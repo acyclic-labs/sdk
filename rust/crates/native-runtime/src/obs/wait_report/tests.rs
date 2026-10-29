@@ -2,7 +2,7 @@ use super::*;
 use std::{future::Future, pin::Pin, task::Poll};
 use tracing_subscriber::layer::SubscriberExt as _;
 
-type Wait = Pin<Box<crate::obs::Scoped<tokio::sync::oneshot::Receiver<()>>>>;
+type Wait = Pin<Box<crate::obs::Waiting<tokio::sync::oneshot::Receiver<()>>>>;
 
 fn pending(report: &WaitReport, key: usize) -> (tokio::sync::oneshot::Sender<()>, Wait) {
     let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
@@ -36,10 +36,53 @@ fn producer_drop_is_typed_and_foreign_polling_keeps_the_original_report() {
         assert!(snapshot(&foreign).is_empty());
         drop(sender);
         assert!(matches!(poll(&mut wait), Poll::Ready(Err(_))));
+        assert!(snapshot(&report).is_empty());
         drop(wait);
     });
     assert!(snapshot(&report).is_empty());
     assert!(snapshot(&foreign).is_empty());
+}
+
+#[test]
+fn a_retained_descendant_does_not_retain_a_finished_or_cancelled_wait() {
+    for outcome in ["completed", "producer-dropped", "cancelled"] {
+        let report = WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        let (child_sender, child_receiver) = std::sync::mpsc::channel();
+        let mut wait = Box::pin(tracing::dispatcher::with_default(&dispatch, || {
+            crate::obs::waiting("channel-close", outcome, async move {
+                child_sender
+                    .send(tracing::info_span!("retained-child"))
+                    .unwrap();
+                receiver.await
+            })
+        }));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+        let child = child_receiver.try_recv().unwrap();
+        assert!(snapshot(&report).contains(outcome));
+        match outcome {
+            "completed" => {
+                sender.send(()).unwrap();
+                assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(Ok(()))));
+                assert!(snapshot(&report).is_empty());
+                drop(wait);
+            }
+            "producer-dropped" => {
+                drop(sender);
+                assert!(matches!(wait.as_mut().poll(&mut cx), Poll::Ready(Err(_))));
+                assert!(snapshot(&report).is_empty());
+                drop(wait);
+            }
+            _ => drop(wait),
+        }
+        // Negative control: the original layer kept this parent listed until
+        // the child closed, even though no primitive wait remained.
+        assert!(snapshot(&report).is_empty(), "{outcome}");
+        drop(child);
+        assert!(snapshot(&report).is_empty());
+    }
 }
 
 #[test]

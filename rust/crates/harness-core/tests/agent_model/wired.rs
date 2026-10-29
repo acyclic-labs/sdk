@@ -463,13 +463,13 @@ enum Arrival {
 /// (its settled turn output, staged as inherited conversation on the child's
 /// private volume) and a follow-up, in `arrival` order. `structured` is the
 /// admission's structured filesystem grant over every volume; without it the
-/// admission grants only the root's own volume. Returns the model requests
-/// and the child's result.
+/// admission grants only the root's own volume. Returns the model requests,
+/// the child's result and the root's final phase.
 async fn admitted_root_after_its_child(
     arrival: Arrival,
     structured: bool,
     base: u8,
-) -> std::result::Result<(Vec<ModelRequest>, FileRef), String> {
+) -> std::result::Result<(Vec<ModelRequest>, FileRef, Phase), String> {
     let run = async {
         let root = AgentPath::root(&id(base));
         let child = root.child(&id(base + 1))?;
@@ -579,11 +579,8 @@ async fn admitted_root_after_its_child(
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
-        if let Phase::Done {
-            outcome: AgentOutcome::Failed { message },
-        } = &stepped.state.phase
-        {
-            return Err(message.clone().into());
+        if matches!(stepped.state.phase, Phase::Done { .. }) {
+            return Ok((model.requests(), *result, stepped.state.phase));
         }
         // Settle the first turn as its step commit would.
         let records = stepped
@@ -607,7 +604,7 @@ async fn admitted_root_after_its_child(
                 idempotency_key: intent_key("settle", &[root.as_str()])?,
             })
             .await?;
-        let stepped = step(
+        let settled = step(
             &driver,
             &root,
             Some(stepped.state),
@@ -616,13 +613,7 @@ async fn admitted_root_after_its_child(
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
-        if let Phase::Done {
-            outcome: AgentOutcome::Failed { message },
-        } = &stepped.state.phase
-        {
-            return Err(message.clone().into());
-        }
-        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result))
+        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result, settled.state.phase))
     };
     run.await.map_err(|error| error.to_string())
 }
@@ -637,9 +628,10 @@ async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first(
         (30, Arrival::ChildResultFirst),
         (40, Arrival::FollowUpFirst),
     ] {
-        let (requests, result) = admitted_root_after_its_child(arrival, true, base)
+        let (requests, result, phase) = admitted_root_after_its_child(arrival, true, base)
             .await
             .map_err(|error| format!("{arrival:?}: {error}"))?;
+        assert_eq!(phase, Phase::Idle, "{arrival:?}: the admitted turn settles");
         assert!(
             result
                 .path()
@@ -673,8 +665,34 @@ async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Resu
         (50, Arrival::ChildResultFirst),
         (60, Arrival::FollowUpFirst),
     ] {
-        let refused = admitted_root_after_its_child(arrival, false, base).await;
-        assert!(refused.is_err(), "{arrival:?}: {refused:?}");
+        let (requests, result, phase) = admitted_root_after_its_child(arrival, false, base)
+            .await
+            .map_err(|error| format!("{arrival:?}: {error}"))?;
+        assert!(
+            matches!(
+                phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            ),
+            "{arrival:?}: {phase:?}"
+        );
+        let admitted = match arrival {
+            Arrival::ChildResultFirst => 1,
+            Arrival::FollowUpFirst => 2,
+        };
+        assert_eq!(
+            requests.len(),
+            admitted,
+            "{arrival:?}: refused before dispatch"
+        );
+        assert!(
+            requests.iter().all(|request| request
+                .messages
+                .iter()
+                .all(|message| message.content.file_refs().all(|file| *file != result))),
+            "{arrival:?}: the ungranted result never reaches the model"
+        );
     }
     Ok(())
 }
@@ -917,6 +935,23 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                             .outs
                             .iter()
                             .any(|out| matches!(out, Out::Conversation(_)))
+                    );
+                    assert_eq!(
+                        stepped.status.expect("failure publishes status").phase,
+                        stepped.state.phase
+                    );
+                    assert!(
+                        stepped.outs.iter().all(|out| matches!(
+                            out,
+                            Out::Send {
+                                record: InboxRecord::ChildDone(ChildDone {
+                                    outcome: AgentOutcome::Failed { .. },
+                                    ..
+                                }),
+                                ..
+                            }
+                        )),
+                        "a refused turn emits only its terminal failure"
                     );
                 }
                 Err(error) => {

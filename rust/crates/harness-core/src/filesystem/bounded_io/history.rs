@@ -89,15 +89,6 @@ impl HistoryIo for &PreparationIo {
         let retained = decoded.1.bytes();
         Ok((retain_decoded(decoded)?, retained))
     }
-    fn clone_authority(
-        &mut self,
-        authority: &crate::core::Authority,
-    ) -> Result<crate::core::Authority> {
-        Ok(crate::core::Authority {
-            kind: authority.kind,
-            id: self.clone_text(&authority.id)?,
-        })
-    }
     fn clone_text(&mut self, text: &str) -> Result<String> {
         stock_string_copy(text, Some(self))
     }
@@ -108,23 +99,6 @@ impl HistoryIo for &PreparationIo {
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
         Error::Allocation(cause)
     }
-    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
-        if capacity <= text.capacity() {
-            return Ok(());
-        }
-        let old = text.capacity();
-        let claimed = (capacity - old) as u64;
-        self.retain_owned(claimed)?;
-        if let Err(error) = self.allocation_attempt(claimed).and_then(|()| {
-            text.try_reserve_exact(capacity - text.len())
-                .map_err(Error::Allocation)
-        }) {
-            self.release(claimed)?;
-            return Err(error);
-        }
-        self.retain_owned((text.capacity() - capacity) as u64)
-    }
-
     fn admit_copy(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_copied: bytes,

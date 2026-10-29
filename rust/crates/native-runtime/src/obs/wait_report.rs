@@ -4,7 +4,11 @@ use std::{
     sync::{Arc, Mutex, PoisonError, Weak},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tracing::{Id, Subscriber, field::Visit, span::Attributes};
+use tracing::{
+    Id, Subscriber,
+    field::Visit,
+    span::{Attributes, Record},
+};
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
 /// Collects the live [`super::waiting`] spans of one subscriber.
@@ -102,7 +106,31 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
     }
 
     fn on_close(&self, id: Id, context: Context<'_, S>) {
-        let Some(span) = context.span(&id) else {
+        self.retire(&id, context);
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
+        #[derive(Default)]
+        struct Finished(bool);
+        impl Visit for Finished {
+            fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+                if field.name() == "finished" {
+                    self.0 = value;
+                }
+            }
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn fmt::Debug) {}
+        }
+        let mut finished = Finished::default();
+        values.record(&mut finished);
+        if finished.0 {
+            self.retire(id, context);
+        }
+    }
+}
+
+impl WaitReport {
+    fn retire<S: Subscriber + for<'a> LookupSpan<'a>>(&self, id: &Id, context: Context<'_, S>) {
+        let Some(span) = context.span(id) else {
             return;
         };
         let Some(SpanWait(node)) = span.extensions_mut().remove::<SpanWait>() else {
@@ -131,9 +159,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
             chain.last = previous.as_ref().map_or_else(Weak::new, Arc::downgrade);
         }
     }
-}
 
-impl WaitReport {
     /// Writes a snapshot of live primitive/key/start observations, then flushes.
     ///
     /// A blocked or failed writer cannot hold the lock needed by a completing

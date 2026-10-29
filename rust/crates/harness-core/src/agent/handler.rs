@@ -1,16 +1,16 @@
 //! The agent as an A4 actor: one [`Handler`] package serves every agent.
 //!
 //! Each agent's actor subscribes to its inbox (subscription [`INBOX`]). A delivery
-//! runs one [`step`], lowers its effects into the one commit the runtime publishes
+//! runs one [`super::step`], lowers its effects into the one commit the runtime publishes
 //! with the checkpoint, and maps the step's alarm onto the actor's single alarm.
 //! A spawn's commit also creates the child's actor state at the fork cut, so the
 //! child's first delivery is its `ForkAdopted` record. There is no other timer,
 //! poller or per-agent task.
 
-use super::checkpoint::{self, checkpoint_state, codec, decode};
+use super::checkpoint::{checkpoint_state, codec, decode};
 use super::{
     AgentId, AgentPath, AgentRecord, AgentState, Alarm, Error, ForkAdopted, InboxRecord, IntentId,
-    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower, step,
+    Out, Spawn, TurnDriver, Wake, create_root, delivery_key, lower,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -340,12 +340,18 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
-        let mut step = step(&self.driver, &path, state, cursor, wake, cancellation).await?;
+        let mut prepared =
+            super::machine::prepare_step(&self.driver, &path, state, cursor, wake, cancellation)
+                .await?;
         let participant = match &self.volumes {
-            Some(volumes) => volumes.bind(&step.state, &mut step.outs)?,
+            Some(volumes) => {
+                let (state, outs) = prepared.state_and_outs();
+                volumes.bind(state, outs)?
+            }
             None => None,
         };
-        let request = lower(&step, cursor, delivery_key(&step.state, &trigger)?)?;
+        let step = prepared.step();
+        let request = lower(step, cursor, delivery_key(&step.state, &trigger)?)?;
         let mut effects = effects(request);
         let spawned: BTreeSet<_> = step
             .outs
@@ -376,11 +382,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                     .wake(&Agents::<P>::actor(&delivery.actor, &agent)?),
             );
         }
+        let alarm = step.alarm;
         Ok(Transition {
             response: None,
             participant,
-            checkpoint: checkpoint::checkpoint(&step.state)?,
-            alarm: match step.alarm {
+            checkpoint: prepared.into_checkpoint(),
+            alarm: match alarm {
                 Alarm::Clear => AlarmChange::Clear,
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
             },

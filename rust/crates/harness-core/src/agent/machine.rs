@@ -5,7 +5,7 @@
 //! composed commit by [`super::lower::lower`]; nothing is acknowledged before that
 //! commit.
 
-use super::checkpoint::{self, MAX_CHECKPOINT_BYTES, TAIL_SLACK};
+use super::checkpoint::{self, MAX_CHECKPOINT_BYTES};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
@@ -400,6 +400,25 @@ pub struct Step {
     pub alarm: Alarm,
 }
 
+pub(super) struct PreparedStep {
+    step: Step,
+    checkpoint: acyclic_actors::guest::Checkpoint,
+}
+
+impl PreparedStep {
+    pub(super) fn step(&self) -> &Step {
+        &self.step
+    }
+
+    pub(super) fn state_and_outs(&mut self) -> (&AgentState, &mut Vec<Out>) {
+        (&self.step.state, &mut self.step.outs)
+    }
+
+    pub(super) fn into_checkpoint(self) -> acyclic_actors::guest::Checkpoint {
+        self.checkpoint
+    }
+}
+
 /// Runs one step for `wake`. Every control decision is made by [`kernel`].
 ///
 /// `state` is `None` only for the first delivery, which must be `ForkAdopted`.
@@ -411,6 +430,21 @@ pub async fn step<T: TurnDriver + ?Sized>(
     wake: Wake,
     cancellation: acyclic_actors::guest::CancellationToken,
 ) -> Result<Step, Error> {
+    Ok(
+        prepare_step(driver, path, state, cursor, wake, cancellation)
+            .await?
+            .step,
+    )
+}
+
+pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
+    driver: &T,
+    path: &AgentPath,
+    state: Option<AgentState>,
+    cursor: u64,
+    wake: Wake,
+    cancellation: acyclic_actors::guest::CancellationToken,
+) -> Result<PreparedStep, Error> {
     let mut outs = Vec::new();
     let alarm_wake = matches!(wake, Wake::Alarm);
     // A requested spawn's step carries only that spawn: its child is created
@@ -486,12 +520,40 @@ pub async fn step<T: TurnDriver + ?Sized>(
         .await?;
     }
     apply_spawns(&mut state, &mut outs, applied, MAX_OPEN_CHILDREN);
-    // The one point every state passes before it is checkpointed: one that
-    // would not fit fails the agent visibly, shedding everything a step can
-    // grow, so no step ever produces a record its stream refuses.
-    if checkpoint::encode(&state)?.len() > MAX_CHECKPOINT_BYTES - TAIL_SLACK {
+    let tails = (state.conversation_tail, state.status_tail);
+    let completion = (state.awaited, state.checkpoint, outs.len());
+    let mut step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+    let mut bytes = checkpoint::encode(&step.state)?;
+    // Check the exact final tails, then retain these same bytes for commit.
+    // Only a state that must shed its growing input is encoded again.
+    if bytes.len() > MAX_CHECKPOINT_BYTES {
+        let Step {
+            mut state,
+            mut outs,
+            ..
+        } = step;
+        state.conversation_tail = tails.0;
+        state.status_tail = tails.1;
+        state.awaited = completion.0;
+        state.checkpoint = completion.1;
+        outs.truncate(completion.2);
         shed(&mut state, &mut outs, OVERSIZED_STATE);
+        step = finalize_step(state, outs, &previous, cursor, inbox_wake)?;
+        bytes = checkpoint::encode(&step.state)?;
     }
+    Ok(PreparedStep {
+        step,
+        checkpoint: checkpoint::from_encoded(bytes)?,
+    })
+}
+
+fn finalize_step(
+    mut state: AgentState,
+    mut outs: Vec<Out>,
+    previous: &Phase,
+    cursor: u64,
+    inbox_wake: bool,
+) -> Result<Step, Error> {
     let alarm = match kernel::alarm(
         control(&state),
         !state.queued.is_empty() || state.overflow.is_some(),
@@ -527,19 +589,29 @@ pub async fn step<T: TurnDriver + ?Sized>(
     let mut sequence = state.conversation_tail;
     for out in &outs {
         match out {
-            Out::Conversation(_) => sequence += 1,
+            Out::Conversation(_) => {
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or(Error::Record("agent conversation tail overflow"))?;
+            }
             Out::Checkpoint => state.checkpoint = sequence.checked_sub(1),
             Out::Send { .. } | Out::Archive { .. } | Out::Spawn { .. } => {}
         }
     }
-    state.conversation_tail += appended;
-    let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
+    state.conversation_tail = state
+        .conversation_tail
+        .checked_add(appended)
+        .ok_or(Error::Record("agent conversation tail overflow"))?;
+    let status = (&phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
         .then_some(StatusRecord {
             phase,
             cursor,
             conversation: state.conversation_tail,
         });
-    state.status_tail += u64::from(status.is_some());
+    state.status_tail = state
+        .status_tail
+        .checked_add(u64::from(status.is_some()))
+        .ok_or(Error::Record("agent status tail overflow"))?;
     Ok(Step {
         state,
         outs,

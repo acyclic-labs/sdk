@@ -102,6 +102,10 @@ impl Completion {
         lease_wait: std::time::Duration,
     ) -> io::Result<()> {
         if let Some(file) = &mut self.0 {
+            // Windows exposes the process status as a DWORD, including when
+            // ExitStatus and process::exit carry its bits in an i32.
+            #[cfg(windows)]
+            let code = u32::from_ne_bytes(code.to_ne_bytes());
             let lease_wait_seconds = lease_wait.as_secs_f64();
             writeln!(
                 file,
@@ -149,6 +153,8 @@ impl Drop for Directory {
 ///
 /// `--completion ABSOLUTE_FILE` exclusively reserves a receipt before launch
 /// and writes its v2 completion only after physical process-tree retirement.
+/// Its exit code is the unsigned native process status on Windows and the
+/// shell exit code on Unix, matching the enclosing process's observed exit.
 /// Failed admission or drain never produces a completed receipt. It confers
 /// no mount-retirement capability. `--custody ABSOLUTE_DIRECTORY` reuses the
 /// shared custody fence before admission; the caller must already serialize
@@ -708,22 +714,35 @@ mod tests {
 
     #[test]
     fn process_completion_is_exclusive_and_never_publishes_before_retirement() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("completion.json");
-        let mut completion = Completion::open(Some(&path)).unwrap();
-        assert!(std::fs::read(&path).unwrap().is_empty());
-        assert_eq!(
-            Completion::open(Some(&path)).err().unwrap().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        completion
-            .retired(17, false, std::time::Duration::ZERO)
-            .unwrap();
-        let receipt = std::fs::read_to_string(path).unwrap();
-        assert!(receipt.contains("\"exit_code\":17"));
-        assert!(receipt.contains("\"process_tree_retired\":true"));
-        assert!(receipt.contains("\"schema\":\"acyclic.process-custody-completion.v2\""));
-        assert!(receipt.contains("\"lease_wait_seconds\":0"));
-        assert!(!receipt.contains("mount"));
+        #[cfg(windows)]
+        let codes = [0, 17, 124, 0x7fff_ffff, 0x8000_0000, u32::MAX];
+        #[cfg(not(windows))]
+        let codes = [17_u32];
+        for raw in codes {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("completion.json");
+            let mut completion = Completion::open(Some(&path)).unwrap();
+            assert!(std::fs::read(&path).unwrap().is_empty());
+            assert_eq!(
+                Completion::open(Some(&path)).err().unwrap().kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            #[cfg(windows)]
+            let code = {
+                use std::os::windows::process::ExitStatusExt as _;
+                exit_code(ExitStatus::from_raw(raw))
+            };
+            #[cfg(not(windows))]
+            let code = 17;
+            completion
+                .retired(code, false, std::time::Duration::ZERO)
+                .unwrap();
+            let receipt = std::fs::read_to_string(path).unwrap();
+            assert!(receipt.contains(&format!("\"exit_code\":{raw},")));
+            assert!(receipt.contains("\"process_tree_retired\":true"));
+            assert!(receipt.contains("\"schema\":\"acyclic.process-custody-completion.v2\""));
+            assert!(receipt.contains("\"lease_wait_seconds\":0"));
+            assert!(!receipt.contains("mount"));
+        }
     }
 }
