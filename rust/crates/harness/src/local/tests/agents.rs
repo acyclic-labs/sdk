@@ -44,25 +44,38 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
 
 /// The root's conversation once its first turn has settled.
 async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
-    let conversation = root.conversation().map_err(agent)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    loop {
-        let entries = records(&**agents.provider(), conversation.clone()).await?;
-        if !entries.is_empty() {
-            return Ok(entries);
+    let mut statuses = acyclic_stream::records_only(
+        agents
+            .provider()
+            .follow(acyclic_stream::FollowRequest::new(
+                root.status().map_err(agent)?,
+                0,
+            ))
+            .await
+            .map_err(agent)?,
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while let Some(record) = statuses.try_next().await.map_err(agent)? {
+            let status = StatusRecord::decode(&record.value).map_err(agent)?;
+            match status.phase {
+                crate::agent::Phase::Idle if status.cursor > 0 => {
+                    return records(&**agents.provider(), root.conversation().map_err(agent)?)
+                        .await;
+                }
+                crate::agent::Phase::Done { outcome } => {
+                    return Err(Error::Conflict(format!(
+                        "agent ended before settlement: {outcome:?}"
+                    )));
+                }
+                _ => {}
+            }
         }
-        if std::time::Instant::now() > deadline {
-            let statuses = records(&**agents.provider(), root.status().map_err(agent)?).await?;
-            let statuses = statuses
-                .iter()
-                .map(|status| StatusRecord::decode(status).map(|status| status.phase))
-                .collect::<Vec<_>>();
-            return Err(Error::Conflict(format!(
-                "no settled turn; statuses {statuses:?}"
-            )));
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+        Err(Error::Storage(
+            "agent status follow ended before settlement".into(),
+        ))
+    })
+    .await
+    .map_err(|_| Error::Conflict("agent did not publish settlement".into()))?
 }
 
 #[tokio::test]
@@ -87,7 +100,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.request_count(), 1);
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
@@ -136,25 +149,60 @@ async fn names(
 
 #[tokio::test]
 async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
+    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(waits.clone()).with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        ),
+    );
+    // Retain the exact admission the served tree derives its credentials from.
+    // Minting another scope with the same grants does not identify that parent.
+    struct Admission(std::sync::Mutex<Option<crate::core::Scope>>);
+    impl crate::local::Verifier for Admission {
+        fn caller(
+            &self,
+            custody: &crate::local::Custody<'_>,
+            owner: &crate::core::Scope,
+        ) -> Result<crate::hosting::VerifiedCaller> {
+            let caller =
+                crate::local::Verifier::caller(&crate::local::KeyFileVerifier, custody, owner)?;
+            *self.0.lock().map_err(agent)? = Some(caller.scope.clone());
+            Ok(caller)
+        }
+        fn session(
+            &self,
+            custody: &crate::local::Custody<'_>,
+        ) -> Result<Arc<acyclic_stream::session::Authority>> {
+            crate::local::Verifier::session(&crate::local::KeyFileVerifier, custody)
+        }
+    }
+    let admission = Arc::new(Admission(std::sync::Mutex::new(None)));
     let directory = tempfile::tempdir().map_err(agent)?;
     let provider = super::scripted([
         super::checked_commands::call(0, crate::tools::shell::PLATFORM.name, "echo staged"),
         crate::test_support::ScriptedTurn::Text("done".into()),
     ]);
-    let harness = Arc::new(
-        LocalHarness::open(super::checkout_config(
-            directory.path(),
-            (super::model()?, provider),
-        )?)
-        .await?,
-    );
+    let mut config = super::checkout_config(directory.path(), (super::model()?, provider))?;
+    config.served = Some(admission.clone());
+    let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
+    let mut failures = harness
+        .agent_failures()
+        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = tokio::select! {
+        result = settled(&agents, &root) => result,
+        failure = failures.recv() => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
+    };
+    let entries = entries.inspect_err(|_| {
+        let _ = waits.report(&mut std::io::stderr());
+    })?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.
@@ -192,7 +240,13 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
         names(&harness, private, &format!("{turn}/{call}/stdout")).await?,
         ["0000000000000000"]
     );
-    follow_tool_output(&harness, &state.path, &turn_id).await
+    let scope = admission
+        .0
+        .lock()
+        .map_err(agent)?
+        .clone()
+        .ok_or_else(|| Error::NotFound("served admission".into()))?;
+    follow_tool_output(&harness, &state.path, &turn_id, &scope).await
 }
 
 async fn observation(
@@ -220,6 +274,7 @@ async fn follow_tool_output(
     harness: &Arc<LocalHarness>,
     root: &AgentPath,
     turn: &str,
+    admitted: &crate::core::Scope,
 ) -> Result<()> {
     use acyclic_fs::access::{Action, Capability, Generations, Grant, ResourcePattern};
     let (agents, _) = harness.agents().await?;
@@ -309,8 +364,11 @@ async fn follow_tool_output(
     .map_err(|_| Error::Conflict(format!("no output of turn {turn} arrived")))??;
     // Revoking the agent scope the connection's credential derives from
     // ends its observation.
-    let revoked = authority()?;
-    revoked.issuer.revoke_workload(&revoked.scope)?;
+    // Negative control: an unrelated root with identical grants cannot close it.
+    let unrelated = authority()?;
+    unrelated.issuer.revoke_workload(&unrelated.scope)?;
+    issuer.verifier(&mut None)?.verify(admitted, &mut None)?;
+    issuer.revoke_workload(admitted)?;
     tokio::time::timeout(wait, async {
         loop {
             if observer.next().await.is_err() {
@@ -325,32 +383,61 @@ async fn follow_tool_output(
 /// A local HTTP peer that answers each request with its own ordinal, so a
 /// hook that ran again would add different context.
 #[cfg(unix)]
-fn counting_server() -> Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
-    use std::io::{Read as _, Write as _};
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(agent)?;
+struct CountingServer {
+    port: u16,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(unix)]
+impl Drop for CountingServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[cfg(unix)]
+async fn counting_server() -> Result<CountingServer> {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(agent)?;
     let port = listener.local_addr().map_err(agent)?.port();
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let served = Arc::clone(&count);
-    std::thread::spawn(move || {
-        for mut stream in listener.incoming().flatten() {
+    let task = tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
             let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let mut request = Vec::new();
-            let mut buffer = [0; 1024];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                match stream.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+            let mut request = [0; 8192];
+            let mut used: usize = 0;
+            loop {
+                let start = used.saturating_sub(3);
+                match stream.read(&mut request[used..]).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => used += read,
+                }
+                if request[start..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
                 }
             }
             let body = format!("HOOK-HTTP-{ordinal}");
-            let _ = write!(
-                stream,
+            let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
+            if stream.write_all(response.as_bytes()).await.is_err() {
+                return;
+            }
         }
     });
-    Ok((port, count))
+    Ok(CountingServer {
+        port,
+        calls: count,
+        task,
+    })
 }
 
 /// A turn whose `UserPromptSubmit` hook called an HTTP peer is interrupted
@@ -361,7 +448,8 @@ fn counting_server() -> Result<(u16, Arc<std::sync::atomic::AtomicUsize>)> {
 #[tokio::test]
 async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let directory = tempfile::tempdir().map_err(agent)?;
-    let (port, calls) = counting_server()?;
+    let peer = counting_server().await?;
+    let (port, calls) = (peer.port, &peer.calls);
     let home = directory.path().join("home");
     std::fs::create_dir_all(home.join(".claude")).map_err(agent)?;
     let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
@@ -390,23 +478,33 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
             Ok::<_, Error>(Arc::new(LocalHarness::open(config).await?))
         }
     };
-    let pending = super::scripted([crate::test_support::ScriptedTurn::Events(vec![
-        crate::test_support::ScriptedEvent::Pending {},
-    ])]);
+    let (dispatched, mut requests) = tokio::sync::mpsc::channel(1);
+    let pending = Arc::new(
+        ScriptedModelProvider::new([crate::test_support::ScriptedTurn::Events(vec![
+            crate::test_support::ScriptedEvent::Pending {},
+        ])])
+        .with_context_capacity(super::capacity())
+        .with_dispatch_observer(move |_| {
+            let _ = dispatched.try_send(());
+        }),
+    );
     let harness = open(pending.clone()).await?;
+    harness.agents().await?;
+    let mut failures = harness
+        .agent_failures()
+        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
     conversation(&harness)
         .await?
         .send("hooked", "hello")
         .await?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    while pending.request_count() == 0 {
-        if std::time::Instant::now() > deadline {
-            return Err(Error::Conflict(
-                "the hooked turn never reached the model".into(),
-            ));
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        tokio::select! {
+            request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
+            failure = failures.recv() => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    })
+    .await
+    .map_err(|_| Error::Conflict("the hooked turn never reached the model".into()))??;
     let recorded = serde_json::to_string(&pending.request(0)).map_err(agent)?;
     assert!(recorded.contains("HOOK-HTTP-1"), "{recorded}");
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);

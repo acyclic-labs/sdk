@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "decision": "retired_live_child_discovery_orphan_caller",
+  "observed_main": "2146782983e066e02946ea8c387316693d5fad41",
+  "retirement": {
+    "commit": "2344393e026e78807e85edff8a87c880d31d7f7c",
+    "pr": 1522,
+    "parent": "47411b88b024eb152578f09aeb9c964cb5982244",
+    "removed_contract": "StreamProvider::children(ChildrenRequest) -> ChildStream: replay direct children and push newly created children through a live parent subscription.",
+    "removed_sources": [
+      "rust/crates/stream/src/memory/discovery_model.rs",
+      "rust/crates/stream/src/local/discovery_model.rs"
+    ],
+    "removed_export": "acyclic_stream::discovery_verification",
+    "protocol_evidence": "rust/crates/stream/proto/stream/v1/session.proto reserves child-discovery fields 11/12 and names children/child; finite children_page remains a separate API.",
+    "signature_limit": "Local git reports E for the historical merged commit; this mapping does not claim independently verified historical signer trust. Commit identity, tree differences and the recorded PR establish the source disposition."
+  },
+  "orphan": {
+    "path": "rust/crates/stream/tests/local_follow_loom.rs",
+    "test": "discovery_observes_failure_without_waiting_for_durability",
+    "calls": [
+      "acyclic_stream::discovery_verification::local_failure(false)",
+      "acyclic_stream::discovery_verification::local_accepted(false)"
+    ],
+    "disposition": "Remove only this complete orphan test item together with this explicit retirement mapping. Do not restore an alias/export or substitute record-follow models. All other live positive/negative tests remain unchanged."
+  },
+  "historical_oracles": [
+    {
+      "function": "local::discovery_model::accepted(broken)",
+      "healthy": "Actual LocalStream children opens and yields accepted child state without waiting for device acknowledgement.",
+      "negative": "broken=true uses the former child adapter that waits through visible/durability; the same readiness assertion fails.",
+      "blob": "a100ec93eef44cf364eadd2e4c0d1073c2b80deb"
+    },
+    {
+      "function": "local::discovery_model::failure(broken)",
+      "healthy": "Actual parked child observer receives provider Unavailable after poison, including registration/failure races.",
+      "negative": "broken=true omits the local child adapter's failure subscription; the same wake/Unavailable oracle fails.",
+      "blob": "a100ec93eef44cf364eadd2e4c0d1073c2b80deb"
+    },
+    {
+      "function": "memory::discovery_model",
+      "retained_capability": "Original indexed child registration, executor handoff, cancellation and local oracle delegates, including their broken switches.",
+      "blob": "81edc14caacebd99f16fa08e2d2abf6d9f84d7f5"
+    }
+  ],
+  "historical_capture": {
+    "sha256": "5594ec3154e65a658851408b975d5112a44fc6dbc210108b6946556697a29701",
+    "producer": "git archive --format=tar at exact retirement parent 47411b88b024eb152578f09aeb9c964cb5982244; seven original source members, no authored fixture output.",
+    "members": [
+      "rust/crates/stream/src/local/discovery_model.rs",
+      "rust/crates/stream/src/memory/discovery_model.rs",
+      "rust/crates/stream/tests/local_follow_loom.rs",
+      "rust/crates/stream/src/lib.rs",
+      "rust/crates/stream/src/lib/provider.rs",
+      "rust/crates/stream/src/local/provider.rs",
+      "rust/crates/stream/src/memory/children.rs"
+    ],
+    "limit": "Historical source preservation only. Neither the old healthy cases nor their broken controls were executed by this disposition."
+  },
+  "live_contracts_not_equivalent_to_retired_discovery": [
+    {
+      "entry": "verification::local_accepted_queries_do_not_wait_for_durability",
+      "production_seam": "local::query_model::accepted_queries_and_publication_have_no_lost_wakeup_or_durability_wait",
+      "oracle": "Actual checked record follow sees accepted append while watermarks remain accepted=2,durable=0; omitted path wake is a separate negative control.",
+      "limit": "Record-follow coverage, not live-child discovery. At observed main the public helper has no caller in stream/src or stream/tests; execution coverage remains open."
+    },
+    {
+      "entry": "verification::local_poison_wakes_followers",
+      "production_seam": "local::query_model::poison_wakes_checked_followers",
+      "oracle": "Actual checked record follow returns Unavailable on poison; omitted poison publication is a separate negative control.",
+      "caller": "local_follow_loom::terminal_failure_races_registration_and_wakes_checked_followers",
+      "limit": "Keep this live test and its internal negative control. No execution qualification is claimed here."
+    },
+    {
+      "entry": "StreamProvider::children_page",
+      "oracle": "Finite bounded hierarchy/page-cut semantics remain live and retain their existing tests.",
+      "limit": "No continuous child subscription, local child wake, no-durability-wait or hosted equivalence is inferred from finite paging."
+    }
+  ],
+  "validation": "Source inspection and capture only. No new compiler, test, model schedule, proof campaign, historical receipt rewrite or hosted/platform qualification."
+}

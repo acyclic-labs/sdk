@@ -15,8 +15,10 @@ impl Client {
     /// The revision tracker every route and session pool of this client
     /// shares, across credential changes.
     #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
-    pub(crate) fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
-        Ok(Arc::clone(&self.revisions))
+    pub(crate) fn revisions(
+        &self,
+    ) -> Result<crate::query_sync::Arc<crate::RevisionTracker>, StreamError> {
+        Ok(crate::query_sync::Arc::clone(&self.revisions))
     }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
@@ -26,7 +28,7 @@ impl Client {
                 self.credential.clone(),
                 self.session_ca.clone(),
                 self.session_verifier.clone(),
-                Arc::clone(&self.revisions),
+                crate::query_sync::Arc::clone(&self.revisions),
             )
         })
     }

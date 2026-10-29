@@ -134,10 +134,10 @@ impl RevisionCut {
 /// every later read. Each authority keeps its own participant; a reset
 /// incarnation replaces its scope's entry.
 #[derive(Debug, Default)]
-pub struct RevisionTracker(std::sync::Mutex<RevisionCut>);
+pub struct RevisionTracker(crate::query_sync::SyncMutex<RevisionCut>);
 
 impl RevisionTracker {
-    fn cut(&self) -> std::sync::MutexGuard<'_, RevisionCut> {
+    fn cut(&self) -> impl std::ops::DerefMut<Target = RevisionCut> + '_ {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

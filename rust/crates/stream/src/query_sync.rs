@@ -3,9 +3,9 @@
 pub(crate) mod parity;
 
 #[cfg(loom)]
-pub use loom::sync::Mutex as SyncMutex;
+pub use loom::sync::{Arc, Mutex as SyncMutex};
 #[cfg(not(loom))]
-pub use std::sync::Mutex as SyncMutex;
+pub use std::sync::{Arc, Mutex as SyncMutex};
 #[cfg(not(loom))]
 pub use tokio::sync::{Mutex, RwLock, watch};
 

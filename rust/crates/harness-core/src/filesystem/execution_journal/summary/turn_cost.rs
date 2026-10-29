@@ -152,8 +152,9 @@ async fn append_cost_measurements() -> Result<()> {
             // A bounded cache may read cold index pages, never a journal
             // prefix. Retry and tool-state preloads plus their two updates
             // each traverse at most 256 branches, a leaf and an external value.
-            let historical = (after.authority_records_read - before.authority_records_read)
-                - (after.authority_records_appended - before.authority_records_appended);
+            // Acknowledged appends are not reads: publication need not read
+            // its own records back. Bound all actual reads, including replay.
+            let historical = after.authority_records_read - before.authority_records_read;
             assert!(
                 historical <= 4 * 258,
                 "append exceeded fixed-width index work at step {step}"
@@ -184,8 +185,7 @@ async fn append_cost_measurements() -> Result<()> {
                     elapsed[step as usize],
                     after.authority_records_read - before.authority_records_read,
                     after.authority_bytes_read - before.authority_bytes_read,
-                    (after.authority_records_read - before.authority_records_read)
-                        - (after.authority_records_appended - before.authority_records_appended),
+                    historical,
                     after.authority_bytes_written - before.authority_bytes_written,
                     after.bytes_encoded - before.bytes_encoded
                 );

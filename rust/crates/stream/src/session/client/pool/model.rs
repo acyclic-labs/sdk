@@ -31,6 +31,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
+                revisions: Arc::clone(&pool.revisions),
             };
             let prepare = |client: &Client, id| {
                 let progress = Arc::new(Progress::new(0));
@@ -141,6 +142,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
+            revisions: Arc::clone(&pool.revisions),
         };
         let prepare = |id| {
             let progress = Arc::new(Progress::new(0));
@@ -249,6 +251,7 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
             admissions: Arc::new(Admissions::new()),
             attempt_epoch: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(gate::Gate::new()),
+            revisions: Arc::default(),
         };
         let mut live = BTreeMap::new();
         for &(key, open) in &operations {
@@ -433,6 +436,7 @@ pub fn verify_registration_deadline(broken: bool) {
                 admissions: Arc::new(Admissions::new()),
                 attempt_epoch: Arc::new(AtomicU64::new(0)),
                 abandoned: Arc::new(gate::Gate::new()),
+                revisions: Arc::default(),
             };
             let (_, receiver) = mpsc::channel(2);
             let progress = Arc::new(Progress::new(0));
@@ -533,6 +537,7 @@ pub fn verify_node_dials(fault: u8) {
                 admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
+                revisions: Arc::clone(&pool.revisions),
             };
             let a = client
                 .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver)
@@ -646,6 +651,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
+            revisions: Arc::clone(&pool.revisions),
         };
         let a = client
             .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)

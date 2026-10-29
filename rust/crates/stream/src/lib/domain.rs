@@ -42,7 +42,7 @@ impl IdempotencyKey {
 
     /// A key no other call in this process has used, for fixtures whose
     /// writes carry no retry identity of their own.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, loom, feature = "test-support"))]
     #[must_use]
     pub fn unique() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
