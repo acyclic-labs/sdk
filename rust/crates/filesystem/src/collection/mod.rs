@@ -118,6 +118,20 @@ impl Collection {
     ) -> Result<Unswept, crate::FsError> {
         accounting.check()?;
         let hold = self.unswept().await;
+        self.admit_held(hold, objects, scope, staged, accounting)
+            .await
+    }
+
+    /// Admits while retaining the caller's barrier, before any private spill
+    /// lock. Pins, publication and pressure relief share this lock order.
+    pub(crate) async fn admit_held<S: crate::AsyncObjectStore>(
+        &self,
+        hold: Unswept,
+        objects: &S,
+        scope: crate::PublicationScope<'_>,
+        staged: impl Fn(&ObjectId) -> bool + acyclic_stream::ProviderPlatform,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Unswept, crate::FsError> {
         accounting.check()?;
         let crate::PublicationScope::Closure {
             objects: closure,
