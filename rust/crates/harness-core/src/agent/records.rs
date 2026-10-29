@@ -20,6 +20,121 @@ pub const MAX_INTENT_BYTES: usize = 128;
 pub const MAX_MESSAGE_BYTES: usize = 4 * 1024;
 /// Most volumes bound to one agent.
 pub const MAX_VOLUMES: usize = 8;
+/// Format version of every persisted agent record and saved turn effect,
+/// carried by their one shared header. Any change to a persisted shape bumps
+/// it, and readers refuse every other version whole: there is no migration
+/// code. The headerless format before it is version 1; version 2 carries a
+/// spawn brief by file reference.
+pub const RECORD_VERSION: u32 = 2;
+
+/// A persisted record of a format version this build does not read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("unsupported record version {found}; this build reads version {expected}")]
+pub struct UnsupportedRecordVersion {
+    /// The version the record carries.
+    pub found: u32,
+    /// The only version this build reads, [`RECORD_VERSION`].
+    pub expected: u32,
+}
+
+/// Why a versioned record did not open.
+pub(crate) enum Unopened {
+    /// The record carries another format version.
+    Version(UnsupportedRecordVersion),
+    /// The bytes are not a well-formed record of this version.
+    Malformed,
+}
+
+/// `record` under the shared header, as canonical JSON.
+pub(crate) fn seal<T: Serialize + ?Sized>(record: &T) -> crate::Result<Vec<u8>> {
+    #[derive(Serialize)]
+    struct Sealed<'a, T: ?Sized> {
+        record: &'a T,
+        version: u32,
+    }
+    crate::contract::canonical_json_bytes(&Sealed {
+        record,
+        version: RECORD_VERSION,
+    })
+}
+
+/// The record under the shared header. The version is checked before any of
+/// the record is decoded, so a record of another version is refused whole.
+pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unopened> {
+    let header: Header<'_> = serde_json::from_slice(bytes).map_err(|_| Unopened::Malformed)?;
+    let found = header.version.unwrap_or(1);
+    if found != RECORD_VERSION {
+        return Err(Unopened::Version(UnsupportedRecordVersion {
+            found,
+            expected: RECORD_VERSION,
+        }));
+    }
+    match header.record {
+        Some(record) if !header.unknown => {
+            serde_json::from_str(record.get()).map_err(|_| Unopened::Malformed)
+        }
+        _ => Err(Unopened::Malformed),
+    }
+}
+
+/// The record of any agent stream as `T`, such as a JSON value for a
+/// reader of every record kind: bounded by [`MAX_RECORD_BYTES`], and of any
+/// version but [`RECORD_VERSION`] refused whole.
+pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error> {
+    if bytes.len() > MAX_RECORD_BYTES {
+        return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
+    }
+    open(bytes).map_err(|unopened| match unopened {
+        Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
+        Unopened::Malformed => Error::Record("record is malformed"),
+    })
+}
+
+/// One pass over the header's keys. Unknown keys are noted, not refused, so
+/// a record of another version, header or not, still reports its version.
+struct Header<'a> {
+    version: Option<u32>,
+    record: Option<&'a serde_json::value::RawValue>,
+    unknown: bool,
+}
+
+impl<'de> Deserialize<'de> for Header<'de> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Keys;
+        impl<'de> serde::de::Visitor<'de> for Keys {
+            type Value = Header<'de>;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a versioned record")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut header = Header {
+                    version: None,
+                    record: None,
+                    unknown: false,
+                };
+                while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+                    match &*key {
+                        "version" if header.version.is_none() => {
+                            header.version = Some(map.next_value()?);
+                        }
+                        "record" if header.record.is_none() => {
+                            header.record = Some(map.next_value()?);
+                        }
+                        _ => {
+                            header.unknown = true;
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(header)
+            }
+        }
+        deserializer.deserialize_map(Keys)
+    }
+}
 
 /// Stable caller-chosen identity of one intent (a message, cancel, archive, hook or approval).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -199,8 +314,8 @@ pub struct SpawnRequest {
     pub by: Sender,
     /// Stable intent identity.
     pub id: IntentId,
-    /// Task brief, at most [`MAX_MESSAGE_BYTES`].
-    pub brief: String,
+    /// Task brief, staged on the parent's private volume.
+    pub brief: Box<FileRef>,
 }
 
 /// A child delegates an approval request to this agent (the parent approver).
@@ -405,24 +520,21 @@ pub trait AgentRecord: Serialize + for<'de> Deserialize<'de> {
         Ok(())
     }
 
-    /// Canonical JSON with sorted keys, refused above [`MAX_RECORD_BYTES`].
+    /// Canonical JSON with sorted keys under the shared [`RECORD_VERSION`]
+    /// header, refused above [`MAX_RECORD_BYTES`].
     fn encode(&self) -> Result<Vec<u8>, Error> {
         self.check()?;
-        let bytes = crate::contract::canonical_json_bytes(self)
-            .map_err(|_| Error::Record("record is not encodable"))?;
+        let bytes = seal(self).map_err(|_| Error::Record("record is not encodable"))?;
         if bytes.len() > MAX_RECORD_BYTES {
             return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
         }
         Ok(bytes)
     }
 
-    /// Total, bounded decode of untrusted bytes.
+    /// Total, bounded decode of untrusted bytes; a record of any version but
+    /// [`RECORD_VERSION`] is refused whole.
     fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.len() > MAX_RECORD_BYTES {
-            return Err(Error::Record("record exceeds MAX_RECORD_BYTES"));
-        }
-        let value: Self =
-            serde_json::from_slice(bytes).map_err(|_| Error::Record("record is malformed"))?;
+        let value: Self = decode_record(bytes)?;
         value.check()?;
         Ok(value)
     }
@@ -478,12 +590,7 @@ impl AgentRecord for InboxRecord {
             | Self::Archive(Control { by: from, .. })
             | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
-            Self::Spawn(spawn) => {
-                if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {
-                    return Err(Error::Record("spawn brief must be 1-4096 bytes"));
-                }
-                check_sender(&spawn.by)
-            }
+            Self::Spawn(spawn) => check_sender(&spawn.by),
             Self::Approval(_)
             | Self::ApprovalRequested(_)
             | Self::Awaited
@@ -517,5 +624,84 @@ impl AgentRecord for StatusRecord {
 impl AgentRecord for Closed {
     fn check(&self) -> Result<(), Error> {
         check_sender(&self.by)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        conversation::{FileDescriptor, VolumeClass, VolumeOwner},
+        resources::ProviderRef,
+    };
+
+    /// A spawn request of the headerless version 1, its brief a string.
+    const V1_SPAWN: &[u8] =
+        br#"{"spawn":{"brief":"review the diff","by":{"user":{"principal":"p"}},"id":"spawn-1"}}"#;
+
+    fn refused(bytes: &[u8]) -> UnsupportedRecordVersion {
+        match InboxRecord::decode(bytes) {
+            Err(Error::UnsupportedRecordVersion(version)) => version,
+            other => panic!("expected a version refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_inbox_record_of_another_version_is_refused_whole() -> crate::Result<()> {
+        assert_eq!(
+            refused(V1_SPAWN),
+            UnsupportedRecordVersion {
+                found: 1,
+                expected: RECORD_VERSION
+            }
+        );
+        // The header decides: a later version is refused before its record is read.
+        assert_eq!(
+            refused(br#"{"record":{"spawn":"not read"},"version":3}"#).found,
+            3
+        );
+        // Negative controls. A spawn of this version decodes; the version 1
+        // body under this version's header is malformed, never a partial spawn.
+        let volume = VolumeRef::new(
+            ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?,
+            "records-test".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([3; 16])),
+            &mut None,
+        )?;
+        let spawn = InboxRecord::Spawn(SpawnRequest {
+            by: Sender::User {
+                principal: "p".into(),
+            },
+            id: IntentId::try_from("spawn-1")
+                .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+            brief: Box::new(FileRef::new(
+                volume,
+                "briefs/spawn-1.md".into(),
+                "version-1".into(),
+                FileDescriptor::from_bytes(b"review the diff", "text/markdown", &mut None)?,
+                "brief".into(),
+                &mut None,
+            )?),
+        });
+        let encoded = spawn
+            .encode()
+            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+        assert_eq!(InboxRecord::decode(&encoded).ok(), Some(spawn));
+        let mut relabeled = br#"{"record":"#.to_vec();
+        relabeled.extend_from_slice(V1_SPAWN);
+        relabeled.extend_from_slice(br#","version":2}"#);
+        assert!(matches!(
+            InboxRecord::decode(&relabeled),
+            Err(Error::Record("record is malformed"))
+        ));
+        // This version's header admits nothing beside its record.
+        let mut extra = encoded[..encoded.len() - 1].to_vec();
+        extra.extend_from_slice(br#","extra":0}"#);
+        assert!(matches!(
+            InboxRecord::decode(&extra),
+            Err(Error::Record("record is malformed"))
+        ));
+        Ok(())
     }
 }

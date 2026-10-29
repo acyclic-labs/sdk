@@ -76,6 +76,11 @@ pub struct AgentState {
     pub volumes: Vec<VolumeBinding>,
     /// Approval policy file.
     pub policy: Option<FileRef>,
+    /// Identity digest of the brief its adoption named: on a spawned agent,
+    /// the one file of its parent's it may read, granted to exactly that
+    /// reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<[u8; 32]>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
     /// Inherited conversation tail at adoption: this agent's own entries are
@@ -130,15 +135,32 @@ fn is_zero(count: &u16) -> bool {
     *count == 0
 }
 
+/// The identity a brief's read grant names: the digest of its exact reference.
+fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
+    file.identity_digest(
+        crate::store::default_projection_read_limits().maximum_bytes,
+        &mut None,
+    )
+}
+
 impl AgentState {
     /// State at adoption, before the first step.
-    #[must_use]
-    pub fn adopted(path: AgentPath, adopted: &ForkAdopted) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// When the adoption's brief has no identity digest.
+    pub fn adopted(path: AgentPath, adopted: &ForkAdopted) -> Result<Self, Error> {
+        let brief = adopted
+            .brief
+            .as_ref()
+            .map(brief_identity)
+            .transpose()
+            .map_err(|error| Error::Turn(Box::new(error)))?;
+        Ok(Self {
             path,
             parent: adopted.parent.clone(),
             volumes: adopted.volumes.clone(),
             policy: adopted.policy.clone(),
+            brief,
             conversation_tail: adopted.conversation_tail,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
@@ -156,6 +178,20 @@ impl AgentState {
             reported: false,
             turn: None,
             reserved_children: 0,
+        })
+    }
+
+    /// `file` when it is exactly the brief this agent's adoption named, the
+    /// one file outside its own volumes it may read; otherwise nothing.
+    #[must_use]
+    pub fn brief_grant<'f>(&self, file: &'f FileRef) -> &'f [FileRef] {
+        let named = self
+            .brief
+            .is_some_and(|brief| brief_identity(file).is_ok_and(|identity| identity == brief));
+        if named {
+            std::slice::from_ref(file)
+        } else {
+            &[]
         }
     }
 
@@ -292,9 +328,9 @@ pub enum Out {
     Spawn {
         /// Spawning intent; names the child.
         intent: IntentId,
-        /// Task brief bytes; [`super::SpawnVolumes`] creates the child's private
-        /// volume holding them, and the child names that file at adoption.
-        brief: Option<Vec<u8>>,
+        /// Task brief, staged on the spawning agent's private volume; the
+        /// child's adoption names it.
+        brief: Option<FileRef>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -473,7 +509,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
             if adopted.agent != path.id() {
                 return Err(Error::Record("ForkAdopted names another agent"));
             }
-            let mut state = AgentState::adopted(path.clone(), &adopted);
+            let mut state = AgentState::adopted(path.clone(), &adopted)?;
             state.queued.extend(adopted.brief.map(|brief| Queued {
                 inbox: adopted.forked_at,
                 input: TurnInput::Brief {
@@ -495,7 +531,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         ) => {
             outs.push(Out::Spawn {
                 intent: requested_intent(sequence)?,
-                brief: Some(spawn.brief.into_bytes()),
+                brief: Some(*spawn.brief),
                 volumes: Vec::new(),
             });
             // A turn in progress keeps the slots its recorded spawns take.

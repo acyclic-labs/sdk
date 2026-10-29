@@ -681,9 +681,19 @@ async fn checkout_with(
     Arc<LocalHarness>,
     Arc<ScriptedModelProvider>,
 )> {
+    checkout_scripted(files, text()).await
+}
+
+async fn checkout_scripted(
+    files: &[(String, Vec<u8>)],
+    provider: Arc<ScriptedModelProvider>,
+) -> Result<(
+    tempfile::TempDir,
+    Arc<LocalHarness>,
+    Arc<ScriptedModelProvider>,
+)> {
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
-    let provider = text();
     let harness = Arc::new(
         LocalHarness::open(super::checkout_config(
             directory.path(),
@@ -854,21 +864,102 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
 }
 
 #[tokio::test]
-async fn an_oversized_prompt_is_refused_and_the_conversation_goes_on() -> Result<()> {
-    use crate::local::agent_conversation::Sent;
+async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()> {
+    use acyclic_harness_client::AgentCommand;
     let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
-    let oversized = "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES);
-    // Over the command limit, the prompt never leaves: it is refused, not
-    // an error that ends the caller's stream.
+    // Far past one command frame: the client stages it in parts and the
+    // command names them by digest.
+    let prompt = "0123456789abcdef\n".repeat(10 * 1024 * 1024 / 17 + 1);
+    let inbox = client.send("large", &prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let (read, _) = client.turn(&entry).await?;
+    assert!(read.as_deref() == Some(prompt.as_str()));
+    // A resend is the same delivery.
+    assert_eq!(client.send("large", &prompt).await?, inbox);
+    // Negative controls: a head is refused when its parts were never staged,
+    // and when the staged parts do not match its digest.
+    let connection = harness.connect().await?;
+    let digest = blake3::hash(b"{}").to_hex().to_string();
+    let head = |digest: &str| AgentCommand::Staged {
+        agent: root.clone(),
+        command: "prompt".into(),
+        digest: digest.to_owned(),
+        parts: 1,
+        bytes: 2,
+    };
+    assert!(connection.execute(&head(&digest)).await.is_err());
+    connection
+        .execute(&AgentCommand::Stage {
+            agent: root.clone(),
+            digest: digest.clone(),
+            part: 0,
+            text: "[]".into(),
+        })
+        .await?;
+    assert!(connection.execute(&head(&digest)).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
+    // The child's brief turn, then the parent's own.
+    let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
+    let (_directory, harness, _provider) = checkout_scripted(&[], super::scripted(turns)).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    // Two frames and more: the client stages the command, and the host stages
+    // the brief once on the parent, where the child's adoption names it.
+    let brief = "brief \u{e9}\u{1f600}\n".repeat(2 * 1024 * 1024 / 12);
+    let spawn = AgentCommand::Spawn {
+        parent: root.clone(),
+        id: crate::agent::IntentId::try_from("large").map_err(agent)?,
+        brief: crate::model::ModelContent::Text(brief.clone()),
+    };
+    let AgentReply::Spawned { agent: child, .. } = connection.execute(&spawn).await? else {
+        return Err(Error::Invalid("spawn was not delivered".into()));
+    };
+    let entries = settled(&agents, &child).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Brief { brief: file } = entry.input else {
+        return Err(Error::Invalid(
+            "the child's first input is not its brief".into(),
+        ));
+    };
+    let read = Conversation::read(&connection, &child, ReadTarget::File { file: *file }).await?;
+    assert!(read == brief.as_bytes());
+    // Negative control: the child reads no other file of its parent's.
+    let client = conversation(&harness).await?;
+    client.send("other", "a parent's own prompt").await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message { body, .. } = entry.input else {
+        return Err(Error::Invalid(
+            "the parent's input is not its prompt".into(),
+        ));
+    };
+    assert!(
+        Conversation::read(
+            &connection,
+            &child,
+            ReadTarget::File {
+                file: (*body).clone()
+            }
+        )
+        .await
+        .is_err()
+    );
+    // The parent reads it, so the refusal is the grant's.
+    Conversation::read(&connection, &root, ReadTarget::File { file: *body }).await?;
+    // A retried spawn names the same child.
     assert!(matches!(
-        client.deliver("oversized", &oversized).await?,
-        Sent::Refused(_)
-    ));
-    // Negative control: the next prompt on the same conversation commits.
-    assert!(matches!(
-        client.deliver("next", "hello").await?,
-        Sent::Accepted(_)
+        connection.execute(&spawn).await?,
+        AgentReply::Spawned { agent, .. } if agent == child
     ));
     Ok(())
 }

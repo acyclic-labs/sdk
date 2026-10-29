@@ -8,10 +8,14 @@ use acyclic_harness_core::{
     model::ModelContent,
 };
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
-/// Finite encoded command budget, before decoding or starting any host work.
-pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
+/// Most bytes a binding's routing adds to a command frame in its invocation.
+const MAX_ROUTING_BYTES: usize = 64 * 1024;
+/// One command frame: the encoded bytes one invocation carries beside its
+/// routing, within the session's one-frame bound. A larger command is not
+/// refused; [`PreparedCommand::new`] stages it in parts of one frame each, so
+/// this bounds only what the host decodes at once.
+pub const MAX_COMMAND_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES - MAX_ROUTING_BYTES;
 /// Most bytes one [`AgentCommand::Read`] returns; its encoded reply stays
 /// within the reply budget.
 pub const MAX_READ_BYTES: u64 = 32 * 1024;
@@ -216,7 +220,7 @@ pub enum AgentCommand {
         binding: ApprovalBinding,
         /// Human decision; the responder is derived from verified authority.
         approved: bool,
-        /// Optional explanation, charged to the command byte limit.
+        /// Optional explanation.
         reason: Option<String>,
     },
     /// The committed reply to message `id`, accepted at inbox sequence
@@ -248,6 +252,36 @@ pub enum AgentCommand {
         target: ReadTarget,
         /// First byte of the range; the host returns at most [`MAX_READ_BYTES`].
         offset: u64,
+    },
+    /// One part of a command whose encoding exceeds one frame, staged
+    /// before it by [`PreparedCommand::new`].
+    Stage {
+        /// The staged command's agent, whose private volume holds the part.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// BLAKE3 of the whole command's encoding, lowercase hex.
+        digest: String,
+        /// Zero-based position of this part.
+        part: u32,
+        /// This part's slice of the encoding.
+        text: String,
+    },
+    /// The command whose encoding is the `parts` staged under `digest`, in
+    /// order, `bytes` long. The host authorizes this head, which names
+    /// everything authorization needs, before it reads any part, then runs
+    /// the command exactly as if sent in one frame.
+    Staged {
+        /// The staged command's agent.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// The staged command's kind.
+        command: String,
+        /// BLAKE3 of the whole encoding, lowercase hex.
+        digest: String,
+        /// Number of staged parts.
+        parts: u32,
+        /// Length of the whole encoding.
+        bytes: u64,
     },
 }
 
@@ -281,6 +315,15 @@ impl AgentCommand {
                 .validate_user_input(&mut None)
                 .map_err(|_| CommandError::Invalid),
             Self::Decide { binding, .. } => binding.validate().map_err(|_| CommandError::Invalid),
+            Self::Stage { digest, text, .. } if !is_digest(digest) || text.is_empty() => {
+                Err(CommandError::Invalid)
+            }
+            Self::Staged {
+                digest,
+                parts,
+                bytes,
+                ..
+            } if !is_digest(digest) || *parts == 0 || *bytes == 0 => Err(CommandError::Invalid),
             Self::Read {
                 target: ReadTarget::ToolOutput { path },
                 ..
@@ -297,10 +340,85 @@ impl AgentCommand {
     }
 }
 
+impl AgentCommand {
+    /// The agent this command acts on; discovery names none.
+    #[must_use]
+    pub const fn agent(&self) -> Option<&AgentPath> {
+        match self {
+            Self::Bind {} | Self::Root {} => None,
+            Self::Spawn { parent: agent, .. }
+            | Self::Prompt { agent, .. }
+            | Self::Cancel { agent, .. }
+            | Self::Compact { agent, .. }
+            | Self::Rewind { agent, .. }
+            | Self::ClearAll { agent, .. }
+            | Self::Children { agent, .. }
+            | Self::Approvals { agent, .. }
+            | Self::Decide { agent, .. }
+            | Self::Reply { agent, .. }
+            | Self::Settlement { agent }
+            | Self::Read { agent, .. }
+            | Self::Stage { agent, .. }
+            | Self::Staged { agent, .. } => Some(agent),
+        }
+    }
+
+    /// This command's kind, as its encoding tags it.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Bind {} => "bind",
+            Self::Root {} => "root",
+            Self::Prompt { .. } => "prompt",
+            Self::Cancel { .. } => "cancel",
+            Self::Compact { .. } => "compact",
+            Self::Rewind { .. } => "rewind",
+            Self::ClearAll { .. } => "clear_all",
+            Self::Spawn { .. } => "spawn",
+            Self::Children { .. } => "children",
+            Self::Approvals { .. } => "approvals",
+            Self::Decide { .. } => "decide",
+            Self::Reply { .. } => "reply",
+            Self::Settlement { .. } => "settlement",
+            Self::Read { .. } => "read",
+            Self::Stage { .. } => "stage",
+            Self::Staged { .. } => "staged",
+        }
+    }
+}
+
+/// A BLAKE3 digest in lowercase hex.
+fn is_digest(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Bytes `ch` takes inside a JSON string, as `serde_json` escapes it.
+const fn escaped_len(ch: char) -> usize {
+    match ch {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        '\0'..='\u{1f}' => 6,
+        _ => ch.len_utf8(),
+    }
+}
+
 /// Immutable admitted bytes retained by the caller while a command is in flight.
 /// Transport loss cannot turn an old intent into a newly reconstructed command.
 #[derive(Clone)]
-pub struct PreparedCommand(Vec<u8>);
+pub struct PreparedCommand {
+    /// The command's whole encoding.
+    command: Vec<u8>,
+    /// Past one frame, the frames that carry it: its parts, then its head.
+    staged: Option<Staging>,
+}
+
+#[derive(Clone)]
+struct Staging {
+    parts: Vec<Vec<u8>>,
+    head: Vec<u8>,
+}
 
 /// Typed local refusal before transport or host execution begins.
 #[derive(Debug, thiserror::Error)]
@@ -328,29 +446,84 @@ impl PreparedCommand {
     /// Admit an already encoded body without rewriting its original bytes.
     /// The caller keeps this value across an interrupted exchange.
     pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, CommandError> {
-        Self::decode(&bytes)?;
-        Ok(Self(bytes))
+        let command = Self::decode_whole(&bytes)?;
+        Self::admit(bytes, &command)
     }
 
-    /// Encode without ever retaining an oversized serialization buffer.
+    /// Encode `command`, of any size: past one frame it is staged in parts.
     pub fn new(command: &AgentCommand) -> Result<Self, CommandError> {
         command.validate()?;
-        let mut writer = CommandWriter {
-            // One admitted buffer; geometric growth cannot exceed the budget.
-            bytes: Vec::with_capacity(MAX_COMMAND_BYTES),
-            full: false,
-        };
-        if serde_json::to_writer(&mut writer, command).is_err() {
-            return Err(if writer.full {
-                CommandError::Capacity
-            } else {
-                CommandError::Invalid
-            });
-        }
-        Ok(Self(writer.bytes))
+        let bytes = serde_json::to_vec(command).map_err(|_| CommandError::Invalid)?;
+        Self::admit(bytes, command)
     }
 
-    /// Decode only after bounding the entire untrusted envelope.
+    /// The frames carrying `bytes`, the encoding of `command`: itself when it
+    /// fits one frame, else parts of one frame each and the head naming them.
+    /// The host assembles the parts and checks them against the digest, so
+    /// the command it runs is exactly these bytes.
+    fn admit(bytes: Vec<u8>, command: &AgentCommand) -> Result<Self, CommandError> {
+        if bytes.len() <= MAX_COMMAND_BYTES {
+            return Ok(Self {
+                command: bytes,
+                staged: None,
+            });
+        }
+        let agent = match command {
+            AgentCommand::Stage { .. } | AgentCommand::Staged { .. } => {
+                return Err(CommandError::Invalid);
+            }
+            command => command.agent().ok_or(CommandError::Invalid)?.clone(),
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| CommandError::Invalid)?;
+        let digest = blake3::hash(&bytes).to_hex().to_string();
+        let frame =
+            |command: &AgentCommand| serde_json::to_vec(command).map_err(|_| CommandError::Invalid);
+        let part = |part: u32, text: &str| AgentCommand::Stage {
+            agent: agent.clone(),
+            digest: digest.clone(),
+            part,
+            text: text.to_owned(),
+        };
+        // Every part leaves room for the widest index; one escaped character
+        // takes at most six bytes.
+        let budget = MAX_COMMAND_BYTES
+            .checked_sub(frame(&part(u32::MAX, ""))?.len())
+            .filter(|budget| *budget >= 6)
+            .ok_or(CommandError::Invalid)?;
+        let (mut parts, mut start, mut used) = (Vec::new(), 0, 0);
+        for (index, ch) in text.char_indices() {
+            let cost = escaped_len(ch);
+            if used + cost > budget {
+                parts.push(&text[start..index]);
+                (start, used) = (index, 0);
+            }
+            used += cost;
+        }
+        parts.push(&text[start..]);
+        let parts = parts
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                frame(&part(
+                    u32::try_from(index).map_err(|_| CommandError::Invalid)?,
+                    text,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let head = frame(&AgentCommand::Staged {
+            agent: agent.clone(),
+            command: command.kind().to_owned(),
+            digest: digest.clone(),
+            parts: u32::try_from(parts.len()).map_err(|_| CommandError::Invalid)?,
+            bytes: bytes.len() as u64,
+        })?;
+        Ok(Self {
+            command: bytes,
+            staged: Some(Staging { parts, head }),
+        })
+    }
+
+    /// Decode one frame, bounded before any host work.
     pub fn decode(bytes: &[u8]) -> Result<AgentCommand, CommandError> {
         if bytes.len() > MAX_COMMAND_BYTES {
             return Err(CommandError::Capacity);
@@ -361,30 +534,46 @@ impl PreparedCommand {
         Ok(command)
     }
 
-    /// Exact owned request body; intent and payload stay unchanged on transport.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.0
-    }
-}
-
-struct CommandWriter {
-    bytes: Vec<u8>,
-    full: bool,
-}
-
-impl Write for CommandWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_COMMAND_BYTES - self.bytes.len() {
-            self.full = true;
-            return Err(std::io::Error::other("client command capacity exceeded"));
+    /// Decode a whole command, of any size: a staged command its host
+    /// assembled, or one a caller encoded. Staging frames are one frame each.
+    pub fn decode_whole(bytes: &[u8]) -> Result<AgentCommand, CommandError> {
+        let command: AgentCommand =
+            serde_json::from_slice(bytes).map_err(|_| CommandError::Invalid)?;
+        command.validate()?;
+        if matches!(
+            command,
+            AgentCommand::Stage { .. } | AgentCommand::Staged { .. }
+        ) && bytes.len() > MAX_COMMAND_BYTES
+        {
+            return Err(CommandError::Invalid);
         }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
+        Ok(command)
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+    /// The whole command's exact encoding, as the host runs it.
+    #[must_use]
+    pub fn command(&self) -> &[u8] {
+        &self.command
+    }
+
+    /// The whole command, decoded.
+    ///
+    /// # Errors
+    /// Never for a prepared command; its encoding was admitted on creation.
+    pub fn decoded(&self) -> Result<AgentCommand, CommandError> {
+        Self::decode_whole(&self.command)
+    }
+
+    /// The frames that carry the command, in the order they are sent: its
+    /// staged parts, then their head; or, within one frame, the command.
+    pub(crate) fn frames(&self) -> impl Iterator<Item = &[u8]> {
+        let (parts, last) = self
+            .staged
+            .as_ref()
+            .map_or((&[][..], self.command.as_slice()), |staged| {
+                (staged.parts.as_slice(), staged.head.as_slice())
+            });
+        parts.iter().map(Vec::as_slice).chain(std::iter::once(last))
     }
 }
 
@@ -408,7 +597,8 @@ mod tests {
         .as_bytes()
         .to_vec();
         let prepared = PreparedCommand::from_bytes(original.clone())?;
-        assert_eq!(prepared.as_bytes(), original);
+        assert_eq!(prepared.command(), original);
+        assert!(prepared.frames().eq([original.as_slice()]));
         assert!(matches!(
             PreparedCommand::from_bytes(br#"{"kind":"cancel"}"#.to_vec()),
             Err(CommandError::Invalid)
@@ -428,23 +618,62 @@ mod tests {
     }
 
     #[test]
-    fn encoded_expansion_is_bounded_before_dispatch() -> Result<(), Box<dyn std::error::Error>> {
+    fn a_command_past_one_frame_is_staged_in_frames_that_reassemble_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let agent =
+            AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
+        // Escapes expand text up to sixfold, and multibyte characters must
+        // never split: each part is cut on the encoded, escaped length.
+        let text = "line \"quoted\" \u{1} é 🦀\n".repeat(400_000);
         let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from(
-                "harness/agents/00000000000000000000000000000001".to_owned(),
-            )?,
+            agent: agent.clone(),
             id: IntentId::try_from("prompt-1")?,
-            // JSON escaping expands each byte; raw text length is insufficient.
-            body: ModelContent::Text("\n".repeat(MAX_COMMAND_BYTES / 2)),
+            body: ModelContent::Text(text.clone()),
         };
-        assert!(matches!(
-            PreparedCommand::new(&command),
-            Err(CommandError::Capacity)
-        ));
+        let prepared = PreparedCommand::new(&command)?;
+        let frames = prepared.frames().collect::<Vec<_>>();
+        let (head, parts) = frames.split_last().ok_or("no frame")?;
+        let mut assembled = String::new();
+        for (index, part) in parts.iter().enumerate() {
+            assert!(part.len() <= MAX_COMMAND_BYTES);
+            let AgentCommand::Stage { part, text, .. } = PreparedCommand::decode(part)? else {
+                return Err("expected a staged part".into());
+            };
+            assert_eq!(part as usize, index);
+            assembled.push_str(&text);
+        }
+        assert_eq!(assembled.as_bytes(), prepared.command());
+        let AgentCommand::Staged {
+            command: kind,
+            digest,
+            parts,
+            bytes,
+            ..
+        } = PreparedCommand::decode(head)?
+        else {
+            return Err("expected a staged head".into());
+        };
+        assert_eq!(kind, "prompt");
+        assert_eq!(parts as usize, frames.len() - 1);
+        assert_eq!(bytes as usize, assembled.len());
+        assert_eq!(digest, blake3::hash(assembled.as_bytes()).to_hex().as_str());
+        let AgentCommand::Prompt { body, .. } =
+            PreparedCommand::decode_whole(assembled.as_bytes())?
+        else {
+            return Err("expected the prompt".into());
+        };
+        assert_eq!(body, ModelContent::Text(text.clone()));
+        assert!(
+            matches!(prepared.decoded()?, AgentCommand::Prompt { body, .. } if body == ModelContent::Text(text))
+        );
+        // Negative controls: one frame stays bounded, and a command that fits
+        // one frame is sent as itself.
         assert!(matches!(
             PreparedCommand::decode(&vec![b' '; MAX_COMMAND_BYTES + 1]),
             Err(CommandError::Capacity)
         ));
+        let small = PreparedCommand::new(&AgentCommand::Settlement { agent })?;
+        assert!(small.frames().eq([small.command()]));
         Ok(())
     }
 
@@ -458,8 +687,7 @@ mod tests {
             body: ModelContent::Text("exact input".into()),
         };
         let prepared = PreparedCommand::new(&command)?;
-        let AgentCommand::Prompt { id, body, .. } = PreparedCommand::decode(prepared.as_bytes())?
-        else {
+        let AgentCommand::Prompt { id, body, .. } = prepared.decoded()? else {
             return Err("expected prompt command".into());
         };
         assert_eq!(id.as_str(), "prompt-1");

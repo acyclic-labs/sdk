@@ -1,7 +1,8 @@
 //! [`SpawnVolumes`] on Filesystem volumes placed in the agents' own stream: a
 //! child forks each parent volume at its current head, except its private
-//! volume, which is created holding only the spawn's brief, and a
-//! session-shared volume, which it shares.
+//! volume, which is created empty, and a session-shared volume, which it
+//! shares. The child's brief stays a file on its parent's private volume,
+//! named by its adoption.
 //! Every fork and creation joins the parent step's commit through one sealed
 //! [`FilesystemCommit`], so the children and their volumes appear together.
 
@@ -11,8 +12,7 @@ use crate::{
         AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, MAX_OPEN_CHILDREN,
         Out, SpawnVolumes, VolumeBinding,
     },
-    conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    core::RuntimeAuthority,
+    conversation::{VolumeClass, VolumeOwner, VolumeRef},
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -22,9 +22,7 @@ use acyclic_fs::{
     AsyncObjectStore, CancellationToken, CreateSpec, FilesystemCommit, ForkSpec, IdempotencyKey,
     StreamAuthorityStore, WorkBudget, WorkspaceName, distributed::AuthorityProvider,
 };
-use acyclic_stream::{
-    BoxProviderFuture, CommitOutcome, CommitRequest, OwnedBytes, Record, StreamError,
-};
+use acyclic_stream::{BoxProviderFuture, CommitOutcome, CommitRequest, Record, StreamError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -33,9 +31,6 @@ type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
 pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
-    issuer: RuntimeAuthority,
-    admission: super::TurnAdmission,
-    maximum_bytes: u64,
     cuts: Option<Arc<dyn ForkCuts>>,
 }
 
@@ -56,23 +51,10 @@ pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
 
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     /// Volumes on `host`, whose authority must be the agents' stream
-    /// provider; `issuer` is the agents' signing custody, which stages each
-    /// child's brief of at most `maximum_bytes` under the child's own authority,
-    /// derived from `admission` like the child's turns.
+    /// provider.
     #[must_use]
-    pub fn new(
-        host: Arc<Host<P, O>>,
-        issuer: impl Into<RuntimeAuthority>,
-        admission: super::TurnAdmission,
-        maximum_bytes: u64,
-    ) -> Self {
-        Self {
-            host,
-            issuer: issuer.into(),
-            admission,
-            maximum_bytes,
-            cuts: None,
-        }
+    pub fn new(host: Arc<Host<P, O>>) -> Self {
+        Self { host, cuts: None }
     }
 
     /// Forks each source at the generation `cuts` chooses.
@@ -83,18 +65,11 @@ impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     }
 }
 
-/// Name of the brief file in a spawned child's private volume.
-const BRIEF: &str = "brief.md";
-/// The brief's absolute path in the creating generation.
-const BRIEF_PATH: &str = "/brief.md";
-
-/// One child volume: forked from `source`, or created holding `brief` (if
-/// any) without one.
+/// One child volume: forked from `source`, or created empty without one.
 struct Planned {
     source: Option<VolumeRef>,
     destination: VolumeRef,
     key: [u8; 16],
-    brief: Option<OwnedBytes>,
 }
 
 fn key(child: &AgentPath, name: &str) -> [u8; 16] {
@@ -105,15 +80,6 @@ fn key(child: &AgentPath, name: &str) -> [u8; 16] {
     let mut bytes = [0; 16];
     hasher.finalize_xof().fill(&mut bytes);
     bytes
-}
-
-/// Operation staging `child`'s brief as its own file.
-fn brief_operation(child: &AgentPath) -> crate::OperationId {
-    let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.agent.brief.v1");
-    hasher.update(child.as_str().as_bytes());
-    let mut bytes = [0; 16];
-    hasher.finalize_xof().fill(&mut bytes);
-    crate::OperationId::from_bytes(bytes)
 }
 
 fn invalid(error: crate::Error) -> Error {
@@ -165,7 +131,6 @@ pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<Vol
 fn plan(
     child: &AgentPath,
     binding: &VolumeBinding,
-    brief: Option<&[u8]>,
 ) -> Result<(VolumeBinding, Option<Planned>), Error> {
     let source = &binding.volume;
     if source.class() == VolumeClass::SessionShared {
@@ -182,9 +147,6 @@ fn plan(
             source: fork.then(|| source.clone()),
             destination,
             key: key.into_bytes(),
-            brief: brief
-                .filter(|_| !fork)
-                .map(|brief| OwnedBytes::from(brief.to_vec())),
         }),
     ))
 }
@@ -199,7 +161,6 @@ const SPAWN: &str = "acyclic.harness.agent.spawn-volumes.v1";
 #[serde(deny_unknown_fields)]
 struct Requested {
     intent: IntentId,
-    brief: Option<Vec<u8>>,
 }
 
 /// The one planning function: each requested child's bindings and the volumes
@@ -207,27 +168,20 @@ struct Requested {
 fn children(
     parent: &AgentState,
     requested: &[Requested],
-    maximum_bytes: u64,
 ) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
     if requested.len() > MAX_OPEN_CHILDREN {
         return Err(Error::Record("spawn requests too many children"));
     }
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
-    for Requested { intent, brief } in requested {
-        if brief
-            .as_ref()
-            .is_some_and(|brief| u64::try_from(brief.len()).map_or(true, |len| len > maximum_bytes))
-        {
-            return Err(Error::Record("spawn brief exceeds its bound"));
-        }
+    for Requested { intent } in requested {
         let child = parent.path.child(&crate::agent::AgentId::derive(
             &parent.path.id(),
             intent.as_str(),
         ))?;
         let mut volumes = Vec::with_capacity(parent.volumes.len());
         for binding in &parent.volumes {
-            let (bound, created) = plan(&child, binding, brief.as_deref())?;
+            let (bound, created) = plan(&child, binding)?;
             volumes.push(bound);
             planned.extend(created);
         }
@@ -257,14 +211,13 @@ where
         let requested: Vec<Requested> = outs
             .iter()
             .filter_map(|out| match out {
-                Out::Spawn { intent, brief, .. } => Some(Requested {
+                Out::Spawn { intent, .. } => Some(Requested {
                     intent: intent.clone(),
-                    brief: brief.clone(),
                 }),
                 _ => None,
             })
             .collect();
-        let (bindings, planned) = children(parent, &requested, self.maximum_bytes)?;
+        let (bindings, planned) = children(parent, &requested)?;
         let mut bindings = bindings.into_iter();
         for out in outs {
             if let Out::Spawn { volumes, .. } = out {
@@ -282,102 +235,6 @@ where
                 .map_err(|_| Error::Record("spawn volume request does not encode"))?
                 .into(),
         }))
-    }
-
-    fn brief<'a>(
-        &'a self,
-        child: &'a AgentPath,
-        volumes: &'a [VolumeBinding],
-    ) -> BoxProviderFuture<'a, Result<Option<FileRef>, Error>> {
-        Box::pin(async move {
-            let Some(private) = volumes
-                .iter()
-                .find(|binding| binding.name == super::PRIVATE_VOLUME)
-            else {
-                return Ok(None);
-            };
-            // The creating generation may be retired; the brief is staged as
-            // the child's own file, retained like every other staged file,
-            // under the child's one brief operation, so a replayed adoption
-            // names the identical file.
-            let authority = super::agent_turns::agent_authority(
-                &self.issuer,
-                &self.admission,
-                child,
-                volumes,
-                &[],
-            )
-            .await
-            .map_err(invalid)?;
-            let writer = super::FilesystemContentPublisher::new(
-                Arc::clone(&self.host),
-                &private.volume,
-                &authority.verifier,
-                &authority.scope,
-                self.maximum_bytes,
-                None,
-            )
-            .map_err(invalid)?;
-            let operation = brief_operation(child);
-            if let Some(file) = writer
-                .observe_staged_once(operation, self.maximum_bytes, ContentAccess::default())
-                .map_err(invalid)?
-                .await
-                .map_err(invalid)?
-                .0
-            {
-                return Ok(Some(file));
-            }
-            let fs = &self.host.filesystem;
-            let cancellation = CancellationToken::new();
-            // The creating generation, which the spawn commit published
-            // holding the brief.
-            let generation = fs
-                .workspace_for_creation_operation(
-                    private.volume.storage_name(&mut None).map_err(invalid)?,
-                    self.host.volume_initialization().config,
-                    acyclic_fs::OperationId::from_bytes(key(child, &private.name)),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-                .map_err(|failure| invalid(super::map_error(failure.error)))?
-                .value
-                .ok_or(Error::Record("spawned private volume was not created"))?;
-            let bytes = match generation
-                .read(
-                    BRIEF_PATH,
-                    self.maximum_bytes,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await
-            {
-                Ok(receipt) => receipt.value,
-                Err(failure) => {
-                    let error = super::map_error(failure.error);
-                    if error.code() == crate::wire::ErrorCode::NotFound {
-                        return Ok(None);
-                    }
-                    return Err(invalid(error));
-                }
-            };
-            drop(generation);
-            let file = writer
-                .stage_once(
-                    operation,
-                    BRIEF,
-                    &bytes,
-                    "text/markdown",
-                    BRIEF,
-                    ContentAccess::default(),
-                )
-                .map_err(invalid)?
-                .await
-                .map_err(invalid)?
-                .0;
-            Ok(Some(file))
-        })
     }
 }
 
@@ -409,7 +266,7 @@ where
                         Some(parent) => parent.child(&adopted.agent).map_err(guest)?,
                         None => AgentPath::root(&adopted.agent),
                     };
-                    AgentState::adopted(path, &adopted)
+                    AgentState::adopted(path, &adopted).map_err(guest)?
                 }
                 _ => return Err(guest("first agent input is not ForkAdopted")),
             },
@@ -423,7 +280,7 @@ where
         if parent.path.id().as_str() != actor.id() {
             return Err(guest("spawn parent is not the publishing actor"));
         }
-        let (_, planned) = children(&parent, &requested, self.maximum_bytes).map_err(guest)?;
+        let (_, planned) = children(&parent, &requested).map_err(guest)?;
         if planned.is_empty() {
             return Err(guest("spawn volume request creates nothing"));
         }
@@ -502,20 +359,6 @@ where
             }
         }
         let mut forks = Vec::with_capacity(heads.len());
-        // Each creation's initial files, borrowed by its spec.
-        let files: Vec<Vec<(&str, OwnedBytes)>> = self
-            .planned
-            .iter()
-            .filter(|planned| planned.source.is_none())
-            .map(|planned| {
-                planned
-                    .brief
-                    .iter()
-                    .map(|brief| (BRIEF_PATH, brief.clone()))
-                    .collect()
-            })
-            .collect();
-        let mut files = files.iter();
         let mut creations = Vec::new();
         let mut sources = heads.iter();
         for planned in &self.planned {
@@ -533,12 +376,7 @@ where
                 None => creations.push(CreateSpec {
                     name: destination,
                     initialization: self.host.volume_initialization(),
-                    creation: acyclic_fs::CreationOperation::populated(
-                        acyclic_fs::OperationId::from_bytes(planned.key),
-                        files
-                            .next()
-                            .ok_or_else(|| guest("spawn creation missing"))?,
-                    ),
+                    creation: acyclic_fs::OperationId::from_bytes(planned.key).into(),
                 }),
             }
         }

@@ -348,7 +348,7 @@ mod tests {
             records.push(InboxRecord::Spawn(SpawnRequest {
                 by: from.clone(),
                 id: intent(),
-                brief: widest_text(MAX_MESSAGE_BYTES),
+                brief: Box::new(file()),
             }));
             for action in [
                 crate::agent::ContextAction::Compact {
@@ -455,6 +455,7 @@ mod tests {
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),
                     policy: adopted.policy.clone(),
+                    brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
                     checkpoint: Some(u64::MAX),
@@ -507,7 +508,7 @@ mod tests {
         record
             .check()
             .expect("generated record satisfies structural admission");
-        let raw = crate::contract::canonical_json_bytes(record).expect("canonical record");
+        let raw = crate::agent::records::seal(record).expect("canonical record");
         assert!(
             raw.len() <= MAX_RECORD_BYTES,
             "{}: {} > {MAX_RECORD_BYTES}",

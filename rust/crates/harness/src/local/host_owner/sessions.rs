@@ -129,14 +129,9 @@ impl HostWorkspaceOwner {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
-            if state.open_children.contains(&child) {
-                // Replaying a spawn is idempotent only for its own prompt.
-                if self.native.brief(&child).await?.prompt != *prompt {
-                    return Err(Error::Conflict(format!(
-                        "session {reference} was already spawned with a different prompt"
-                    )));
-                }
-            } else {
+            // Replaying a spawn is idempotent only for its own prompt.
+            let brief = self.native.brief(&state, reference, prompt).await?;
+            if !state.open_children.contains(&child) {
                 // Host-authored parent work is the child's starting point.
                 self.view(parent)?.capture(operation).await?;
                 self.native
@@ -145,7 +140,7 @@ impl HostWorkspaceOwner {
                         operation,
                         &Event::Spawn {
                             reference: reference.into(),
-                            prompt: prompt.clone(),
+                            brief,
                         },
                     )
                     .await?;

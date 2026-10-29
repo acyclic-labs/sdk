@@ -308,7 +308,7 @@ impl Providers {
             )
             .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
         )
-        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes(options, owner, admission)))
+        .map(|handler| handler.with_spawn_volumes(self.spawn_volumes()))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))
     }
 
@@ -361,18 +361,8 @@ impl Providers {
             .executors((model, provider), tools, (limits, compaction), context))
     }
 
-    pub(super) fn spawn_volumes(
-        &self,
-        options: &WasmBrowserAgentOptions,
-        owner: &WasmAgentAuthority,
-        admission: &TurnAdmission,
-    ) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
-        Arc::new(FilesystemSpawnVolumes::new(
-            self.filesystem.clone(),
-            owner.issuer.clone(),
-            admission.clone(),
-            options.limits.file_bytes,
-        ))
+    pub(super) fn spawn_volumes(&self) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
+        Arc::new(FilesystemSpawnVolumes::new(self.filesystem.clone()))
     }
 }
 

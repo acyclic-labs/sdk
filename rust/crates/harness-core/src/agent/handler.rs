@@ -207,7 +207,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
-            AgentState::adopted(agent.clone(), adopted)
+            AgentState::adopted(agent.clone(), adopted)?
         };
         if &observed.path != agent || observed.parent != agent.parent() {
             return Err(Error::Record("agent state binding differs"));
@@ -266,7 +266,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
             .subscriptions
             .get(INBOX)
             .ok_or(Error::Record("agent inbox subscription missing"))?;
-        let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
+        let (wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
             (
                 Trigger::Record {
                     subscription,
@@ -312,21 +312,6 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
         }
         if cut.path != path.inbox()? {
             return Err(Error::Record("agent inbox subscription differs"));
-        }
-        // A spawned child names the brief its private volume was created with.
-        if let (
-            None,
-            Some(volumes),
-            Wake::Inbox {
-                record: InboxRecord::ForkAdopted(adopted),
-                ..
-            },
-        ) = (&saved, &self.volumes, &mut wake)
-            && adopted.parent.is_some()
-            && adopted.brief.is_none()
-        {
-            let brief = volumes.brief(&path, &adopted.volumes).await?;
-            adopted.brief = brief;
         }
         let mut state = saved;
         if let Some(state) = state.as_mut() {

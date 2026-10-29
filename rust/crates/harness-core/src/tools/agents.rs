@@ -39,7 +39,7 @@ pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SpawnAgentInput {
-    /// The child's task; its private volume is created holding it as `brief.md`.
+    /// The child's task, staged as a file the child's adoption names.
     pub task: String,
     /// Optional child name, unique under this agent; it names the child's path.
     pub name: Option<String>,
@@ -180,9 +180,21 @@ impl AgentTool {
                         "at most {limit} open children; archive one or wait for one to finish"
                     )));
                 }
+                let brief = turn
+                    .writer
+                    .stage_once(
+                        invocation.operation_id,
+                        &format!("briefs/{operation}.md"),
+                        input.task.as_bytes(),
+                        "text/markdown",
+                        "brief",
+                        ContentAccess::default(),
+                    )?
+                    .await?
+                    .0;
                 TurnEffect::Spawn {
                     intent,
-                    brief: input.task,
+                    brief: Box::new(brief),
                 }
             }
             "send" => {

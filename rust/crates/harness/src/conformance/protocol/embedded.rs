@@ -18,6 +18,7 @@ use acyclic_harness_core::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{BoxProviderStream, session::Client};
 use futures::TryFutureExt as _;
+use prost::Message as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Objects = crate::conformance::ObjectStore;

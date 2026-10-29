@@ -19,10 +19,11 @@ export function conversation(id: string, inbox: bigint): string {
   return `{"input":{"message":{"from":{"user":{"principal":"fixture"}},"id":${JSON.stringify(id)},"body":${JSON.stringify(file)},"inbox":${inbox}}},"output":${JSON.stringify(file)}}`;
 }
 
+// Every agent record carries the shared format version header.
 export async function appendRecord(stream: WasmStream, path: string, value: string): Promise<bigint> {
   const response = fromBinary(AppendResponseSchema, await stream.dispatch("append",
     toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-      path, records: [{ value: encode.encode(value) }],
+      path, records: [{ value: encode.encode(`{"record":${value},"version":2}`) }],
     }))));
   if (response.outcome.case !== "committed") throw new Error(`actor fixture append: ${response.outcome.case}`);
   return response.outcome.value.tail;

@@ -163,6 +163,9 @@ pub enum Error {
     /// Search publication is retryable; its completed response remains in ready.json.
     #[error("search publication deferred; resume from ready.json")]
     SearchPublicationDeferred,
+    /// A persisted record of another format version, refused whole.
+    #[error(transparent)]
+    UnsupportedRecordVersion(crate::agent::UnsupportedRecordVersion),
     /// A Machines provider failure with no operation receipt, keeping its exact cause.
     #[cfg(feature = "machines")]
     #[error("Machines {0}")]
@@ -463,6 +466,7 @@ impl Error {
             Self::FilesystemAccessConfiguration(_)
             | Self::Unsupported(_)
             | Self::GoalBlocked(_)
+            | Self::UnsupportedRecordVersion(_)
             | Self::MountUnavailable { .. } => ErrorCode::Unsupported,
             Self::Invalid(_) | Self::ModelContextOverflow => ErrorCode::Invalid,
             Self::ToolRejected { code, .. } => *code,
@@ -629,6 +633,7 @@ impl Error {
             | Self::Storage(_)
             | Self::Indeterminate(_)
             | Self::CommandIndeterminate { .. }
+            | Self::UnsupportedRecordVersion(_)
             | Self::SearchPublicationDeferred => false,
             Self::ModelDiagnostic { .. } => false,
             #[cfg(feature = "machines")]

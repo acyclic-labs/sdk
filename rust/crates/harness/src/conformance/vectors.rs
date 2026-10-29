@@ -121,7 +121,8 @@ pub(crate) async fn controls(backend: &dyn Backend) -> Result {
     Ok(())
 }
 
-pub(crate) fn prompt() -> Result<acyclic_harness_core::conversation::FileRef> {
+pub(crate) fn prompt() -> acyclic_harness_core::Result<acyclic_harness_core::conversation::FileRef>
+{
     use acyclic_harness_core::{conversation::*, resources::ProviderRef};
     let provider = ProviderRef::new(
         "conformance".into(),
@@ -136,14 +137,14 @@ pub(crate) fn prompt() -> Result<acyclic_harness_core::conversation::FileRef> {
         VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes([1; 16])),
         &mut None,
     )?;
-    Ok(FileRef::new(
+    FileRef::new(
         volume,
         "prompt".into(),
         "v1".into(),
         FileDescriptor::from_bytes(b"changed", "text/plain", &mut None)?,
         "prompt".into(),
         &mut None,
-    )?)
+    )
 }
 
 pub(crate) async fn spawn_cut(backend: &dyn Backend) -> Result {

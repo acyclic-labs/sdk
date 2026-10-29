@@ -248,7 +248,7 @@ async fn seeded() -> Result<Seeded> {
         provider.commit(seeded).await?,
         CommitOutcome::Committed(_)
     ));
-    let mut state = AgentState::adopted(parent.clone(), &adopted(id(1)));
+    let mut state = AgentState::adopted(parent.clone(), &adopted(id(1))).expect("adopts");
     state.conversation_tail = 2;
     state.status_tail = 2;
     Ok(Seeded {
@@ -396,7 +396,7 @@ async fn spawn_is_all_or_none_and_exclusion_is_load_bearing() -> Result {
 #[test]
 fn a_step_cannot_write_into_a_child_it_spawns() -> Result {
     let parent = AgentPath::root(&id(1));
-    let state = AgentState::adopted(parent.clone(), &adopted(id(1)));
+    let state = AgentState::adopted(parent.clone(), &adopted(id(1))).expect("adopts");
     let child = parent.child(&AgentId::derive(&parent.id(), "s1"))?;
     let step = Step {
         outs: vec![
@@ -441,7 +441,7 @@ fn child_of(parent: &AgentPath, byte: u8) -> Result<(AgentPath, AgentState)> {
     let path = parent.child(&id(byte))?;
     let mut adoption = adopted(id(byte));
     adoption.parent = Some(parent.clone());
-    let state = AgentState::adopted(path.clone(), &adoption);
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
     Ok((path, state))
 }
 
@@ -495,7 +495,9 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
     };
     assert_eq!(adopted.checkpoint, Some(101));
     assert_eq!(
-        AgentState::adopted(path.child(&id(9))?, &adopted).checkpoint,
+        AgentState::adopted(path.child(&id(9))?, &adopted)
+            .expect("adopts")
+            .checkpoint,
         Some(101)
     );
     Ok(())
@@ -668,7 +670,7 @@ async fn an_outcome_too_large_for_the_parents_record_settles_as_a_failure() -> R
 #[tokio::test]
 async fn a_full_window_overflows_into_the_inbox_and_never_drops_input() -> Result {
     let path = AgentPath::root(&id(1));
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     state.phase = Phase::WaitingApproval { id: intent("q") };
     state.turn = Some(Progress {
         inbox: 0,
@@ -941,7 +943,7 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
 /// Root at `MAX_OPEN_CHILDREN - 1` open children, idle.
 fn one_below_the_child_limit() -> Result<(AgentPath, AgentState)> {
     let root = AgentPath::root(&id(1));
-    let mut state = AgentState::adopted(root.clone(), &adopted(id(1)));
+    let mut state = AgentState::adopted(root.clone(), &adopted(id(1))).expect("adopts");
     for n in 0..MAX_OPEN_CHILDREN - 1 {
         let mut bytes = [0; 16];
         bytes[..8].copy_from_slice(&(n as u64).to_le_bytes());
@@ -958,7 +960,7 @@ fn spawn_request(sequence: u64) -> Wake {
         record: InboxRecord::Spawn(SpawnRequest {
             by: user(),
             id: intent(&format!("s{sequence}")),
-            brief: "task".into(),
+            brief: Box::new(driver::file("task").expect("file")),
         }),
     }
 }

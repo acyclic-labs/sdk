@@ -458,7 +458,7 @@ impl WasmAgents {
         background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
         options.limits.validate(&mut None).map_err(js_error)?;
-        let composer = providers.spawn_volumes(&options, owner, &owner.admission()?);
+        let composer = providers.spawn_volumes();
         let Providers {
             stream, filesystem, ..
         } = providers;
@@ -724,9 +724,7 @@ impl WasmAgents {
             .map(|record| {
                 Ok(WasmAgentRecord {
                     sequence: record.sequence,
-                    value: serde_json::from_slice(&record.value).map_err(|_| {
-                        js_error(Error::Invalid("agent record is malformed".into()))
-                    })?,
+                    value: crate::agent::decode_record(&record.value).map_err(agent_error)?,
                 })
             })
             .collect::<std::result::Result<Vec<_>, JsValue>>()?;

@@ -347,12 +347,7 @@ where
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.
-        let spawns = FilesystemSpawnVolumes::new(
-            Arc::clone(&volumes),
-            issuer.clone(),
-            admission.clone(),
-            maximum_bytes,
-        );
+        let spawns = FilesystemSpawnVolumes::new(Arc::clone(&volumes));
         let spawns = Arc::new(match cuts {
             Some(cuts) => spawns.with_fork_cuts(cuts),
             None => spawns,
@@ -511,8 +506,8 @@ where
 
     /// Reads at most `maximum` bytes of `file` from `offset`, through
     /// `agent`'s own authorized reader: only a file on one of `agent`'s
-    /// volumes, within its scope, is readable. Returns the bytes and the
-    /// file's length.
+    /// volumes, within its scope, or the exact brief its adoption named, is
+    /// readable. Returns the bytes and the file's length.
     ///
     /// # Errors
     /// When `agent` is absent, the file is outside its scope, or `offset` is
@@ -531,7 +526,7 @@ where
             &self.admission,
             &state.path,
             &state.volumes,
-            &[],
+            state.brief_grant(file),
         )
         .await
         .map_err(turn)?;

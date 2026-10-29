@@ -24,7 +24,7 @@ pub mod kernel;
 mod layout;
 mod lower;
 mod machine;
-mod records;
+pub(crate) mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
@@ -55,8 +55,9 @@ pub use machine::{
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
     ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
-    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender,
-    SpawnRequest, StatusRecord, VolumeBinding,
+    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase,
+    RECORD_VERSION, Sender, SpawnRequest, StatusRecord, UnsupportedRecordVersion, VolumeBinding,
+    decode_record,
 };
 pub use reply::{Reply, reply};
 
@@ -90,6 +91,9 @@ pub enum Error {
     /// Turn driver failure.
     #[error(transparent)]
     Turn(Box<crate::Error>),
+    /// A persisted record of another format version, refused whole.
+    #[error(transparent)]
+    UnsupportedRecordVersion(UnsupportedRecordVersion),
 }
 
 impl Error {
@@ -110,6 +114,7 @@ impl Error {
             },
             Self::Path(_)
             | Self::Record(_)
+            | Self::UnsupportedRecordVersion(_)
             | Self::NoSuchAgent
             | Self::SpawnRefused(_)
             | Self::Conflict(_) => false,
@@ -123,6 +128,7 @@ impl Error {
         match self {
             Self::Path(_) => "invalid_agent_path",
             Self::Record(_) => "invalid_agent_record",
+            Self::UnsupportedRecordVersion(_) => "unsupported_record_version",
             Self::NoSuchAgent => "no_such_agent",
             Self::SpawnRefused(_) => "spawn_refused",
             Self::Conflict(_) => "agent_conflict",

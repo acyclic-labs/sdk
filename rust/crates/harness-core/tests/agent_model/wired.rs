@@ -159,7 +159,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         let mut adoption = adopted(id(2));
         adoption.parent = Some(parent.clone());
         adoption.volumes = vec![binding];
-        let state = AgentState::adopted(path.clone(), &adoption);
+        let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
         let wake = || requested("r1", &parent);
         if !matching_limits {
             let refused = driver
@@ -266,7 +266,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
     );
     let mut adoption = adopted(id(3));
     adoption.volumes = vec![binding];
-    let state = AgentState::adopted(path.clone(), &adoption);
+    let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
     // Settling the conversation creates the subtree; its inbox stays empty,
     // so these directly driven turns retain cursor 0.
     let first = step(
@@ -382,7 +382,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     ));
     let mut adoption = adopted(id(5));
     adoption.volumes = vec![binding];
-    let state = AgentState::adopted(parent.clone(), &adoption);
+    let state = AgentState::adopted(parent.clone(), &adoption).expect("adopts");
     let first = step(
         &driver,
         &parent,
@@ -428,7 +428,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         brief: None,
         policy: None,
     };
-    let state = AgentState::adopted(child.clone(), &forked);
+    let state = AgentState::adopted(child.clone(), &forked).expect("adopts");
     step(
         &driver,
         &child,
@@ -537,7 +537,7 @@ async fn admitted_root_after_its_child(
         let settled = step(
             &driver(child_scope),
             &child,
-            Some(AgentState::adopted(child.clone(), &adoption)),
+            Some(AgentState::adopted(child.clone(), &adoption).expect("adopts")),
             0,
             requested("c1", &child),
             acyclic_actors::guest::CancellationToken::new(),
@@ -573,7 +573,7 @@ async fn admitted_root_after_its_child(
         let stepped = step(
             &driver,
             &root,
-            Some(AgentState::adopted(root.clone(), &adoption)),
+            Some(AgentState::adopted(root.clone(), &adoption).expect("adopts")),
             0,
             first,
             acyclic_actors::guest::CancellationToken::new(),
@@ -732,7 +732,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
             let mut adoption = adopted(id(5));
             adoption.parent = Some(parent.clone());
             adoption.volumes = vec![binding];
-            let state = AgentState::adopted(path.clone(), &adoption);
+            let state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
             let stepped = step(
                 &driver,
                 &path,
@@ -908,7 +908,7 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
             let mut adoption = adopted(id(7));
             adoption.parent = Some(parent.clone());
             adoption.volumes = vec![binding];
-            let mut state = AgentState::adopted(path.clone(), &adoption);
+            let mut state = AgentState::adopted(path.clone(), &adoption).expect("adopts");
             // Settled history the turn would read first.
             state.conversation_tail = 3;
             let stepped = step(
@@ -1037,12 +1037,36 @@ impl TurnEffects for Recorded {
     }
 }
 
-/// A writer that names the agent's private volume; spawn stages nothing.
+/// A writer that names the agent's private volume and stages every brief as
+/// one fixed file.
 struct Writer(VolumeRef);
 
 impl acyclic_harness_core::conversation::ContentPublisher for Writer {
     fn volume(&self) -> &VolumeRef {
         &self.0
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        _: OperationId,
+        _: &'a str,
+        _: &'a [u8],
+        _: &'a str,
+        _: &'a str,
+        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
+    ) -> acyclic_harness_core::Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            (
+                FileRef,
+                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
+            ),
+        >,
+    > {
+        let file = super::driver::file("brief.md")?;
+        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
+            Ok((file, None))
+        })
     }
 }
 
@@ -1050,7 +1074,7 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(9)));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
     state.open_children.insert(path.child(&id(10))?);
     // Each spawn call in order, under `limit`: which ones the tool refused.
     let refused = |state: AgentState, limit: Option<u32>| {

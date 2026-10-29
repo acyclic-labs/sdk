@@ -69,7 +69,7 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
         ],
     )
     .await?;
-    let mut state = AgentState::adopted(root.clone(), &super::adopted(id(1)));
+    let mut state = AgentState::adopted(root.clone(), &super::adopted(id(1))).expect("adopts");
     state.conversation_tail = 3;
     state.queued.push_back(Queued {
         inbox: 5,
@@ -127,7 +127,7 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
     .await?;
     let mut adoption = super::adopted(id(2));
     adoption.conversation_tail = 2;
-    let mut state = AgentState::adopted(forked, &adoption);
+    let mut state = AgentState::adopted(forked, &adoption).expect("adopts");
     state.conversation_tail = 3;
     assert_eq!(ask(state.clone(), "m1", 1).await?, Reply::Dropped);
     assert!(matches!(

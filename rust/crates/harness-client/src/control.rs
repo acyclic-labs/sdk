@@ -14,6 +14,18 @@ const DISCOVERY_ACTOR: &str = "agents";
 /// The routing URL of a discovery invocation.
 const DISCOVERY_URL: &str = "/agents/bind";
 
+/// `route` carrying `body`: one command frame within the session's bound.
+fn with_body(route: &wire::InvokeActorRequest, body: &[u8]) -> Result<Bytes, CommandError> {
+    // Body framing adds at most five bytes for one command frame.
+    // Check before cloning the routing metadata or allocating its body.
+    if route.encoded_len() + body.len() + 5 > acyclic_stream::MAX_COMMAND_BYTES {
+        return Err(CommandError::Capacity);
+    }
+    let mut invocation = route.clone();
+    invocation.body = body.to_vec();
+    Ok(invocation.encode_to_vec().into())
+}
+
 /// Pure protocol admission used by both the client and the owning host. The
 /// authenticated session supplies authority separately; no field here grants it.
 fn decode_invocation(encoded: &[u8]) -> Result<wire::InvokeActorRequest, CommandError> {
@@ -58,6 +70,28 @@ impl AgentCall {
     /// The admitted public command, shared by every backend's dispatcher.
     pub fn command(&self) -> &AgentCommand {
         &self.command
+    }
+
+    /// This call as the whole command its staged parts assembled to, `whole`:
+    /// the host authorizes, runs and answers it exactly as if it came in one
+    /// frame. It acts on the agent its head named, and is never itself staged.
+    pub fn assembled(&self, whole: &[u8]) -> Result<Self, CommandError> {
+        let AgentCommand::Staged { command: kind, .. } = &self.command else {
+            return Err(CommandError::Invalid);
+        };
+        let command = PreparedCommand::decode_whole(whole)?;
+        if matches!(
+            command,
+            AgentCommand::Stage { .. } | AgentCommand::Staged { .. }
+        ) || command.agent() != self.command.agent()
+            || command.kind() != kind
+        {
+            return Err(CommandError::Invalid);
+        }
+        Ok(Self {
+            invocation: self.invocation.clone(),
+            command,
+        })
     }
 
     /// Encode a successful exchange, including typed refusals and Unknown, in
@@ -156,7 +190,7 @@ impl AgentBinding {
         &self,
         command: &'a PreparedCommand,
     ) -> Result<PreparedAgentInvocation<'a>, CommandError> {
-        PreparedAgentInvocation::new(command, self.encode(command)?)
+        PreparedAgentInvocation::new(&self.0, Cow::Borrowed(command))
     }
 
     /// Own both the original command and invocation across browser awaits.
@@ -164,24 +198,7 @@ impl AgentBinding {
         &self,
         command: PreparedCommand,
     ) -> Result<PreparedAgentInvocation<'static>, CommandError> {
-        let encoded = self.encode(&command)?;
-        let prepared = PreparedAgentInvocation::new(&command, encoded.clone())?;
-        drop(prepared);
-        Ok(PreparedAgentInvocation {
-            command: Cow::Owned(command),
-            invocation: encoded,
-        })
-    }
-
-    fn encode(&self, command: &PreparedCommand) -> Result<Bytes, CommandError> {
-        // Body framing adds at most five bytes for this finite command budget.
-        // Check before cloning the routing metadata or allocating its body.
-        if self.0.encoded_len() + command.as_bytes().len() + 5 > acyclic_stream::MAX_COMMAND_BYTES {
-            return Err(CommandError::Capacity);
-        }
-        let mut invocation = self.0.clone();
-        invocation.body = command.as_bytes().to_vec();
-        Ok(invocation.encode_to_vec().into())
+        PreparedAgentInvocation::new(&self.0, Cow::Owned(command))
     }
 }
 
@@ -329,33 +346,86 @@ mod tests {
         }
     }
 
+    /// A host that stages parts and answers a head with the command its
+    /// parts assemble to; a head whose parts it never received is refused.
+    fn staging_host(
+        staged: &mut Vec<String>,
+        sent: &mut Vec<AgentCommand>,
+        invocation: &[u8],
+    ) -> Result<Bytes, AgentExchangeError> {
+        let call = AgentCall::decode(invocation)?;
+        assert_eq!(call.invocation().actor_id, "fixture");
+        sent.push(call.command().clone());
+        let reply = match call.command() {
+            AgentCommand::Stage { part, text, .. } => {
+                assert_eq!(*part as usize, staged.len());
+                staged.push(text.clone());
+                AgentReply::Staged {}
+            }
+            AgentCommand::Staged { digest, .. } => {
+                let whole = staged.concat();
+                if blake3::hash(whole.as_bytes()).to_hex().as_str() != digest {
+                    return Err(AgentExchangeError::ActorStatus(400));
+                }
+                let call = call.assembled(whole.as_bytes())?;
+                assert!(matches!(call.command(), AgentCommand::Prompt { .. }));
+                return Ok(call.reply(&Ok(AgentReply::Delivered {
+                    delivery: acyclic_harness_core::agent::Delivered::Committed { inbox: 7 },
+                }))?);
+            }
+            _ => return Err(CommandError::Invalid.into()),
+        };
+        Ok(call.reply(&Ok(reply))?)
+    }
+
     #[test]
-    fn invocation_retains_exact_command_and_rejects_another_body()
+    fn a_staged_command_is_sent_as_its_parts_then_its_head_on_one_route()
     -> Result<(), Box<dyn std::error::Error>> {
-        let command = PreparedCommand::new(&AgentCommand::Root {})?;
-        let bytes: Bytes = invocation(command.as_bytes().to_vec())
-            .encode_to_vec()
-            .into();
-        let held = PreparedAgentInvocation::new(&command, bytes.clone())?;
-        assert_eq!(held.as_bytes(), &bytes);
-        let changed = invocation(b"{}".to_vec()).encode_to_vec().into();
+        use acyclic_harness_core::{agent::IntentId, model::ModelContent};
+        let agent = crate::AgentPath::try_from(
+            "harness/agents/00000000000000000000000000000001".to_owned(),
+        )?;
+        let command = PreparedCommand::new(&AgentCommand::Prompt {
+            agent,
+            id: IntentId::try_from("prompt-1")?,
+            body: ModelContent::Text("x".repeat(2 * crate::MAX_AGENT_COMMAND_BYTES)),
+        })?;
+        let binding = AgentBinding::new(&invocation(Vec::new()).encode_to_vec())?;
+        let held = binding.prepare(&command)?;
+        assert!(held.invocations().len() > 2);
+        let (mut staged, mut sent) = (Vec::new(), Vec::new());
+        let reply = futures::executor::block_on(held.send(|invocation| {
+            std::future::ready(staging_host(&mut staged, &mut sent, &invocation))
+        }))?;
         assert!(matches!(
-            PreparedAgentInvocation::new(&command, changed),
-            Err(CommandError::Invalid)
+            reply,
+            Ok(AgentReply::Delivered {
+                delivery: acyclic_harness_core::agent::Delivered::Committed { inbox: 7 }
+            })
         ));
+        let (head, parts) = sent.split_last().ok_or("nothing sent")?;
+        assert!(matches!(head, AgentCommand::Staged { .. }));
+        assert_eq!(parts.len(), held.invocations().len() - 1);
+        assert!(
+            parts
+                .iter()
+                .all(|part| matches!(part, AgentCommand::Stage { .. }))
+        );
+        // Negative control: the head alone, without its parts, is refused.
+        let (mut staged, mut sent) = (Vec::new(), Vec::new());
+        let head = held.invocations().last().ok_or("no head")?;
+        assert!(staging_host(&mut staged, &mut sent, head).is_err());
         Ok(())
     }
 
     #[test]
-    fn invocation_does_not_discard_unknown_wire_fields() -> Result<(), Box<dyn std::error::Error>> {
-        let command = PreparedCommand::new(&AgentCommand::Root {})?;
-        let mut encoded = invocation(command.as_bytes().to_vec()).encode_to_vec();
+    fn binding_does_not_discard_unknown_wire_fields() {
+        let mut encoded = invocation(Vec::new()).encode_to_vec();
         encoded.extend_from_slice(&[0xf8, 0x07, 0x01]); // unknown varint field 127
         assert!(matches!(
-            PreparedAgentInvocation::new(&command, encoded.into()),
+            AgentBinding::new(&encoded),
             Err(CommandError::Invalid)
         ));
-        Ok(())
     }
 
     #[test]
@@ -364,9 +434,12 @@ mod tests {
         let template = invocation(Vec::new());
         let binding = AgentBinding::new(&template.encode_to_vec())?;
         let command = PreparedCommand::from_bytes(b"{ \"kind\" : \"root\" }".to_vec())?;
-        let original = command.as_bytes().to_vec();
+        let original = command.command().to_vec();
         let prepared = binding.prepare_owned(command)?;
-        let request = wire::InvokeActorRequest::decode(prepared.as_bytes().clone())?;
+        let [invocation] = prepared.invocations() else {
+            return Err("a one-frame command is one invocation".into());
+        };
+        let request = wire::InvokeActorRequest::decode(invocation.clone())?;
         assert_eq!(request.body, original);
         assert_eq!(request.actor_id, template.actor_id);
         assert_eq!(request.url, template.url);
@@ -419,26 +492,66 @@ impl AgentExchangeError {
 /// backend-specific route. The command remains caller-owned across every await.
 pub struct PreparedAgentInvocation<'a> {
     command: Cow<'a, PreparedCommand>,
-    invocation: Bytes,
+    /// One invocation per frame of the command, in the order they are sent.
+    invocations: Vec<Bytes>,
 }
 
 impl<'a> PreparedAgentInvocation<'a> {
-    /// Validate the canonical Actors envelope before opening a session channel.
-    /// Its body must be the exact admitted command bytes, including the intent.
-    pub fn new(command: &'a PreparedCommand, encoded: Bytes) -> Result<Self, CommandError> {
-        let invocation = decode_invocation(encoded.as_ref())?;
-        if invocation.body.as_slice() != command.as_bytes() {
-            return Err(CommandError::Invalid);
-        }
+    /// `command` on `route`: one canonical Actors invocation per frame.
+    fn new(
+        route: &wire::InvokeActorRequest,
+        command: Cow<'a, PreparedCommand>,
+    ) -> Result<Self, CommandError> {
+        let invocations = command
+            .frames()
+            .map(|frame| with_body(route, frame))
+            .collect::<Result<_, _>>()?;
         Ok(Self {
-            command: Cow::Borrowed(command),
-            invocation: encoded,
+            command,
+            invocations,
         })
     }
 
-    /// The original encoded invocation, retained unchanged after interruption.
-    pub fn as_bytes(&self) -> &Bytes {
-        &self.invocation
+    /// The exact invocations this command is sent as, retained unchanged after
+    /// interruption: its staged parts, then their head; or the one command.
+    pub fn invocations(&self) -> &[Bytes] {
+        &self.invocations
+    }
+
+    /// Send the command once through `exchange`, which carries one canonical
+    /// Actors invocation and yields its encoded response: every staged part
+    /// in order, each answered as staged, then the head, answered as the
+    /// whole command. Every transport sends through this one path, so no
+    /// path sends a head without its parts. Each part stages exactly once
+    /// under its digest and position, so a resend stages nothing twice.
+    ///
+    /// # Errors
+    /// The exchange's own failure, or a response that is not this command's.
+    pub async fn send<E, F, Fut>(
+        &self,
+        mut exchange: F,
+    ) -> Result<Result<AgentReply, AgentControlFailure>, E>
+    where
+        E: From<AgentExchangeError>,
+        F: FnMut(Bytes) -> Fut,
+        Fut: std::future::Future<Output = Result<Bytes, E>>,
+    {
+        let invalid = || E::from(AgentExchangeError::from(CommandError::Invalid));
+        let (head, parts) = self.invocations.split_last().ok_or_else(invalid)?;
+        for (frame, invocation) in self.command.frames().zip(parts) {
+            let part = PreparedCommand::decode(frame)
+                .map_err(|error| E::from(AgentExchangeError::from(error)))?;
+            match response(&exchange(invocation.clone()).await?, &part)? {
+                Ok(AgentReply::Staged {}) => {}
+                Ok(_) => return Err(invalid()),
+                Err(failure) => return Ok(Err(failure)),
+            }
+        }
+        let command = self
+            .command
+            .decoded()
+            .map_err(|error| E::from(AgentExchangeError::from(error)))?;
+        Ok(response(&exchange(head.clone()).await?, &command)?)
     }
 
     /// Execute once on the caller's existing session. This method installs no
@@ -448,25 +561,34 @@ impl<'a> PreparedAgentInvocation<'a> {
         session: &Client,
         credential: u32,
     ) -> Result<AgentReply, AgentExchangeError> {
-        let bytes = session
-            .actor_call(
-                &self.invocation,
-                credential,
-                acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
-            )
-            .await
-            .map_err(AgentExchangeError::Session)?;
-        let response =
-            wire::InvokeActorResponse::decode(bytes.as_ref()).map_err(|_| CommandError::Invalid)?;
-        if response.encode_to_vec().as_slice() != bytes.as_ref() {
-            return Err(CommandError::Invalid.into());
-        }
-        let response =
-            domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
-        if response.status() != 200 {
-            return Err(AgentExchangeError::ActorStatus(response.status()));
-        }
-        let command = PreparedCommand::decode(self.command.as_bytes())?;
-        decode_agent_reply(response.body(), &command)?.map_err(AgentExchangeError::Control)
+        self.send(|invocation| async move {
+            session
+                .actor_call(
+                    &invocation,
+                    credential,
+                    acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                )
+                .await
+                .map_err(AgentExchangeError::Session)
+        })
+        .await?
+        .map_err(AgentExchangeError::Control)
     }
+}
+
+/// One invocation's encoded response, its reply checked against `command`.
+fn response(
+    bytes: &[u8],
+    command: &AgentCommand,
+) -> Result<Result<AgentReply, AgentControlFailure>, AgentExchangeError> {
+    let response = wire::InvokeActorResponse::decode(bytes).map_err(|_| CommandError::Invalid)?;
+    if response.encode_to_vec().as_slice() != bytes {
+        return Err(CommandError::Invalid.into());
+    }
+    let response =
+        domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
+    if response.status() != 200 {
+        return Err(AgentExchangeError::ActorStatus(response.status()));
+    }
+    Ok(decode_agent_reply(response.body(), command)?)
 }

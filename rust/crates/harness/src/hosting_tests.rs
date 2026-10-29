@@ -93,7 +93,7 @@ fn invocation(namespace: &str, command: &AgentCommand) -> Result<Bytes> {
         actor_id: "root".into(),
         method: "POST".into(),
         url: "https://agents.invalid/command".into(),
-        body: PreparedCommand::new(command)?.as_bytes().to_vec(),
+        body: PreparedCommand::new(command)?.command().to_vec(),
         namespace: Some(namespace.into()),
         account_id: b"account".to_vec(),
         ..Default::default()
@@ -298,6 +298,113 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .is_err()
     );
     runner.abort();
+    Ok(())
+}
+
+/// A staged head is authorized before any part is read: a denied caller's
+/// head makes the host read nothing, however many parts it names.
+#[tokio::test]
+async fn a_denied_staged_head_reads_no_part() -> Result {
+    let stream = Arc::new(MemoryStream::default());
+    let objects = acyclic_stream::testing::Counted::new(acyclic_objects::MemoryObjects::memory());
+    let ledger = objects.ledger();
+    let bound = Bound::local_root(
+        AuthorityRoot::new(
+            "agents",
+            [7; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "local".into(),
+            },
+        ),
+        Placement {
+            filesystem: acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+                LogicalObjectStore::new(Arc::new(objects)),
+                EmbeddedCapabilities::MEMORY,
+            ),
+            provider: provider()?,
+            within: ActorReference::new(b"account", b"agents", b"owner")?,
+        },
+        Turns {
+            executors: Arc::new(Never),
+            limits: TurnLimits {
+                maximum_bytes: 64 * 1024,
+                max_steps: 4,
+                history_turns: 8,
+            },
+            actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            clock: Arc::new(SystemClock),
+            approval_policy: Default::default(),
+        },
+    )?;
+    let agent = AgentId::from_bytes([1; 16]);
+    let private = VolumeBinding {
+        name: PRIVATE_VOLUME.into(),
+        volume: VolumeRef::new(
+            provider()?,
+            "agent-private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
+            &mut None,
+        )?,
+    };
+    let owner = Arc::new(Owner::default());
+    let server = serve(
+        bound,
+        owner.clone(),
+        &IntentId::try_from("root")?,
+        RootRequest {
+            agent,
+            fresh: vec![private],
+            retained: Vec::new(),
+            brief: None,
+            policy: None,
+        },
+    )
+    .await?;
+    let Serving::Served(server) = server else {
+        return Err("serving the root was uncertain".into());
+    };
+    let client = Client::in_process_with_products(
+        stream.clone(),
+        acyclic_stream::session::testing::authority(),
+        None,
+        server.clone(),
+        Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
+    );
+    client.register_credential(0, credential(server.resource()))?;
+    let root = server.root().clone();
+    let digest = blake3::hash(b"{}").to_hex().to_string();
+    let stage = AgentCommand::Stage {
+        agent: root.clone(),
+        digest: digest.clone(),
+        part: 0,
+        text: "[]".into(),
+    };
+    assert!(matches!(
+        call(&client, "agents", &stage).await?,
+        Ok(AgentReply::Staged {})
+    ));
+    let head = AgentCommand::Staged {
+        agent: root.clone(),
+        command: "prompt".into(),
+        digest,
+        parts: 1,
+        bytes: 2,
+    };
+    // Negative control: an admitted head reads its part, and refuses it.
+    let before = ledger.requests();
+    assert!(call(&client, "agents", &head).await?.is_err());
+    assert!(
+        ledger.requests() != before,
+        "an admitted head reads its parts"
+    );
+    owner.0.store(true, Ordering::SeqCst);
+    let before = ledger.requests();
+    assert!(call(&client, "agents", &head).await.is_err());
+    assert!(ledger.requests() == before, "a denied head reads no part");
     Ok(())
 }
 

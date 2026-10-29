@@ -377,7 +377,7 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     let request = InboxRecord::Spawn(SpawnRequest {
         by: user(),
         id: intent("s"),
-        brief: "task".into(),
+        brief: Box::new(super::driver::file("task").expect("file")),
     });
     let Delivered::Committed { inbox } = host.send(&root, &user(), &request).await? else {
         return Err("spawn request was not committed".into());
@@ -434,7 +434,7 @@ async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
         InboxRecord::Spawn(SpawnRequest {
             by: user(),
             id: intent(&format!("s{n}")),
-            brief: "task".into(),
+            brief: Box::new(super::driver::file("task").expect("file")),
         })
     };
     let mut last = 0;
@@ -473,7 +473,7 @@ async fn a_spawn_retry_after_later_steps_names_the_same_child() -> Result {
         InboxRecord::Spawn(SpawnRequest {
             by: user(),
             id: intent(&format!("s{n}")),
-            brief: "task".into(),
+            brief: Box::new(super::driver::file("task").expect("file")),
         })
     };
     let mut sequences = Vec::new();
