@@ -101,7 +101,6 @@ impl NativeMountAuthority {
             work,
         )
         .await
-        .map(|options| options.native_context(work, None, None))
     }
 }
 
@@ -141,6 +140,8 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn mount_port_cannot_outlive_runtime_or_revoked_parent() -> Result<()> {
+        acyclic_native_runtime::initialize_native_io_services()?;
+        acyclic_fs::initialize_native_mount_services()?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -223,6 +224,17 @@ mod tests {
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while for_scope above only retains the authenticated narrow workload.
         let bootstrap = port.mount_options(&workspace, None, true, &work).await?;
+        let source = workspace.native_source(&bootstrap).await?;
+        use acyclic_fs::native_mount::MountFilesystem;
+        let original = source
+            .native_original_work()?
+            .ok_or_else(|| Error::Invalid("native source lost its original work".into()))?;
+        assert!(original.shares_allocation_context(&work));
+        let guard = source
+            .native_callback_guard()
+            .ok_or_else(|| Error::Invalid("native source lost its authority guard".into()))?;
+        guard.check(&work)?.await?;
+        guard.check_write(&work)?.await?;
         assert!(
             bootstrap
                 .require_access_view()
@@ -237,6 +249,15 @@ mod tests {
             port.mount_options(&workspace, None, true, &work)
                 .await
                 .is_err()
+        );
+        let before = work.receipt();
+        assert!(guard.check(&work)?.await.is_err());
+        assert!(guard.check_write(&work)?.await.is_err());
+        let after = work.receipt();
+        assert_eq!(before.backend_read_operations, after.backend_read_operations);
+        assert_eq!(
+            before.backend_write_operations,
+            after.backend_write_operations
         );
         let foreign = crate::core::AuthorityRoot::new("mount-port", [64; 32], audience.clone());
         let forged =
