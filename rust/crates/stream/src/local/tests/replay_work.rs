@@ -29,7 +29,7 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
         assert_eq!(stream.commit(request.clone()).await.unwrap(), first);
     }
     if !ELIDE {
-        let command = Command::Commit(request.clone());
+        let command = WriteRequest::Commit(request.clone());
         let span = obs::OperationSpan::new(tracing::info_span!("duplicate_replay_control"));
         stream
             .exclusive(&span, move |stream| async move {

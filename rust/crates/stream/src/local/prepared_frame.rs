@@ -84,7 +84,7 @@ impl PreparedFrame {
     }
 
     fn encode(
-        command: &Command,
+        command: &WriteRequest,
         time: u64,
         work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, LocalStreamError> {
@@ -102,7 +102,7 @@ impl PreparedFrame {
         Ok(frame)
     }
 
-    fn fill(&mut self, command: &Command, time: u64) -> Result<(), LocalStreamError> {
+    fn fill(&mut self, command: &WriteRequest, time: u64) -> Result<(), LocalStreamError> {
         let size = command.encoded_len();
         if size > MAX_COMMAND_BYTES
             || 4 + FRAME_TIME_BYTES + size + FRAME_CHECKSUM_BYTES > self.encoded.capacity()

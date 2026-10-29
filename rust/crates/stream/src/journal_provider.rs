@@ -5,7 +5,6 @@
 //! become visible only after the journal's durability promise resolves.
 
 use crate::{
-    journal::{Command, Outcome},
     replicated::{ReplicaClock, Replicated},
     *,
 };
@@ -173,9 +172,9 @@ impl JournalStream {
 
     async fn execute(
         &self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<WriteOutcome, StreamError> {
         self.0
             .cache
             .lock()

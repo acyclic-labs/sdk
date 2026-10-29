@@ -8,7 +8,7 @@ fn frames(
     (0..count)
         .map(|sequence| {
             Ok(PreparedFrame::encode(
-                &Command::Append(super::keyed_append("batch", sequence)?),
+                &WriteRequest::Append(super::keyed_append("batch", sequence)?),
                 time,
                 work.clone(),
             )?)

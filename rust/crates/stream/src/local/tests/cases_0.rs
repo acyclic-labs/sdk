@@ -499,7 +499,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
-    let command = Command::Append(AppendRequest {
+    let command = WriteRequest::Append(AppendRequest {
         path: StreamPath::new("partial")?,
         records: vec![(Bytes::from_static(b"record")).into()],
         if_tail: Some(0),
@@ -649,7 +649,7 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     };
     let path = directory.path().join(JOURNAL_FILE);
     let before = std::fs::read(&path)?;
-    let frame = PreparedFrame::encode(&Command::Append(second), 1, None)?;
+    let frame = PreparedFrame::encode(&WriteRequest::Append(second), 1, None)?;
     let mut damaged = before.clone();
     damaged.extend_from_slice(&frame.encoded);
     damaged.extend_from_slice(&[9, 8, 7]);

@@ -125,7 +125,7 @@ impl LocalStream {
                             }
                         })
                 }
-                Recovered::Command {
+                Recovered::WriteRequest {
                     committed_at_millis,
                     command,
                 } => {
@@ -196,7 +196,7 @@ impl LocalStream {
 
     async fn execute(
         &self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
     ) -> Result<crate::replicated::Execution, StreamError> {
         let cursor = self
@@ -225,9 +225,9 @@ impl LocalStream {
         if replica.cursor == cursor
             && matches!(
                 result.as_ref().map(|execution| &execution.outcome),
-                Ok(crate::journal::Outcome::Append(AppendOutcome::Committed(_))
-                    | crate::journal::Outcome::Commit(CommitOutcome::Committed(_))
-                    | crate::journal::Outcome::Fork(_))
+                Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))
+                    | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+                    | crate::WriteOutcome::Fork(_))
             )
         {
             // A retained success joins the original durability cut even when
@@ -242,7 +242,7 @@ impl LocalStream {
 
     /// Encodes the command and pins its recorded commit timestamp.
     #[cfg(any(test, loom))]
-    fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
+    fn prepare(&self, command: &WriteRequest) -> Result<PreparedFrame, StreamError> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         let frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())
             .map_err(|error| match error {

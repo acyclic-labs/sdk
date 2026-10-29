@@ -128,8 +128,8 @@ async fn a_lost_conditional_proposal_keeps_its_exact_command()
     );
     let mut request = append(&path, 2);
     request.if_tail = None;
-    let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) = replica
-        .execute(Command::Append(request.clone()), None, 1)
+    let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = replica
+        .execute(WriteRequest::Append(request.clone()), None, 1)
         .await?
         .outcome
     else {
@@ -179,7 +179,7 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
     );
     assert!(matches!(
         replica
-            .execute(Command::Append(request.clone()), None, 1)
+            .execute(WriteRequest::Append(request.clone()), None, 1)
             .await,
         Err(StreamError::Unavailable)
     ));
@@ -238,8 +238,8 @@ async fn a_prepared_stamp_matches_recovery_when_the_acceptance_clock_advances()
         clock,
         HEADER_BYTES as u64,
     );
-    let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) = replica
-        .execute(Command::Append(request), None, 1)
+    let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = replica
+        .execute(WriteRequest::Append(request), None, 1)
         .await?
         .outcome
     else {

@@ -34,11 +34,11 @@ impl LocalStream {
                     copied,
                 ))?;
                 work.record(work.meter.admit_codec(0, copied as u64, 0))?;
-                let command = Command::Commit(request.clone());
+                let command = WriteRequest::Commit(request.clone());
                 work.record(work.meter.record_codec(0, copied as u64, 0))?;
                 drop(input);
                 let (plan, recovery) = provider.prepare(request, maximum).await?;
-                let Command::Commit(request) = &command else {
+                let WriteRequest::Commit(request) = &command else {
                     unreachable!()
                 };
                 let size =
@@ -94,7 +94,7 @@ impl LocalStream {
 
     async fn settle_prepared(
         &self,
-        mut command: Command,
+        mut command: WriteRequest,
         frame: PreparedFrame,
         plan: crate::memory::PreparedCommit,
         ingress: Arc<crate::native::NativeCommitRecordSlot>,
@@ -108,7 +108,7 @@ impl LocalStream {
         let body = ingress.receive().await?;
         let visibility = self.inner.visibility.write().await;
         self.check_available()?;
-        let Command::Commit(request) = &mut command else {
+        let WriteRequest::Commit(request) = &mut command else {
             unreachable!()
         };
         let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
@@ -134,7 +134,7 @@ impl LocalStream {
             self.inner.poison();
         }
         let result = result.and_then(|execution| {
-            let crate::journal::Outcome::Commit(outcome) = execution.outcome else {
+            let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
                 return Err(StreamError::InvalidResponse);
             };
             if replica.cursor == cursor && matches!(outcome, CommitOutcome::Committed(_)) {

@@ -251,7 +251,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
 
     let path = StreamPath::new("failed-replay")?;
     let invalid = PreparedFrame::encode(
-        &Command::Fork(ForkRequest {
+        &WriteRequest::Fork(ForkRequest {
             exclude: Vec::new(),
             source: StreamPath::new("missing-source")?,
             destination: path.clone(),
@@ -262,7 +262,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
         None,
     )?;
     let valid = PreparedFrame::encode(
-        &Command::Append(AppendRequest {
+        &WriteRequest::Append(AppendRequest {
             path,
             records: vec![(Bytes::from_static(b"later")).into()],
             if_tail: Some(0),

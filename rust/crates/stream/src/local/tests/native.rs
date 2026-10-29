@@ -383,8 +383,11 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
     }
     let meter = Arc::new(Meter::local());
     let work = crate::native::Work::new(meter.original())?;
-    let mut plan =
-        PreparedFrame::encode(&Command::Commit(keyed_commit("partial", 0)?), 0, Some(work))?;
+    let mut plan = PreparedFrame::encode(
+        &WriteRequest::Commit(keyed_commit("partial", 0)?),
+        0,
+        Some(work),
+    )?;
     let mut writer = Partial { bytes: Vec::new() };
     let physical = plan.write(&mut writer);
     assert!(matches!(physical, Err(LocalStreamError::IncompleteFrame)));

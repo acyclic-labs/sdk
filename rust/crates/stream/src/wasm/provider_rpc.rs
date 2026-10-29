@@ -236,8 +236,8 @@ impl StreamProvider for InjectedStream {
         match request {
             crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
                 async move {
-                    let request = crate::journal::Command::Append(request).validated()?;
-                    let crate::journal::Command::Append(request) = request else {
+                    let request = crate::WriteRequest::Append(request).validated()?;
+                    let crate::WriteRequest::Append(request) = request else {
                         return Err(StreamError::InvalidArgument);
                     };
                     let input = wire::AppendRequest {

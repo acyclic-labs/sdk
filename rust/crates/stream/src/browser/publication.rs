@@ -91,13 +91,13 @@ pub(super) struct Before(BTreeMap<StreamPath, Option<u64>>);
 impl Before {
     pub(super) async fn capture(
         provider: &MemoryStream,
-        command: &Command,
+        command: &WriteRequest,
         publications: &notifications::Publications,
     ) -> Result<Self, StreamError> {
         let destinations = match command {
-            Command::Append(request) => vec![(request.path.clone(), false)],
-            Command::Fork(request) => vec![(request.destination.clone(), true)],
-            Command::Commit(request) => request
+            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
+            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
+            WriteRequest::Commit(request) => request
                 .mutations
                 .iter()
                 .map(|mutation| match mutation {
@@ -238,7 +238,7 @@ impl crate::replicated::ReplayObserver for Observer<'_> {
     fn observe<'a>(
         &'a mut self,
         provider: &'a MemoryStream,
-        command: &'a Command,
+        command: &'a WriteRequest,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
         async move {

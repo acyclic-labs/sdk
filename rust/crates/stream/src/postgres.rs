@@ -5,7 +5,6 @@
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
-    journal::{Command, Outcome},
     replicated::{ReplicaClock, Replicated},
     *,
 };
@@ -287,9 +286,9 @@ impl PostgresStream {
 
     async fn publish(
         &self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<WriteOutcome, StreamError> {
         let command = command.validated()?;
         let provider = self.clone();
         // This one exact publication retains custody through caller cancellation.

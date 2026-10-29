@@ -1,6 +1,6 @@
 //! One ordered replica over a conditional command journal.
 use crate::{
-    journal::{Command, Outcome, decode_command, replay},
+    journal::{decode_command, replay},
     *,
 };
 use std::sync::{Arc, Mutex};
@@ -40,7 +40,7 @@ pub(crate) struct JournalPage {
 }
 
 pub(crate) struct JournalFrame<'a> {
-    pub(crate) command: &'a Command,
+    pub(crate) command: &'a WriteRequest,
     /// Trusted proposal clock sampled by the journal read. Installation and
     /// recovery use this same stamp; the port checks deadlines at acceptance.
     pub(crate) at_millis: u64,
@@ -62,7 +62,7 @@ pub(crate) enum AppendIf {
 }
 
 pub(crate) struct Execution {
-    pub(crate) outcome: Outcome,
+    pub(crate) outcome: WriteOutcome,
     pub(crate) allocation: crate::memory::Allocation,
 }
 
@@ -121,7 +121,7 @@ pub(crate) trait ReplayObserver: ProviderPlatform {
     fn observe<'a>(
         &'a mut self,
         provider: &'a MemoryStream,
-        command: &'a Command,
+        command: &'a WriteRequest,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a;
 }
@@ -130,7 +130,7 @@ impl ReplayObserver for NoopObserver {
     fn observe<'a>(
         &'a mut self,
         _: &'a MemoryStream,
-        _: &'a Command,
+        _: &'a WriteRequest,
         _: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
         std::future::ready(Ok(()))
@@ -203,13 +203,13 @@ impl<J: CommandJournal> Replicated<J> {
     #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) async fn execute_prepared(
         &mut self,
-        command: &Command,
+        command: &WriteRequest,
         plan: crate::memory::PreparedCommit,
         body: crate::AppendRecord,
     ) -> Result<Execution, StreamError> {
         self.refresh(1).await?;
         let expected = self.cursor;
-        let Command::Commit(request) = command else {
+        let WriteRequest::Commit(request) = command else {
             return Err(StreamError::InvalidArgument);
         };
         let frame = JournalFrame {
@@ -223,7 +223,7 @@ impl<J: CommandJournal> Replicated<J> {
             .settle_durable(body, attempt.persist(&mut self.journal, expected, frame))
             .await
             .map(|(outcome, allocation)| Execution {
-                outcome: Outcome::Commit(outcome),
+                outcome: WriteOutcome::Commit(outcome),
                 allocation,
             });
         if !self.complete(attempt, &result) {
@@ -310,7 +310,7 @@ impl<J: CommandJournal> Replicated<J> {
 
     pub(crate) async fn execute(
         &mut self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
     ) -> Result<Execution, StreamError> {
@@ -320,7 +320,7 @@ impl<J: CommandJournal> Replicated<J> {
 
     pub(crate) async fn execute_with(
         &mut self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
         observe: &mut impl ReplayObserver,
@@ -330,15 +330,15 @@ impl<J: CommandJournal> Replicated<J> {
         let deadline = deadline
             .into_iter()
             .chain(match command {
-                Command::Commit(request) => request.deadline_unix_millis,
+                WriteRequest::Commit(request) => request.deadline_unix_millis,
                 _ => None,
             })
             .min();
         #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
         let changes = match command {
-            Command::Append(request) => vec![(request.path.clone(), false)],
-            Command::Fork(request) => vec![(request.destination.clone(), true)],
-            Command::Commit(request) => request
+            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
+            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
+            WriteRequest::Commit(request) => request
                 .mutations
                 .iter()
                 .map(|mutation| {

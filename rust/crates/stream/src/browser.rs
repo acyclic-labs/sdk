@@ -1,7 +1,6 @@
 //! Strict `IndexedDB` command publication around the existing Rust state machine.
 
 use crate::{
-    journal::{Command, Outcome},
     replicated::{ReplicaClock, Replicated},
     *,
 };
@@ -206,8 +205,8 @@ impl BrowserStream {
         &self,
         cache: &mut Cache,
         changed: &mut publication::Changes,
-        command: Option<(Command, Option<u64>)>,
-    ) -> Result<Option<Outcome>, StreamError> {
+        command: Option<(WriteRequest, Option<u64>)>,
+    ) -> Result<Option<WriteOutcome>, StreamError> {
         if !cache.valid {
             cache.provider = staged(
                 self.inner.limits.memory,
@@ -266,9 +265,9 @@ impl BrowserStream {
 
     async fn execute(
         &self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<WriteOutcome, StreamError> {
         let mut dispatch = publication::Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
         dispatch.repair = true;

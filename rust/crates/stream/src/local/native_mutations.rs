@@ -58,8 +58,10 @@ impl LocalStream {
                     let publication = stream.inner.publication.write().await;
                     let mut result = async {
                         stream.check_available()?;
-                        let execution = stream.execute(Command::Commit(request), deadline).await?;
-                        let crate::journal::Outcome::Commit(outcome) = execution.outcome else {
+                        let execution = stream
+                            .execute(WriteRequest::Commit(request), deadline)
+                            .await?;
+                        let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
                             return Err(StreamError::InvalidResponse);
                         };
                         Ok((outcome, execution.allocation))
@@ -131,8 +133,8 @@ impl LocalStream {
             let result = stream
                 .exclusive(&span, move |stream| async move {
                     let _input = input;
-                    let execution = stream.execute(Command::Append(request), None).await?;
-                    let crate::journal::Outcome::Append(outcome) = execution.outcome else {
+                    let execution = stream.execute(WriteRequest::Append(request), None).await?;
+                    let crate::WriteOutcome::Append(outcome) = execution.outcome else {
                         return Err(StreamError::InvalidResponse);
                     };
                     Ok((outcome, execution.allocation))

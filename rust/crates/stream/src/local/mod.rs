@@ -1,5 +1,7 @@
 //! Bounded crash-recoverable local Stream provider.
 
+#[cfg(any(test, loom))]
+use crate::StreamProviderExt as _;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -33,7 +35,8 @@ mod snapshot_ready;
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
-use crate::journal::{Command, decode_command, replay};
+use crate::WriteRequest;
+use crate::journal::{decode_command, replay};
 use crate::obs;
 use crate::{
     AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
