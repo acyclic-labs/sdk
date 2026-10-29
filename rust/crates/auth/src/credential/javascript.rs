@@ -138,6 +138,17 @@ struct Request {
     token: Zeroizing<String>,
     binding: Option<CredentialBinding>,
 }
+impl Request {
+    fn synchronous_check(&self) -> Result<(), CredentialError> {
+        // The public JS owner contract is synchronous and returns void. An
+        // asynchronous or malformed owner must not be admitted as ready.
+        if invoke(&self.object, "check")?.is_undefined() {
+            Ok(())
+        } else {
+            Err(CredentialError::Invalid)
+        }
+    }
+}
 impl CredentialRequest for Request {
     fn token(&self) -> &str {
         &self.token
@@ -146,12 +157,13 @@ impl CredentialRequest for Request {
         self.binding.clone()
     }
     fn check(&self) -> CredentialAction<()> {
-        invoke(&self.object, "check").map(|_| ()).into()
+        self.synchronous_check().into()
     }
     fn retained_access(&self) -> Option<Result<(), CredentialError>> {
         // JS's admitted request owns a synchronous check. Forward the same
         // object; no async invocation, copied validity or new identity exists.
-        Some(invoke(&self.object, "check").map(|_| ()))
+        self.binding.as_ref()?;
+        Some(self.synchronous_check())
     }
     fn reject(&self) -> CredentialAction<bool> {
         invoke(&self.object, "reject")
