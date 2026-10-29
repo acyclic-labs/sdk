@@ -243,7 +243,7 @@ fn exact_batch_work(
     // (inline placement and final encoding), and copied once into the frame.
     // Pin the work beyond those physical output bytes, without clock coupling.
     // The observed backend baseline includes the ledger's initial allocation.
-    // Staging adds exactly the flush frame and the three drain vectors.
+    // Resident staging adds the flush frame, targets and write vector.
     actual.durability_operations == batch.durability_operations
         && actual.backend_write_operations == batch.backend_write_operations
         && actual.object_bytes_written == batch.object_bytes_written
@@ -251,7 +251,7 @@ fn exact_batch_work(
         && actual.bytes_encoded + 2 * batch.output_bytes
             == batch.bytes_encoded + 2 * actual.output_bytes
         && actual.bytes_copied + batch.output_bytes == batch.bytes_copied + actual.output_bytes
-        && backend.is_some_and(|operations| actual.allocation_operations == operations + 4)
+        && backend.is_some_and(|operations| actual.allocation_operations == operations + 3)
         && actual.items_examined == batch.items_examined + 3 * count as u64
 }
 

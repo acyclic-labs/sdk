@@ -22,6 +22,73 @@ fn native_write_budget() -> WorkBudget {
 }
 
 #[tokio::test]
+async fn native_flush_caller_cancellation_refuses_before_frame_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let store = StagedObjects::open(
+        crate::MemoryObjectStore::default(),
+        directory.path().to_owned(),
+    );
+    let original_token = CancellationToken::new();
+    let caller = CancellationToken::new();
+    let original = NativeMaterializationWork::new(native_write_budget(), &original_token)
+        .map_err(|(error, _)| error)?;
+    let (id, bytes) = blob(OwnedBytes::from_static(
+        b"cancelled publication stays staged",
+    ));
+    store
+        .put(
+            id,
+            bytes.clone(),
+            &mut AuthorityWork::native(&original, &original_token),
+        )
+        .await?;
+    let before = original.receipt();
+    let live = original.live_allocation_bytes();
+    caller.cancel();
+    assert!(matches!(
+        store
+            .flush_before_publish(
+                PublicationScope::Closure {
+                    objects: &[id],
+                    proven_at: store.collection.sweeps()
+                },
+                &mut AuthorityWork::native(&original, &caller),
+            )
+            .await,
+        Err(ObjectStoreError::Cancelled)
+    ));
+    assert_eq!(original.receipt(), before);
+    assert_eq!(original.live_allocation_bytes(), live);
+    assert!(store.index().objects.contains_key(&id));
+    drop(
+        store
+            .flush_before_publish(
+                PublicationScope::Closure {
+                    objects: &[id],
+                    proven_at: store.collection.sweeps(),
+                },
+                &mut AuthorityWork::native(&original, &original_token),
+            )
+            .await?,
+    );
+    assert!(store.index().objects.is_empty());
+    assert_eq!(
+        store
+            .inner()
+            .read(
+                id,
+                bytes.len() as u64,
+                &mut AuthorityWork::native(&original, &original_token)
+            )
+            .await?
+            .bytes,
+        bytes
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;

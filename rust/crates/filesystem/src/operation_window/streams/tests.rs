@@ -40,7 +40,6 @@ async fn stream_window_loads_one_head_and_stale_cas_never_changes_its_lease()
     else {
         return Err("active window did not carry its exact history identity".into());
     };
-    use acyclic_stream::StreamProvider;
     let head = provider.inner().head(path).await?;
     assert_eq!(expected, current.revision);
     assert_eq!(commit_id, head.last.ok_or("missing window head")?.commit_id);
@@ -71,7 +70,6 @@ async fn stream_window_loads_one_head_and_stale_cas_never_changes_its_lease()
 #[tokio::test]
 async fn stream_window_corrupt_state_is_not_observed_as_absent()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_stream::StreamProvider;
     for case in 0..4 {
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
         let workspace = WorkspaceId::from_bytes([161; 16]);

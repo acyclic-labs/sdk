@@ -181,6 +181,9 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         scope: PublicationScope<'_>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        work.accounting()
+            .check()
+            .map_err(crate::async_storage::object_error)?;
         let native = work.original;
         let future = self.flush(scope, work);
         let allocation = frame_allocation(native, &future)?;
