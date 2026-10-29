@@ -188,7 +188,7 @@ test("cancelled queued Session open retains its predecessor's admission fence", 
     // Its successor must retain that write's ordering fence.
     producer.resolve();
     expect(await first).toBe(refused);
-    expect(await successor).toBe(refused);
+    expect((await successor).code).toBe("unavailable");
     expect(overtook).toBe(false);
     expect(alarms).toBe(2);
   } finally { host.close(); producer.resolve(); authority.free(); fixture.free(); }

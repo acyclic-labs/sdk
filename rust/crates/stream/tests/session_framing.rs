@@ -1,7 +1,7 @@
 //! Byte framing vectors use records returned by the real public memory provider.
 use acyclic_stream::{
     AppendRequest, IdempotencyKey, MemoryStream, OwnedBytes, ReadRequest, StreamError, StreamPath,
-    StreamProvider, wire, wire_codec,
+    StreamProvider, StreamProviderExt as _, wire, wire_codec,
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
@@ -23,6 +23,7 @@ async fn frames() -> Result<Vec<wire::SessionFrame>, StreamError> {
         .await?;
     let records = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 2,

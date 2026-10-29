@@ -27,7 +27,14 @@ pub async fn qualify_journal_deadline(
             idempotency_key: key.clone(),
             deadline_unix_millis: None,
         };
-        let provider = JournalStream::open(journal.clone(), JournalStreamLimits::default()).await?;
+        let (provider, peer) = futures::try_join!(
+            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
+            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
+        )?;
+        if peer.tail(path.clone()).await != Err(StreamError::NotFound) {
+            return Err(StreamError::InvalidResponse);
+        }
+        drop(peer);
         if provider.tail(path.clone()).await != Err(StreamError::NotFound)
             || provider.inspect_idempotency(key.clone()).await?.is_some()
         {
