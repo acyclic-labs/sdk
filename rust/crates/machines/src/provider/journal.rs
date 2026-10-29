@@ -32,7 +32,7 @@ pub(crate) struct Journal {
     machine: MachineId,
     // At most one physical transition runs under the incarnation's admission
     // lock. This is its live producer, never an operation/result registry.
-    producer: std::sync::Mutex<Option<(OperationId, tokio::sync::watch::Receiver<bool>)>>,
+    producer: Mutex<Option<(OperationId, tokio::sync::watch::Receiver<bool>)>>,
 }
 
 pub(crate) enum Admission {
@@ -55,20 +55,14 @@ impl Journal {
             streams,
             root,
             machine,
-            producer: std::sync::Mutex::new(None),
+            producer: Mutex::new(None),
         }
     }
 
-    pub(crate) fn producer(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<tokio::sync::watch::Sender<bool>, ProviderError> {
+    pub(crate) async fn producer(&self, key: IdempotencyKey) -> tokio::sync::watch::Sender<bool> {
         let (sender, receiver) = tokio::sync::watch::channel(false);
-        *self
-            .producer
-            .lock()
-            .map_err(|_| ProviderError::Unavailable)? = Some((OperationId(key.0), receiver));
-        Ok(sender)
+        *self.producer.lock().await = Some((OperationId(key.0), receiver));
+        sender
     }
 
     fn path(&self, suffix: impl fmt::Display) -> Result<StreamPath, ProviderError> {
@@ -281,6 +275,10 @@ impl Journal {
     ) -> Result<OperationStream, ProviderError> {
         let key = IdempotencyKey(operation.0);
         let path = self.operation(key)?;
+        // Pin producer selection across this head cut. Completion needs no
+        // lock; a subsequent transition cannot replace its live source before
+        // this observer retains it. No provider lock survives follow opening.
+        let active = self.producer.lock().await;
         let head = self.head(path.clone()).await?;
         let mut request = acyclic_stream::FollowRequest::new(path, head.tail);
         request.preceding = head.last.as_ref().map(|record| record.commit_id);
@@ -292,14 +290,12 @@ impl Journal {
         if initial.phase != OperationPhase::Pending {
             return Ok(stream::once(async move { Ok(initial) }).boxed());
         }
-        let mut producer = self
-            .producer
-            .lock()
-            .map_err(|_| ProviderError::Unavailable)?
+        let mut producer = active
             .as_ref()
             .filter(|(id, _)| *id == operation)
             .map(|(_, receiver)| receiver.clone())
             .ok_or(ProviderError::Indeterminate(key))?;
+        drop(active);
         if !*producer.borrow() && producer.has_changed().is_err() {
             return Err(ProviderError::Indeterminate(key));
         }

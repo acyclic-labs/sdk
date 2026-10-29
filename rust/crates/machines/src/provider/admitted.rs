@@ -95,7 +95,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         };
         // Keep the original physical producer alive across admission, cleanup
         // and publication. Dropping this future closes its loss notification.
-        let producer = self.journal.producer(key)?;
+        let producer = self.journal.producer(key).await;
         let admitted = match self
             .journal
             .begin(
