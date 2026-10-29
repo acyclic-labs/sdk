@@ -23,10 +23,10 @@ use std::{
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
-    MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId,
-    MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider,
-    MutationOutcome, OperationId, OperationObservation, OperationPhase, OperationStream,
-    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
+    MAX_EVENT_PAGE_SIZE, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation,
+    MachineOutput, MachinePage, MachineState, MachinesProvider, MutationOutcome, OperationId,
+    OperationObservation, OperationPhase, OperationStream, ProviderAssurance, ProviderError,
+    SuspensionPolicy, UsageReceipt, page_limit,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -72,8 +72,8 @@ pub struct DaytonaConfig {
     pub poll_interval: Duration,
     /// Maximum time to wait for a sandbox or snapshot to settle before reporting indeterminate.
     pub ready_timeout: Duration,
-    /// Per-request HTTP timeout.
-    pub request_timeout: Duration,
+    /// Optional caller-selected per-request HTTP timeout.
+    pub request_timeout: Option<Duration>,
     /// Absolute directory a container disk fork (`Capability::DiskFork`) copies from the
     /// source into each child; everything outside it comes from the source's snapshot.
     pub workspace_dir: String,
@@ -95,7 +95,7 @@ impl DaytonaConfig {
             organization_id: None,
             poll_interval: Duration::from_millis(500),
             ready_timeout: Duration::from_secs(180),
-            request_timeout: Duration::from_secs(60),
+            request_timeout: None,
             workspace_dir: DEFAULT_WORKSPACE_DIR.to_owned(),
         }
     }
@@ -1104,11 +1104,7 @@ impl MachinesProvider for DaytonaProvider {
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
+        let limit = page_limit(limit, MAX_PAGE_SIZE)?;
         let limit = usize::try_from(limit)
             .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?;
         let mut merged: BTreeMap<MachineId, MachineObservation> = self
@@ -1249,9 +1245,6 @@ impl MachinesProvider for DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(key, &Intent::Fork(checkpoint, count), async |operation| {
             let source = self.inspect_checkpoint(checkpoint).await?;
             if !source.forkable {
@@ -1289,9 +1282,6 @@ impl MachinesProvider for DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             &Intent::ForkMachine(machine, count),
@@ -1460,11 +1450,7 @@ impl MachinesProvider for DaytonaProvider {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "event page limit must be 1..=1024".into(),
-            ));
-        }
+        let limit = page_limit(limit, MAX_EVENT_PAGE_SIZE)?;
         // One poll per call: refreshing the observation appends a state event on change.
         self.fetch_machine(machine).await?;
         let limit = usize::try_from(limit)
@@ -1823,17 +1809,6 @@ mod tests {
         assert!(matches!(
             provider.watch_operation(op).await.err(),
             Some(ProviderError::NotFound(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn fork_counts_are_bounded_before_any_request() {
-        let provider = DaytonaProvider::new(DaytonaConfig::new("k")).unwrap();
-        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000004").unwrap();
-        let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap();
-        assert!(matches!(
-            provider.fork_machine(MachineId::new(), too_many, key).await,
-            Err(ProviderError::Invalid(_))
         ));
     }
 

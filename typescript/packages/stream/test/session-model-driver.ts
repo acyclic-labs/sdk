@@ -89,7 +89,8 @@ async function command(action: string, hex?: string, path?: string,
     // Lifetime controls: a command that never settles while client work stays scheduled, a client that keeps
     // reconnecting, and an exact number of connections. None may outlive the owner or the process-wide budget.
     case "park":
-      setInterval(() => {}, 1 << 30);
+      // serve() retains the owner's stdin pipe and exits on its close event,
+      // including while this command is pending. No periodic keepalive is needed.
       acknowledge("parked");
       await new Promise<void>(() => {});
       break;

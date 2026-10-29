@@ -319,7 +319,7 @@ fn wait_for_watch(
 fn wait_for_watch_after_child(
     receiver: &mpsc::Receiver<notify::Result<notify::Event>>,
     sentinel: &Path,
-    child: &Result<std::process::Output, Failure>,
+    child: &Result<CapturedOutput, Failure>,
 ) -> Result<(), Failure> {
     match child {
         Ok(output) if output.status.success() => wait_for_watch(receiver, sentinel),

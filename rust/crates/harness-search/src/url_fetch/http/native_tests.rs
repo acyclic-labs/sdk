@@ -1,6 +1,7 @@
 use super::tests::{Framing, joined, nonce, serve};
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use std::time::Duration;
 
 fn budget() -> WorkBudget {
     acyclic_fs::performance::work_budget(2_000_000, 32 * 1_024 * 1_024)
@@ -153,7 +154,7 @@ async fn native_fetch_one_byte_budget_cannot_read_a_complete_http_frame() -> Res
 }
 
 #[tokio::test]
-async fn native_fetch_protocol_body_and_size_rejections_release_all_custody() -> Result<()> {
+async fn native_fetch_protocol_and_body_rejections_release_all_custody() -> Result<()> {
     for (status, headers, body, framing) in [
         (404, "", b"private-nonce".to_vec(), Framing::Length),
         (200, "", vec![0xff], Framing::Length),
@@ -174,24 +175,6 @@ async fn native_fetch_protocol_body_and_size_rejections_release_all_custody() ->
             "Location: http://user:private-nonce@example.com/\r\n",
             Vec::new(),
             Framing::Length,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Length,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Chunked,
-        ),
-        (
-            200,
-            "",
-            vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1],
-            Framing::Close,
         ),
     ] {
         let work = work(budget(), &CancellationToken::new())?;

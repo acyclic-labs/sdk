@@ -5,8 +5,7 @@ mod tests;
 
 use acyclic_harness_client::{
     AgentBinding, AgentControlFailure, AgentControls, AgentExchangeError, CommandError,
-    MAX_AGENT_COMMAND_BYTES, MAX_AGENT_REPLY_BYTES, PreparedAgentInvocation, PreparedCommand,
-    decode_agent_reply,
+    PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
 };
 use js_sys::Uint8Array;
 use std::rc::Rc;
@@ -230,30 +229,15 @@ pub struct WasmAgentCommand {
 
 #[wasm_bindgen]
 impl WasmAgentCommand {
-    /// Canonical pre-copy limits, shared with endpoint conformance drivers.
-    #[wasm_bindgen(js_name = maximumCommandBytes)]
-    pub fn maximum_command_bytes() -> u32 {
-        MAX_AGENT_COMMAND_BYTES as u32
-    }
+    /// Current logical invocation transport bound, pending shared chunking.
     #[wasm_bindgen(js_name = maximumInvocationBytes)]
     pub fn maximum_invocation_bytes() -> u32 {
         acyclic_stream::MAX_COMMAND_BYTES as u32
     }
-    #[wasm_bindgen(js_name = maximumReplyBytes)]
-    pub fn maximum_reply_bytes() -> u32 {
-        MAX_AGENT_REPLY_BYTES as u32
-    }
-
-    /// Snapshot only after the encoded byte length passes the Rust limit.
+    /// Snapshot the complete command before canonical Rust validation.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
-            if length > MAX_AGENT_COMMAND_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
+        let (bytes, ()) = super::bytes::snapshot(encoded, |_| Ok(()))?;
         let command = PreparedCommand::from_bytes(bytes).map_err(command_error)?;
         Ok(Self { command })
     }
@@ -274,13 +258,7 @@ impl WasmAgentCommand {
     /// result throws the shared typed error with its owned protobuf request.
     #[wasm_bindgen(unchecked_return_type = "AgentReply")]
     pub fn reply(&self, encoded: &Uint8Array) -> Result<JsValue, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
-            if length > MAX_AGENT_REPLY_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
+        let (bytes, ()) = super::bytes::snapshot(encoded, |_| Ok(()))?;
         let command = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
         match decode_agent_reply(&bytes, &command).map_err(command_error)? {
             Ok(reply) => super::json::to_js_client_admitted(&reply),

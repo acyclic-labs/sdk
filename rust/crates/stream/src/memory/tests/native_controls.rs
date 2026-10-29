@@ -359,7 +359,15 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
             IdempotencyKey::new(OwnedBytes::from(format!("prepared/{index}")))?;
         let key = request.idempotency_key.clone();
         let (mut issued, guard) = provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
             .await??
             .into_parts();
         drop(issued.take_recovery_future());
@@ -432,7 +440,15 @@ async fn prepared_replay_probe_credit_is_required_before_acceptance() -> MemoryR
     meter.examination_limit.store(1, Ordering::SeqCst);
     assert!(
         provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16
+                },
+                meter.original()
+            )
             .await
             .is_err()
     );
@@ -513,7 +529,15 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         }
     })?;
     let issued = provider
-        .native_prepare_commit(request, 64, original)
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            original,
+        )
         .await??;
     let (mut issued, packet_guard) = issued.into_parts();
     let recovery = issued
@@ -614,7 +638,15 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         let foreign_key = request.idempotency_key.clone();
         let meter = Arc::new(Meter::default());
         let issued = provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
             .await??;
         let (mut issued, packet_guard) = issued.into_parts();
         let recovery = issued
@@ -710,13 +742,37 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         ..Meter::default()
     });
     let issued = provider
-        .native_prepare_commit(request.clone(), 64, meter.original())
+        .native_prepare_commit(
+            request.clone(),
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await??;
     let replay = provider
-        .native_prepare_commit(request.clone(), 64, meter.original())
+        .native_prepare_commit(
+            request.clone(),
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await??;
     let mismatch = provider
-        .native_prepare_commit(request, 64, meter.original())
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await??;
     let allocations = meter.allocations.load(Ordering::SeqCst);
     meter.cancelled.store(true, Ordering::SeqCst);
@@ -793,7 +849,15 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
     let key = request.idempotency_key.clone();
     let meter = Arc::new(Meter::default());
     let issued = provider
-        .native_prepare_commit(request, 64, meter.original())
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: 64,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await??;
     provider
         .append(AppendRequest {
@@ -835,18 +899,26 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
 async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it() -> MemoryResult<()>
 {
     let limits = MemoryLimits {
-        commits: 3,
-        records: 3,
-        payload_bytes: 72,
+        commits: Some(3),
+        records: Some(3),
+        payload_bytes: Some(72),
         // Two retained seed receipts and exactly one promised completion.
-        idempotency_results: 3,
+        idempotency_results: Some(3),
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {
         let (provider, request) = prepared_fixture(limits).await?;
         let meter = Arc::new(Meter::default());
         let issued = provider
-            .native_prepare_commit(request, 64, meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: 64,
+                    keys: 64,
+                    attributes: 16,
+                },
+                meter.original(),
+            )
             .await??;
         let append = AppendRequest {
             path: path("unrelated")?,

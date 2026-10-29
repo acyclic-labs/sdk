@@ -9,11 +9,8 @@ use tonic::{
     service::{Interceptor, interceptor::InterceptedService},
 };
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
-const MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS: u8 = 3;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
@@ -140,8 +137,6 @@ impl GrpcProvider {
         }
         let endpoint = TonicEndpoint::from_shared(uri.to_owned())
             .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(RPC_TIMEOUT)
             .tls_config(
                 ClientTlsConfig::new()
                     .ca_certificate(Certificate::from_pem(tls.ca))
@@ -174,8 +169,6 @@ impl GrpcProvider {
         let path = path.to_path_buf();
         let expected_uid = rustix::process::geteuid().as_raw();
         let channel = TonicEndpoint::from_static("http://[::]:50051")
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(RPC_TIMEOUT)
             .connect_with_connector(service_fn(move |_| {
                 let path = path.clone();
                 async move {

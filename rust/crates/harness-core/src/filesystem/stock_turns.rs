@@ -95,7 +95,7 @@ impl Preset {
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
         if let Some(steps) = self.max_steps {
-            limits.model_steps = steps;
+            limits.model_steps = Some(steps);
         }
         StockExecutors::new(model, tools, (limits, compaction), context)
             .with_agent_tools(&self.tools, self.max_children)

@@ -50,7 +50,7 @@ async fn span_at<S: AsyncObjectStore>(
             root: extents,
             file_size: logical_bytes,
             range: ByteRange { offset, length: 1 },
-            maximum_spans: 1,
+            maximum_spans: Some(1),
             limits,
             budget: accounting.remaining()?,
         },
@@ -191,7 +191,7 @@ async fn compare<S: AsyncObjectStore>(
         }
         // Partial chunk comparisons retain at most one admitted range per side,
         // rather than allocating or hashing a whole potentially enormous file.
-        let length = length.min(config.limits.maximum_read_bytes);
+        let length = length.min(super::CONTENT_READ_CHUNK_BYTES);
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }
@@ -209,7 +209,7 @@ async fn compare<S: AsyncObjectStore>(
                 FileRangeRequest {
                     record,
                     range,
-                    maximum_spans: limits.maximum_page_items,
+                    maximum_spans: None,
                     limits,
                     budget: accounting.remaining()?,
                 },

@@ -26,8 +26,6 @@ use tonic::{Request, Status};
 
 type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
-/// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
-pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 /// Smallest encoded response that can contain a valid protocol handshake.
 pub const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
 /// Largest encoded byte-bearing envelope: an eight-byte cursor, 33-byte typed
@@ -47,10 +45,10 @@ pub struct HostedFsOptions {
     pub maximum_response_bytes: usize,
     /// Maximum encoded request size sent by this client.
     pub maximum_request_bytes: usize,
-    /// Connection deadline.
-    pub connect_timeout: Duration,
-    /// Per-request transport deadline.
-    pub request_timeout: Duration,
+    /// Optional caller-selected connection deadline.
+    pub connect_timeout: Option<Duration>,
+    /// Optional caller-selected per-request transport deadline.
+    pub request_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for HostedFsOptions {
@@ -72,7 +70,7 @@ impl std::fmt::Debug for HostedFsOptions {
 }
 
 impl HostedFsOptions {
-    /// Creates bounded hosted options with conservative transport defaults.
+    /// Creates hosted options with transport frame sizing and no operation deadline.
     #[must_use]
     pub fn new(endpoint: impl Into<String>, bearer_token: impl Into<String>) -> Self {
         Self {
@@ -82,8 +80,8 @@ impl HostedFsOptions {
             maximum_response_bytes: usize::try_from(DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES)
                 .unwrap_or(usize::MAX),
             maximum_request_bytes: 16 * 1024 * 1024,
-            connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(30),
+            connect_timeout: None,
+            request_timeout: None,
         }
     }
 
@@ -203,12 +201,10 @@ fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsErro
     if options
         .ca_certificate_pem
         .as_ref()
-        .is_some_and(|certificate| {
-            certificate.is_empty() || certificate.len() > MAX_CA_CERTIFICATE_BYTES
-        })
+        .is_some_and(|certificate| certificate.is_empty())
     {
         return Err(HostedFsError::InvalidOptions(
-            "CA certificate must contain 1 to 65536 bytes",
+            "CA certificate must not be empty",
         ));
     }
     if !(options.endpoint.starts_with("https://")
@@ -248,9 +244,13 @@ impl HostedFs {
             Some(credential_header(&options.bearer_token)?)
         };
         let is_https = options.endpoint.starts_with("https://");
-        let mut endpoint = Endpoint::new(options.endpoint)?
-            .connect_timeout(options.connect_timeout)
-            .timeout(options.request_timeout);
+        let mut endpoint = Endpoint::new(options.endpoint)?;
+        if let Some(timeout) = options.connect_timeout {
+            endpoint = endpoint.connect_timeout(timeout);
+        }
+        if let Some(timeout) = options.request_timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
         if let Some(certificate) = options.ca_certificate_pem {
             if !is_https {
                 return Err(HostedFsError::InvalidOptions(
@@ -352,7 +352,12 @@ impl HostedFs {
     }
 
     fn require_transaction_bound(&self, value: usize) -> Result<(), HostedFsError> {
-        if value == 0 || value > self.capabilities.maximum_transaction_mutations as usize {
+        if value == 0
+            || self
+                .capabilities
+                .maximum_transaction_mutations
+                .is_some_and(|maximum| u32::try_from(value).map_or(true, |value| value > maximum))
+        {
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         } else {
             Ok(())

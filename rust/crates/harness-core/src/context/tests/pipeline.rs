@@ -75,7 +75,7 @@ impl ContextStage for Transform {
 async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
     let input = input();
     let limits = Limits {
-        context_messages: 2,
+        context_messages: std::num::NonZeroUsize::new(2),
         render_bytes: 2048,
         ..payload_limits()
     };
@@ -95,7 +95,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
         let exact = crate::contract::canonical_json_bytes(&projected)?.len() as u64;
         for rejected in [
             Limits {
-                context_messages: 1,
+                context_messages: std::num::NonZeroUsize::new(1),
                 ..limits
             },
             Limits {
@@ -137,7 +137,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    context_messages: 1,
+                    context_messages: std::num::NonZeroUsize::new(1),
                     ..limits
                 },
                 None
@@ -361,4 +361,31 @@ proptest::proptest! {
             extent: ContextExtent::Span { start, end }, representation: ContextRepresentation::Full };
         proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default(), &mut None).is_ok(), start < end && end <= 10);
     }
+}
+
+#[test]
+fn optional_step_allowances_intersect_without_widening_finite_policy() -> Result<()> {
+    for (pinned, admitted, expected) in [
+        (None, None, None),
+        (None, Some(3), Some(3)),
+        (Some(2), None, Some(2)),
+        (Some(2), Some(3), Some(2)),
+    ] {
+        let result = restrict_context_limits(
+            Limits {
+                model_steps: pinned.and_then(std::num::NonZeroUsize::new),
+                ..Limits::default()
+            },
+            Limits {
+                model_steps: admitted.and_then(std::num::NonZeroUsize::new),
+                ..Limits::default()
+            },
+            None,
+        )?;
+        assert_eq!(
+            result.model_steps.map(std::num::NonZeroUsize::get),
+            expected
+        );
+    }
+    Ok(())
 }

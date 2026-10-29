@@ -64,7 +64,7 @@ mod tests {
         let embedded = crate::MemoryFs::memory();
         let limits = FilesystemWireLimits {
             maximum_response_bytes: 1_024,
-            maximum_transaction_mutations: 2,
+            maximum_transaction_mutations: Some(2),
             maximum_page_items: 2,
             ..FilesystemWireLimits::default()
         };
@@ -100,7 +100,7 @@ mod tests {
         options.maximum_response_bytes = 1_024 + usize::try_from(MAX_BYTE_RESPONSE_ENVELOPE_BYTES)?;
         let hosted = HostedFs::connect(options).await?;
         assert_eq!(hosted.capabilities().maximum_response_bytes, 1_024);
-        assert_eq!(hosted.capabilities().maximum_transaction_mutations, 2);
+        assert_eq!(hosted.capabilities().maximum_transaction_mutations, Some(2));
         assert_eq!(hosted.capabilities().maximum_page_items, 2);
         let workspace = hosted
             .create_workspace(
@@ -274,6 +274,46 @@ mod tests {
             oversized.commit(1).await,
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         ));
+        let before_denial = child.head().await?;
+        let mutations = (0..3)
+            .map(|index| wire::Mutation {
+                mutation: Some(wire::mutation::Mutation::CreateDirectories(
+                    wire::CreateDirectories {
+                        path: format!("/policy-denied-{index}"),
+                    },
+                )),
+            })
+            .collect::<Vec<_>>();
+        let mut raw = hosted.client.clone();
+        let apply = raw
+            .apply_transaction(
+                hosted
+                    .request(wire::ApplyTransactionRequest {
+                        base: Some(before_denial.reference.clone()),
+                        mutations: mutations.clone(),
+                        operation: Some(operation(IdempotencyKey::from_bytes([18; 16]))),
+                        maximum_conflicts: None,
+                    })
+                    .await?,
+            )
+            .await
+            .expect_err("the selected service policy also applies without the client check");
+        assert_eq!(apply.code(), tonic::Code::InvalidArgument);
+        let rebase = raw
+            .rebase_transaction(
+                hosted
+                    .request(wire::RebaseTransactionRequest {
+                        base: Some(before_denial.reference.clone()),
+                        mutations,
+                        operation: Some(operation(IdempotencyKey::from_bytes([19; 16]))),
+                        maximum_conflicts: None,
+                    })
+                    .await?,
+            )
+            .await
+            .expect_err("the selected service policy also applies to rebase");
+        assert_eq!(rebase.code(), tonic::Code::InvalidArgument);
+        assert_eq!(child.head().await?.id(), before_denial.id());
         let empty = child.begin_transaction(IdempotencyKey::from_bytes([11; 16]));
         assert!(matches!(
             empty.commit(1).await,
@@ -347,6 +387,7 @@ mod tests {
         )
         .await?;
         assert_eq!(hosted.capabilities().contract_version, "1");
+        exercise_wide_atomic_transaction(&hosted).await?;
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let resolved = calls.clone();
         let renewed = HostedFs::connect_with_credential(
@@ -383,8 +424,77 @@ mod tests {
         Ok(())
     }
 
+    async fn exercise_wide_atomic_transaction(
+        hosted: &HostedFs,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let workspace = hosted
+            .create_workspace(
+                "wide-atomic",
+                EmbeddedProfile::Portable,
+                IdempotencyKey::from_bytes([31; 16]),
+            )
+            .await?;
+        let initial = workspace.head().await?;
+        let prepare = || {
+            let mut transaction = workspace.begin_transaction(IdempotencyKey::from_bytes([32; 16]));
+            for index in 0..2_049 {
+                transaction.create_file(format!("/file-{index:04}"), b"complete".to_vec(), None);
+            }
+            transaction
+        };
+        let transaction = prepare();
+        let rebased = transaction.rebase(None).await?;
+        assert!(rebased.conflicts.is_empty());
+        assert_eq!(workspace.head().await?.id(), initial.id());
+        assert!(
+            initial
+                .list_directory("/", None, 256)
+                .await?
+                .entries
+                .is_empty()
+        );
+        let published = transaction.commit(None).await?;
+        assert_eq!(published.status, wire::MutationStatus::Committed as i32);
+        let head = workspace.head().await?;
+        assert_ne!(head.id(), initial.id());
+        assert_eq!(
+            prepare().commit(None).await?.generation,
+            published.generation
+        );
+
+        let mut next = None;
+        let mut count = 0;
+        loop {
+            let page = head.list_directory("/", next, 256).await?;
+            for entry in page.entries {
+                let name = entry.name.ok_or("directory entry has no name")?;
+                assert_eq!(name.bytes, format!("file-{count:04}").as_bytes());
+                count += 1;
+            }
+            next = page.next;
+            if next.is_none() {
+                break;
+            }
+        }
+        assert_eq!(count, 2_049);
+        assert_eq!(head.read("/file-0000", 8).await?, b"complete"[..]);
+        assert_eq!(head.read("/file-2048", 8).await?, b"complete"[..]);
+
+        // A late invalid mutation must publish none of the preceding work.
+        let current = hosted.open_workspace("wide-atomic").await?;
+        let mut invalid = current.begin_transaction(IdempotencyKey::from_bytes([33; 16]));
+        for index in 0..2_049 {
+            invalid.create_directory(format!("/unpublished-{index:04}"), None);
+        }
+        invalid.create_file("/file-0000", b"replacement".to_vec(), None);
+        assert!(invalid.commit(None).await.is_err());
+        assert_eq!(current.head().await?.id(), head.id());
+        assert_eq!(head.read("/file-0000", 8).await?, b"complete"[..]);
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn hosted_constructor_rejects_unbounded_ca_and_malformed_handshake()
+    async fn hosted_constructor_rejects_empty_ca_and_malformed_handshake()
     -> Result<(), HostedFsError> {
         let debug = format!(
             "{:?}",
@@ -392,12 +502,12 @@ mod tests {
         );
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("[REDACTED]"));
-        let oversized = HostedFsOptions::new("https://localhost", "token")
-            .with_ca_certificate(vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]);
+        let empty_ca =
+            HostedFsOptions::new("https://localhost", "token").with_ca_certificate(Vec::new());
         assert!(matches!(
-            HostedFs::connect(oversized).await,
+            HostedFs::connect(empty_ca).await,
             Err(HostedFsError::InvalidOptions(
-                "CA certificate must contain 1 to 65536 bytes"
+                "CA certificate must not be empty"
             ))
         ));
 
@@ -439,7 +549,7 @@ mod tests {
                 profiles: Vec::new(),
                 maximum_request_bytes: 1,
                 maximum_response_bytes: 1,
-                maximum_transaction_mutations: 1,
+                maximum_transaction_mutations: Some(1),
                 maximum_page_items: 1,
                 native_mount_credentials: false,
                 s3_credentials: false,

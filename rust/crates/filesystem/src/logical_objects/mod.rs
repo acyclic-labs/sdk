@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct LogicalObjectStore<P: ?Sized> {
     provider: Arc<P>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
     publication_root: Option<acyclic_objects::RootId>,
     /// Stored blobs some publication root has not retained yet, shared by
@@ -57,7 +57,7 @@ impl<P: ?Sized> LogicalObjectStore<P> {
     pub fn new(provider: Arc<P>) -> Self {
         Self {
             provider,
-            maximum_object_bytes: 5 * 1024 * 1024 * 1024,
+            maximum_object_bytes: None,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
             publication_root: None,
             staged: Arc::default(),
@@ -80,8 +80,8 @@ impl<P: ?Sized> LogicalObjectStore<P> {
     }
 
     /// Applies the composition's existing positive per-object bound.
-    pub fn with_object_limit(mut self, maximum: u64) -> Result<Self, ObjectStoreError> {
-        if maximum == 0 || usize::try_from(maximum).is_err() {
+    pub fn with_object_limit(mut self, maximum: Option<u64>) -> Result<Self, ObjectStoreError> {
+        if maximum.is_some_and(|maximum| maximum == 0 || usize::try_from(maximum).is_err()) {
             return Err(ObjectStoreError::Rejected(
                 "invalid object size limit".to_owned(),
             ));
@@ -319,16 +319,33 @@ fn service_error(error: Error) -> ObjectStoreError {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn native_error(error: acyclic_objects::NativeObjectsError) -> ObjectStoreError {
-    use acyclic_objects::NativeObjectsCause;
-    match &error.cause {
-        NativeObjectsCause::Service(service) if !error.has_payload() => service_error(*service),
-        NativeObjectsCause::Unsupported if !error.has_payload() => {
-            ObjectStoreError::NativeUnavailable
-        }
-        _ => ObjectStoreError::NativeObjects(error),
+fn native_error(
+    error: acyclic_objects::NativeObjectsError,
+    original: &crate::NativeMaterializationWork,
+) -> ObjectStoreError {
+    use acyclic_objects::{NativeObjectsCause as Cause, NativeObjectsError as Native};
+    // Only payload-free refusals may shed their native envelope. Completed
+    // physical data and its custody stay together on every other error.
+    match error {
+        Native {
+            cause: Cause::Admission(cause),
+            object: None,
+            receipt: None,
+        } => ObjectStoreError::Native(original.runtime_error(cause)),
+        Native {
+            cause: Cause::Service(service),
+            object: None,
+            receipt: None,
+        } => service_error(service),
+        Native {
+            cause: Cause::Unsupported,
+            object: None,
+            receipt: None,
+        } => ObjectStoreError::NativeUnavailable,
+        error => ObjectStoreError::NativeObjects(error),
     }
 }
+
 mod requests;
 use requests::*;
 mod read;

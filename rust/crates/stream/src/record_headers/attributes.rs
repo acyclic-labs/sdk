@@ -166,6 +166,7 @@ impl<'a> IntoIterator for RecordAttributes<'a> {
 }
 
 /// An allocation-free iterator over canonical attribute views.
+#[derive(Clone)]
 pub struct RecordAttributeIter<'a> {
     attributes: RecordAttributes<'a>,
     remaining: Range<usize>,
