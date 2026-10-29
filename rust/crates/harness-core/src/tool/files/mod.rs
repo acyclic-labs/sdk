@@ -33,7 +33,7 @@ pub fn edit() -> Result<Tool> {
 /// Explicitly selects exact V4A update-file editing with pinned finite work limits.
 pub fn patch_file(maximum_work: u64, maximum_hunks: u32) -> Result<Tool> {
     super::patch::PatchLimits {
-        maximum_bytes: 1,
+        maximum_bytes: None,
         maximum_work,
         maximum_hunks,
     }
