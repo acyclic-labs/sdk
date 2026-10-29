@@ -9,7 +9,7 @@ use acyclic_harness_core::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Most bytes a binding's routing adds to a command frame in its invocation.
+/// Space reserved for routing beside one command frame in its invocation.
 const MAX_ROUTING_BYTES: usize = 64 * 1024;
 /// One command frame: the encoded bytes one invocation carries beside its
 /// routing, within the session's one-frame bound. A larger command is not
