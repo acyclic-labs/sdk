@@ -417,7 +417,7 @@ impl ContextPipeline {
         let optional_limits = Limits {
             render_bytes: limits
                 .render_bytes
-                .saturating_sub(request_frame_bytes.saturating_sub(frame)),
+                .map(|maximum| maximum.saturating_sub(request_frame_bytes.saturating_sub(frame))),
             ..limits
         };
         for stage in self.0.iter().filter(|stage| stage.has_optional()) {
