@@ -28,7 +28,7 @@ pub(crate) struct PreparedCommit {
     /// The request's publication deadline; an accepted retry precedes it.
     deadline: Option<u64>,
     plan: CommitPlan,
-    retained: Option<RetainedReservation>,
+    retained: RetainedReservation,
     namespace: NamespaceReserve,
     conflicts: (Vec<CommitConflict>, Allocation),
     capacity: Option<CapacityReservation>,
@@ -401,13 +401,14 @@ impl PreparedCommit {
             Decision::Accepted {
                 bytes,
                 install: |state: &mut State, _durable| {
-                    self.provider.install_retained(state, self.retained)?;
+                    let retained = self.provider.install_retained(state, self.retained)?;
                     publication.publish(
                         state,
                         &mut || self.provider.record_replay_probe(&mut self.probes),
                         self.key,
                         digest,
                         time,
+                        retained,
                     )
                 },
             }

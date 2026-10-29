@@ -62,6 +62,7 @@ impl CommitPublication {
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
+        retained: Arc<RetainedFact>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         install_namespace(state, self.namespace, &self.envelope)?;
         state.decision += 1;
@@ -73,7 +74,7 @@ impl CommitPublication {
             Some(key),
             digest,
             IdempotencyOutcome::Commit(self.envelope),
-            self.resident,
+            (self.resident, retained),
         );
         Ok((self.result, self.output_claim))
     }
@@ -310,7 +311,19 @@ impl MemoryStream {
         Ok((paths, allocation))
     }
 
-    fn reserve_retained(&self, state: &State) -> Result<Option<RetainedReservation>, StreamError> {
+    fn reserve_retained(&self, state: &State) -> Result<RetainedReservation, StreamError> {
+        let header =
+            self.allocate(std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>())?;
+        Ok(RetainedReservation {
+            slot: RetainedFact::reserved(header),
+            growth: self.reserve_retained_growth(state)?,
+        })
+    }
+
+    fn reserve_retained_growth(
+        &self,
+        state: &State,
+    ) -> Result<Option<RetainedGrowthReservation>, StreamError> {
         let needed = state
             .retained
             .len()
@@ -386,7 +399,7 @@ impl MemoryStream {
                     ))
                 })
                 .transpose()?;
-            return Ok(Some(RetainedReservation {
+            return Ok(Some(RetainedGrowthReservation {
                 growth,
                 #[cfg(not(target_arch = "wasm32"))]
                 codec,
@@ -498,7 +511,7 @@ impl MemoryStream {
                     // Spending a refused key is the injected defect. Its invalid
                     // retained family cannot be emitted by successful commits.
                     IdempotencyOutcome::Append(AppendOutcome::TailConflict { actual_tail: 0 }),
-                    Default::default(),
+                    (Default::default(), RetainedFact::reserved(None)),
                 );
             }
             return Ok(Decision::Returned((result, output_claim)));
@@ -538,13 +551,14 @@ impl MemoryStream {
                 if !durable {
                     check_deadline()?;
                 }
-                self.install_retained(state, retained)?;
+                let retained = self.install_retained(state, retained)?;
                 publication.publish(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     request.idempotency_key.clone(),
                     digest,
                     time,
+                    retained,
                 )
             },
         })

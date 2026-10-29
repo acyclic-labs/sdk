@@ -89,21 +89,39 @@ fn retain(
     key: Option<crate::IdempotencyKey>,
     digest: [u8; 32],
     result: IdempotencyOutcome,
-    allocation: Allocation,
+    (allocation, mut fact): (Allocation, Arc<RetainedFact>),
 ) {
+    let data = Arc::get_mut(&mut fact)
+        .unwrap_or_else(|| unreachable!("retained reservation is exclusively owned"));
+    data.previous = state.retained.last().map(|entry| Arc::clone(&entry.fact));
+    data.replay = key.map(|key| key.0);
+    data.digest = digest;
+    data.index = state.decision;
+    data.result = result;
+    data.envelope = envelope;
+    data._allocation = allocation;
+    let header = if data.previous.is_some() {
+        data._header.take()
+    } else {
+        None
+    };
     let entry = Retained {
-        replay: key.map(|key| key.0),
+        fact,
         replay_left: None,
         replay_right: None,
         replay_height: 1,
         commit_branch: None,
-        digest,
-        index: state.decision,
-        result,
-        envelope,
-        _allocation: allocation,
     };
     if entry.envelope().is_some() || entry.replay.is_some() {
+        if let Some(previous) = &entry.fact.previous {
+            previous
+                .next
+                .set(RetainedLink {
+                    fact: Arc::downgrade(&entry.fact),
+                    _allocation: header,
+                })
+                .unwrap_or_else(|_| unreachable!("the retained tail has one successor"));
+        }
         let keyed = entry.replay.is_some();
         let committed = entry.envelope().is_some();
         let index = state.retained.len();

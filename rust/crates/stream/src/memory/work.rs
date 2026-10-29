@@ -9,6 +9,11 @@ pub(crate) type Allocation = Option<ReadAllocation>;
 pub(crate) type Allocation = Option<()>;
 
 struct RetainedReservation {
+    slot: Arc<RetainedFact>,
+    growth: Option<RetainedGrowthReservation>,
+}
+
+struct RetainedGrowthReservation {
     growth: Arc<RetainedGrowth>,
     #[cfg(not(target_arch = "wasm32"))]
     codec: Option<acyclic_native_runtime::NativeCodecReservation<Arc<dyn NativeReadMeter>>>,
@@ -41,9 +46,10 @@ impl MemoryStream {
     fn install_retained(
         &self,
         state: &mut State,
-        reservation: Option<RetainedReservation>,
-    ) -> Result<(), StreamError> {
-        if let Some(reservation) = reservation {
+        reservation: RetainedReservation,
+    ) -> Result<Arc<RetainedFact>, StreamError> {
+        let RetainedReservation { slot, growth } = reservation;
+        if let Some(reservation) = growth {
             #[cfg(not(target_arch = "wasm32"))]
             let mut codec = reservation.codec;
             let mut pending = reservation
@@ -73,7 +79,7 @@ impl MemoryStream {
         if state.retained.len() >= state.retained.capacity() {
             return Err(StreamError::Capacity);
         }
-        Ok(())
+        Ok(slot)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

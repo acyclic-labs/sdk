@@ -95,8 +95,19 @@ Local immutable `read_commit` hits also bypass the publication fence, checking
 provider health and using the same retained envelope index. Missing envelopes
 still join publication before reporting absence. This adds no receipt cache,
 storage read or durability barrier and does not change mutable read freshness.
-Snapshot encoding still traverses retained state under its read guard; cold
-recovery and snapshot traversal are not constant-time operations.
+Snapshot capture pins the persistent namespace and the original immutable
+retained facts under one short read guard. Those roots retain their original
+native allocation ownership across later publications and state replacement.
+The existing Local compaction worker performs encoding after the guard is
+released, before taking the journal mutex. This adds no worker, file operation
+or durability barrier; the existing replacement fence still orders mutations
+against physical journal replacement. Retained fact headers are reserved before
+acceptance, including prepared native work. Capturing a cut is constant work;
+encoding and cold recovery remain proportional to the complete snapshot. The
+encoder follows once-published weak successor links, stopping at the captured
+tail. It neither copies the retained inventory nor pins later payloads. An old
+tail can retain one retired successor's allocation header; the link owns that
+header's original funding guard until its weak reference is dropped.
 
 The shared Streams replica owns catch-up and stale-CAS replanning. The physical
 port has no condition evaluator, retry cache or private connection protocol.

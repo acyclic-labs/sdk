@@ -9,6 +9,147 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[derive(Default)]
 struct TestClock(AtomicU64);
 
+#[tokio::test]
+async fn captured_snapshot_pins_facts_and_namespace_without_retaining_state_guard()
+-> Result<(), StreamError> {
+    for width in [1, 16, 256] {
+        let stream = MemoryStream::default();
+        let source = StreamPath::new("pinned/source")?;
+        let destination = StreamPath::new("pinned/fork")?;
+        for tail in 0..width {
+            stream
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec![Bytes::from_static(b"retained").into()],
+                    if_tail: Some(tail),
+                    idempotency_key: IdempotencyKey::unique(),
+                })
+                .await?;
+        }
+        stream
+            .fork(crate::ForkRequest {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: Some(width / 2),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        stream
+            .commit(crate::CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![crate::CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![Bytes::from_static(b"private").into()],
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        let expected = stream.encode_state().await;
+        let cut = stream.capture_state().await;
+        // The old borrowed-state cut prevents this same acquisition.
+        {
+            let old_cut = stream.state.read().await;
+            assert!(stream.state.try_write().is_err());
+            drop(old_cut);
+        }
+        assert!(
+            stream.state.try_write().is_ok(),
+            "capture retained the state guard"
+        );
+        stream
+            .append(AppendRequest {
+                path: source.clone(),
+                records: vec![Bytes::from_static(b"later").into()],
+                if_tail: Some(width),
+                idempotency_key: IdempotencyKey::unique(),
+            })
+            .await?;
+        assert_ne!(
+            stream.encode_state().await,
+            expected,
+            "negative control must observe later state"
+        );
+        let empty = MemoryStream::default().encode_state().await;
+        stream.install_state(&empty).await?;
+        assert_eq!(
+            stream.tail(source.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        assert_eq!(cut.encode(), expected);
+        let restored = MemoryStream::default();
+        restored.install_state(&cut.encode()).await?;
+        assert_eq!(restored.tail(source).await?, width);
+        assert_eq!(restored.tail(destination).await?, width / 2 + 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn captured_snapshot_keeps_original_native_allocation_custody()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let meter = Arc::new(crate::test_meter::Meter::local());
+    let provider = MemoryStream::default();
+    let output = provider
+        .native_append(
+            AppendRequest {
+                path: StreamPath::new("pinned/native")?,
+                records: vec![Bytes::from_static(b"original").into()],
+                if_tail: Some(0),
+                idempotency_key: IdempotencyKey::unique(),
+            },
+            meter.original(),
+        )
+        .await??;
+    drop(output);
+    let cut = provider.capture_state().await;
+    let encoded = cut.encode();
+    let later_meter = Arc::new(crate::test_meter::Meter::local());
+    drop(
+        provider
+            .native_append(
+                AppendRequest {
+                    path: StreamPath::new("pinned/native")?,
+                    records: vec![Bytes::from_static(b"later").into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::unique(),
+                },
+                later_meter.original(),
+            )
+            .await??,
+    );
+    drop(provider);
+    assert!(
+        meter.held.load(Ordering::SeqCst) > 0,
+        "capture lost original resident custody"
+    );
+    // No later payload is retained, but the old tail's weak successor still
+    // owns its Arc storage. Removing the link's original claim refunds early.
+    assert_eq!(
+        later_meter.held.load(Ordering::SeqCst),
+        (std::mem::size_of::<RetainedFact>() + 2 * std::mem::size_of::<usize>()) as u64,
+    );
+    assert_eq!(cut.encode(), encoded);
+    drop(cut);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    assert_eq!(later_meter.held.load(Ordering::SeqCst), 0);
+    later_meter.assert_refunded();
+    Ok(())
+}
+
+#[test]
+fn retained_snapshot_ownership_retires_deep_chains_iteratively() {
+    let mut root = None;
+    for _ in 0..30000 {
+        let mut node = RetainedFact::reserved(None);
+        Arc::get_mut(&mut node).expect("reserved node").previous = root;
+        root = Some(node);
+    }
+    drop(root);
+}
+
 impl UnixMillisClock for TestClock {
     fn now_unix_millis(&self) -> u64 {
         self.0.load(Ordering::SeqCst)
@@ -398,92 +539,112 @@ fn current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields()
     Ok(())
 }
 
+fn corrupt_retained(
+    encoded: &[u8],
+    selected: usize,
+    change: impl FnOnce(
+        &mut Option<IdempotencyObservation>,
+        &mut Option<crate::CommittedEnvelope>,
+    ) -> Result<(), StreamError>,
+) -> Result<Vec<u8>, StreamError> {
+    let invalid = || StreamError::InvalidArgument;
+    let mut input = Input(encoded.strip_prefix(MAGIC).ok_or_else(invalid)?);
+    preamble(&mut input).ok_or_else(invalid)?;
+    let count = input.len().ok_or_else(invalid)?;
+    let mut out = encoded[..encoded.len() - input.0.len()].to_vec();
+    let mut change = Some(change);
+    for ordinal in 0..count {
+        let flags = input.u8().ok_or_else(invalid)?;
+        let mut observation = if flags & RETAINS_REPLAY != 0 {
+            Some(crate::persistence::observation_from_wire(
+                crate::persistence::decode::<crate::wire::IdempotencyObservation>(
+                    input.bytes().ok_or_else(invalid)?,
+                    retained_fact_bound().ok_or_else(invalid)?,
+                )?,
+            )?)
+        } else {
+            None
+        };
+        let mut envelope = if flags & RETAINS_COMMIT != 0 {
+            Some(crate::persistence::decode_envelope(
+                input.bytes().ok_or_else(invalid)?,
+                retained_fact_bound().ok_or_else(invalid)?,
+            )?)
+        } else {
+            None
+        };
+        if ordinal == selected {
+            let change = change.take().ok_or_else(invalid)?;
+            change(&mut observation, &mut envelope)?;
+        }
+        out.push(flags);
+        if let Some(observation) = observation {
+            put_bytes(&mut out, &observation_wire(observation).encode_to_vec());
+        }
+        if let Some(envelope) = envelope {
+            put_bytes(&mut out, &envelope_to_wire(envelope).encode_to_vec());
+        }
+    }
+    if change.is_some() || !input.0.is_empty() {
+        return Err(invalid());
+    }
+    Ok(out)
+}
+
 #[tokio::test]
 async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads()
 -> Result<(), StreamError> {
     let stream = MemoryStream::default();
-    let key = IdempotencyKey::new(Bytes::from_static(b"inventory"))?;
     stream
         .append(AppendRequest {
             path: StreamPath::new("inventory/path")?,
-            records: vec![(Bytes::from_static(b"real")).into()],
+            records: vec![Bytes::from_static(b"real").into()],
             if_tail: Some(0),
-            idempotency_key: key.clone(),
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"inventory"))?,
         })
         .await?;
-    let mut state = stream.state.write().await;
-    let index = state
-        .retained
-        .iter()
-        .position(|entry| {
-            entry
-                .replay
-                .as_ref()
-                .is_some_and(|stored| stored.as_ref() == key.as_bytes())
-        })
-        .ok_or(StreamError::Unavailable)?;
-    let replay = state
-        .retained
-        .get_mut(index)
-        .ok_or(StreamError::Unavailable)?;
-    let original_result = replay.result.clone();
-    let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
-        &mut replay.result
-    else {
-        return Err(StreamError::Unavailable);
-    };
-    receipt.start = receipt.end;
-    assert!(decode(&encode(&state)).is_err());
-    state
-        .retained
-        .get_mut(index)
-        .ok_or(StreamError::Unavailable)?
-        .result = original_result.clone();
-    let replay = state
-        .retained
-        .get_mut(index)
-        .ok_or(StreamError::Unavailable)?;
-    let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
-        &mut replay.result
-    else {
-        return Err(StreamError::Unavailable);
-    };
-    receipt.start = 1;
-    receipt.end = 2;
-    receipt.tail = 2;
-    assert!(decode(&encode(&state)).is_err());
-    state
-        .retained
-        .get_mut(index)
-        .ok_or(StreamError::Unavailable)?
-        .result = original_result;
-    let commit_index = index;
-    let envelope = state
-        .retained
-        .get_mut(commit_index)
-        .and_then(|entry| entry.envelope.as_mut())
-        .ok_or(StreamError::Unavailable)?;
-    let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
-        return Err(StreamError::Unavailable);
-    };
-    let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
-    record.sequence = 9;
-    assert!(decode(&encode(&state)).is_err());
-    let envelope = state
-        .retained
-        .get_mut(commit_index)
-        .and_then(|entry| entry.envelope.as_mut())
-        .ok_or(StreamError::Unavailable)?;
-    let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
-        return Err(StreamError::Unavailable);
-    };
-    let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
-    record.sequence = 0;
-    record.value = Bytes::from_static(b"phantom payload absent from immutable history");
-    assert!(decode(&encode(&state)).is_err());
+    let encoded = stream.encode_state().await;
+    for fault in 0..4 {
+        let corrupted = corrupt_retained(&encoded, 0, |observation, envelope| {
+            if fault < 2 {
+                let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
+                    &mut observation
+                        .as_mut()
+                        .ok_or(StreamError::Unavailable)?
+                        .outcome
+                else {
+                    return Err(StreamError::Unavailable);
+                };
+                if fault == 0 {
+                    receipt.start = receipt.end;
+                } else {
+                    receipt.start = 1;
+                    receipt.end = 2;
+                    receipt.tail = 2;
+                }
+            } else {
+                let Some(crate::CommittedMutation::Append(append)) = envelope
+                    .as_mut()
+                    .ok_or(StreamError::Unavailable)?
+                    .mutations
+                    .first_mut()
+                else {
+                    return Err(StreamError::Unavailable);
+                };
+                let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
+                if fault == 2 {
+                    record.sequence = 9;
+                } else {
+                    record.value =
+                        Bytes::from_static(b"phantom payload absent from immutable history");
+                }
+            }
+            Ok(())
+        })?;
+        assert!(decode(&corrupted).is_err());
+    }
     Ok(())
 }
-
 #[tokio::test]
 async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(), StreamError> {
     let stream = MemoryStream::default();
@@ -517,8 +678,11 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
         })
         .await?;
     assert!(decode(&stream.encode_state().await).is_ok());
-    let mut state = stream.state.write().await;
-    let index = state
+    let encoded = stream.encode_state().await;
+    let index = stream
+        .state
+        .read()
+        .await
         .retained
         .iter()
         .position(|entry| {
@@ -527,16 +691,19 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
                 .is_some_and(|envelope| envelope.commit_id == receipt.commit_id)
         })
         .ok_or(StreamError::Unavailable)?;
-    let envelope = state
-        .retained
-        .get_mut(index)
-        .and_then(|entry| entry.envelope.as_mut())
-        .ok_or(StreamError::Unavailable)?;
-    let Some(crate::CommittedMutation::Fork(fork)) = envelope.mutations.first_mut() else {
-        return Err(StreamError::Unavailable);
-    };
-    fork.source = later;
-    assert!(decode(&encode(&state)).is_err());
+    let corrupted = corrupt_retained(&encoded, index, |_, envelope| {
+        let Some(crate::CommittedMutation::Fork(fork)) = envelope
+            .as_mut()
+            .ok_or(StreamError::Unavailable)?
+            .mutations
+            .first_mut()
+        else {
+            return Err(StreamError::Unavailable);
+        };
+        fork.source = later;
+        Ok(())
+    })?;
+    assert!(decode(&corrupted).is_err());
     Ok(())
 }
 

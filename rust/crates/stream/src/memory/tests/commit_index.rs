@@ -135,7 +135,7 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
             None,
             [0; 32],
             IdempotencyOutcome::Commit(envelope),
-            Default::default(),
+            (Default::default(), RetainedFact::reserved(None)),
         );
         assert!(probes <= COMMIT_INDEX_PROBES);
         keys.push(commit_id);

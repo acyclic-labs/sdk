@@ -1,5 +1,8 @@
 //! Canonical snapshot of retained Stream facts.
-use super::{History, MemoryStream, Retained, State, install_namespace, retain, stage_namespace};
+use super::{
+    History, MemoryStream, Namespace, Retained, RetainedFact, State, install_namespace, retain,
+    stage_namespace,
+};
 use crate::wire_codec::{envelope_to_wire, observation_wire};
 use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation, StreamError};
 use prost::Message as _;
@@ -10,6 +13,30 @@ const NODE_BATCH: u8 = 0;
 const NODE_PREFIX: u8 = 1;
 const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
+
+pub(crate) struct Snapshot {
+    paths: Namespace,
+    retained: Option<Arc<RetainedFact>>,
+    first_retained: Option<Arc<RetainedFact>>,
+    retained_len: usize,
+    decision: u64,
+    last_committed_at_micros: u64,
+    hierarchy_version: CommitId,
+}
+
+impl Snapshot {
+    fn capture(state: &State) -> Self {
+        Self {
+            paths: state.paths.clone(),
+            retained: state.retained.last().map(|entry| Arc::clone(&entry.fact)),
+            first_retained: state.retained.first().map(|entry| Arc::clone(&entry.fact)),
+            retained_len: state.retained.len(),
+            decision: state.decision,
+            last_committed_at_micros: state.last_committed_at_micros,
+            hierarchy_version: state.hierarchy_version,
+        }
+    }
+}
 
 pub(crate) enum RestoreError {
     State(StreamError),
@@ -37,10 +64,14 @@ fn invalid() -> RestoreError {
 }
 
 impl MemoryStream {
+    pub(crate) async fn capture_state(&self) -> Snapshot {
+        Snapshot::capture(&*self.state.read().await)
+    }
+
     /// Encodes the whole state.
+    #[cfg(any(test, loom))]
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
-        let state = self.state.read().await;
-        encode(&state)
+        self.capture_state().await.encode()
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
@@ -70,105 +101,153 @@ impl MemoryStream {
             return Ok(());
         }
         let mut state = self.state.write().await;
-        *state = decoded;
+        let interested = state.signals.keys_in::<crate::StreamPath, _>(..)?;
+        let mut previous = std::mem::replace(&mut *state, decoded);
+        state.signals = std::mem::take(&mut previous.signals);
+        // Registration owns the original registry and producers. Replacement
+        // must wake every active path, including removed or reused histories.
+        for path in interested {
+            if let Some(signals) = state.signals.get(&path)? {
+                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
+                signals.changed.send_replace(tail);
+                signals
+                    .follows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .created(tail);
+            }
+        }
         self.applied(&state);
+        drop(state);
+        drop(_publication);
+        drop(previous);
         Ok(())
     }
 }
 
 fn encode(state: &State) -> Vec<u8> {
-    let mut out = MAGIC.to_vec();
-    put_u64(&mut out, state.decision);
-    put_u64(&mut out, state.last_committed_at_micros);
-    out.extend_from_slice(state.hierarchy_version.as_bytes());
-    // Each node after every node it reaches, so decoding links backwards.
-    let mut indices = HashMap::new();
-    let mut nodes = Vec::new();
-    for path in state.paths.values() {
-        let mut chain = Vec::new();
-        let mut cursor = path.history.clone();
-        while let Some(node) = cursor {
-            if indices.contains_key(&Arc::as_ptr(&node)) {
-                break;
+    Snapshot::capture(state).encode()
+}
+
+impl Snapshot {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let state = self;
+        let mut out = MAGIC.to_vec();
+        put_u64(&mut out, state.decision);
+        put_u64(&mut out, state.last_committed_at_micros);
+        out.extend_from_slice(state.hierarchy_version.as_bytes());
+        // Each node after every node it reaches, so decoding links backwards.
+        let mut indices = HashMap::new();
+        let mut nodes = Vec::new();
+        for path in state.paths.values() {
+            let mut chain = Vec::new();
+            let mut cursor = path.history.clone();
+            while let Some(node) = cursor {
+                if indices.contains_key(&Arc::as_ptr(&node)) {
+                    break;
+                }
+                cursor = match node.as_ref() {
+                    History::Batch { parent, .. } => parent.clone(),
+                    History::Prefix { source, .. } => source.clone(),
+                };
+                chain.push(node);
             }
-            cursor = match node.as_ref() {
-                History::Batch { parent, .. } => parent.clone(),
-                History::Prefix { source, .. } => source.clone(),
-            };
-            chain.push(node);
+            for node in chain.into_iter().rev() {
+                indices.insert(Arc::as_ptr(&node), nodes.len());
+                nodes.push(node);
+            }
         }
-        for node in chain.into_iter().rev() {
-            indices.insert(Arc::as_ptr(&node), nodes.len());
-            nodes.push(node);
-        }
-    }
-    let reference = |node: &Option<Arc<History>>| {
-        node.as_ref()
-            .and_then(|node| indices.get(&Arc::as_ptr(node)))
-            .map_or(0, |index| index + 1)
-    };
-    put_len(&mut out, nodes.len());
-    for node in &nodes {
-        match node.as_ref() {
-            History::Batch {
-                parent, records, ..
-            } => {
-                out.push(NODE_BATCH);
-                put_len(&mut out, reference(parent));
-                put_len(&mut out, records.records.len());
-                for record in records.records.iter() {
-                    put_u64(&mut out, record.sequence);
-                    out.extend_from_slice(record.commit_id.as_bytes());
-                    put_u64(&mut out, record.committed_at_micros);
-                    put_bytes(&mut out, &record.value);
+        let reference = |node: &Option<Arc<History>>| {
+            node.as_ref()
+                .and_then(|node| indices.get(&Arc::as_ptr(node)))
+                .map_or(0, |index| index + 1)
+        };
+        put_len(&mut out, nodes.len());
+        for node in &nodes {
+            match node.as_ref() {
+                History::Batch {
+                    parent, records, ..
+                } => {
+                    out.push(NODE_BATCH);
+                    put_len(&mut out, reference(parent));
+                    put_len(&mut out, records.records.len());
+                    for record in records.records.iter() {
+                        put_u64(&mut out, record.sequence);
+                        out.extend_from_slice(record.commit_id.as_bytes());
+                        put_u64(&mut out, record.committed_at_micros);
+                        put_bytes(&mut out, &record.value);
+                    }
+                }
+                History::Prefix { source, tail, .. } => {
+                    out.push(NODE_PREFIX);
+                    put_len(&mut out, reference(source));
+                    put_u64(&mut out, *tail);
                 }
             }
-            History::Prefix { source, tail, .. } => {
-                out.push(NODE_PREFIX);
-                put_len(&mut out, reference(source));
-                put_u64(&mut out, *tail);
+        }
+        put_len(&mut out, state.paths.len());
+        for (path, stream) in &state.paths {
+            put_bytes(&mut out, path.as_bytes());
+            put_len(&mut out, reference(&stream.history));
+            put_u64(&mut out, stream.tail);
+        }
+        put_len(&mut out, state.retained_len);
+        let mut cursor = state.first_retained.clone();
+        for ordinal in 0..state.retained_len {
+            let fact = cursor
+                .take()
+                .unwrap_or_else(|| unreachable!("the cut pins its retained prefix"));
+            let retained = fact.as_ref();
+            let replay = retained.replay.as_ref().map(|key| (key, retained));
+            let commit = if replay.is_some()
+                && matches!(retained.result, crate::IdempotencyOutcome::Commit(_))
+            {
+                None
+            } else {
+                retained.envelope()
+            };
+            out.push(
+                if replay.is_some() { RETAINS_REPLAY } else { 0 }
+                    | if commit.is_some() { RETAINS_COMMIT } else { 0 },
+            );
+            if let Some((key, replay)) = replay {
+                let observation = observation_wire(IdempotencyObservation {
+                    idempotency_key: IdempotencyKey::new(key.clone())
+                        .unwrap_or_else(|_| unreachable!("retained keys were admitted")),
+                    request_digest: replay.digest,
+                    outcome: replay.result.clone(),
+                    // The store's durable incarnation rebinds the retained index on replay.
+                    revision: None,
+                });
+                put_bytes(&mut out, &observation.encode_to_vec());
+            }
+            if let Some(envelope) = commit {
+                put_bytes(
+                    &mut out,
+                    &envelope_to_wire(envelope.clone()).encode_to_vec(),
+                );
+            }
+            if ordinal + 1 < state.retained_len {
+                cursor = Some(
+                    retained
+                        .next
+                        .get()
+                        .and_then(|link| link.fact.upgrade())
+                        .unwrap_or_else(|| {
+                            unreachable!("the captured tail pins every predecessor")
+                        }),
+                );
+            } else {
+                debug_assert!(
+                    state
+                        .retained
+                        .as_ref()
+                        .is_some_and(|tail| Arc::ptr_eq(tail, &fact))
+                );
             }
         }
+        out
     }
-    put_len(&mut out, state.paths.len());
-    for (path, stream) in &state.paths {
-        put_bytes(&mut out, path.as_bytes());
-        put_len(&mut out, reference(&stream.history));
-        put_u64(&mut out, stream.tail);
-    }
-    put_len(&mut out, state.retained.len());
-    for retained in &state.retained {
-        let replay = retained.replay.as_ref().map(|key| (key, retained));
-        let commit = if replay.is_some()
-            && matches!(retained.result, crate::IdempotencyOutcome::Commit(_))
-        {
-            None
-        } else {
-            retained.envelope()
-        };
-        out.push(
-            if replay.is_some() { RETAINS_REPLAY } else { 0 }
-                | if commit.is_some() { RETAINS_COMMIT } else { 0 },
-        );
-        if let Some((key, replay)) = replay {
-            let observation = observation_wire(IdempotencyObservation {
-                idempotency_key: IdempotencyKey::new(key.clone())
-                    .unwrap_or_else(|_| unreachable!("retained keys were admitted")),
-                request_digest: replay.digest,
-                outcome: replay.result.clone(),
-                // The store's durable incarnation rebinds the retained index on replay.
-                revision: None,
-            });
-            put_bytes(&mut out, &observation.encode_to_vec());
-        }
-        if let Some(envelope) = commit {
-            put_bytes(
-                &mut out,
-                &envelope_to_wire(envelope.clone()).encode_to_vec(),
-            );
-        }
-    }
-    out
 }
 
 fn decode(encoded: &[u8]) -> Result<State, RestoreError> {
@@ -391,7 +470,7 @@ fn restore_retained(
         key,
         digest,
         result,
-        Default::default(),
+        (Default::default(), RetainedFact::reserved(None)),
     );
     Some(())
 }

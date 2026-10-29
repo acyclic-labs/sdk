@@ -66,7 +66,7 @@ impl MemoryStream {
             bytes: 0,
             install: move |state: &mut State, _durable| {
                 let _holds = (_histories, _paths);
-                self.install_retained(state, retained)?;
+                let retained = self.install_retained(state, retained)?;
                 install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;
                 state.last_committed_at_micros = time;
@@ -77,7 +77,7 @@ impl MemoryStream {
                     Some(request.idempotency_key.clone()),
                     digest,
                     IdempotencyOutcome::Fork(receipt.clone()),
-                    Default::default(),
+                    (Default::default(), retained),
                 );
                 Ok(receipt)
             },

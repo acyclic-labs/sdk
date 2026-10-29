@@ -406,15 +406,13 @@ impl LocalStream {
         {
             return Ok(());
         }
-        let state = self.inner.provider.encode_state().await;
+        let state = self.inner.provider.capture_state().await;
         let inner = Arc::clone(&self.inner);
         let work = self.work.clone();
-        let span = obs::OperationSpan::new(tracing::debug_span!(
-            "acyclic.stream.compact",
-            bytes = state.len()
-        ));
+        let span = obs::OperationSpan::new(tracing::debug_span!("acyclic.stream.compact"));
         spawn_blocking(move || {
             span.in_scope(|| {
+                let state = state.encode();
                 let mut journal = inner
                     .journal
                     .lock()
