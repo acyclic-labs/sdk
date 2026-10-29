@@ -101,6 +101,8 @@ pub enum AgentReply {
         /// The file's length; a reader is done at this offset.
         length: u64,
     },
+    /// One part of a staged command is held for its head.
+    Staged {},
 }
 
 impl AgentReply {
@@ -313,6 +315,7 @@ fn validate_reply(
         (AgentReply::Root { .. }, AgentCommand::Root {})
         | (AgentReply::Bound { .. }, AgentCommand::Bind {})
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
+        | (AgentReply::Staged {}, AgentCommand::Stage { .. })
         | (
             AgentReply::Delivered { .. },
             AgentCommand::Prompt { .. }

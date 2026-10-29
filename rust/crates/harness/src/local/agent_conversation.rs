@@ -30,9 +30,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Bytes read back from one staged prompt or turn output.
-const MAXIMUM_TEXT: u64 = 16 * 1024 * 1024;
-
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
@@ -298,20 +295,16 @@ impl Conversation {
         }
     }
 
-    /// Reads all of `target` on `agent`, at most `maximum` bytes.
+    /// Reads all of `target` on `agent`, one bounded range at a time.
     pub(super) async fn read(
         connection: &Connection,
         agent: &AgentPath,
         target: ReadTarget,
-        maximum: u64,
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         loop {
             let (range, length) =
                 Self::read_at(connection, agent, target.clone(), bytes.len() as u64).await?;
-            if length > maximum {
-                return Err(Error::Invalid("read file exceeds its limit".into()));
-            }
             let done = range.is_empty();
             bytes.extend_from_slice(&range);
             if done || bytes.len() as u64 >= length {
@@ -347,7 +340,6 @@ impl Conversation {
             &self.connection,
             self.agent(),
             ReadTarget::File { file: file.clone() },
-            MAXIMUM_TEXT,
         )
         .await?;
         String::from_utf8(bytes).map_err(failed)

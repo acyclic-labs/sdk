@@ -854,22 +854,42 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
 }
 
 #[tokio::test]
-async fn an_oversized_prompt_is_refused_and_the_conversation_goes_on() -> Result<()> {
-    use crate::local::agent_conversation::Sent;
+async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()> {
+    use acyclic_harness_client::AgentCommand;
     let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
     let client = conversation(&harness).await?;
-    let oversized = "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES);
-    // Over the command limit, the prompt never leaves: it is refused, not
-    // an error that ends the caller's stream.
-    assert!(matches!(
-        client.deliver("oversized", &oversized).await?,
-        Sent::Refused(_)
-    ));
-    // Negative control: the next prompt on the same conversation commits.
-    assert!(matches!(
-        client.deliver("next", "hello").await?,
-        Sent::Accepted(_)
-    ));
+    // Far past one command frame: the client stages it in parts and the
+    // command names them by digest.
+    let prompt = "0123456789abcdef\n".repeat(10 * 1024 * 1024 / 17 + 1);
+    let inbox = client.send("large", &prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let (read, _) = client.turn(&entry).await?;
+    assert!(read.as_deref() == Some(prompt.as_str()));
+    // A resend is the same delivery.
+    assert_eq!(client.send("large", &prompt).await?, inbox);
+    // Negative controls: a head is refused when its parts were never staged,
+    // and when the staged parts do not match its digest.
+    let connection = harness.connect().await?;
+    let digest = blake3::hash(b"{}").to_hex().to_string();
+    let head = |digest: &str| AgentCommand::Staged {
+        agent: root.clone(),
+        digest: digest.to_owned(),
+        parts: 1,
+        bytes: 2,
+    };
+    assert!(connection.execute(&head(&digest)).await.is_err());
+    connection
+        .execute(&AgentCommand::Stage {
+            agent: root.clone(),
+            digest: digest.clone(),
+            part: 0,
+            text: "[]".into(),
+        })
+        .await?;
+    assert!(connection.execute(&head(&digest)).await.is_err());
     Ok(())
 }
 

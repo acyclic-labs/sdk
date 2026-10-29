@@ -244,16 +244,11 @@ impl WasmAgentCommand {
         MAX_AGENT_REPLY_BYTES as u32
     }
 
-    /// Snapshot only after the encoded byte length passes the Rust limit.
+    /// Admit an encoded command of any size: past one frame, the shared
+    /// Rust codec stages it in parts.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
-            if length > MAX_AGENT_COMMAND_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
+        let (bytes, ()) = super::bytes::snapshot(encoded, |_| Ok(()))?;
         let command = PreparedCommand::from_bytes(bytes).map_err(command_error)?;
         Ok(Self { command })
     }

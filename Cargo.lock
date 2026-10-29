@@ -499,6 +499,7 @@ dependencies = [
  "acyclic-harness-core",
  "acyclic-stream",
  "base64 0.22.1",
+ "blake3",
  "bytes",
  "futures",
  "prost",

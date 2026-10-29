@@ -41,8 +41,8 @@ use crate::{
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_harness_client::{
-    AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_READ_BYTES, PendingApproval,
-    ReadTarget,
+    AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_AGENT_COMMAND_BYTES,
+    MAX_READ_BYTES, PendingApproval, ReadTarget,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
@@ -571,6 +571,22 @@ where
                     next: None,
                 })
             }
+            AgentCommand::Stage {
+                agent,
+                digest,
+                part,
+                text,
+            } => {
+                let agent = self.within_tree(agent)?;
+                // A part's source is its own identity: its digest and position.
+                let intent = part_intent(digest, *part)?;
+                self.bound
+                    .stage_text(agent, STAGED_PART, by, &intent, (intent.as_str(), text))
+                    .await?;
+                Ok(AgentReply::Staged {})
+            }
+            // The call assembled its parts before dispatch.
+            AgentCommand::Staged { .. } => Err(Error::Record("a staged command is not assembled")),
             AgentCommand::Decide {
                 agent,
                 id,
@@ -590,6 +606,43 @@ where
                 })
             }
         }
+    }
+
+    /// The whole encoding of a staged command: its `parts`, staged by `by`
+    /// under `digest` in `agent`'s private volume, in order, checked against
+    /// the digest and length its head names.
+    async fn assemble(
+        &self,
+        agent: &AgentPath,
+        by: &Sender,
+        digest: &str,
+        parts: u32,
+        bytes: u64,
+    ) -> Result<Vec<u8>, Error> {
+        let agent = self.within_tree(agent)?;
+        let mut whole = Vec::new();
+        for part in 0..parts {
+            let intent = part_intent(digest, part)?;
+            let file = self
+                .bound
+                .staged_text(agent, STAGED_PART, by, &intent, intent.as_str())
+                .await?
+                .ok_or(Error::Record("a staged command part is missing"))?;
+            let (text, length) = self
+                .bound
+                .read_file(agent, &file, 0, MAX_AGENT_COMMAND_BYTES as u64)
+                .await?;
+            if text.len() as u64 != length || (whole.len() + text.len()) as u64 > bytes {
+                return Err(Error::Record("staged command parts exceed their length"));
+            }
+            whole.extend_from_slice(&text);
+        }
+        if whole.len() as u64 != bytes || blake3::hash(&whole).to_hex().as_str() != digest {
+            return Err(Error::Record(
+                "staged command parts do not match their digest",
+            ));
+        }
+        Ok(whole)
     }
 
     /// The tail of stream `path`; an absent stream holds nothing.
@@ -631,6 +684,14 @@ where
 }
 
 /// The text of a prompt or brief; hosted agents take text input.
+/// The staged-input kind each part of a staged command is held under.
+const STAGED_PART: &str = "command-part";
+
+/// The intent one part of the command staged under `digest` is held under.
+fn part_intent(digest: &str, part: u32) -> Result<IntentId, Error> {
+    IntentId::try_from(format!("{digest}.{part}"))
+}
+
 fn text(content: &ModelContent) -> Result<&str, Error> {
     match content {
         ModelContent::Text(text) => Ok(text.as_str()),
@@ -691,14 +752,38 @@ where
             let call = admitted?;
             let server = server.ok_or(StreamError::Unavailable)?;
             let principal = authorization.principal()?;
+            let by = Sender::User {
+                principal: principal.id.clone(),
+            };
+            // A staged command is authorized, run and answered as the whole
+            // command its parts assemble to.
+            let call = match call.command() {
+                AgentCommand::Staged {
+                    agent,
+                    digest,
+                    parts,
+                    bytes,
+                } => {
+                    let whole = server.assemble(agent, &by, digest, *parts, *bytes).await;
+                    match whole.and_then(|whole| {
+                        call.assembled(&whole)
+                            .map_err(|_| Error::Record("a staged command does not decode"))
+                    }) {
+                        Ok(whole) => whole,
+                        Err(error) => {
+                            return call
+                                .reply(&Err(error))
+                                .map_err(|_| StreamError::LimitExceeded);
+                        }
+                    }
+                }
+                _ => call,
+            };
             let policy = server.platform.policy(&principal, call.command()).await?;
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
                 .map_err(|_| StreamError::InvalidArgument)?;
             authorization.authorize(&server.resource, &[], &attributes, policy)?;
             server.platform.admitted().await?;
-            let by = Sender::User {
-                principal: principal.id.clone(),
-            };
             let approver = server.platform.approver(&principal);
             let result = server.dispatch(call.command(), &by, &approver).await;
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
