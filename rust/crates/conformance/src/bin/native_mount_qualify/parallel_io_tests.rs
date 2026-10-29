@@ -69,6 +69,24 @@ fn exit_wait_child() {
             eprintln!("complete failed-child stderr");
             std::process::exit(7);
         }
+        Ok("ready" | "bad-ready") => {
+            let marker =
+                std::path::PathBuf::from(std::env::var_os("ACYCLIC_QUALIFIER_READY").unwrap());
+            let pending = marker.with_extension("ready-pending");
+            std::fs::write(
+                &pending,
+                if std::env::var("ACYCLIC_QUALIFIER_EXIT_CHILD").unwrap() == "ready" {
+                    b"ready".as_slice()
+                } else {
+                    b"partial".as_slice()
+                },
+            )
+            .unwrap();
+            std::fs::rename(pending, marker).unwrap();
+            loop {
+                std::thread::park();
+            }
+        }
         Ok("blocked") => loop {
             std::thread::park();
         },
@@ -117,5 +135,67 @@ async fn exit_wait_settles_all_successes_and_failure_behind_a_blocked_child()
         "{error}"
     );
     assert!(children.iter().all(Option::is_none));
+    Ok(())
+}
+
+#[tokio::test]
+async fn ready_marker_uses_native_events_and_settles_death_or_bad_publication()
+-> Result<(), super::Failure> {
+    let root = tempfile::tempdir()?;
+    let marker = root.path().join("ready");
+    // An early authoritative record remains visible even before subscription.
+    std::fs::write(&marker, b"ready")?;
+    let mut early = exit_child("blocked")?.ok_or("child")?;
+    let result =
+        super::captured_child_ready(&mut early, &marker, Instant::now() + Duration::from_secs(2))
+            .await;
+    early.process.terminate(None)?;
+    result?;
+    std::fs::remove_file(&marker)?;
+
+    for mode in ["ready", "fail", "bad-ready"] {
+        let mut child = super::spawn_captured_child(
+            std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "parallel_io_tests::exit_wait_child",
+                    "--nocapture",
+                ])
+                .env("ACYCLIC_QUALIFIER_EXIT_CHILD", mode)
+                .env("ACYCLIC_QUALIFIER_READY", &marker),
+        )?;
+        let result = super::captured_child_ready(
+            &mut child,
+            &marker,
+            Instant::now() + Duration::from_secs(2),
+        )
+        .await;
+        child.process.terminate(None)?;
+        match mode {
+            "ready" => result?,
+            "fail" => assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("exited before readiness")
+            ),
+            "bad-ready" => assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("malformed ready marker")
+            ),
+            _ => unreachable!(),
+        }
+        if marker.try_exists()? {
+            std::fs::remove_file(&marker)?;
+        }
+    }
+    let mut child = exit_child("blocked")?.ok_or("child")?;
+    let error = super::captured_child_ready(&mut child, &marker, Instant::now())
+        .await
+        .expect_err("an expired readiness observation must refuse");
+    child.process.terminate(None)?;
+    assert!(error.to_string().contains("before its deadline"), "{error}");
     Ok(())
 }
