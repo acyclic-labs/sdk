@@ -153,13 +153,13 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         assert!(second_work.live_allocation_bytes() > second_baseline);
     }
     gate.release.notify_one();
-    owner_released.wait_async().await;
+    owner_released.released().await;
     assert_eq!(
         weak.strong_count(),
         0,
         "prefix owner remained after retirement"
     );
-    released.wait_async().await;
+    released.released().await;
     if native {
         assert_eq!(first_work.live_allocation_bytes(), first_baseline);
         assert_eq!(second_work.live_allocation_bytes(), second_baseline);
@@ -256,7 +256,7 @@ async fn check_pins(native: bool) -> TestResult {
     drop(second);
     let weak = Arc::downgrade(&owner.0);
     drop(owner);
-    owner_released.wait_async().await;
+    owner_released.released().await;
     assert_eq!(
         weak.strong_count(),
         0,
