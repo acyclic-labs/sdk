@@ -49,7 +49,10 @@ impl CommandJournal for PgJournal<'_> {
                 let rows = transaction
                     .as_ref()
                     .ok_or(StreamError::Unavailable)?
-                    .query(self.read_fenced, &[&self.namespace.as_slice(), &from, &page])
+                    .query(
+                        self.read_fenced,
+                        &[&self.namespace.as_slice(), &from, &page],
+                    )
                     .await
                     .map_err(unavailable)?;
                 let mut captured = None;
@@ -119,7 +122,7 @@ impl CommandJournal for PgJournal<'_> {
 async fn append(
     transaction: Transaction<'_>,
     publish: &Statement,
-    namespace: &str,
+    namespace: &[u8; 32],
     expected: u64,
     frames: &[JournalFrame<'_>],
 ) -> Result<AppendIf, StreamError> {
@@ -148,7 +151,13 @@ async fn append(
     let row = transaction
         .query_one(
             publish,
-            &[&namespace, &expected, &bytes, &millis, &deadlines],
+            &[
+                &namespace.as_slice(),
+                &expected,
+                &bytes,
+                &millis,
+                &deadlines,
+            ],
         )
         .await
         .map_err(|error| {

@@ -53,12 +53,30 @@ impl MemoryStream {
 
     pub(crate) async fn restore_state(&self, encoded: &[u8]) -> Result<(), RestoreError> {
         let decoded = decode(encoded)?;
-        if self.limits.paths.is_some_and(|limit| decoded.paths.len() > limit)
-            || self.limits.path_bytes.is_some_and(|limit| decoded.path_bytes > limit)
-            || self.limits.records.is_some_and(|limit| decoded.record_count > limit)
-            || self.limits.payload_bytes.is_some_and(|limit| decoded.payload_bytes > limit)
-            || self.limits.commits.is_some_and(|limit| decoded.decision > limit as u64)
-            || self.limits.idempotency_results.is_some_and(|limit| decoded.replay_count() > limit)
+        if self
+            .limits
+            .paths
+            .is_some_and(|limit| decoded.paths.len() > limit)
+            || self
+                .limits
+                .path_bytes
+                .is_some_and(|limit| decoded.path_bytes > limit)
+            || self
+                .limits
+                .records
+                .is_some_and(|limit| decoded.record_count > limit)
+            || self
+                .limits
+                .payload_bytes
+                .is_some_and(|limit| decoded.payload_bytes > limit)
+            || self
+                .limits
+                .commits
+                .is_some_and(|limit| decoded.decision > limit as u64)
+            || self
+                .limits
+                .idempotency_results
+                .is_some_and(|limit| decoded.replay_count() > limit)
         {
             return Err(StreamError::Capacity.into());
         }
@@ -309,7 +327,10 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Resto
             None
         } else {
             let bytes = input.bytes().ok_or_else(invalid)?;
-            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(bytes, bytes.len())?;
+            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(
+                bytes,
+                bytes.len(),
+            )?;
             use crate::wire::{append_response, idempotency_observation::Outcome};
             let pre_revision = match &wire.outcome {
                 Some(Outcome::Append(response)) => matches!(&response.outcome,

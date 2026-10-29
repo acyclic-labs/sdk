@@ -313,7 +313,9 @@ impl StockExecution<'_> {
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let selected_base = step == 0 && input.selected_context.is_some();
                 let possible_message_pressure = selected_base
-                    && self.compaction_message_limit(true, 0).is_some_and(|maximum| prepared.request().messages.len() > maximum);
+                    && self
+                        .compaction_message_limit(true, 0)
+                        .is_some_and(|maximum| prepared.request().messages.len() > maximum);
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
