@@ -58,7 +58,8 @@ pub enum DiffKind {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(deny_unknown_fields)]
 pub struct DiffCursor {
-    /// Digest of the exact authorized volume/base/publication projection.
+    /// Digest of the authorized volume/base, publication history and retained
+    /// omission choices. Another rendering of the same generation cannot resume it.
     pub publication: [u8; 32],
     /// Exact volume-relative file at this position.
     pub path: String,

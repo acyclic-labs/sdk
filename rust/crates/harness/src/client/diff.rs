@@ -16,7 +16,7 @@ use file::{PatchText, render_bound};
 pub use page::{DiffCursor, DiffFilePage};
 
 /// Caller-owned bounds for query transfer and retained rendering data.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct DiffLimits {
     /// Total changed files retained for one volume.
     pub files: usize,
@@ -40,6 +40,7 @@ pub struct DiffView {
     base: GenerationRef,
     generation: GenerationRef,
     last_digest: Option<[u8; 32]>,
+    projection_digest: Option<[u8; 32]>,
     files: BTreeMap<String, FileDiff>,
     added: u64,
     removed: u64,
@@ -62,6 +63,7 @@ impl DiffView {
             generation: base.clone(),
             base,
             last_digest: None,
+            projection_digest: None,
             files: BTreeMap::new(),
             added: 0,
             removed: 0,
@@ -127,7 +129,7 @@ impl DiffView {
             && publication.generation == self.base
             && publication.paths.is_empty()
         {
-            self.last_digest = Some(digest);
+            self.advance_projection(digest);
             return Ok(Vec::new());
         }
         if publication.previous != self.generation || publication.generation == self.generation {
@@ -197,9 +199,21 @@ impl DiffView {
         }
         (self.added, self.removed, self.render_bytes) = (added, removed, rendered);
         self.generation = publication.generation.clone();
-        self.last_digest = Some(digest);
+        self.advance_projection(digest);
         Ok(changed)
     }
+
+    // Unchanged files retain earlier omission decisions. Bind the continuation
+    // to that history as well as the latest publication, without walking files.
+    fn advance_projection(&mut self, digest: [u8; 32]) {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"acyclic.client.diff-view/v1\0");
+        hasher.update(&self.projection_digest.unwrap_or([0; 32]));
+        hasher.update(&digest);
+        self.projection_digest = Some(*hasher.finalize().as_bytes());
+        self.last_digest = Some(digest);
+    }
+
     fn validate_publication(
         &self,
         publication: &DiffPublication,
@@ -246,8 +260,11 @@ impl DiffView {
         }
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"acyclic.client.diff-projection/v1\0");
-        serde_json::to_writer(&mut hasher, &(&self.volume, &self.base, publication))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        serde_json::to_writer(
+            &mut hasher,
+            &(&self.volume, &self.base, publication, limits),
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
         let digest = *hasher.finalize().as_bytes();
         Ok(digest)
     }

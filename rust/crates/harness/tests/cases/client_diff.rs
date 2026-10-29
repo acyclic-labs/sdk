@@ -1091,6 +1091,59 @@ async fn visible_pages_cross_empty_binary_and_omitted_files_without_new_reads() 
         3,
         "paging performs no reads"
     );
+
+    let mut omitted = DiffView::new(fixture.root.volume.clone(), publication.previous.clone())?;
+    omitted
+        .apply(
+            &publication,
+            fixture.reader.as_ref(),
+            DiffLimits {
+                file_bytes: 1,
+                ..limits()
+            },
+        )
+        .await?;
+    assert!(omitted.files()["c-unicode"].patch.is_empty());
+    let after_omission = omitted
+        .page(None, 1, 4)?
+        .expect("first omitted-view header")
+        .next
+        .expect("another file follows");
+    assert!(matches!(
+        view.page(Some(&after_omission), 2, 4),
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+
+    // A later identical delta must not erase the retained omission choices of
+    // unchanged files. Binding only the latest publication and limits fails here.
+    fixture.put("z-later", "later\n", "later").await?;
+    let later = fixture.source("z-later").await?;
+    let next = DiffPublication {
+        previous: publication.generation,
+        generation: later.generation.clone(),
+        paths: vec![DiffPath {
+            path: "z-later".into(),
+            base: None,
+            current: Some(later),
+            largest_file_bytes: Some(6),
+            matches_base: false,
+        }],
+    };
+    view.apply(&next, fixture.reader.as_ref(), limits()).await?;
+    omitted
+        .apply(&next, fixture.reader.as_ref(), limits())
+        .await?;
+    assert!(!view.files()["c-unicode"].patch.is_empty());
+    assert!(omitted.files()["c-unicode"].patch.is_empty());
+    let next_cursor = omitted
+        .page(None, 1, 4)?
+        .expect("retained first header")
+        .next
+        .expect("retained continuation");
+    assert!(matches!(
+        view.page(Some(&next_cursor), 2, 4),
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
     Ok(())
 }
 

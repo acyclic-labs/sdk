@@ -15,7 +15,8 @@ impl DiffView {
     /// Every successful nonterminal page advances its position, including a
     /// header-only page. Insufficient space for one UTF-8 scalar refuses.
     /// Work is at most two ordered file lookups plus returned text; there is no IO,
-    /// hashing, full-view clone, or traversal of earlier pages.
+    /// hashing, full-view clone, or traversal of earlier pages. The cursor binds
+    /// the retained publication history and its content omission decisions.
     pub fn page(
         &self,
         cursor: Option<&DiffCursor>,
@@ -26,7 +27,7 @@ impl DiffView {
             return Err(Error::Invalid("diff page requires output credit".into()));
         }
         if let Some(cursor) = cursor
-            && Some(cursor.publication) != self.last_digest
+            && Some(cursor.publication) != self.projection_digest
         {
             return Err(Error::Conflict("diff page projection changed".into()));
         }
@@ -40,7 +41,7 @@ impl DiffView {
         let Some((path, file)) = entry else {
             return Ok(None);
         };
-        let publication = self.last_digest.ok_or_else(invalid_cursor)?;
+        let publication = self.projection_digest.ok_or_else(invalid_cursor)?;
         let offset = cursor.and_then(|cursor| cursor.offset);
         let continued = offset.is_some();
         let start = offset.unwrap_or(0);
