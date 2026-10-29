@@ -174,10 +174,6 @@ where
                 "journal content belongs to another private volume",
             ));
         }
-        let maximum = io
-            .map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-            .transpose()?
-            .unwrap_or(u64::MAX);
         crate::executor::with_history_io(io, |work| {
             ContentGrant::authorize_volume(
                 &self.verifier,

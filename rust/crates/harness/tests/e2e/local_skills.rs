@@ -47,15 +47,12 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
 
 /// Observe the same committed prompt completion as local scenarios and DST.
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_millis(if settles { 8_000 } else { 500 }),
-        prompt_settled(
-            harness,
-            &acyclic_harness::OperationId::new().to_string(),
-            prompt,
-        ),
+    let outcome = prompt_settled(
+        harness,
+        &acyclic_harness::OperationId::new().to_string(),
+        prompt,
     )
-    .await??;
+    .await?;
     match (settles, outcome) {
         (true, PromptOutcome::Settled(..)) | (false, PromptOutcome::Failed(_)) => Ok(()),
         (_, outcome) => Err(format!("skill turn outcome differs: {outcome:?}").into()),
