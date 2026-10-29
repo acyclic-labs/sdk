@@ -55,7 +55,9 @@ impl FileProjectionPolicy {
         limits.validate_file(file, work)?;
         history_step(work, 1)?;
         if matches!(self, Self::BoundedFull)
-            && file.descriptor().byte_length() > limits.render_bytes
+            && limits
+                .render_bytes
+                .is_some_and(|maximum| file.descriptor().byte_length() > maximum)
         {
             return Err(invalid(work, "model file exceeds render limit"));
         }
@@ -67,7 +69,10 @@ impl FileProjectionPolicy {
             {
                 return Err(invalid(work, "instruction source exceeds path bound"));
             }
-            if InstructionSource::with_identity(file, source).framed_bytes()? > limits.render_bytes
+            let framed_bytes = InstructionSource::with_identity(file, source).framed_bytes()?;
+            if limits
+                .render_bytes
+                .is_some_and(|maximum| framed_bytes > maximum)
             {
                 return Err(invalid(work, "project instructions exceed render bound"));
             }
@@ -283,7 +288,9 @@ impl NativeMediaPolicy {
             limits.validate_file(&binding.configuration.content, work)?;
             history_step(work, 1)?;
             if binding.configuration.content.descriptor().media_type() != "application/json"
-                || binding.configuration.content.descriptor().byte_length() > limits.render_bytes
+                || limits.render_bytes.is_some_and(|maximum| {
+                    binding.configuration.content.descriptor().byte_length() > maximum
+                })
             {
                 return Err(invalid(work, "native options require bounded JSON"));
             }
