@@ -142,7 +142,7 @@ fn accounting<'a>(
         context.cancellation,
     ))
 }
-impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
+impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     /// The stream entry is the commit: its closure is durable first, in one
     /// durability round.
     async fn flush_scope(
@@ -156,8 +156,13 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
         })?;
         let flushed = match scope {
             crate::PublicationScope::Closure { objects, .. } => {
-                let blobs: Vec<_> = objects.iter().copied().map(blob).collect();
-                self.provider.flush(Some(&blobs)).await
+                let (mut blobs, custody) = vector(objects.len(), work)?;
+                let bytes = (blobs.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
+                blobs.extend(objects.iter().copied().map(blob));
+                let result = self.provider.flush(Some(&blobs)).await;
+                drop(blobs);
+                release(work, custody, bytes)?;
+                result
             }
             crate::PublicationScope::Everything => self.provider.flush(None).await,
         };

@@ -318,6 +318,33 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     });
     let historical: GenerationId = serde_json::from_slice(&retained_reference)?;
     let recovered = historical.object_id();
+    let ids = [recovered];
+    let scope = acyclic_fs::PublicationScope::Closure {
+        objects: &ids,
+        proven_at: 0,
+    };
+    // A cold sealed root uses the same commit boundary as an unsealed root.
+    // Refusal must precede the durability call and its locator allocation.
+    let mut denied = AuthorityWork::new(
+        WorkBudget {
+            durability_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    );
+    assert!(matches!(
+        cold.flush_before_publish(scope, &mut denied).await,
+        Err(ObjectStoreError::Work(_))
+    ));
+    assert_eq!(denied.spent(), WorkCounters::UNCHARGED);
+    let mut commit = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let _hold = cold.flush_before_publish(scope, &mut commit).await?;
+    assert_eq!(commit.spent().durability_operations, 1);
+    let before = original.receipt().durability_operations;
+    let live = original.live_allocation_bytes();
+    let _hold = cold.flush_before_publish(scope, &mut work).await?;
+    assert_eq!(original.receipt().durability_operations, before + 1);
+    assert_eq!(original.live_allocation_bytes(), live);
     let read = cold.read(recovered, 1024, &mut work).await?;
     assert!(
         cold.put(recovered, read.bytes.clone(), &mut work)
