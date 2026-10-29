@@ -224,8 +224,9 @@ impl NativeChildren {
         )
     }
 
-    /// Records the context a reply names: the first reply fixes it, and any
-    /// later one naming another task or view is refused.
+    /// Records the task a reply names: the first reply fixes it, and any
+    /// later one naming another task is refused. Its view may differ: an
+    /// idle child's view is released and remounted by a later exchange.
     fn record(&mut self, reference: &str, reply: &Value) -> Result<&mut Accepted> {
         let accepted = match self.accepted.entry(reference.into()) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
@@ -328,6 +329,8 @@ impl NativeChildren {
             .get(reference)
             .ok_or_else(|| invalid("native child receipt absent"))?
             .receipt;
+        // The view this exchange mounted the child at.
+        let view = receipt.confirm(&turn)?;
         let lease = HostProcessLease::admit(&self.cwd, receipt, &turn)?;
         let field = |name: &str| {
             turn.get(name)
@@ -349,11 +352,11 @@ impl NativeChildren {
         let mut command = launch::child(
             &self.host,
             &self.flags,
-            receipt.view(),
+            &view,
             resume.and_then(Value::as_str),
         )?;
         command
-            .env("ACYCLIC_WORKSPACE", receipt.view())
+            .env("ACYCLIC_WORKSPACE", &view)
             .env("ACYCLIC_TASK", receipt.task().to_string());
         let process = lease.funded_process()?;
         let wake = Waker::from(Arc::new(ChildWake {
@@ -675,6 +678,34 @@ mod tests;
 #[cfg(test)]
 mod framing {
     use super::*;
+
+    #[test]
+    fn a_receipt_follows_its_child_to_a_remounted_view() {
+        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+        let Ok(child) = parent.child(&crate::agent::AgentId::from_bytes([2; 16])) else {
+            panic!("a child path nests under its root");
+        };
+        let reply = |task: &AgentPath, cwd: &str| serde_json::json!({"task": task, "cwd": cwd});
+        let Ok(receipt) = Receipt::accepted(&reply(&child, "/w/.views/a")) else {
+            panic!("the first reply names the child");
+        };
+        // An idle child's view was released; the next exchange mounted it
+        // elsewhere, and its turn runs there.
+        assert_eq!(
+            receipt.confirm(&reply(&child, "/w/.views/b")).ok(),
+            Some(PathBuf::from("/w/.views/b"))
+        );
+        // Negative control: a reply naming another task is still refused.
+        assert!(matches!(
+            receipt.confirm(&reply(&parent, "/w/.views/b")),
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            receipt
+                .confirm(&serde_json::json!({"task": child}))
+                .is_err()
+        );
+    }
 
     #[test]
     fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {

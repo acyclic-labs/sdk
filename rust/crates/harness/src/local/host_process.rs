@@ -74,18 +74,19 @@ pub struct HostProcessLease {
 /// Its fields are private and it has no serialization or cloning operation.
 pub struct QuiescentHostProcess(HostProcessLease);
 
-/// One child's admitted task and view, exactly as the live harness accepted
-/// them: immutable for the child's lifetime. Every later reply must name the
-/// same context, so a competitor or a replaced context is refused, and no
-/// separate observation precedes a launch.
+/// One child's admitted task, exactly as the live harness accepted it:
+/// immutable for the child's lifetime. Every later reply must name the same
+/// task, so a competitor is refused, and no separate observation precedes a
+/// launch. The child is its task, not a path: its view is wherever the
+/// harness mounted it for each exchange, so an idle child's view can be
+/// released and remounted elsewhere without invalidating the receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Receipt {
     task: AgentPath,
-    view: PathBuf,
 }
 
 impl Receipt {
-    /// The context a session reply names.
+    /// The task a session reply names.
     pub fn accepted(reply: &serde_json::Value) -> Result<Self> {
         let task = serde_json::from_value(
             reply
@@ -94,24 +95,22 @@ impl Receipt {
                 .ok_or_else(|| Error::Invalid("native child task absent".into()))?,
         )
         .map_err(storage)?;
-        let view = reply
-            .get("cwd")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| Error::Invalid("native child view absent".into()))?;
-        Ok(Self {
-            task,
-            view: PathBuf::from(view),
-        })
+        Ok(Self { task })
     }
 
-    /// Refuses a reply that names another task or view.
-    pub fn confirm(&self, reply: &serde_json::Value) -> Result<()> {
+    /// The view `reply` names for its own exchange; a reply naming another
+    /// task is refused.
+    pub fn confirm(&self, reply: &serde_json::Value) -> Result<PathBuf> {
         if Self::accepted(reply)? != *self {
             return Err(Error::Conflict(
-                "step=claim native process: admitted task or view changed; recovery: acyclic agents".into(),
+                "step=claim native process: admitted task changed; recovery: acyclic agents".into(),
             ));
         }
-        Ok(())
+        reply
+            .get("cwd")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::Invalid("native child view absent".into()))
     }
 
     /// The admitted agent.
@@ -119,26 +118,21 @@ impl Receipt {
     pub const fn task(&self) -> &AgentPath {
         &self.task
     }
-
-    /// The admitted view.
-    #[must_use]
-    pub fn view(&self) -> &Path {
-        &self.view
-    }
 }
 
 impl HostProcessLease {
     /// Takes the physical execution lease of one claimed child input, which
     /// its accepting exchange carried. The turn must name the receipt's own
-    /// task and view: adapters cannot construct an execution lease from
+    /// task, and runs in the view that exchange mounted, inside the
+    /// workspace: adapters cannot construct an execution lease from
     /// caller-supplied task/view strings. A competitor holding the lease is
     /// refused; the claim stays exact for the next fenced handoff.
     pub fn admit(cwd: &Path, receipt: &Receipt, turn: &serde_json::Value) -> Result<Self> {
-        receipt.confirm(turn)?;
+        let view = receipt.confirm(turn)?;
         Self::acquire(
             &super::host_files::workspace_root(cwd)?,
             &receipt.task,
-            &receipt.view,
+            &view,
         )
     }
 
