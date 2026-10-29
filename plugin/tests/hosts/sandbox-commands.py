@@ -139,7 +139,6 @@ def main():
     if args.inside:
         inside(args.inside)
         return
-    from native_fixture import wait_for_file
     assert all([args.host, args.binary, args.graphcoder, args.native, args.package, args.scratch])
     assert not args.pi_sandbox_codex or args.host == 'pi'
     started = time.monotonic()
