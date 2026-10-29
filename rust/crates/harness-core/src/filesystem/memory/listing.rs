@@ -12,7 +12,7 @@ struct ListFilesInput {
 pub(super) struct LocalListFilesTool<A: 'static, O: 'static> {
     pub(super) verifier: Arc<FilesystemContentVerifier<A, O>>,
     pub(super) volume: VolumeRef,
-    pub(super) maximum_bytes: u64,
+    pub(super) maximum_bytes: Option<u64>,
     pub(super) observed: tokio::sync::Mutex<BTreeMap<OperationId, ListFilesObservation>>,
 }
 
@@ -124,10 +124,10 @@ impl crate::filesystem::UploadRecord for ListFilesInput {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListFilesTool<A, O> {
     fn native_result_copy(
         result: &ToolResult,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
-        let (value, custody) = crate::tool::clone_value(&result.value, Some(maximum_bytes), work)?;
+        let (value, custody) = crate::tool::clone_value(&result.value, maximum_bytes, work)?;
         Ok((ToolResult { value }, custody))
     }
 
@@ -170,7 +170,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
     ) -> Result<(ToolResult, acyclic_fs::NativeAllocation)> {
         let maximum_bytes = self
             .maximum_bytes
-            .min(context.effective_scope().limits().render_bytes);
+            .into_iter()
+            .chain(context.effective_scope().limits().render_bytes)
+            .min();
         let _input_custody;
         let (input, custody): (ListFilesInput, _) =
             crate::tool::decode(&invocation.arguments, Some(work))?;
@@ -199,7 +201,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             .await?;
         _page_custody = custody;
         let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, Some(maximum_bytes), Some(work))?;
+        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
         let output = (
             ToolResult { value },
             custody.ok_or(Error::NativeBoundary {
@@ -243,7 +245,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             })?
         };
         let limits = context.effective_scope().limits();
-        let maximum_bytes = self.maximum_bytes.min(limits.render_bytes);
+        let maximum_bytes = self
+            .maximum_bytes
+            .into_iter()
+            .chain(limits.render_bytes)
+            .min();
         let mut observed = self.observed.lock().await;
         if let Some(original) = observed.get(&invocation.operation_id) {
             return if original.admission_digest == digest {
@@ -385,9 +391,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         let wire = list_files_page_wire(&generation, &page)?;
         let maximum_bytes = context.map_or(self.maximum_bytes, |context| {
             self.maximum_bytes
-                .min(context.effective_scope().limits().render_bytes)
+                .into_iter()
+                .chain(context.effective_scope().limits().render_bytes)
+                .min()
         });
-        let (value, _) = crate::tool::value(&wire, Some(maximum_bytes), None)?;
+        let (value, _) = crate::tool::value(&wire, maximum_bytes, None)?;
         Ok(ToolResult { value })
     }
 
