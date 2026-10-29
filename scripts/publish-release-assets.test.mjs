@@ -208,7 +208,11 @@ test('asset traversal yields before scanning the tree and retires directories on
     return dir;
   });
   const iterator = assets(directory);
+  const started = performance.now();
+  const rss = process.memoryUsage().rss;
   const first = await iterator.next();
+  t.diagnostic(JSON.stringify({ files: expected.length, firstYieldEntries: entries,
+    firstYieldMs: performance.now() - started, firstYieldRssDelta: process.memoryUsage().rss - rss }));
   assert.equal(first.done, false);
   assert.ok(expected.includes(first.value));
   assert.ok(entries < expected.length, 'first yield scanned the complete asset tree');
