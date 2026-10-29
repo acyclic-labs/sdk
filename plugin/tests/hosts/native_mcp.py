@@ -42,6 +42,8 @@ class McpClient:
             self.process.stdin.flush()
         except (OSError, ValueError) as error:
             raise McpFailure("write MCP request", str(error), self.recovery) from error
+        if "id" in message:
+            self.responses[message["id"]] = None
 
     def submit(self, name, reference, prompt=None):
         self.sequence += 1
@@ -53,8 +55,9 @@ class McpClient:
         return self.sequence
 
     def response(self, identifier):
+        self.responses.setdefault(identifier, None)
         deadline = time.monotonic() + 3
-        while identifier not in self.responses:
+        while self.responses[identifier] is None:
             if b"\n" not in self.pending:
                 remaining = deadline - time.monotonic()
                 try:
@@ -81,10 +84,12 @@ class McpClient:
                 if message.get("id") is None and "error" in message:
                     raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
                 if "id" in message:
-                    try:
-                        self.responses[message["id"]] = message
-                    except TypeError as error:
-                        raise McpFailure("decode MCP response ID", str(error), self.recovery) from error
+                    key = message["id"]
+                    if type(key) is not int or key not in self.responses:
+                        raise McpFailure("decode MCP response ID", "request is not outstanding", self.recovery)
+                    if self.responses[key] is not None:
+                        raise McpFailure("decode MCP response ID", "duplicate response", self.recovery)
+                    self.responses[key] = message
         message = self.responses.pop(identifier)
         if "error" in message:
             raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
