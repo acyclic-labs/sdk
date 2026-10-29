@@ -39,6 +39,7 @@ export async function serveGrpcSession(host: Server, request: Request): Promise<
   let cursor: HostedSession | undefined;
   let terminal: Error | undefined;
   let ended = false;
+  let uploadEnded = false;
   let resolveTrailers!: (headers: Headers) => void;
   const trailers = new Promise<Headers>(resolve => { resolveTrailers = resolve; });
   const finish = (error?: Error) => {
@@ -64,6 +65,7 @@ export async function serveGrpcSession(host: Server, request: Request): Promise<
         if (signal.aborted) cancel();
         const part = await reader.read();
         if (signal.aborted || terminal) throw terminal ?? failure("unavailable");
+        uploadEnded = part.done;
         return part.done ? null : part.value;
       } finally { signal.removeEventListener("abort", cancel); }
     }, request.signal);
@@ -74,7 +76,10 @@ export async function serveGrpcSession(host: Server, request: Request): Promise<
           if (terminal) throw terminal;
           const frame = await cursor!.next();
           if (terminal) throw terminal;
-          if (frame === null) { finish(); controller.close(); return; }
+          if (frame === null) {
+            if (!uploadEnded) throw failure("unavailable");
+            finish(); controller.close(); return;
+          }
           controller.enqueue(frame);
         } catch (error) {
           const terminal = cause(error);
