@@ -190,8 +190,14 @@ impl CommandJournal for LocalPort {
                 .operations
                 .checked_add(prepared.as_slice().len() as u64)
                 .ok_or(StreamError::Capacity)?;
-            if journal.limits.journal_bytes.is_some_and(|limit| bytes > limit)
-                || journal.limits.journal_operations.is_some_and(|limit| operations > limit)
+            if journal
+                .limits
+                .journal_bytes
+                .is_some_and(|limit| bytes > limit)
+                || journal
+                    .limits
+                    .journal_operations
+                    .is_some_and(|limit| operations > limit)
             {
                 return Err(StreamError::Capacity);
             }

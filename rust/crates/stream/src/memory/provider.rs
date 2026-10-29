@@ -197,8 +197,7 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         };
         #[cfg(all(loom, feature = "local"))]
         let size =
-            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
-            {
+            if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes) {
                 child.path.as_str().len()
             } else {
                 crate::wire_codec::requests::child_len(&child)
@@ -210,8 +209,7 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
         // One child always makes progress; growing pages continue at the
         // last returned child rather than refusing the original request.
         if !children.is_empty()
-            && projected_bytes.saturating_add(child.path.as_str().len())
-                > crate::MAX_COMMAND_BYTES
+            && projected_bytes.saturating_add(child.path.as_str().len()) > crate::MAX_COMMAND_BYTES
         {
             has_more = true;
             break;
