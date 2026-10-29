@@ -10,7 +10,9 @@ import { decodeMetadata, type EventStorage } from "./event-storage.js";
 
 export { EventStreamLedger, streamLedgerPort } from "./event-ledger.js";
 export { ActorStateStorage, type ActorState, type ActorStateView } from "./actor-state-storage.js";
-export type { StreamLedger, ImmutableObjects, ProviderReply } from "./event-ledger.js";
+export { connectStreamProvider, streamProviderPort } from "./stream-provider.js";
+export type { StreamProviderPort, OwnedStreamProviderPort, StreamProviderCursor } from "./stream-provider.js";
+export type { StreamLedger, ImmutableObjects, ProviderReply, EventStreamProvider } from "./event-ledger.js";
 export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
 interface Identity {

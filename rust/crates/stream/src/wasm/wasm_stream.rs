@@ -24,6 +24,45 @@ struct WasmJournalStreamLimits {
 
 #[wasm_bindgen]
 impl WasmStream {
+    /// Own one injected-provider request through setup as well as delivery.
+    /// Closing the request drops the original future, including a parked
+    /// minimum or missing-path registration, through the shared pull owner.
+    #[wasm_bindgen(js_name = openProviderRequest)]
+    pub fn open_provider_request(
+        &self,
+        operation: String,
+        input: Vec<u8>,
+        preceding: Vec<u8>,
+    ) -> Result<WasmProviderRequest, JsValue> {
+        check_command_size(&input)?;
+        if !preceding.is_empty() && preceding.len() != 32 {
+            return Err(js_error(StreamError::InvalidArgument));
+        }
+        let provider = Self::from_provider(self.provider.clone());
+        let request = futures::stream::once(async move {
+            if operation == "read" || operation == "follow" {
+                provider
+                    .provider_cursor(&operation, &input, &preceding)
+                    .await
+                    .map(JsValue::from)
+            } else if preceding.is_empty() {
+                provider
+                    .dispatch(&operation, &input)
+                    .await
+                    .map(|bytes| JsValue::from(js_sys::Uint8Array::from(bytes.as_slice())))
+            } else {
+                Err(js_error(StreamError::InvalidArgument))
+            }
+        })
+        .boxed_local();
+        Ok(WasmProviderRequest {
+            state: Rc::new(crate::pull::PullCursor::new(
+                request,
+                js_error(StreamError::Unavailable),
+            )),
+        })
+    }
+
     /// Pull-based finite read or atomic checked follow for an injected host
     /// port. Returns length-delimited canonical SessionFrame record/progress bytes,
     /// so a byte transport may split or coalesce chunks without changing records.

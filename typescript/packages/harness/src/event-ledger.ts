@@ -1,9 +1,14 @@
-import { WasmStream, type WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
 import { WakeIndex, type EventStorage, type StreamChange, type Placement } from "./event-storage.js";
 import type { ImmutableObjects } from "@acyclic-labs/objects";
 export type { ImmutableObjects } from "@acyclic-labs/objects";
+import { providerFailure as failure, type ProviderReply, type StreamProviderPort } from "./stream-provider.js";
 
-export type ProviderReply<T> = { value: T } | { code: string };
+export type { ProviderReply } from "./stream-provider.js";
+/** Install the consistency domain's original change producer before exposing
+ * its port. Wake metadata and journal publication retain their shared cut. */
+export type EventStreamProvider = (changed: (changes: readonly StreamChange[]) => void)
+  => StreamProviderPort | Promise<StreamProviderPort>;
 /** Private provider RPC contract, independent of its transport. */
 export interface StreamLedger {
   register(actor: string, paths: string[]): Promise<Placement>;
@@ -15,23 +20,18 @@ export interface StreamLedger {
   objectPut(keys: Uint8Array[], values: Uint8Array[]): Promise<void>;
 }
 
-function failure(error: unknown): { code: string } {
-  return { code: typeof error === "object" && error !== null && "code" in error
-    && typeof error.code === "string" ? error.code : "unavailable" };
-}
-
 /** Shared event-owned ledger, including durable wake custody and cursor lifetime. */
 export class EventStreamLedger implements StreamLedger {
-  private readonly stream: Promise<WasmStream>;
+  private readonly stream: Promise<StreamProviderPort>;
   private serial: Promise<unknown> = Promise.resolve();
   private source = "";
   private readonly wakes: WakeIndex;
 
   constructor(private readonly storage: EventStorage, private readonly objects: ImmutableObjects,
-    journal: (changed: (changes: readonly StreamChange[]) => void) => object,
+    provider: EventStreamProvider,
     private readonly wake: (actor: string) => Promise<void>, limits: WasmJournalStreamLimits) {
     this.wakes = new WakeIndex(storage, limits.paths);
-    this.stream = WasmStream.openJournal(journal(changes => this.wakes.changed(this.source, changes)), limits);
+    this.stream = Promise.resolve(provider(changes => this.wakes.changed(this.source, changes)));
   }
 
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -54,7 +54,7 @@ export class EventStreamLedger implements StreamLedger {
         const mutation = operation === "append" || operation === "fork" || operation === "commit";
         if (mutation) await this.storage.alarm(Date.now());
         this.source = actor;
-        try { return { value: await (await this.stream).dispatch(operation, input) }; }
+        try { return await (await this.stream).dispatch(operation, input); }
         finally {
           this.source = "";
           if (mutation) await this.schedule();
@@ -64,22 +64,24 @@ export class EventStreamLedger implements StreamLedger {
   }
 
   private async observe(operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
-    try { return { value: await (await this.stream).dispatch(operation, input) }; }
+    try { return await (await this.stream).dispatch(operation, input); }
     catch (error) { return failure(error); }
   }
 
   open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>> {
     return this.exclusive(async () => {
       try {
-        const cursor = await (await this.stream).openProviderCursor(operation, input, preceding);
-        let closed = false;
-        const close = () => { if (!closed) { closed = true; cursor.close(); cursor.free(); } };
+        const opened = await (await this.stream).open(operation, input, preceding);
+        if ("code" in opened) return opened;
+        const cursor = opened.value;
+        const close = () => cursor.close();
         return { value: new ReadableStream<Uint8Array>({
           async pull(controller) {
             try {
-              const value = await cursor.next();
-              if (value === null) { controller.close(); close(); }
-              else controller.enqueue(value);
+              const reply = await cursor.next();
+              if ("code" in reply) { controller.error(reply); close(); }
+              else if (reply.value === null) { controller.close(); close(); }
+              else controller.enqueue(reply.value);
             } catch (error) { controller.error(error); close(); }
           },
           cancel: close,
@@ -113,7 +115,7 @@ export class EventStreamLedger implements StreamLedger {
 }
 
 /** Convert any pull-based RPC stream into the canonical injected-provider port. */
-export function streamLedgerPort(ledger: StreamLedger, actor: string) {
+export function streamLedgerPort(ledger: StreamLedger, actor: string): StreamProviderPort {
   return {
     dispatch: (operation: string, input: Uint8Array) => ledger.dispatch(actor, operation, input),
     async open(operation: string, input: Uint8Array, preceding: Uint8Array) {

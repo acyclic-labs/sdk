@@ -31,6 +31,7 @@ include!("wasm_stream.rs");
 include!("follow_state.rs");
 
 include!("wasm_follow.rs");
+include!("provider_request.rs");
 
 pub(crate) mod provider_rpc;
 mod remote;
