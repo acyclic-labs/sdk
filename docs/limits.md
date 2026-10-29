@@ -1618,3 +1618,5 @@ Check31016fd00bc06 (job1793269918351-41335-5e555fb6) failed before compilation b
 Check31133c4a4e220 (job1793270059450-41970-ca34a66f) failed on the missing shared Span import; the later import correction changes no policy or oracle. Composition qualification remains pending.
 
 Check31200bdafeb1b (job1793270156289-42695-2a6c0b36) fails at two integration sites: optional staged-input observation allowance and a shadowed typed error projection. Later source preserves the exact finite allowance, renames the reference, and retains panel scrolling alongside transcript paging. New composition compilation remains pending; no oracle changed.
+
+Check313 on7286eebf67 (job1793270340211-44358-16662dee) fails native all-target compilation at two new fixture fields, a deleted command-cap test, a retired duplicate child field and the obsolete failure-broadcast match. Current fixes project the canonical machine child index and committed failure status, preserve new settlement fields and delete the cap-only test. Compilation pending; runtime308 four failures unchanged.

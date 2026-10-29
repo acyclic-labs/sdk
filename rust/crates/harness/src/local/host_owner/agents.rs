@@ -329,12 +329,9 @@ impl HostDriver {
                 None
             }
             TurnInput::Message { .. } => return start(session, inbox, input),
-            TurnInput::ChildDone { done } => {
-                session.spawned.retain(|reference| {
-                    child(&agent.path, reference).ok().as_ref() != Some(&done.child)
-                });
-                None
-            }
+            // The agent machine owns open-child membership and retires the
+            // completed child before delivering this notification.
+            TurnInput::ChildDone { .. } => None,
             // Native hosts decide their own tool approvals and own their
             // model context.
             TurnInput::Approval { .. }
