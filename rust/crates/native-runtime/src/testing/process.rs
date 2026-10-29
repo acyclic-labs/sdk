@@ -9,8 +9,8 @@ pub struct ProcessCapture<'a> {
     pub command: &'a Command,
     /// Original monotonic deadline allowance.
     pub timeout: Option<Duration>,
-    /// Shared stdout and stderr bound.
-    pub maximum: usize,
+    /// Optional shared stdout and stderr bound.
+    pub maximum: Option<usize>,
     /// Original literal input or exchange allowance.
     pub input: Option<CaptureInput<'a>>,
 }
@@ -96,7 +96,7 @@ mod tests {
             let capture = || ProcessCapture {
                 command: &command,
                 timeout: Some(Duration::from_millis(10)),
-                maximum: 8,
+                maximum: Some(8),
                 input: None,
             };
             assert!(capture_process(capture(), &mut || Ok(()), &mut |_| Ok(ProcessInput::default())).is_none());

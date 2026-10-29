@@ -288,7 +288,7 @@ async fn verify_diffs(
             files: 16,
             changes: 16,
             file_bytes: 65_536,
-            render_bytes: 65_536,
+            render_bytes: Some(65_536),
             work: 65_536,
         },
     )

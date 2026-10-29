@@ -57,8 +57,8 @@ pub struct Limits {
     pub path_bytes: Option<std::num::NonZeroUsize>,
     /// Optional maximum attachments in one message, inline or manifest-backed.
     pub attachments: Option<std::num::NonZeroUsize>,
-    /// Maximum bytes rendered directly into one model context part.
-    pub render_bytes: u64,
+    /// Optional maximum bytes rendered directly into one model context part.
+    pub render_bytes: Option<u64>,
     /// Optional maximum model round trips in the stock agent loop.
     pub model_steps: Option<std::num::NonZeroUsize>,
     /// Optional maximum streamed observations admitted in one model round trip.
@@ -75,7 +75,7 @@ impl Default for Limits {
             file_bytes: MAX_EXACT_JS_INTEGER,
             path_bytes: None,
             attachments: None,
-            render_bytes: MAX_EXACT_JS_INTEGER,
+            render_bytes: None,
             model_steps: None,
             model_events_per_step: None,
             tool_calls_per_step: None,
@@ -93,8 +93,9 @@ impl Limits {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
         }
-        if [self.file_bytes, self.render_bytes]
+        if [Some(self.file_bytes), self.render_bytes]
             .into_iter()
+            .flatten()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
             || [self.path_bytes, self.attachments, self.context_messages]
                 .into_iter()

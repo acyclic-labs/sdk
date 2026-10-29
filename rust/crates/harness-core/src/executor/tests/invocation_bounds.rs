@@ -67,7 +67,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits {
                     file_bytes: maximum,
-                    render_bytes: render,
+                    render_bytes: Some(render),
                     ..Limits::default()
                 },
             )?,

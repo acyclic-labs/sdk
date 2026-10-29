@@ -101,7 +101,12 @@ impl FileTool {
                     work,
                     io,
                 )?;
-                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+                let maximum = scope
+                    .limits()
+                    .render_bytes
+                    .into_iter()
+                    .chain(Some(scope.limits().file_bytes))
+                    .min();
                 let length = match input.0.range {
                     Some(range)
                         if source
@@ -117,7 +122,9 @@ impl FileTool {
                         .as_ref()
                         .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if length.is_none_or(|length| length > maximum) {
+                if maximum.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX)
+                    || length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum))
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file selection exceeds text rendering bound",

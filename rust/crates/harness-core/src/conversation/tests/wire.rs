@@ -177,7 +177,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         .await?;
     let mut narrow = Limits::default();
     narrow.file_bytes = manifest.descriptor().byte_length().saturating_add(1);
-    narrow.render_bytes = narrow.file_bytes;
+    narrow.render_bytes = Some(narrow.file_bytes);
     assert!(narrow.file_bytes < member.descriptor().byte_length());
     assert!(matches!(
         composite
