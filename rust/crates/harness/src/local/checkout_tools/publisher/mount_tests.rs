@@ -239,7 +239,7 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
             &grant,
             "private.txt",
             None,
-            64,
+            Some(64),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
