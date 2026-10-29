@@ -5,12 +5,16 @@ use super::*;
 pub enum ToolPolicyDecision {
     /// The invocation may proceed under its existing capability grant.
     Allow,
-    /// The invocation is rejected before dispatch.
+    /// The invocation is rejected before dispatch and its refusal is returned
+    /// to the model, which may choose another action.
     Deny {
         /// Explanation retained with the denied decision.
         reason: String,
     },
-    /// An addressable approval must resolve for this exact action.
+    /// An addressable approval must resolve for this exact action. Declining,
+    /// cancelling, expiring or denying the approval terminates an unstarted
+    /// turn with that rejection; it is not a recoverable tool result. A
+    /// rejection after dispatch remains indeterminate and never replays the effect.
     RequireApproval {
         /// Ref-free text used to create the approval request.
         prompt: String,

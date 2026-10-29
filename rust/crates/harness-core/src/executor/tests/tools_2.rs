@@ -125,6 +125,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
+        assert_eq!(model.requests().len(), 2);
         let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1");
         assert_eq!(text.is_some(), deny);
         if let Some(text) = text {
@@ -132,6 +133,7 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         }
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
         assert_eq!(executor.execute(input, &journal).await?, output);
+        assert_eq!(model.requests().len(), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
     }
     Ok(())

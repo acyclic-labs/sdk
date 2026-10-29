@@ -101,9 +101,8 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
         .await
         .map_err(storage)?
         .value;
-    let settled = capture.is_some_and(|capture| {
-        hex::encode(capture.id().to_bytes()) == replayed.version()
-    });
+    let settled =
+        capture.is_some_and(|capture| hex::encode(capture.id().to_bytes()) == replayed.version());
     let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
         Err(_) => false,
@@ -144,11 +143,7 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
         .ok_or_else(|| Error::Invalid("file version is not a canonical generation".into()))?;
     let stop = acyclic_fs::CancellationToken::new();
     let parents = workspace
-        .generation(
-            generation,
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &stop,
-        )
+        .generation(generation, acyclic_fs::WorkBudget::UNBOUNDED, &stop)
         .await
         .map_err(storage)?
         .value
@@ -302,10 +297,7 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         .map_err(storage)?
         .value
         .ok_or_else(|| Error::Invalid("another write took the interrupted capture".into()))?;
-    assert_eq!(
-        recovered.version(),
-        hex::encode(capture.id().to_bytes())
-    );
+    assert_eq!(recovered.version(), hex::encode(capture.id().to_bytes()));
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"agent bytes
@@ -570,9 +562,8 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
         .await
         .map_err(storage)?
         .value;
-    let settled = capture.is_some_and(|capture| {
-        hex::encode(capture.id().to_bytes()) == finished.version()
-    });
+    let settled =
+        capture.is_some_and(|capture| hex::encode(capture.id().to_bytes()) == finished.version());
     let edited = match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
         Err(_) => false,

@@ -242,6 +242,67 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound("approval".into()))?
             .1 = Some(outcome.clone());
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            // A hook's human approval must preserve the same disposition as
+            // the policy's approval, including on replay and after dispatch.
+            let mut hook_executor = executor.clone();
+            hook_executor.hooks = Some(Arc::new(crate::hooks::BoundHooks {
+                rules: crate::hooks::Hooks::default(),
+                manifest: [19; 32],
+            }));
+            let hook = StockExecution::ordinary(&hook_executor);
+            let tool = hook_executor
+                .tools
+                .get(&invocation.name, None, None)?
+                .ok_or_else(|| Error::NotFound("approval tool".into()))?;
+            let hook_journal = Journal::default();
+            assert!(matches!(
+                hook.hook_approval(
+                    &hook_journal, input.operation_id, &invocation, tool,
+                    "Approve echo".into(), false,
+                ).await?,
+                Some(ExecutionProgress::Pending(operation)) if operation == invocation.operation_id
+            ));
+            {
+                let mut interactions = hook_journal.2.lock().unwrap();
+                assert_eq!(interactions.len(), 1);
+                interactions
+                    .values_mut()
+                    .next()
+                    .ok_or_else(|| Error::NotFound("hook approval".into()))?
+                    .1 = Some(outcome.clone());
+            }
+            for _ in 0..2 {
+                let progress = hook
+                    .hook_approval(
+                        &hook_journal,
+                        input.operation_id,
+                        &invocation,
+                        tool,
+                        "Approve echo".into(),
+                        false,
+                    )
+                    .await?;
+                match rejection {
+                    Some(expected) => assert!(matches!(
+                        progress, Some(ExecutionProgress::Rejected(actual)) if actual == expected
+                    )),
+                    None => assert!(progress.is_none()),
+                }
+            }
+            if rejection.is_some() {
+                assert!(matches!(
+                    hook.hook_approval(
+                        &hook_journal, input.operation_id, &invocation, tool,
+                        "Approve echo".into(), true,
+                    ).await,
+                    Err(Error::Indeterminate(operation)) if operation == invocation.operation_id
+                ));
+            }
+            assert_eq!(model.requests().len(), 1);
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        }
         if let Some(rejection) = rejection {
             for _ in 0..2 {
                 assert!(matches!(
