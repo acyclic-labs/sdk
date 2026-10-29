@@ -126,7 +126,7 @@ async fn revision_only_bindings_recheck_credential_context_without_resource_acce
             }),
         });
     });
-    auth.register(&mut slots, 0, &bytes, 2).await.unwrap();
+    auth.register(&mut slots, 0, &bytes).await.unwrap();
     let request = crate::HeadsRequest {
         durable_through: None,
         projection: Default::default(),

@@ -524,7 +524,7 @@ impl Authority {
             let authorization = visibility.authorization.clone();
             (binding, authorization, Some(visibility))
         } else {
-            let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+            let (revision, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
             let capability = credential.as_ref().map_err(|error| *error)?;
             let resource = stream_resource(request.paths.first());
             let mut authorization = ResourceAuthorization::new(
