@@ -459,11 +459,6 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
     cancellation.cancel();
     let prefix = original.lock().receipt();
@@ -563,11 +558,9 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
+    // Startup is synchronous; the original cursor excludes any delivery
+    // already in flight before the accounting leaf is held below.
+    drop(watch.shared.reading());
     let wait = CancellationToken::new();
     // Holding only the test's accounting leaf delays recording a genuine wake/retirement, without inventing a mock native completion.
     let state = original.lock();
