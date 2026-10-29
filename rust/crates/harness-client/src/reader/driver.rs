@@ -450,6 +450,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            let head = stream.head(path.clone()).await.unwrap();
             // The first check admits the original request. Lose the producer
             // at each read or follow boundary on the actual provider.
             for (follow, wait_at) in [(false, 2), (false, 3), (true, 2), (true, 3), (true, 4)] {
@@ -482,6 +483,8 @@ mod tests {
                 driver.attach(&mut reader, 0);
                 reader.cache.access = super::super::Access::Lease(lease);
                 if follow {
+                    reader.cache.observe_origin(&path, head.origin.clone());
+                    reader.cache.observe_tail(&path, head.tail);
                     reader.set_follows([path.clone()]);
                 } else {
                     reader.plan([(
