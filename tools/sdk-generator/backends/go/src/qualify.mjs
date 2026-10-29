@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,7 @@ export async function verifyArchive(path, expected, receipt) {
   return entries;
 }
 
-export async function qualify(args, command = spawnSync) {
+export async function qualify(args, command = captureCommand) {
   const archive = realpathSync(args.package);
   const authority = realpathSync(args.authority);
   const receiptPath = realpathSync(args.receipt);
@@ -48,7 +48,7 @@ export async function qualify(args, command = spawnSync) {
   const entries = await verifyArchive(archive, args.sha256, receipt);
   const env = { ...process.env, GOMAXPROCS: "1", GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off",
     GOWORK: "off", GOENV: "off", GOFLAGS: "" };
-  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000 });
   const version = execute(["version"]);
   if (version.error || version.status !== 0 || version.stdout.trim().split(/\s+/)[2] !== receipt.go_version) {
     throw new Error("Go toolchain differs from generation receipt");
