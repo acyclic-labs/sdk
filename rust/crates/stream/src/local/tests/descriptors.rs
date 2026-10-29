@@ -41,7 +41,7 @@ async fn an_idle_journal_closes_its_descriptor_and_appends_after_reopening()
             "{}::an_idle_journal_closes_its_descriptor_and_appends_after_reopening",
             module.split_once("::").map_or(module, |(_, path)| path)
         );
-        let status = std::process::WriteRequest::new(std::env::current_exe()?)
+        let status = std::process::Command::new(std::env::current_exe()?)
             .args([test.as_str(), "--exact", "--nocapture"])
             .env(acyclic_native_runtime::CACHED_DESCRIPTORS_VARIABLE, "1")
             .status()?;

@@ -171,13 +171,11 @@ async fn a_pre_revision_snapshot_has_an_actionable_format_refusal() -> Result {
     let [offset] = positions.as_slice() else {
         return Err("snapshot must contain exactly one retained observation".into());
     };
-    let Some(crate::wire::idempotency_observation::WriteOutcome::Append(response)) =
-        &mut wire.outcome
+    let Some(crate::wire::idempotency_observation::Outcome::Append(response)) = &mut wire.outcome
     else {
         return Err("expected append outcome".into());
     };
-    let Some(crate::wire::append_response::WriteOutcome::Committed(receipt)) =
-        &mut response.outcome
+    let Some(crate::wire::append_response::Outcome::Committed(receipt)) = &mut response.outcome
     else {
         return Err("expected committed receipt".into());
     };
