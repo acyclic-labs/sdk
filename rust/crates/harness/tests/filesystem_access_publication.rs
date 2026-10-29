@@ -53,7 +53,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_path(operation, path, 4096, None)
+            .observe_staged_path(operation, path, Some(4096), None)
             .await?,
         Some(first.clone())
     );
@@ -63,7 +63,7 @@ async fn known_write_receipts_do_not_authorize_metadata_discovery() -> Result<()
         .await?;
     assert_eq!(
         writer
-            .observe_staged_at(replacement, &first, 4096, None)
+            .observe_staged_at(replacement, &first, Some(4096), None)
             .await?,
         Some(next)
     );

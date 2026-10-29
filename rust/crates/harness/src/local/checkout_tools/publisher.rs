@@ -29,7 +29,7 @@ pub(in crate::local) struct CheckoutPublisher {
     files: Arc<LocalFilesystem>,
     volume: VolumeRef,
     verifier: AuthorityVerifier,
-    maximum: u64,
+    maximum: Option<u64>,
 }
 
 enum Publication<'a> {
@@ -65,7 +65,7 @@ impl CheckoutPublisher {
         files: Arc<LocalFilesystem>,
         volume: &VolumeRef,
         verifier: &AuthorityVerifier,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Self {
         Self {
             tools,
@@ -132,7 +132,7 @@ impl CheckoutPublisher {
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, None, Some(self.maximum), crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
+                Publication::Once { .. } => writer.observe_staged_once(operation, None, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };

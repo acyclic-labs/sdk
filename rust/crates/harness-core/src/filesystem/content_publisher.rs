@@ -443,7 +443,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         operation: OperationId,
         path: &str,
-        maximum: u64,
+        maximum: Option<u64>,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
         self.observe_write_receipt(upload_key(operation, path, None)?, path, maximum, ceiling)
@@ -454,7 +454,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         operation: OperationId,
         source: &FileRef,
-        maximum: u64,
+        maximum: Option<u64>,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
         self.observe_publication(
@@ -471,7 +471,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         key: IdempotencyKey,
         path: &str,
-        maximum: u64,
+        maximum: Option<u64>,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<Option<FileRef>> {
         self.grant
@@ -483,10 +483,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     volume: &self.volume,
                     key: &key,
                     expected_path: Some(path),
-                    maximum_bytes: Some(
-                        self.maximum_bytes
-                            .map_or(maximum, |limit| maximum.min(limit)),
-                    ),
+                    maximum_bytes: maximum.into_iter().chain(self.maximum_bytes).min(),
                     internal_class: None,
                     purpose: super::PublicationPurpose::WriteReceipt,
                     scope: self.grant.policy_scope(),
