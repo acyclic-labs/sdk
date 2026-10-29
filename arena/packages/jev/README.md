@@ -199,8 +199,13 @@ The shared Space is too slow and too quota-bound for a hook on every tool call; 
 
 ```
 JEV_SERVE_TOKEN=<secret> jev serve --backend local --host 0.0.0.0 --port 8788   # on a GPU box; clients send Authorization: Bearer <secret>
-# Off loopback the server refuses to start without a token. Bodies (1 MiB), questions (64), options (64) and state (200k chars) are capped.
+# Off loopback the server refuses to start without a token. Request sizes and counts are unbounded by default.
 jev decide --backend http://<gpu-box>:8788 ...                   # anywhere else
 ```
 
 `HttpBackend` and the server are stdlib only. The server takes one batch at a time per GPU.
+Operators can opt into finite request policies with `JEV_SERVE_MAX_BODY` (bytes),
+`JEV_SERVE_MAX_QUESTIONS` (per request), `JEV_SERVE_MAX_OPTIONS` (per question)
+and `JEV_SERVE_MAX_STATE` (characters). Omitted policies are unbounded; explicit
+non-negative values are enforced before backend work, and the body policy is
+checked before reading or parsing the body. Invalid values prevent startup.
