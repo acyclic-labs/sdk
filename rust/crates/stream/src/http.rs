@@ -276,9 +276,6 @@ impl HttpStream {
                     }
                 })
                 .collect::<Result<Vec<_>, StreamError>>()?;
-            if conflicts.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
-            }
             Ok(CommitOutcome::Conflict(conflicts))
         }
     }
