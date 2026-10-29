@@ -5,7 +5,7 @@ use super::*;
 pub(crate) struct RequestContinuation {
     request: ModelRequest,
     limits: Limits,
-    instruction_remaining: u64,
+    instruction_remaining: Option<u64>,
     suffix: Vec<ModelMessage>,
     bytes: acyclic_stream::OwnedBytes,
     encoding: Vec<encoding::EncodingPrefix>,
@@ -41,11 +41,7 @@ impl RequestContinuation {
         &self.request.tools
     }
 
-    fn validate_suffix(
-        &mut self,
-        limits: Limits,
-        io: Option<&PreparationIo>,
-    ) -> Result<Option<u64>> {
+    fn validate_suffix(&mut self, limits: Limits, io: Option<&PreparationIo>) -> Result<bool> {
         let count = self
             .request
             .messages
@@ -64,9 +60,10 @@ impl RequestContinuation {
             let mut remaining = self.instruction_remaining;
             reserve_instruction_bodies(&self.suffix, &mut remaining, io)?;
             ModelRequest::validate_messages(&mut self.suffix, &self.request.tools, limits, io)?;
-            Ok(Some(remaining))
+            self.instruction_remaining = remaining;
+            Ok(true)
         } else {
-            Ok(None)
+            Ok(false)
         }
     }
 
@@ -74,8 +71,8 @@ impl RequestContinuation {
         mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<(ModelRequest, u64)> {
-        let remaining = self.validate_suffix(limits, io)?;
+    ) -> Result<(ModelRequest, Option<u64>)> {
+        let validated = self.validate_suffix(limits, io)?;
         let count = self.request.messages.len() + self.suffix.len();
         if count > self.request.messages.capacity() {
             let capacity = self
@@ -92,9 +89,10 @@ impl RequestContinuation {
         for message in crate::executor::stock_into_iter(self.suffix, io)? {
             crate::executor::stock_vec_push(&mut self.request.messages, message, io)?;
         }
-        let remaining = match remaining {
-            Some(remaining) => remaining,
-            None => self.request.validate_with_instruction_budget(limits, io)?,
+        let remaining = if validated {
+            self.instruction_remaining
+        } else {
+            self.request.validate_with_instruction_budget(limits, io)?
         };
         Ok((self.request, remaining))
     }

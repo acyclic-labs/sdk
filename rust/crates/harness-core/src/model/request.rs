@@ -30,7 +30,7 @@ impl ModelRequest {
         &mut self,
         limits: Limits,
         io: Option<&PreparationIo>,
-    ) -> Result<u64> {
+    ) -> Result<Option<u64>> {
         #[cfg(not(target_arch = "wasm32"))]
         let _span = tracing::debug_span!("acyclic.harness.request.validate").entered();
         with_history_io(io, |work| limits.validate(work))?;
@@ -54,7 +54,7 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
-        let mut remaining = limits.render_bytes;
+        let mut remaining = Some(limits.render_bytes);
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
         Self::validate_messages(&mut self.messages, &self.tools, limits, io)?;
         Ok(remaining)
@@ -299,7 +299,7 @@ pub struct PreparedModelRequest {
     bytes: acyclic_stream::OwnedBytes,
     request_digest: [u8; 32],
     admitted_limits: Limits,
-    instruction_remaining: u64,
+    instruction_remaining: Option<u64>,
     encoding: Vec<encoding::EncodingPrefix>,
     content_admission: Option<admission::ContentAdmission>,
     #[cfg(feature = "filesystem")]
@@ -484,7 +484,7 @@ impl PreparedModelRequest {
     fn encode_validated(
         request: ModelRequest,
         limits: Limits,
-        instruction_remaining: u64,
+        instruction_remaining: Option<u64>,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         #[cfg(feature = "filesystem")]

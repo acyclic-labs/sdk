@@ -247,7 +247,11 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
     let mut original = request(1)?;
     original.messages = vec![instruction.clone()];
     let prepared = PreparedModelRequest::prepare(original.clone(), limits, None)?;
-    assert!(prepared.instruction_remaining < 1_000);
+    assert!(
+        prepared
+            .instruction_remaining
+            .is_some_and(|remaining| remaining < 1_000)
+    );
     let mut continuation = prepared.into_continuation();
     continuation.messages().push(instruction.clone());
     assert!(
@@ -263,7 +267,11 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
         ..limits
     };
     let continued = continuation.finish(enlarged, None)?;
-    assert!(continued.instruction_remaining < 2_000);
+    assert!(
+        continued
+            .instruction_remaining
+            .is_some_and(|remaining| remaining < 2_000)
+    );
     Ok(())
 }
 

@@ -69,18 +69,10 @@ impl ContextManifest {
         }
         let mut discovered = manifest.discovery.messages(limits, io)?;
         append_context_messages(&mut messages, &mut discovered, io)?;
-        let mut remaining = limits
-            .render_bytes
-            .checked_sub(crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
-            })?)
-            .ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "manifest exceeds context byte bound",
-                )
-            })?;
+        let bytes = crate::executor::with_history_io(io, |work| {
+            crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
+        })?;
+        let mut remaining = Some(limits.render_bytes - bytes);
         crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
         for name in manifest.selected_skills {
             let skill = manifest
@@ -96,18 +88,18 @@ impl ContextManifest {
                     )
                 })?;
             let message = skill
-                .invoke_observed(reader, limits.file_bytes.min(remaining), io)
+                .invoke_observed(
+                    reader,
+                    remaining.map_or(limits.file_bytes, |remaining| {
+                        limits.file_bytes.min(remaining)
+                    }),
+                    io,
+                )
                 .await?;
             let size = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&message, Some(remaining), work)
+                crate::executor::json::json_byte_length(&message, remaining, work)
             })?;
-            remaining = remaining.checked_sub(size).ok_or_else(|| {
-                stock_boundary(
-                    io,
-                    ErrorCode::Invalid,
-                    "manifest exceeds context byte bound",
-                )
-            })?;
+            remaining = remaining.map(|remaining| remaining - size);
             messages.push(message);
         }
         let key = crate::executor::stock_string_copy("context.manifest", io)?;

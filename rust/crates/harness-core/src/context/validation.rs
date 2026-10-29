@@ -104,8 +104,8 @@ pub(crate) fn validate_projected_messages(
         crate::executor::json::json_byte_length(&borrowed, Some(limits.render_bytes), work)
     })
     .and_then(|bytes| {
-        let mut remaining = limits.render_bytes - bytes;
-        crate::model::reserve_instruction_bodies(messages, &mut remaining, io)
+        let mut remaining = Some(limits.render_bytes - bytes);
+        crate::model::reserve_instruction_bodies(messages, &mut remaining, io).map(|_| ())
     })
 }
 
