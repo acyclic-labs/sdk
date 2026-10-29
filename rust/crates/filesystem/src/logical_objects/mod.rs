@@ -436,14 +436,18 @@ fn service_error(error: Error) -> ObjectStoreError {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn native_error(error: acyclic_objects::NativeObjectsError) -> ObjectStoreError {
+fn native_error(
+    error: acyclic_objects::NativeObjectsError,
+    original: &crate::NativeMaterializationWork,
+) -> ObjectStoreError {
     use acyclic_objects::NativeObjectsCause;
-    match &error.cause {
-        NativeObjectsCause::Service(service) if !error.has_payload() => service_error(*service),
-        NativeObjectsCause::Unsupported if !error.has_payload() => {
-            ObjectStoreError::NativeUnavailable
-        }
-        _ => ObjectStoreError::NativeObjects(error),
+    if error.has_payload() {
+        return ObjectStoreError::NativeObjects(error);
+    }
+    match error.into_cause() {
+        NativeObjectsCause::Service(service) => service_error(service),
+        NativeObjectsCause::Admission(error) => ObjectStoreError::Native(original.runtime_error(error)),
+        NativeObjectsCause::Unsupported => ObjectStoreError::NativeUnavailable,
     }
 }
 mod requests;

@@ -88,12 +88,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet((blob(id), ByteRange::FULL, maximum), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
                     object_probes: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                future.await.map_err(native_error)
+                future.await.map_err(|error| native_error(error, original))
             }
             _ => {
                 work.charge(WorkCounters {
@@ -205,14 +205,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet(incoming, custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
                     object_probes: requests.len() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = future.await.map_err(native_error)?;
+                let results = future.await.map_err(|error| native_error(error, original))?;
                 values = self.finish_reads::<STORED>(
-                    results.map(|value| value.map_err(native_error)),
+                    results.map(|value| value.map_err(|error| native_error(error, original))),
                     requests,
                     quota,
                     work,
