@@ -62,6 +62,7 @@ impl Shared {
         reads: &mut Reads,
         work: &mut W,
     ) -> Result<(), DemandError> {
+        self.hub.check()?;
         let buffer = reads
             .buffer
             .as_mut()
@@ -126,7 +127,7 @@ impl Shared {
         }
         let capacity = reads.capacity();
         if wait {
-            if !self.await_completion(reads) {
+            if !self.await_completion(reads)? {
                 return Ok(false);
             }
             work.record(READ)?;
@@ -356,7 +357,7 @@ impl Shared {
         };
         let opened = super::startup::open(current, self.pin_name, work).and_then(|handle| {
             work.started_io(WRITE)?;
-            hub::attach(self, HANDLE(handle.as_raw_handle()))?;
+            self.hub.attach(self, HANDLE(handle.as_raw_handle()))?;
             Ok(handle)
         });
         let handle = match opened {
@@ -403,6 +404,7 @@ impl NativeSourceWatch {
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
+        self.shared.hub.check()?;
         if self.shared.stopping.load(Ordering::Acquire) {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
         }
