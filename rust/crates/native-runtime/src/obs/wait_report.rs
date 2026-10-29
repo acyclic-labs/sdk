@@ -27,6 +27,28 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 #[derive(Clone, Default)]
 pub struct WaitReport(Arc<Mutex<Chain>>);
 
+/// One live wait at the selected process's snapshot boundary.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct WaitSnapshot {
+    /// The primitive event whose producer owns completion.
+    pub primitive: String,
+    /// Opaque operation identity, never user content or credentials.
+    pub key: String,
+    /// Original wait span identity, independent of its creating span.
+    pub job: u64,
+    /// Creating span identity, when the wait has a parent.
+    pub origin: Option<u64>,
+    /// Exact native file fence currently blocking the persistence job, or zero.
+    pub predecessor: u64,
+    /// Persistence stage: admitted, queued, running, syscall, published or file
+    /// predecessor, encoded as 0 through 5 respectively.
+    pub stage: u64,
+    /// Start time in seconds since the Unix epoch.
+    pub since: f64,
+    /// Observed elapsed seconds, not an attribution of earlier process time.
+    pub elapsed: f64,
+}
+
 #[derive(Default)]
 struct Chain {
     first: Option<Arc<Node>>,
@@ -194,11 +216,9 @@ impl WaitReport {
         }
     }
 
-    /// Writes a snapshot of live primitive/key/start observations, then flushes.
-    ///
-    /// A blocked or failed writer cannot hold the lock needed by a completing
-    /// producer. Output errors are returned unchanged to the process owner.
-    pub fn report(&self, output: &mut impl Write) -> io::Result<()> {
+    /// Copies the live primitive/key/start observations. Encoding and output
+    /// happen after releasing the registry lock needed by completing producers.
+    pub fn snapshot(&self) -> Vec<WaitSnapshot> {
         let nodes = {
             let chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             let mut next = chain.first.clone();
@@ -214,15 +234,32 @@ impl WaitReport {
             }
             nodes
         };
-        for node in nodes {
-            let since = node.started.duration_since(UNIX_EPOCH).unwrap_or_default();
-            write!(
-                output,
-                "waiting: {} {}",
-                node.fields.primitive, node.fields.key
-            )?;
-            if node.fields.primitive == "persistence-completion" {
-                let stage = match node.stage.load(std::sync::atomic::Ordering::Relaxed) {
+        nodes
+            .into_iter()
+            .map(|node| WaitSnapshot {
+                primitive: node.fields.primitive.clone(),
+                key: node.fields.key.clone(),
+                job: node.job,
+                origin: node.origin,
+                predecessor: node.predecessor.load(std::sync::atomic::Ordering::Relaxed),
+                stage: node.stage.load(std::sync::atomic::Ordering::Relaxed),
+                since: node
+                    .started
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64(),
+                elapsed: node.elapsed.elapsed().as_secs_f64(),
+            })
+            .collect()
+    }
+
+    /// Writes the snapshot to a blocking writer. Hosts must call this outside
+    /// their coordination executor; owned process reporting uses `ReportPort`.
+    pub fn report(&self, output: &mut impl Write) -> io::Result<()> {
+        for node in self.snapshot() {
+            write!(output, "waiting: {} {}", node.primitive, node.key)?;
+            if node.primitive == "persistence-completion" {
+                let stage = match node.stage {
                     0 => "admitted",
                     1 => "queued",
                     2 => "running",
@@ -234,16 +271,13 @@ impl WaitReport {
                 write!(
                     output,
                     " job={} origin={:?} predecessor={:#x} stage={stage}",
-                    node.job,
-                    node.origin,
-                    node.predecessor.load(std::sync::atomic::Ordering::Relaxed)
+                    node.job, node.origin, node.predecessor,
                 )?;
             }
             writeln!(
                 output,
                 " since {:.3} ({:.3}s elapsed)",
-                since.as_secs_f64(),
-                node.elapsed.elapsed().as_secs_f64()
+                node.since, node.elapsed,
             )?;
         }
         output.flush()

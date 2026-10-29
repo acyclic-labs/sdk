@@ -215,6 +215,10 @@ def spawn(command, terminal):
             os._exit(127)
     if terminal is not None:
         os.close(terminal[1])
+    # Only the selected executable retains its diagnostic endpoint. The owner
+    # still holds the original cancellation and physical retirement boundary.
+    if "ACYCLIC_REPORT_FD" in os.environ:
+        os.close(int(os.environ["ACYCLIC_REPORT_FD"]))
     return root
 
 
