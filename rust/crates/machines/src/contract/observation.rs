@@ -156,7 +156,7 @@ pub type OperationStream =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
-    pub(crate) timeout_ms: u32,
+    pub(crate) timeout_ms: Option<u64>,
     pub(crate) cwd: Option<String>,
     pub(crate) stdin: Vec<u8>,
     pub(crate) expiry_unix_ms: Option<u64>,
@@ -164,12 +164,16 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
-    /// Requires a program, NUL-free arguments and a positive caller deadline.
-    pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
+    /// Requires a program, NUL-free arguments and an optional positive caller deadline.
+    pub fn new(
+        argv: Vec<String>,
+        timeout_ms: impl Into<Option<u64>>,
+    ) -> Result<Self, ProviderError> {
+        let timeout_ms = timeout_ms.into();
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)
             || argv.iter().any(|value| value.contains('\0'))
-            || timeout_ms == 0
+            || timeout_ms == Some(0)
         {
             return Err(ProviderError::Invalid("invalid guest command".into()));
         }
@@ -231,7 +235,7 @@ impl ExecCommand {
     }
 
     #[must_use]
-    pub fn timeout_ms(&self) -> u32 {
+    pub fn timeout_ms(&self) -> Option<u64> {
         self.timeout_ms
     }
 }
