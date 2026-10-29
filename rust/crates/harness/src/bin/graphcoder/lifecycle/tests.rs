@@ -151,3 +151,72 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
         });
     }
 }
+
+#[test]
+fn a_backpressured_acknowledgement_cannot_hold_the_original_persistence_producer() {
+    let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+    let report = WaitReport::default();
+    let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
+    let _subscriber = tracing::dispatcher::set_default(&dispatch);
+    runtime.block_on(async {
+        let (owner, child) = tokio::io::duplex(256);
+        let port = ReportPort::new(GENERATION.into(), child).unwrap();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let completion = acyclic_native_runtime::spawn_persistence(move || {
+            let _ = entered.send(());
+            held.recv().map_err(io::Error::other)
+        });
+        tokio::pin!(completion);
+        let (terminate, signal) = tokio::sync::oneshot::channel();
+        let shutdown = async {
+            signal.await.unwrap();
+            Ok(143)
+        }
+        .boxed()
+        .shared();
+        let operation = async {
+            completion.as_mut().await??;
+            Ok(0)
+        };
+        // Retain an additional live primitive so the real acknowledgement
+        // exceeds the channel credit. Reading its prefix leaves it blocked.
+        let (_sender, receiver) = tokio::sync::oneshot::channel::<()>();
+        let _held =
+            acyclic_native_runtime::obs::waiting("channel-close", "k".repeat(1024), receiver);
+        let host = async {
+            let mut owner = BufReader::new(owner);
+            let mut line = String::new();
+            owner.read_line(&mut line).await.unwrap();
+            started.await.unwrap();
+            let mut bytes = serde_json::to_vec(&request()).unwrap();
+            bytes.push(b'\n');
+            owner.get_mut().write_all(&bytes).await.unwrap();
+            let prefix = owner.fill_buf().await.unwrap();
+            assert!(!prefix.is_empty() && !prefix.contains(&b'\n'));
+            assert!(
+                report
+                    .snapshot()
+                    .iter()
+                    .any(|wait| wait.primitive == "persistence-completion")
+            );
+            terminate.send(()).unwrap();
+            owner
+        };
+        let ((result, diagnostic), owner) = tokio::join!(
+            observe(&report, Ok(Some(port)), shutdown, false, operation),
+            host
+        );
+        assert_eq!(result.unwrap(), 143);
+        assert_eq!(diagnostic.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        release.send(()).unwrap();
+        completion.await.unwrap().unwrap();
+        assert!(
+            !report
+                .snapshot()
+                .iter()
+                .any(|wait| wait.primitive == "persistence-completion")
+        );
+        drop(owner);
+    });
+}
