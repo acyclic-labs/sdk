@@ -123,7 +123,7 @@ export class DefaultStreamProvider implements StreamProvider {
     return this.provider().then(provider => provider.fork(source, destination, authored));
   }
   read(path: string, options: Parameters<StreamProvider["read"]>[1]) {
-    const authored = { from: options.from, limit: options.limit };
+    const authored = structuredClone(options);
     return this.readAfterSelection(path, authored);
   }
   private async *readAfterSelection(path: string, options: Parameters<StreamProvider["read"]>[1]) {
@@ -132,6 +132,7 @@ export class DefaultStreamProvider implements StreamProvider {
   follow(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
     const authored = {
       from: options.from,
+      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
       ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
