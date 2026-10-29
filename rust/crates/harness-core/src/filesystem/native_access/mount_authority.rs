@@ -246,10 +246,13 @@ mod tests {
             issuer.verifier(&mut Some(&mut io.history_io()))?,
             caller.copy(&mut Some(&mut io.history_io()))?,
         );
-        let caller_options = caller_authority.mount_options(&workspace, None, true, &work).await?;
+        let caller_options = caller_authority
+            .mount_options(&workspace, None, true, &work)
+            .await?;
         let caller_source = workspace.native_source(&caller_options).await?;
         use acyclic_fs::native_mount::MountFilesystem;
-        let caller_guard = caller_source.native_callback_guard()
+        let caller_guard = caller_source
+            .native_callback_guard()
             .ok_or_else(|| Error::Invalid("admitted source lost its caller guard".into()))?;
         caller_guard.check(&work)?.await?;
         caller_guard.check_write(&work)?.await?;
@@ -257,8 +260,14 @@ mod tests {
         let before = work.receipt();
         assert!(caller_guard.check(&work)?.await.is_err());
         assert!(caller_guard.check_write(&work)?.await.is_err());
-        assert_eq!(work.receipt().backend_read_operations, before.backend_read_operations);
-        assert_eq!(work.receipt().backend_write_operations, before.backend_write_operations);
+        assert_eq!(
+            work.receipt().backend_read_operations,
+            before.backend_read_operations
+        );
+        assert_eq!(
+            work.receipt().backend_write_operations,
+            before.backend_write_operations
+        );
         // Negative control: bootstrap custody is explicitly retained by the host,
         // while admitted above only retains the authenticated narrow workload.
         let bootstrap = port.mount_options(&workspace, None, true, &work).await?;

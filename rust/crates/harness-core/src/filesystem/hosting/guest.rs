@@ -55,7 +55,7 @@ pub trait GuestMappingSource: Send + 'static {
 struct GuestAuthorityLifetime {
     cancellation: CancellationToken,
     task: tokio::task::JoinHandle<()>,
-    _alarm: acyclic_native_runtime::WallAlarm,
+    _alarm: Option<acyclic_native_runtime::WallAlarm>,
 }
 
 struct CancelGuest(CancellationToken);
@@ -118,22 +118,29 @@ impl GuestAuthorityLifetime {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let stop = cancellation.clone();
-        let alarm_custody = work.claim(
-            (std::mem::size_of_val(&stop)
-                + std::mem::size_of::<NativeAllocation>()
-                + 2 * std::mem::size_of::<usize>()) as u64,
-            1,
-            WorkCounters::UNCHARGED,
-        )?;
-        let alarm = acyclic_native_runtime::WallAlarm::register(
-            expires_at.saturating_mul(1000),
-            Arc::new(move || {
-                let _held = &alarm_custody;
-                stop.cancel();
-            }),
-        )
-        .map_err(|error| crate::Error::Storage(format!("guest expiry registration: {error}")))?;
+        let alarm = if expires_at == u64::MAX {
+            None
+        } else {
+            let stop = cancellation.clone();
+            let alarm_custody = work.claim(
+                (std::mem::size_of_val(&stop)
+                    + std::mem::size_of::<NativeAllocation>()
+                    + 2 * std::mem::size_of::<usize>()) as u64,
+                1,
+                WorkCounters::UNCHARGED,
+            )?;
+            let alarm = acyclic_native_runtime::WallAlarm::register(
+                expires_at.saturating_mul(1000),
+                Arc::new(move || {
+                    let _held = &alarm_custody;
+                    stop.cancel();
+                }),
+            )
+            .map_err(|error| {
+                crate::Error::Storage(format!("guest expiry registration: {error}"))
+            })?;
+            Some(alarm)
+        };
         let task = runtime.spawn(async move {
             let _frame = frame;
             future.await;
