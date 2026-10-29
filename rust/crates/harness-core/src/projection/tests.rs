@@ -56,12 +56,13 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         fn read<'a>(
             &'a self,
             _: &'a FileRef,
-            _: u64,
+            maximum: u64,
             _ceiling: Option<&'a crate::Capabilities>,
             io: Option<&'a PreparationIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>
         {
             assert!(io.and_then(PreparationIo::original_native_work).is_some());
+            assert_eq!(maximum, RECORD.len() as u64);
             crate::conversation::BoundedContentFuture::new(io, || async {
                 Ok(acyclic_stream::OwnedBytes::from_static(RECORD))
             })
@@ -79,9 +80,9 @@ async fn recorded_tool_metadata_projects_on_its_original_native_ledger() -> Resu
         "application/json",
         RECORD,
     )?;
-    {
+    for maximum in [None, Some(RECORD.len() as u64)] {
         let io = PreparationIo::from_native_work(&work)?;
-        let call = artifacts::read_tool_call(&NativeRecord, &reference, 4096, Some(&io)).await?;
+        let call = artifacts::read_tool_call(&NativeRecord, &reference, maximum, Some(&io)).await?;
         assert_eq!(call.call_id, "call");
         assert_eq!(call.arguments, serde_json::json!({"value":1}));
         assert_eq!(
@@ -364,10 +365,19 @@ async fn json_projection_checks_resolved_bytes_before_parsing() -> Result<()> {
         bytes: vec![0; 1_025],
         ..Resolver::default()
     };
-    assert!(matches!(
-        artifacts::read_value(&resolver, &reference, 1_024, None).await,
-        Err(Error::Invalid(_))
-    ));
+    assert!(
+        artifacts::read_value(&resolver, &reference, Some(1), None)
+            .await
+            .is_err()
+    );
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
+    for maximum in [None, Some(1_024)] {
+        assert!(matches!(
+            artifacts::read_value(&resolver, &reference, maximum, None).await,
+            Err(Error::Invalid(_))
+        ));
+    }
+    assert_eq!(resolver.calls.load(Ordering::SeqCst), 2);
     Ok(())
 }
 
