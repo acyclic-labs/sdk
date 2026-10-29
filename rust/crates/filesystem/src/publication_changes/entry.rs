@@ -6,7 +6,8 @@
 //! path's names joined by `/` in one encoding `tag`, so the key alone is the
 //! lossless path; otherwise it is `depth+1 (tag len name)*`. `records` holds
 //! the before and after file records the operation implies, each
-//! `file_id(16) kind(1) metadata_digest(32)`.
+//! `file_id(16) kind(1) reference_length reference`, where `reference` is the
+//! canonical metadata `ObjectId`, including its sealed storage association.
 use crate::VolumeConfig;
 use crate::kernel::{FileRecord, LogicalName, NameEncoding, NamespacePath};
 use crate::model::CaseSensitivity;
@@ -94,7 +95,10 @@ fn component_key(name: &LogicalName, config: VolumeConfig, key: &mut PathKey) {
     }
 }
 
-const RECORD_BYTES: usize = 16 + 1 + 32;
+fn record_len(record: &FileRecord) -> usize {
+    let reference = record.metadata.encoded_len();
+    16 + 1 + varint_len(reference) + reference
+}
 
 /// The semantic operation of a change: its before and after presence.
 pub(crate) fn operation(change: &ChangedPath) -> &'static str {
@@ -161,8 +165,11 @@ pub(crate) fn encoded_len(change: &ChangedPath, config: VolumeConfig) -> usize {
                 .sum::<usize>()
     };
     names
-        + RECORD_BYTES
-            * (usize::from(change.before.is_some()) + usize::from(change.after.is_some()))
+        + [change.before.as_ref(), change.after.as_ref()]
+            .into_iter()
+            .flatten()
+            .map(record_len)
+            .sum::<usize>()
 }
 
 /// Writes `change`'s metadata, `encoded_len` bytes, after `output`'s contents.
@@ -188,7 +195,9 @@ pub(crate) fn encode(change: &ChangedPath, config: VolumeConfig, output: &mut Ve
 fn write_record(record: &FileRecord, output: &mut Vec<u8>) {
     output.extend_from_slice(&record.file_id.into_bytes());
     output.push(record.kind.tag());
-    output.extend_from_slice(record.metadata.digest.as_bytes());
+    let reference = record.metadata.to_bytes();
+    prost::encoding::encode_varint(reference.len() as u64, output);
+    output.extend_from_slice(reference.as_slice());
 }
 
 /// Lossless path and presence facts decoded by the filesystem publication codec.
@@ -328,7 +337,12 @@ mod read {
             if present {
                 reader.take(16)?;
                 FileKind::from_tag(reader.byte()?).map_err(|_| Malformed)?;
-                reader.take(32)?;
+                let length = reader.number()?;
+                let reference =
+                    crate::ObjectId::try_from(reader.take(length)?).map_err(|_| Malformed)?;
+                if reference.kind != crate::ObjectKind::Metadata {
+                    return Err(Malformed);
+                }
             }
         }
         if !reader.0.is_empty() {

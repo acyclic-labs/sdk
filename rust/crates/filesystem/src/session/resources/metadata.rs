@@ -153,7 +153,18 @@ mod tests {
         }
         metadata.extend_from_slice(&[7; 16]);
         metadata.push(1);
-        metadata.extend_from_slice(&[8; 32]);
+        let reference = crate::ObjectId {
+            kind: crate::ObjectKind::Metadata,
+            digest: crate::Digest::from_bytes([8; 32]),
+            storage: Some(crate::ObjectStorage {
+                locator: crate::Digest::from_bytes([9; 32]),
+                root_file_id: crate::FileId::from_bytes([10; 16]),
+                origin_generation: crate::Digest::from_bytes([11; 32]),
+            }),
+        }
+        .to_bytes();
+        prost::encoding::encode_varint(reference.len() as u64, &mut metadata);
+        metadata.extend_from_slice(reference.as_slice());
         let entry = wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(
                 &text.as_bytes()[..acyclic_stream::MAX_RECORD_KEY_BYTES],
