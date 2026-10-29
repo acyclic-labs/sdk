@@ -117,13 +117,6 @@ pub struct Heads {
 }
 
 impl Heads {
-    pub(crate) fn check_size(&self) -> Result<(), StreamError> {
-        if crate::wire_codec::requests::heads_len(self) > crate::MAX_COMMAND_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        Ok(())
-    }
-
     pub(crate) fn validate_for(&self, request: &HeadsRequest) -> Result<(), StreamError> {
         let child_count = self.children.as_ref().map_or(0, |page| page.children.len());
         if self.projection != request.projection

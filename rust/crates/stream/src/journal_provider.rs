@@ -263,7 +263,6 @@ impl StreamProvider for JournalStream {
                     head.tail
                 };
             }
-            view.check_size()?;
             Ok(view)
         })
         .await

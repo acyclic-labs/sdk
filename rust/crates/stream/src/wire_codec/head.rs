@@ -56,8 +56,13 @@ pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
 }
 
 /// Encodes the exact authority snapshot and its ordered observations.
-pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
-    wire::HeadsResponse {
+/// The encoded-size bound is paid at this transport boundary, never by a
+/// trusted in-process provider observation.
+pub fn heads_to_wire(value: crate::Heads) -> Result<wire::HeadsResponse, StreamError> {
+    if super::requests::heads_len(&value) > crate::MAX_COMMAND_BYTES {
+        return Err(StreamError::LimitExceeded);
+    }
+    Ok(wire::HeadsResponse {
         retained: value
             .retained
             .into_iter()
@@ -76,7 +81,7 @@ pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
             })
             .collect(),
         children: value.children.map(children_page_to_wire),
-    }
+    })
 }
 
 /// Validates every head and the shared authority cut before exposing the view.
@@ -221,7 +226,7 @@ mod tests {
                 heads: Default::default(), children: None,
             };
             prop_assert_eq!(view.validate_for(&request), Ok(()));
-            let response = heads_to_wire(view.clone());
+            let response = heads_to_wire(view.clone()).unwrap();
             prop_assert_eq!(crate::wire_codec::requests::heads_len(&view), response.encoded_len());
             let decoded = wire::HeadsResponse::decode(response.encode_to_vec().as_slice()).unwrap();
             prop_assert_eq!(heads_from_response(decoded).unwrap(), view);

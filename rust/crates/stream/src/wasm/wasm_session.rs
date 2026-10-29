@@ -115,7 +115,9 @@ impl WasmSession {
             .heads(request, credential)
             .await
             .map_err(js_error)?;
-        Ok(wire_codec::heads_to_wire(view).encode_to_vec())
+        Ok(wire_codec::heads_to_wire(view)
+            .map_err(js_error)?
+            .encode_to_vec())
     }
 
     /// Opens explicit application decisions through the same session pool.

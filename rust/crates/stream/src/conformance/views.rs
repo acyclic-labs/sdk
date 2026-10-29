@@ -132,7 +132,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 if crate::wire_codec::requests::heads_len(observed)
                     != prost::Message::encoded_len(&crate::wire_codec::heads_to_wire(
                         observed.clone(),
-                    ))
+                    )?)
                 {
                     return Err(StreamError::Unavailable);
                 }

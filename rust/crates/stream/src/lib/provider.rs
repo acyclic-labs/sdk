@@ -44,6 +44,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Observes named heads, absence and a child page atomically at one snapshot.
     /// Adapters must forward this operation intact; separate head calls cannot
     /// establish this guarantee. Denial refuses the whole view, never absence.
+    /// Trusted in-process results use the caller's result budget; encoded-size
+    /// protection is enforced only when the view crosses a transport boundary.
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError>;
     /// Exact Auth source used by this provider's transport, when configured.
     /// Forwarding adapters preserve it. Subscribe before resolving a lease or

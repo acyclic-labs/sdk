@@ -243,7 +243,6 @@ impl StreamProvider for MemoryStream {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
         let view = self.capture_heads(&request).await?;
-        view.check_size()?;
         Ok(view)
     }
 

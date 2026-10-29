@@ -1,6 +1,77 @@
 use crate::*;
 use futures::StreamExt as _;
 
+pub(crate) async fn large_retained_view<P: StreamProvider>(
+    provider: &P,
+) -> Result<HeadsRequest, StreamError> {
+    let path = StreamPath::new("retained-size")?;
+    let payload = OwnedBytes::from(vec![42; MAX_RECORD_BYTES / 2]);
+    let count = MAX_COMMAND_BYTES / payload.len() + 1;
+    let AppendOutcome::Committed(receipt) = provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![payload.into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?
+    else {
+        return Err(StreamError::InvalidResponse);
+    };
+    Ok(HeadsRequest {
+        retained: std::iter::repeat_n(
+            RetainedRecord {
+                commit_id: receipt.commit_id,
+                path,
+                sequence: 0,
+            },
+            count,
+        )
+        .collect(),
+        durable_through: None,
+        projection: HeadProjection::Tail,
+        paths: Default::default(),
+        children: None,
+        limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
+        at_least: Default::default(),
+    })
+}
+
+async fn check_trusted_view<P: StreamProvider>(provider: &P) -> Result<(), StreamError> {
+    let mut request = large_retained_view(provider).await?;
+    let mut view = provider.heads(request.clone()).await?;
+    view.validate_for(&request)?;
+    let payload = vec![42; MAX_RECORD_BYTES / 2];
+    assert!(view.retained.iter().all(|selected| {
+        selected
+            .record
+            .as_ref()
+            .is_some_and(|record| record.value.as_slice() == payload)
+    }));
+    assert_eq!(
+        wire_codec::heads_to_wire(view.clone()),
+        Err(StreamError::LimitExceeded)
+    );
+    request.retained.truncate(1);
+    request.limit = 1;
+    view.retained.truncate(1);
+    wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?)?.validate_for(&request)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn trusted_heads_use_the_result_budget_and_wire_heads_enforce_the_byte_bound()
+-> Result<(), Box<dyn std::error::Error>> {
+    check_trusted_view(&MemoryStream::default()).await?;
+    #[cfg(feature = "local")]
+    {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        check_trusted_view(&provider).await?;
+    }
+    Ok(())
+}
+
 fn request(
     path: &StreamPath,
     expected: u64,
@@ -267,7 +338,7 @@ async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Resu
         .ok_or(StreamError::InvalidResponse)?
         .retained_through = Some(2);
     assert_eq!(
-        wire_codec::heads_from_response(wire_codec::heads_to_wire(view)),
+        wire_codec::heads_from_response(wire_codec::heads_to_wire(view)?),
         Err(StreamError::InvalidResponse)
     );
     Ok(())
