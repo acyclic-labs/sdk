@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::VecDeque;
 use std::io::Write;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
@@ -20,7 +21,7 @@ fn child() -> io::Result<()> {
     std::process::exit(7);
 }
 
-type Addresses = Arc<Mutex<Vec<(bool, usize, usize)>>>;
+type Addresses = Arc<Mutex<VecDeque<(bool, usize, usize)>>>;
 struct Handler {
     wake: ProcessWake,
     addresses: Addresses,
@@ -44,7 +45,7 @@ impl CaptureHandler for Handler {
         self.addresses
             .lock()
             .unwrap()
-            .push((stderr, bytes.as_ptr() as usize, bytes.len()));
+            .push_back((stderr, bytes.as_ptr() as usize, bytes.len()));
         Ok(ProcessInput::default())
     }
 }
@@ -74,9 +75,10 @@ fn start(
     let child = tree.child.as_mut().unwrap();
     let pid = child.id();
     let input = child.stdin.take().unwrap();
-    let addresses = Arc::new(Mutex::new(Vec::new()));
+    let addresses = Arc::new(Mutex::new(VecDeque::new()));
     let wake = ProcessWake::new()?;
     let output = tree.stream_capture(
+        &crate::TaskSpawner::current(),
         timeout,
         usize::MAX,
         None,
@@ -88,11 +90,8 @@ fn start(
     Ok((output, input, pid, addresses, wake))
 }
 
-fn original_buffer(addresses: &Addresses, stderr: bool, bytes: &[u8]) -> bool {
-    addresses
-        .lock()
-        .unwrap()
-        .contains(&(stderr, bytes.as_ptr() as usize, bytes.len()))
+fn original_buffer(original: (bool, usize, usize), stderr: bool, bytes: &[u8]) -> bool {
+    original == (stderr, bytes.as_ptr() as usize, bytes.len())
 }
 
 #[tokio::test]
@@ -110,9 +109,10 @@ async fn native_stream_moves_original_buffers_and_delivers_exit_after_pipes() ->
                 continue;
             }
             assert!(bytes.len() <= 64 * 1024);
-            assert!(original_buffer(&addresses, is_stderr, &bytes));
+            let original = addresses.lock().unwrap().pop_front().unwrap();
+            assert!(original_buffer(original, is_stderr, &bytes));
             // A copying adapter fails the same pointer identity oracle.
-            assert!(!original_buffer(&addresses, is_stderr, &bytes.clone()));
+            assert!(!original_buffer(original, is_stderr, &bytes.clone()));
             destination.extend_from_slice(&bytes);
         }
         if !released && String::from_utf8_lossy(&stdout).contains(&format!("CHILD={pid}")) {

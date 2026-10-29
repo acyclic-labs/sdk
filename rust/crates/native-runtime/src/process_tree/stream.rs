@@ -78,15 +78,18 @@ impl ProcessTree {
     /// A slow reader holds no worker and admits no more pipe reads. Owner
     /// notifications, the original deadline and receiver loss remain active
     /// while credit is withheld. No process or payload copy is introduced.
+    /// `spawner` retains the invoking task's submission context, so a spawn
+    /// worker can transfer custody before returning the output receiver.
     pub fn stream_capture<H: CaptureHandler>(
         self,
+        spawner: &crate::TaskSpawner,
         timeout: Duration,
         max_bytes: usize,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> ProcessCaptureStream<H> {
         let (sender, receiver) = mpsc::channel(1);
-        let completion = crate::spawn(self.capture_streamed(
+        let completion = spawner.spawn(self.capture_streamed(
             CaptureSchedule::new(timeout),
             max_bytes,
             input,
