@@ -19,13 +19,13 @@ where
     async move { received.await.map_err(|_| StreamError::Unavailable) }
 }
 
-pub(super) async fn spawn_blocking<T>(
+pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
     _medium: &'static str,
     _operation: &'static str,
     _key: &dyn std::fmt::Display,
-    work: impl FnOnce() -> T,
-) -> std::result::Result<T, tokio::task::JoinError> {
-    Ok(work())
+    work: F,
+) -> impl Future<Output = std::result::Result<T, tokio::task::JoinError>> + use<T, F> {
+    async move { Ok(work()) }
 }
 
 // The same owned lease boundary, executed by the existing model worker.
