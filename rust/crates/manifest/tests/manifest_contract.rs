@@ -921,26 +921,47 @@ fn actor_and_worker_lowering_preserve_and_remove_selected_fetch_authority()
     let environment = manifest.environments.first_mut().ok_or_else(missing)?;
     add_worker(environment)?;
     for worker in [false, true] {
-        let index = if worker { environment.entries.len() - 1 } else { 0 };
-        environment.entries.get_mut(index).ok_or_else(missing)?.fetch = Some(FetchBinding {
+        let index = if worker {
+            environment.entries.len() - 1
+        } else {
+            0
+        };
+        environment
+            .entries
+            .get_mut(index)
+            .ok_or_else(missing)?
+            .fetch = Some(FetchBinding {
             name: "UPSTREAM".into(),
-            egress: vec![EgressRule { host: "api.example.com".into(), port: 8443 }],
+            egress: vec![EgressRule {
+                host: "api.example.com".into(),
+                port: 8443,
+            }],
         });
         let entry = environment.entries.get(index).ok_or_else(missing)?;
-        let request = if worker { lower_worker(environment, entry, "selected")? }
-            else { lower_actor(environment, entry, "selected")? };
+        let request = if worker {
+            lower_worker(environment, entry, "selected")?
+        } else {
+            lower_actor(environment, entry, "selected")?
+        };
         let wire: acyclic_actors::wire::DeploymentRequest = request.into();
         let restored = acyclic_actors::domain::DeploymentRequest::try_from(
-            acyclic_actors::wire::DeploymentRequest::decode(wire.encode_to_vec().as_slice())?
+            acyclic_actors::wire::DeploymentRequest::decode(wire.encode_to_vec().as_slice())?,
         )?;
         let fetch = restored.fetch().ok_or("lowerer dropped Fetch")?;
         assert_eq!(fetch.name(), "UPSTREAM");
         let rule = fetch.egress().first().ok_or("destination")?;
         assert_eq!((rule.host(), rule.port()), ("api.example.com", 8443));
-        environment.entries.get_mut(index).ok_or_else(missing)?.fetch = None;
+        environment
+            .entries
+            .get_mut(index)
+            .ok_or_else(missing)?
+            .fetch = None;
         let entry = environment.entries.get(index).ok_or_else(missing)?;
-        let removed = if worker { lower_worker(environment, entry, "removed")? }
-            else { lower_actor(environment, entry, "removed")? };
+        let removed = if worker {
+            lower_worker(environment, entry, "removed")?
+        } else {
+            lower_actor(environment, entry, "removed")?
+        };
         assert!(removed.fetch().is_none(), "removed authority was inherited");
     }
     Ok(())

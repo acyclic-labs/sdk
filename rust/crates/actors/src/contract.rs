@@ -160,7 +160,8 @@ fn validate_fetch_selection(
     bindings: &[wire::Binding],
 ) -> Result<(), ContractError> {
     if let Some(fetch) = fetch {
-        domain::FetchBinding::try_from(fetch.clone()).map_err(|_| ContractError::InvalidArgument)?;
+        domain::FetchBinding::try_from(fetch.clone())
+            .map_err(|_| ContractError::InvalidArgument)?;
         if secrets.iter().any(|secret| secret.name == fetch.name)
             || bindings.iter().any(|binding| binding.name == fetch.name)
         {
@@ -272,9 +273,8 @@ pub use generated::{
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
     CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
     DeleteWorkerRequestProto, DeleteWorkerResponseProto, DeploymentObservationProto,
-    DeploymentRequestProto, DeploymentResponseProto, ErrorCode, HeaderProto,
-    FetchBindingProto, EgressRuleProto,
-    InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
+    DeploymentRequestProto, DeploymentResponseProto, EgressRuleProto, ErrorCode, FetchBindingProto,
+    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
     InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
     RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SecretSelectionProto,

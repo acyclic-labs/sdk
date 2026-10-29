@@ -793,15 +793,25 @@ fn lower_worker_unchecked(
     .and_then(|request| request.with_fetch(selected_fetch))
     .map_err(|_| ManifestError::invalid("entry.runtime", "workers-admission"))
 }
-fn deployment_fetch(entry: &Entry) -> Result<Option<acyclic_actors::domain::FetchBinding>, ManifestError> {
-    entry.fetch.as_ref().map(|fetch| {
-        let rules = fetch.egress.iter().map(|rule| {
-            acyclic_actors::domain::EgressRule::new(rule.host.clone(), u32::from(rule.port))
-        }).collect::<Result<Vec<_>, _>>()
-            .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))?;
-        acyclic_actors::domain::FetchBinding::new(fetch.name.clone(), rules)
-            .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))
-    }).transpose()
+fn deployment_fetch(
+    entry: &Entry,
+) -> Result<Option<acyclic_actors::domain::FetchBinding>, ManifestError> {
+    entry
+        .fetch
+        .as_ref()
+        .map(|fetch| {
+            let rules = fetch
+                .egress
+                .iter()
+                .map(|rule| {
+                    acyclic_actors::domain::EgressRule::new(rule.host.clone(), u32::from(rule.port))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))?;
+            acyclic_actors::domain::FetchBinding::new(fetch.name.clone(), rules)
+                .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))
+        })
+        .transpose()
 }
 
 fn deployment_parts(

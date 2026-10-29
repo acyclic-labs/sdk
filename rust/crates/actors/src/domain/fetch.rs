@@ -33,7 +33,10 @@ impl FetchBinding {
         let mut destinations = std::collections::HashSet::new();
         if !valid_environment_name(&self.name)
             || self.egress.is_empty()
-            || self.egress.iter().any(|rule| !destinations.insert((rule.host(), rule.port())))
+            || self
+                .egress
+                .iter()
+                .any(|rule| !destinations.insert((rule.host(), rule.port())))
         {
             return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
         }
@@ -74,12 +77,13 @@ impl EgressRule {
     pub fn valid_host(value: &str) -> bool {
         value.len() <= 253
             && value.contains('.')
-            && value.split('.').all(|label| {
-                crate::addressing::validate_dns_label(label.as_bytes()).is_ok()
-            })
-            && value.rsplit('.').next().is_some_and(|tail| {
-                !tail.bytes().all(|b| b.is_ascii_digit())
-            })
+            && value
+                .split('.')
+                .all(|label| crate::addressing::validate_dns_label(label.as_bytes()).is_ok())
+            && value
+                .rsplit('.')
+                .next()
+                .is_some_and(|tail| !tail.bytes().all(|b| b.is_ascii_digit()))
             && !value.split('.').any(|part| {
                 part.strip_prefix("0x")
                     .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()))
