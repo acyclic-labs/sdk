@@ -1,20 +1,62 @@
 use super::*;
 use proptest::prelude::*;
 
-fn object(kind: crate::ObjectKind, number: u8) -> crate::ObjectId {
+fn object(kind: crate::ObjectKind, number: u8, sealed: bool) -> crate::ObjectId {
     crate::ObjectId {
-        storage: None,
+        storage: sealed.then_some(crate::ObjectStorage {
+            locator: crate::Digest::from_bytes([number.wrapping_add(1); 32]),
+            root_file_id: crate::FileId::from_bytes([2; 16]),
+            origin_generation: crate::Digest::from_bytes([number.wrapping_add(2); 32]),
+        }),
         kind,
         digest: crate::Digest::from_bytes([number; 32]),
     }
 }
-fn file(payload: &[u8]) -> FileRecord {
+fn file(payload: &[u8], sealed: bool, number: u64) -> FileRecord {
+    let (kind, payload) = match number / 8 % 7 {
+        0 => (
+            FileKind::Regular,
+            FilePayload::InlineRegular(InlineFileData::new(payload).unwrap()),
+        ),
+        1 => (
+            FileKind::Regular,
+            FilePayload::Regular {
+                logical_bytes: number,
+                extents: object(crate::ObjectKind::ExtentPage, 4, sealed),
+            },
+        ),
+        2 => (
+            FileKind::Directory,
+            FilePayload::Directory {
+                entries: object(crate::ObjectKind::TreePage, 4, sealed),
+            },
+        ),
+        3 => (
+            FileKind::SymbolicLink,
+            FilePayload::SymbolicLink {
+                target_bytes: number,
+                target: object(crate::ObjectKind::Blob, 4, sealed),
+            },
+        ),
+        4 => (FileKind::Fifo, FilePayload::Empty),
+        5 => (
+            FileKind::CharacterDevice,
+            FilePayload::Device { major: 1, minor: 2 },
+        ),
+        _ => (
+            FileKind::ReparsePoint,
+            FilePayload::ReparsePoint {
+                payload_bytes: number,
+                payload: object(crate::ObjectKind::Blob, 4, sealed),
+            },
+        ),
+    };
     FileRecord {
         file_id: crate::FileId::from_bytes([2; 16]),
-        kind: FileKind::Regular,
+        kind,
         link_count: 1,
-        metadata: object(crate::ObjectKind::Metadata, 3),
-        payload: FilePayload::InlineRegular(InlineFileData::new(payload).unwrap()),
+        metadata: object(crate::ObjectKind::Metadata, 3, sealed),
+        payload,
     }
 }
 fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
@@ -37,11 +79,12 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
         .unwrap()
     };
     let internal = number & 1 != 0;
+    let sealed = number & 4 != 0;
     match kind {
         0 => encode_file_metadata(
             FileMetadata {
                 posix_mode: MetadataField::Value((number as u32) & 0o777),
-                acl: MetadataField::Value(object(crate::ObjectKind::Blob, 3)),
+                acl: MetadataField::Value(object(crate::ObjectKind::Blob, 3, sealed)),
                 ..FileMetadata::default()
             },
             &mut observe,
@@ -51,9 +94,15 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             &GenerationRoot {
                 volume_id: crate::VolumeId::from_bytes([1; 16]),
                 root_file_id: crate::FileId::from_bytes([2; 16]),
-                file_table: object(crate::ObjectKind::FileTablePage, 3),
+                file_table: object(crate::ObjectKind::FileTablePage, 3, sealed),
                 parents: (0..number % 3)
-                    .map(|i| crate::GenerationId::new(crate::Digest::from_bytes([i as u8; 32])))
+                    .map(|i| {
+                        crate::GenerationId::from_root(object(
+                            crate::ObjectKind::GenerationRoot,
+                            i as u8,
+                            sealed,
+                        ))
+                    })
                     .collect(),
                 required_features: 0,
             },
@@ -64,10 +113,10 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             let page = if internal {
                 FileTablePage::Internal(vec![Child {
                     first: crate::FileId::from_bytes([1; 16]),
-                    page: object(crate::ObjectKind::FileTablePage, 2),
+                    page: object(crate::ObjectKind::FileTablePage, 2, sealed),
                 }])
             } else {
-                FileTablePage::Leaf(vec![file(payload)])
+                FileTablePage::Leaf(vec![file(payload, sealed, number)])
             };
             encode_file_table_page(&page, 32, &mut observe, fail)
         }
@@ -75,7 +124,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             let page = if internal {
                 TreePage::Internal(vec![Child {
                     first: name(),
-                    page: object(crate::ObjectKind::TreePage, 2),
+                    page: object(crate::ObjectKind::TreePage, 2, sealed),
                 }])
             } else {
                 TreePage::Leaf(vec![TreeEntry {
@@ -91,7 +140,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
                 ExtentPage::Internal(vec![ExtentChild {
                     first_offset: 0,
                     end_offset: 1,
-                    page: object(crate::ObjectKind::ExtentPage, 2),
+                    page: object(crate::ObjectKind::ExtentPage, 2, sealed),
                 }])
             } else {
                 ExtentPage::Leaf(vec![Extent {
@@ -106,13 +155,13 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             let page = if internal {
                 AttributePage::Internal(vec![Child {
                     first: attribute(),
-                    page: object(crate::ObjectKind::AttributePage, 2),
+                    page: object(crate::ObjectKind::AttributePage, 2, sealed),
                 }])
             } else {
                 AttributePage::Leaf(vec![AttributeEntry {
                     name: attribute(),
                     value_bytes: number,
-                    value: object(crate::ObjectKind::Blob, 2),
+                    value: object(crate::ObjectKind::Blob, 2, sealed),
                 }])
             };
             encode_attribute_page(&page, 32, &mut observe, fail)
@@ -122,13 +171,13 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
                 BlobNode::Internal(vec![BlobChild {
                     first_offset: 0,
                     end_offset: 1,
-                    page: object(crate::ObjectKind::Blob, 2),
+                    page: object(crate::ObjectKind::Blob, 2, sealed),
                 }])
             } else {
                 BlobNode::Leaf(vec![BlobChunkRef {
                     first_offset: 0,
                     end_offset: 1,
-                    chunk: object(crate::ObjectKind::BlobChunk, 2),
+                    chunk: object(crate::ObjectKind::BlobChunk, 2, sealed),
                 }])
             };
             encode_blob_page(
@@ -146,7 +195,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             VolumeCreated {
                 volume_id: crate::VolumeId::from_bytes([1; 16]),
                 config: crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
-                initial_generation_root: object(crate::ObjectKind::GenerationRoot, 2),
+                initial_generation_root: object(crate::ObjectKind::GenerationRoot, 2, sealed),
             },
             &mut observe,
             fail,
@@ -156,7 +205,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
                 volume_id: crate::VolumeId::from_bytes([1; 16]),
                 kind: RetentionKind::Checkpoint,
                 label: format!("r{number:016x}"),
-                generation_root: object(crate::ObjectKind::GenerationRoot, 2),
+                generation_root: object(crate::ObjectKind::GenerationRoot, 2, sealed),
                 config: crate::VolumeConfig::portable(crate::Lifecycle::Durable),
             },
             &mut observe,
@@ -167,7 +216,11 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
             &mut observe,
             fail,
         ),
-        _ => super::super::file_table::encode_file_record(file(payload), &mut observe, fail),
+        _ => super::super::file_table::encode_file_record(
+            file(payload, sealed, number),
+            &mut observe,
+            fail,
+        ),
     }
     .unwrap()
 }
@@ -195,12 +248,12 @@ fn modes() -> impl Iterator<Item = u8> {
 #[test]
 fn every_writer_shape_round_trips_with_exact_completed_work() {
     for kind in 0..11 {
-        for variant in 0..2 {
+        for variant in 0..56 {
             let wire = fixture(kind, b"payload", variant);
             for mode in modes() {
                 check(&input(kind, mode, &wire));
             }
-            // The gate captures these canonical cases as checked-in fuzz seeds.
+            // Emit canonical inputs for fuzz corpus capture.
             eprintln!(
                 "encoder_seed {kind}-{variant} {}",
                 hex::encode(input(kind, 1, &wire))

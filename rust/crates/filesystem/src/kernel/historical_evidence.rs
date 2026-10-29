@@ -67,10 +67,8 @@ pub fn encode_original_generation_evidence(
     if maximum_bytes == 0 || u64::try_from(minimum).unwrap_or(u64::MAX) > maximum_bytes {
         return Err(PublicationEvidenceError::TooLarge);
     }
-    let (generation_root, generation_id) = generation_root_id(&proof.root)?;
-    if proof.generation_id != generation_id {
-        return Err(PublicationEvidenceError::Mismatch);
-    }
+    let generation_id = proof.generation_id;
+    let generation_root = generation_id.object_id();
     let projection = HistoricalGenerationProjection {
         append: append.clone(),
         manifest: GenerationExportManifest {
@@ -226,10 +224,12 @@ fn validate_projection(
     value: &HistoricalGenerationProjection,
     maximum_bytes: u64,
 ) -> Result<(), PublicationEvidenceError> {
-    let (root_id, generation_id) = generation_root_id(&value.root)?;
+    let (plaintext_root, _) = generation_root_id(&value.root)?;
+    let root_id = value.manifest.generation_root;
     if value.manifest.volume_id != value.root.volume_id
-        || value.manifest.generation_root != root_id
-        || value.manifest.generation_id != generation_id
+        || root_id.kind != crate::ObjectKind::GenerationRoot
+        || root_id.digest != plaintext_root.digest
+        || value.manifest.generation_id.object_id() != root_id
     {
         return Err(PublicationEvidenceError::Mismatch);
     }

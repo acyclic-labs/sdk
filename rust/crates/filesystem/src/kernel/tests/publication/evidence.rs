@@ -369,3 +369,128 @@ async fn publication_evidence_rejects_trailing_and_truncated_frames_with_fresh_d
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn original_evidence_binds_complete_creation_and_retention_references() -> TestResult {
+    use crate::kernel::{
+        RetentionCreated, RetentionKind, VolumeCreated, decode_historical_generation_evidence,
+        encode_original_generation_evidence, encode_retention_created, encode_volume_created,
+        retention_authority_id,
+    };
+    let (request, original, _, config) = evidence_fixture().await?;
+    for sealed in [false, true] {
+        let mut proof = original.clone();
+        let mut root = request.generation_root;
+        if sealed {
+            root.storage = Some(crate::ObjectStorage {
+                locator: Digest::from_bytes([91; 32]),
+                root_file_id: proof.root.root_file_id,
+                origin_generation: Digest::from_bytes([92; 32]),
+            });
+            proof.generation_id = crate::GenerationId::from_root(root);
+            *proof
+                .objects
+                .iter_mut()
+                .find(|id| **id == request.generation_root)
+                .ok_or("missing root")? = root;
+        }
+        for retained in [false, true] {
+            let (authority_id, payload) = if retained {
+                (
+                    retention_authority_id(
+                        request.volume_id,
+                        RetentionKind::Checkpoint,
+                        "original",
+                    ),
+                    encode_retention_created(
+                        &RetentionCreated {
+                            volume_id: request.volume_id,
+                            kind: RetentionKind::Checkpoint,
+                            label: "original".into(),
+                            generation_root: root,
+                            config,
+                        },
+                        |_| Ok::<_, crate::FsError>(()),
+                        |_| crate::FsError::from(CanonicalDecodeError::AllocationFailed),
+                    )?,
+                )
+            } else {
+                (
+                    request.authority_id,
+                    encode_volume_created(
+                        VolumeCreated {
+                            volume_id: request.volume_id,
+                            initial_generation_root: root,
+                            config,
+                        },
+                        |_| Ok::<_, crate::FsError>(()),
+                        |_| crate::FsError::from(CanonicalDecodeError::AllocationFailed),
+                    )?,
+                )
+            };
+            let append = GuardedAppend {
+                authority_id,
+                epoch: request.epoch,
+                expected: Head::genesis(request.epoch),
+                commit: ProposedCommit {
+                    publication: None,
+                    operation_id: request.operation_id,
+                    fingerprint: Digest::from_bytes(Sha256::digest(&payload).into()),
+                    payload: Bytes::from(payload),
+                },
+                permit: PublicationPermit::Unrestricted,
+            };
+            let record = crate::DurableCommit {
+                epoch: append.epoch,
+                sequence: Sequence::new(1),
+                operation_id: append.commit.operation_id,
+                fingerprint: append.commit.fingerprint,
+                previous_digest: append.expected.digest,
+                digest: crate::authority_commit_digest(
+                    authority_id,
+                    append.epoch,
+                    Sequence::new(1),
+                    append.commit.operation_id,
+                    append.commit.fingerprint,
+                    append.expected.digest,
+                    &append.commit.payload,
+                ),
+                payload: append.commit.payload.clone(),
+                settled_at_micros: Some(1),
+            };
+            let evidence = encode_original_generation_evidence(&proof, &append, config, 64 * 1024)?;
+            let decoded = decode_historical_generation_evidence(
+                &evidence,
+                authority_id,
+                &record,
+                64 * 1024,
+                64,
+            )?;
+            assert_eq!(decoded.manifest.generation_root, root);
+            assert_eq!(decoded.manifest.generation_id, proof.generation_id);
+            assert_eq!(decoded.manifest.objects, proof.objects);
+            assert_eq!(decoded.root, proof.root);
+            assert_eq!(decoded.append, append);
+            // Same plaintext digest with a changed locator must not authenticate.
+            let mut changed = proof.clone();
+            let mut wrong_root = root;
+            wrong_root.storage = Some(crate::ObjectStorage {
+                locator: Digest::from_bytes([93; 32]),
+                root_file_id: proof.root.root_file_id,
+                origin_generation: Digest::from_bytes([92; 32]),
+            });
+            changed.generation_id = crate::GenerationId::from_root(wrong_root);
+            assert!(matches!(
+                encode_original_generation_evidence(&changed, &append, config, 64 * 1024),
+                Err(PublicationEvidenceError::Mismatch)
+            ));
+            let mut changed = proof.clone();
+            changed.root.volume_id = VolumeId::from_bytes([94; 16]);
+            assert!(matches!(
+                encode_original_generation_evidence(&changed, &append, config, 64 * 1024),
+                Err(PublicationEvidenceError::Mismatch)
+            ));
+        }
+    }
+    Ok(())
+}
