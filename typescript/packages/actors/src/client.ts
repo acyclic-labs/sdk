@@ -101,6 +101,7 @@ export class ActorsClient {
       if (this.#renewable && client.withCredential === undefined) {
         throw new ActorsTransportError("Actors binding does not support per-request credentials", "configuration");
       }
+      throwIfAborted(signal);
       const response = await abortable(this.#renewable
         ? client.withCredential!(method.name, encoded, token, signal)
         : client[operation](encoded, signal), signal);

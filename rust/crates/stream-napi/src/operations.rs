@@ -72,20 +72,16 @@ pub(super) async fn tail(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::TailRequest>(&request, "tail")?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path)
-        .map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async { stream.tail().await.map_err(|error| stream_error(&error)) },
+        async {
+            wire_codec::tail_response(&**client, request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
         cancellation_state(cancellation),
     )
     .await?;
-    encode(
-        &wire::TailResponse {
-            tail: value,
-            ..Default::default()
-        },
-        "tail",
-    )
+    encode(&value, "tail")
 }
 
 pub(super) async fn append(
