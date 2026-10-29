@@ -129,7 +129,7 @@ impl RemoteReadWait<'_> {
             budget.items_examined = budget
                 .items_examined
                 .checked_sub(cleanup)
-                .ok_or(WorkError::Overflow)?;
+                .ok_or(crate::WorkError::Overflow)?;
             work.work.verify(budget)?;
             work.budget = budget;
             self.reserved += cleanup;
@@ -151,7 +151,7 @@ impl RemoteReadWait<'_> {
                 .budget
                 .items_examined
                 .checked_add(std::mem::take(&mut self.reserved))
-                .ok_or(WorkError::Overflow)?;
+                .ok_or(crate::WorkError::Overflow)?;
             let mut result = Ok(());
             for wait in waits.into_iter().flatten() {
                 result = result.and(work.finish_cancelled(wait).map_err(remote_read_wait_error));
