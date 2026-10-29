@@ -495,7 +495,9 @@ impl Medium for LocalMedium {
             let count = usize::try_from(range.end - range.start)
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
             let mut bytes = vec![0; count];
-            file.seek(std::io::SeekFrom::Start(range.start))?;
+            if range.start != 0 {
+                file.seek(std::io::SeekFrom::Start(range.start))?;
+            }
             file.read_exact(&mut bytes)?;
             Ok(Some(OwnedBytes::from(bytes)))
         })
