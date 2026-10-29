@@ -97,7 +97,7 @@ pub trait HttpTransport: ProviderPlatform {
 }
 
 #[cfg(target_arch = "wasm32")]
-mod browser;
+pub(crate) mod browser;
 #[cfg(target_arch = "wasm32")]
 pub use browser::BrowserTransport;
 

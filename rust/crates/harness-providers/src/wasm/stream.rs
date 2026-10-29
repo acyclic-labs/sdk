@@ -1,4 +1,4 @@
-use super::{error, to_js_json};
+use super::{error, model_error, to_js_json};
 use crate::ResolvedModel;
 use acyclic_harness_core::model::{ModelDispatch, ModelEvent};
 use acyclic_stream::BoxProviderStream;
@@ -131,7 +131,7 @@ impl WasmModelStream {
                 }
                 Some(Err(cause)) => {
                     state.stream.borrow_mut().take();
-                    return Err(error(cause));
+                    return Err(model_error(cause));
                 }
                 None => {
                     state.stream.borrow_mut().take();

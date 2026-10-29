@@ -270,6 +270,23 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
             true,
         ),
     ];
+    for (code, terminal) in [
+        (acyclic_harness_core::wire::ErrorCode::Invalid, true),
+        (acyclic_harness_core::wire::ErrorCode::Unauthorized, true),
+        (acyclic_harness_core::wire::ErrorCode::Unavailable, true),
+        (acyclic_harness_core::wire::ErrorCode::Storage, false),
+        (acyclic_harness_core::wire::ErrorCode::Indeterminate, false),
+        (acyclic_harness_core::wire::ErrorCode::Cancelled, false),
+    ] {
+        cases.push((
+            CoreError::ModelDiagnostic {
+                code,
+                message: "host-protected model exchange failed".into(),
+                custody: None,
+            },
+            terminal,
+        ));
+    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     cases.push((
         CoreError::NativeBoundary {

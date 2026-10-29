@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Authentication required by a registered endpoint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub enum Authentication {
     /// A provider API key is required.
@@ -13,6 +13,27 @@ pub enum Authentication {
     ApiKeyOrCodexLogin,
     /// The endpoint accepts anonymous requests; use an API key when configured.
     Optional,
+    /// Resolve a bearer through a host-protected secret binding on each request.
+    Bearer {
+        /// Canonical logical reference, resolved outside guest memory.
+        secret_reference: String,
+    },
+    /// Resolve the adapter's API-key header through the same protected binding.
+    ApiKeySecret {
+        /// Canonical logical reference, resolved outside guest memory.
+        secret_reference: String,
+    },
+}
+
+impl Authentication {
+    pub(crate) fn secret_reference(&self) -> Option<&str> {
+        match self {
+            Self::Bearer { secret_reference } | Self::ApiKeySecret { secret_reference } => {
+                Some(secret_reference)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Endpoint configuration independent of immutable model identity.

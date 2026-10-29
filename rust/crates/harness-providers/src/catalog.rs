@@ -128,7 +128,9 @@ const MODELS: &[(&str, &str, u32, u32, ModelFeatures)] = &[
 pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
     ENDPOINTS
         .iter()
-        .map(|&(id, adapter, authentication, base_url)| {
+        .map(|(id, adapter, authentication, base_url)| {
+            let (id, adapter, base_url) = (*id, *adapter, *base_url);
+            let authentication = authentication.clone();
             let models = MODELS
                 .iter()
                 .filter(|(provider, ..)| *provider == id)

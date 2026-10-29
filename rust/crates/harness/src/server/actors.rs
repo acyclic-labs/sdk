@@ -36,6 +36,10 @@ pub struct Execution {
     /// Additional task context, when the host supplies one. Otherwise tools
     /// receive exactly this turn's admitted grants and the selected tool grants.
     pub context: Option<Arc<dyn TurnContext>>,
+    /// Independent models selected by the approval policy's named LLM stages.
+    pub approvers: crate::approvals::ApproverModels,
+    /// The host's goal continuation policy; `None` runs no automatic goals.
+    pub goals: Option<crate::goal::GoalContinuationPolicy>,
 }
 
 /// A managed or self-deployed Actors composition for [`super::serve`].
@@ -193,7 +197,12 @@ where
                 // No lazy checkout keeps fork cuts beside these volumes, so a
                 // spawn forks each source's head.
                 None,
-                |turns| turns.with_prompt(self.preset.prompt.as_deref()),
+                |turns| {
+                    turns
+                        .with_approvers(execution.approvers)
+                        .with_goals(execution.goals)
+                        .with_prompt(self.preset.prompt.as_deref())
+                },
             )
             .map_err(super::failed)?;
             let serving = hosting::serve(bound, self.platform, &self.root.0, self.root.1)

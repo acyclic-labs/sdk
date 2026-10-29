@@ -6,6 +6,7 @@ mod accounting;
 mod adapter;
 mod alloy;
 mod alloy_spec;
+mod authorization;
 mod catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod catalog_document;
@@ -67,6 +68,9 @@ mod wasm;
 pub use adapter::Adapter;
 pub use alloy::ResolvedAlloy;
 pub use alloy_spec::{AlloySelection, AlloySpec, AlloyTurn};
+pub use authorization::{
+    AuthorizationScheme, CredentialBinding, CredentialResolver, CredentialSource,
+};
 pub use catalog::default_catalog;
 pub use counting::wire::{TokenCountField, TokenCounterSpec};
 pub use credentials::Credentials;

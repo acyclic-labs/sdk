@@ -75,22 +75,10 @@ impl HttpTransport for BrowserTransport {
                     &JsValue::from_str(&request.url),
                     init.as_ref(),
                 )
-                .map_err(|_| {
-                    crate::transport_failure(
-                        false,
-                        acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        "browser model dispatch failed",
-                    )
-                })?;
+                .map_err(|cause| failure(cause, "browser model dispatch failed"))?;
             let response = JsFuture::from(Promise::resolve(&response))
                 .await
-                .map_err(|_| {
-                    crate::transport_failure(
-                        false,
-                        acyclic_harness_core::ModelTransportFailure::Interrupted,
-                        "browser model exchange failed",
-                    )
-                })?
+                .map_err(|cause| failure(cause, "browser model exchange failed"))?
                 .dyn_into::<Response>()
                 .map_err(|_| invalid("fetch did not return a Response"))?;
             let status = response.status();
@@ -117,13 +105,9 @@ impl HttpTransport for BrowserTransport {
                     _abort: abort,
                 },
                 |body| async move {
-                    let chunk = JsFuture::from(body.reader.read()).await.map_err(|_| {
-                        crate::transport_failure(
-                            false,
-                            acyclic_harness_core::ModelTransportFailure::Interrupted,
-                            "browser model body interrupted",
-                        )
-                    })?;
+                    let chunk = JsFuture::from(body.reader.read())
+                        .await
+                        .map_err(|cause| failure(cause, "browser model body interrupted"))?;
                     let done = Reflect::get(&chunk, &JsValue::from_str("done"))
                         .map_err(|_| invalid("invalid browser stream result"))?;
                     if done.as_bool() == Some(true) {
@@ -151,6 +135,42 @@ impl HttpTransport for BrowserTransport {
     fn now(&self) -> std::time::Duration {
         timer::now()
     }
+}
+
+pub(crate) fn failure(cause: JsValue, message: &'static str) -> acyclic_harness_core::Error {
+    use acyclic_harness_core::{Error, wire::ErrorCode};
+    let received = Reflect::get(&cause, &JsValue::from_str("code"))
+        .ok()
+        .and_then(|value| value.as_f64());
+    let code = [
+        ErrorCode::NotFound,
+        ErrorCode::Conflict,
+        ErrorCode::Unauthorized,
+        ErrorCode::Cancelled,
+        ErrorCode::Unsupported,
+        ErrorCode::Invalid,
+        ErrorCode::Storage,
+        ErrorCode::Indeterminate,
+        ErrorCode::InteractionDeclined,
+        ErrorCode::InteractionCancelled,
+        ErrorCode::InteractionExpired,
+        ErrorCode::InteractionDenied,
+        ErrorCode::Unavailable,
+    ]
+    .into_iter()
+    .find(|code| received == Some(f64::from(*code as i32)));
+    if let Some(code) = code {
+        return Error::ModelDiagnostic {
+            code,
+            message: message.into(),
+            custody: None,
+        };
+    }
+    crate::transport_failure(
+        false,
+        acyclic_harness_core::ModelTransportFailure::Interrupted,
+        message,
+    )
 }
 
 #[cfg(test)]
