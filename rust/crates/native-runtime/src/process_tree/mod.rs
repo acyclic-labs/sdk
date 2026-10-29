@@ -28,6 +28,8 @@ mod exit_wait;
 #[cfg(any(windows, test))]
 mod job_members;
 mod pump;
+mod stream;
+pub use stream::{ProcessCaptureStream, ProcessChunk};
 #[cfg(windows)]
 mod spawner;
 pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};

@@ -93,6 +93,7 @@ pub(super) struct Pump<'a> {
     #[cfg(windows)]
     readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,
+    streaming: bool,
 }
 
 /// What a turn left to do.
@@ -192,7 +193,50 @@ impl<'a> Pump<'a> {
             #[cfg(windows)]
             readers,
             status: None,
+            streaming: false,
         })
+    }
+
+    pub(super) fn stream_output(&mut self) {
+        self.streaming = true;
+    }
+
+    pub(super) fn take_output(&mut self) -> [Vec<u8>; 2] {
+        std::mem::take(&mut self.output)
+    }
+
+    /// While output credit is withheld, only owner control or the deadline
+    /// can advance capture. Readable output must not wake this wait.
+    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait> {
+        let sources = wakes
+            .iter()
+            .map(|wake| {
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsFd;
+                    Source::Readable(wake.as_fd())
+                }
+                #[cfg(windows)]
+                {
+                    // SAFETY: the capture handler retains each event until this wait ends.
+                    Source::Exit(unsafe {
+                        std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + self.deadline.saturating_duration_since(capture_now());
+        events::arm(&sources, Some(deadline))
+    }
+
+    pub(super) fn check_deadline(&self) -> io::Result<()> {
+        if capture_now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process output deadline exceeded; effects may have occurred",
+            ));
+        }
+        Ok(())
     }
 
     /// Moves everything that is ready. Never waits.
@@ -226,6 +270,9 @@ impl<'a> Pump<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         loop {
+            if self.streaming {
+                self.check_deadline()?;
+            }
             let now = capture_now();
             if self.check_every.is_none_or(|_| now >= self.next_check) {
                 check()?;
@@ -282,13 +329,9 @@ impl<'a> Pump<'a> {
                 }
                 return Ok(true);
             }
-            if capture_now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "process output deadline exceeded; effects may have occurred",
-                ));
-            }
-            if !progressed {
+            self.check_deadline()?;
+            if !progressed || (self.streaming && self.output.iter().any(|bytes| !bytes.is_empty()))
+            {
                 return Ok(false);
             }
         }
