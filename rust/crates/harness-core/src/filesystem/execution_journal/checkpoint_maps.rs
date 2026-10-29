@@ -308,7 +308,7 @@ where
     }
 }
 
-pub(super) async fn retry_entry<P: StreamProvider + ?Sized>(
+pub(super) async fn retry_entry<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     state: checkpoint::IndexState,
     retry: [u8; 32],
