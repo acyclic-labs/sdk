@@ -255,7 +255,7 @@ impl ToolProvider for Identities {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> acyclic_harness_core::Result<Option<Wake>> {
+    ) -> acyclic_harness_core::Result<Option<Wake<'_>>> {
         let Some(active) = &self.active else {
             return Ok(None);
         };
@@ -266,7 +266,10 @@ impl ToolProvider for Identities {
             .take();
         let Some(outcome) = finished else {
             let done = Arc::clone(&active.done);
-            return Ok(Some(Box::pin(async move { done.notified().await })));
+            return Ok(Some(Box::pin(async move {
+                done.notified().await;
+                Ok(())
+            })));
         };
         if !active.cancelled && parked.contains(&active.key) {
             settled.push((active.key.clone(), outcome.map_err(|error| error.json())));
