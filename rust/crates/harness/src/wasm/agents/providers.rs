@@ -278,10 +278,11 @@ impl Providers {
         admission: &TurnAdmission,
     ) -> Result<BrowserHandler, JsValue> {
         // The options a handler runs under are its own, not its providers'.
-        options.limits.validate(&mut None).map_err(js_error)?;
+        let limits = options.preset.execution_limits(options.limits);
+        limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
-            maximum_bytes: options.limits.file_bytes,
-            max_steps: u32::try_from(options.limits.model_steps)
+            maximum_bytes: limits.file_bytes,
+            max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
@@ -315,7 +316,8 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
         registry: &WasmAgentRegistry,
     ) -> Result<StockExecutors, JsValue> {
-        options.limits.validate(&mut None).map_err(js_error)?;
+        let limits = options.preset.execution_limits(options.limits);
+        limits.validate(&mut None).map_err(js_error)?;
         let (model, provider, compaction) = registry
             .model
             .clone()
@@ -344,7 +346,7 @@ impl Providers {
                                 .into_iter()
                                 .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
                         ),
-                        options.limits,
+                        limits,
                     )
                     .map_err(js_error)?,
                     ..Default::default()
@@ -354,12 +356,9 @@ impl Providers {
             )),
             None => Arc::new(Grants(grants)),
         };
-        Ok(options.preset.executors(
-            (model, provider),
-            tools,
-            (options.limits, compaction),
-            context,
-        ))
+        Ok(options
+            .preset
+            .executors((model, provider), tools, (limits, compaction), context))
     }
 
     pub(super) fn spawn_volumes(

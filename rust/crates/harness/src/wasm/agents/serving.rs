@@ -100,6 +100,7 @@ impl WasmAgentServer {
         #[wasm_bindgen(unchecked_param_type = "WasmHostingPlatform")] platform: JsValue,
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
+        let limits = options.preset.execution_limits(options.limits);
         let admission: WasmHostingAdmission = from_js(admission)?;
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
@@ -133,8 +134,8 @@ impl WasmAgentServer {
             Turns {
                 executors: Arc::new(Providers::executors(&options, registry)?),
                 limits: TurnLimits {
-                    maximum_bytes: options.limits.file_bytes,
-                    max_steps: u32::try_from(options.limits.model_steps).map_err(|_| {
+                    maximum_bytes: limits.file_bytes,
+                    max_steps: u32::try_from(limits.model_steps).map_err(|_| {
                         js_error(Error::Invalid("model step limit exceeds u32".into()))
                     })?,
                     history_turns: HISTORY_TURNS,

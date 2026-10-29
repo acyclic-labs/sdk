@@ -364,9 +364,7 @@ impl LocalHarnessConfig {
         {
             self.web_tools = preset.web_tools;
         }
-        if let Some(steps) = preset.max_steps {
-            self.limits.model_steps = steps;
-        }
+        self.limits = preset.execution_limits(self.limits);
         self.approval_policy = preset.approval_policy.clone();
         self
     }

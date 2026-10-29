@@ -144,11 +144,12 @@ impl TurnContext for LocalContext {
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?;
-            let (executor, context) = Tasks::bind(&local.harness, executor, agent, turn, authority)?;
+            let (executor, context) =
+                Tasks::bind(&local.harness, executor, agent, turn, authority)?;
             let executor = executor.with_live_reply(crate::executor::LiveReply::new(
-                    Arc::clone(writer),
-                    format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
-                ));
+                Arc::clone(writer),
+                format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
+            ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]

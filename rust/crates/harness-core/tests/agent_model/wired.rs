@@ -5,14 +5,12 @@ use acyclic_fs::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_harness_core::{
     OperationId,
     agent::*,
-    context::{CompactionPolicy, ContextPipeline},
+    context::CompactionPolicy,
     contract::{Capabilities, capability::INTERACTION_ROUTE},
     conversation::{FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
-    executor::Executor,
-    executor::StockExecutor,
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, Tasks, TurnLimits},
-    filesystem::{TurnAdmission, TurnAuthority, TurnExecutors},
+    filesystem::{TurnAdmission, TurnExecutors},
     model::{Model, ModelContent, ModelRequest, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
@@ -62,55 +60,45 @@ async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
     ))
 }
 
-/// The stock loop over a scripted model, built once per turn.
-struct Stock {
-    selection: Model,
-    model: Arc<ScriptedModelProvider>,
-    bindings: Arc<acyclic_harness_core::runtime::AgentHarness>,
-}
-
-impl TurnExecutors for Stock {
-    fn executor<'a>(
-        &'a self,
-        agent: &'a AgentState,
-        turn: OperationId,
-        _: &'a ModelContent,
-        authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
-        Box::pin(async move {
-            let executor = StockExecutor::new(
-                self.selection.clone(),
-                self.model.clone(),
-                ContextPipeline::default(),
-                ToolRegistry::default(),
-            )
-            .with_compaction_policy(CompactionPolicy::Disabled);
-            let (executor, _) = Tasks::bind(&self.bindings, executor, agent, turn, authority)?;
-            Ok(Arc::new(executor) as Arc<dyn Executor>)
-        })
-    }
-}
-
 fn executors(model: Arc<ScriptedModelProvider>) -> Result<Arc<dyn TurnExecutors>> {
+    executors_with_scope(model, true)
+}
+
+fn executors_with_scope(
+    model: Arc<ScriptedModelProvider>,
+    matching_limits: bool,
+) -> Result<Arc<dyn TurnExecutors>> {
     let selection = Model::new(
         "test".into(),
         "text".into(),
         "1".into(),
         serde_json::Value::Null,
     )?;
+    let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
+    preset.tools.clear();
+    preset.max_steps = Some(usize::try_from(LIMITS.max_steps)?);
+    let base = acyclic_harness_core::conversation::Limits {
+        model_steps: 1,
+        ..Default::default()
+    };
     let bindings = acyclic_harness_core::runtime::Bindings {
         scope: acyclic_harness_core::runtime::RuntimeScope::new(
             Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
-            Default::default(),
+            if matching_limits {
+                preset.execution_limits(base)
+            } else {
+                base
+            },
         )?,
         ..Default::default()
     }
     .build()?;
-    Ok(Arc::new(Stock {
-        selection,
-        model,
-        bindings,
-    }))
+    Ok(Arc::new(preset.executors(
+        (selection, model),
+        ToolRegistry::default(),
+        (base, CompactionPolicy::Disabled),
+        Arc::new(Tasks(bindings)),
+    )))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {
@@ -145,67 +133,79 @@ fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
 
 #[tokio::test]
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
-    let parent = AgentPath::root(&id(1));
-    let path = parent.child(&id(2))?;
-    let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
-        "done".into(),
-    )]));
-    let (host, binding) = private(&path).await?;
-    let driver = ExecutorDriver::new(FilesystemTurnHost::new(
-        Arc::new(MemoryStream::default()),
-        host,
-        AuthorityRoot::new(
-            "agents",
-            [7; 32],
-            Authority {
-                kind: AggregateKind::Conversation,
-                id: "agents".into(),
-            },
-        ),
-        TurnAdmission::LocalRoot,
-        executors(model.clone())?,
-        LIMITS,
-        Default::default(),
-    ));
-    let mut adoption = adopted(id(2));
-    adoption.parent = Some(parent.clone());
-    adoption.volumes = vec![binding];
-    let state = AgentState::adopted(path.clone(), &adoption);
-    let wake = || requested("r1", &parent);
-    let first = step(
-        &driver,
-        &path,
-        Some(state.clone()),
-        2,
-        wake(),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    // A child settles its turn and stays open to its parent's messages.
-    if first.state.phase != Phase::Idle {
-        return Err(format!("unexpected phase {:?}", first.state.phase).into());
+    for matching_limits in [false, true] {
+        let parent = AgentPath::root(&id(1));
+        let path = parent.child(&id(2))?;
+        let model = Arc::new(ScriptedModelProvider::new([ScriptedTurn::Text(
+            "done".into(),
+        )]));
+        let (host, binding) = private(&path).await?;
+        let driver = ExecutorDriver::new(FilesystemTurnHost::new(
+            Arc::new(MemoryStream::default()),
+            host,
+            AuthorityRoot::new(
+                "agents",
+                [7; 32],
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "agents".into(),
+                },
+            ),
+            TurnAdmission::LocalRoot,
+            executors_with_scope(model.clone(), matching_limits)?,
+            LIMITS,
+            Default::default(),
+        ));
+        let mut adoption = adopted(id(2));
+        adoption.parent = Some(parent.clone());
+        adoption.volumes = vec![binding];
+        let state = AgentState::adopted(path.clone(), &adoption);
+        let wake = || requested("r1", &parent);
+        let first = step(
+            &driver,
+            &path,
+            Some(state.clone()),
+            2,
+            wake(),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await;
+        if !matching_limits {
+            // The original stale scope refuses before the model or tool can start.
+            assert!(matches!(&first, Err(Error::Turn(error))
+                if matches!(**error, acyclic_harness_core::Error::Unauthorized(_))));
+            assert!(model.requests().is_empty());
+            continue;
+        }
+        let first = first?;
+        let Phase::Done {
+            outcome: AgentOutcome::Succeeded { result: Some(_) },
+        } = &first.state.phase
+        else {
+            return Err(format!("unexpected phase {:?}", first.state.phase).into());
+        };
+        let entries: Vec<_> = first
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                _ => None,
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(entries.len(), 1);
+        // A crash before the step commit re-runs the step; the journal replays it.
+        let again = step(
+            &driver,
+            &path,
+            Some(state),
+            2,
+            wake(),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(again.outs, first.outs);
+        assert_eq!(model.requests().len(), 1);
     }
-    let entries: Vec<_> = first
-        .outs
-        .iter()
-        .filter_map(|out| match out {
-            Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
-            _ => None,
-        })
-        .collect::<std::result::Result<_, _>>()?;
-    assert_eq!(entries.len(), 1);
-    // A crash before the step commit re-runs the step; the journal replays it.
-    let again = step(
-        &driver,
-        &path,
-        Some(state),
-        2,
-        wake(),
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(again.outs, first.outs);
-    assert_eq!(model.requests().len(), 1);
     Ok(())
 }
 
