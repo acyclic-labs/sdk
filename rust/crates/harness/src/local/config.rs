@@ -467,7 +467,7 @@ impl LocalHarnessConfig {
         self.run_limits = limits;
         self
     }
-    /// Selects the finite goal policy; `None` disables automatic continuations.
+    /// Selects the goal policy; `None` disables automatic continuations.
     #[must_use]
     pub fn goal_continuations(
         mut self,

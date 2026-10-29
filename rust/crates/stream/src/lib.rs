@@ -40,6 +40,7 @@ pub mod preparation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use pending::NativePending;
 pub use pending::Pending;
+mod projection;
 pub mod pull;
 pub mod request;
 pub mod runtime;
@@ -140,12 +141,6 @@ pub use local::replay_model::{
 #[doc(hidden)]
 pub use memory::browser_follow_model as browser_follow_verification;
 
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
-/// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
-pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
-
 /// Generated canonical Stream v1 protocol.
 #[allow(
     missing_docs,
@@ -172,18 +167,18 @@ pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
 pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
-/// Maximum records, participants, mutations, or path segments in one request.
+/// Shared session credit quantum and current hierarchy depth bound.
 pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
-const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
+/// Materialized hierarchy page size; larger requests continue through next_after.
+pub const CHILDREN_PAGE_ITEMS: u32 = 1_024;
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Historical minimum replay window, preserved for source compatibility.
-pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
-/// Maximum caller retry-identity width.
-pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = wire::StreamLimit::MaxIdempotencyKeyBytes as usize;
-/// Maximum canonical path text accepted by the single-command wire format.
-pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
+
+/// Bytes indexed from a filesystem resource path. The complete lossless path
+/// remains in change metadata and is authorized after coarse indexed selection.
+/// This controls index granularity; generic record keys have no width ceiling.
+pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
 
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
@@ -225,10 +220,7 @@ pub use changes::{
     ChangeEntryRef, READER_FORMATS, WRITER_FORMAT, changes_chunk_len, changes_encoded_len,
     decode_changes, is_changes,
 };
-pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
-    RecordAttributeIter, RecordAttributes, RecordHeaders,
-};
+pub use record_headers::{RecordAttribute, RecordAttributeIter, RecordAttributes, RecordHeaders};
 
 include!("lib/provider_context.rs");
 include!("lib/provider.rs");
@@ -257,7 +249,7 @@ mod native;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::{
     NativeProviderFuture, NativeRecordStream, NativeStreamOutput, NativeStreamResult,
-    PreparedNativeCommit,
+    PreparedNativeCommit, PreparedRecordCapacity,
 };
 #[cfg(test)]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]

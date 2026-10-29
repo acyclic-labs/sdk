@@ -233,7 +233,6 @@ mod context_custody_tests {
             vec![crate::kernel::LogicalName::new(
                 crate::kernel::NameEncoding::Utf8,
                 b"child".to_vec(),
-                limits.maximum_component_bytes,
             )?],
             limits,
         )?;
@@ -307,7 +306,6 @@ mod context_custody_tests {
             vec![crate::kernel::LogicalName::new(
                 crate::kernel::NameEncoding::Utf8,
                 b"child".to_vec(),
-                limits.maximum_component_bytes,
             )?],
             limits,
         )?;

@@ -70,11 +70,7 @@ impl BrowserResolvedFile {
         let range = ByteRange { offset, length };
         let receipt = self
             .engine
-            .read_range(
-                range,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
+            .read_range(range, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         ts(BrowserFileReadResult {
@@ -88,7 +84,7 @@ impl BrowserResolvedFile {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .read_symbolic_link(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         ts(BrowserFileReadResult {

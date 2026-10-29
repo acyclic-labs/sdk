@@ -90,8 +90,8 @@ pub(super) fn stock_json_bound<T: Serialize>(
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: maximum,
-                maximum_items: io.remaining()?.items_examined,
+                maximum_bytes: Some(maximum),
+                maximum_items: Some(io.remaining()?.items_examined),
                 maximum_depth: 256,
             },
             Some(crate::wire::ErrorCode::Invalid),

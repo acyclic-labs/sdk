@@ -82,7 +82,7 @@ struct PendingPage {
 struct PlanInput {
     file_size: u64,
     range: ByteRange,
-    maximum_spans: u32,
+    maximum_spans: Option<u32>,
 }
 
 /// Complete admitted request shared by synchronous and asynchronous range planners.
@@ -95,7 +95,7 @@ pub struct ExtentRangeRequest {
     /// Exact logical range to cover.
     pub range: ByteRange,
     /// Maximum sparse spans returned.
-    pub maximum_spans: u32,
+    pub maximum_spans: Option<u32>,
     /// Canonical page and decode limits.
     pub limits: DecodeLimits,
     /// Exact admitted implementation work.
@@ -189,7 +189,7 @@ fn seek_request(request: ExtentSeekRequest) -> Result<ExtentRangeRequest, FsErro
             offset: request.offset,
             length,
         },
-        maximum_spans: 1,
+        maximum_spans: Some(1),
         limits: request.limits,
         budget: request.budget,
     })
@@ -201,6 +201,7 @@ struct RangeMachine {
     seek_result: Option<u64>,
     range_end: u64,
     limits: DecodeLimits,
+    maximum_pending: usize,
     pending: Vec<PendingPage>,
     pending_capacity: LogicalVecCapacity,
     visited: Option<super::persistent_point::Owned<VisitedObjectSet>>,
@@ -228,15 +229,14 @@ impl RangeMachine {
             .checked_add(request.range.length)
             .filter(|end| *end <= request.file_size)
             .ok_or_else(|| range_failure(ExtentReadError::InvalidRange))?;
-        if request.range.length != 0 && request.maximum_spans == 0 {
+        if request.range.length != 0 && request.maximum_spans == Some(0) {
             return Err(range_failure(ExtentReadError::InvalidSpanLimit));
         }
         if !request.limits.page_limits_valid(1) {
             return Err(range_failure(ExtentReadError::HeightExceeded));
         }
-        let maximum = usize::try_from(request.limits.maximum_visited_pages)
-            .map_err(|_| range_failure(ExtentReadError::InvalidLimits))?;
-        let visited = VisitedObjectSet::new_with_accounting(maximum, accounting)?;
+        let maximum_pending = request.limits.maximum_pending_frontier()?;
+        let visited = VisitedObjectSet::new_with_accounting(accounting)?;
         let mut machine = Self {
             input: PlanInput {
                 file_size: request.file_size,
@@ -249,6 +249,7 @@ impl RangeMachine {
             .then_some(request.file_size),
             range_end,
             limits: request.limits,
+            maximum_pending,
             pending: Vec::new(),
             pending_capacity: LogicalVecCapacity::default(),
             visited: Some(visited),
@@ -279,8 +280,7 @@ impl RangeMachine {
     ) -> Result<(), FsError> {
         self.pending_capacity.ensure_for_push_with_accounting(
             &mut self.pending,
-            usize::try_from(self.limits.maximum_visited_pages)
-                .map_err(|_| range_failure(ExtentReadError::InvalidLimits))?,
+            self.maximum_pending,
             &mut self.pending_custody,
             accounting,
         )?;
@@ -362,9 +362,10 @@ impl RangeMachine {
                             let start = extent.offset.max(self.input.range.offset);
                             let clipped_end = end.min(self.range_end);
                             if start < clipped_end {
-                                if self.spans.len()
-                                    >= usize::try_from(self.input.maximum_spans)
-                                        .unwrap_or(usize::MAX)
+                                if self
+                                    .input
+                                    .maximum_spans
+                                    .is_some_and(|maximum| self.spans.len() >= maximum as usize)
                                 {
                                     return Err(range_failure(ExtentReadError::TooManySpans));
                                 }
@@ -372,9 +373,7 @@ impl RangeMachine {
                                     .map_err(range_failure)?;
                                 self.spans_capacity.ensure_for_push_with_accounting(
                                     &mut self.spans,
-                                    usize::try_from(self.input.maximum_spans).map_err(|_| {
-                                        range_failure(ExtentReadError::InvalidSpanLimit)
-                                    })?,
+                                    usize::MAX,
                                     &mut self.spans_custody,
                                     accounting,
                                 )?;

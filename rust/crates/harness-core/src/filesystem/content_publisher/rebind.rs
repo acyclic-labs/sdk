@@ -26,7 +26,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || candidate.path() != source.path()
             || candidate.descriptor() != source.descriptor()
             || candidate.display_name() != source.display_name()
-            || source.descriptor().byte_length() > self.maximum_bytes
+            || self
+                .maximum_bytes
+                .is_some_and(|maximum| source.descriptor().byte_length() > maximum)
         {
             return Err(stock_boundary(
                 io,

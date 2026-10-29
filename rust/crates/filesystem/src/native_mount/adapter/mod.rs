@@ -14,9 +14,9 @@ use crate::kernel::{
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
-    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
-    capture_subtrees_with_native_work,
+    NativeViewBaseline, capture_paths_batched, capture_subtrees_with_native_work,
 };
+#[cfg(test)]
 use crate::performance::BOUNDARY_BUDGET;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
@@ -35,11 +35,8 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
+#[cfg(test)]
 use std::time::Duration;
-
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
-const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 
 #[derive(Clone, Copy)]
 pub(super) enum HostCaptureScope {
@@ -59,6 +56,14 @@ pub(super) struct CaptureSourceGate {
     ever_used: bool,
 }
 
+#[derive(Default)]
+pub(super) struct CaptureSourceSignal {
+    gate: StdMutex<CaptureSourceGate>,
+    quiesced: std::sync::Condvar,
+    // Retain original funding until the last producer or cancellation waker drops.
+    _allocation: Option<crate::NativeAllocation>,
+}
+
 /// Blocking native callback adapter over one async canonical checkout.
 ///
 /// The callback bridge runs on native driver threads or multithreaded Tokio
@@ -74,19 +79,12 @@ pub struct CheckoutMountSource<A: 'static, O: 'static> {
     folds_names: bool,
     folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,
-    capture_gate: Arc<StdMutex<CaptureSourceGate>>,
-    capture_quiesced: Arc<std::sync::Condvar>,
+    capture_signal: Arc<CaptureSourceSignal>,
     runtime: CallbackRuntime,
     native_original: Option<crate::NativeMaterializationWork>,
     native_io_original: Option<crate::NativeMaterializationWork>,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    cleanup_credit: StdMutex<
-        Option<(
-            crate::materializer::NativeWorkReservation,
-            crate::materializer::NativeWorkReservation,
-        )>,
-    >,
-    _namespace_allocation: Option<crate::NativeAllocation>,
+    cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
     _source_allocation: Option<crate::NativeAllocation>,
 }
 

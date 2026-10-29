@@ -368,7 +368,7 @@ pub use s3_http::{
 #[cfg(any(test, feature = "memory"))]
 pub use simulation::{
     ScheduledSimulationFault, SimulatedStore, Simulation, SimulationError, SimulationFault,
-    SimulationOperation, SimulationOptions, SimulationTrace,
+    SimulationOperation, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};

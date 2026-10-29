@@ -93,8 +93,11 @@ impl ContextDiscovery {
         let policy = &self.policy;
         let limits = self.limits;
         limits.validate()?;
-        if self.instructions.len().saturating_add(self.skills.len()) > limits.directories as usize
-            || policy.instruction_names.len() > limits.entries as usize
+        if limits.directories.is_some_and(|maximum| {
+            self.instructions.len().saturating_add(self.skills.len()) as u64 > maximum
+        }) || limits
+            .entries
+            .is_some_and(|maximum| policy.instruction_names.len() as u64 > maximum)
         {
             return Err(Error::Invalid(
                 "discovery declarations exceed work bounds".into(),
@@ -175,37 +178,28 @@ impl Default for ContextDiscoveryPolicy {
     }
 }
 
-/// Explicit finite discovery bounds, independent of the retained workspace count.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+/// Optional discovery allowances, independent of the retained workspace count.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextDiscoveryLimits {
     /// Combined directory entries inspected, including nonmatching names.
-    pub entries: u32,
+    pub entries: Option<u64>,
     /// Combined directories visited, including instruction ancestor scopes.
-    pub directories: u32,
+    pub directories: Option<u64>,
     /// Maximum frontmatter prefix bytes read per skill.
-    pub header_bytes: u32,
+    pub header_bytes: Option<u64>,
     /// Maximum complete instruction bytes per file.
-    pub instruction_bytes: u64,
-}
-
-impl Default for ContextDiscoveryLimits {
-    fn default() -> Self {
-        Self {
-            entries: 4_096,
-            directories: 256,
-            header_bytes: 16_384,
-            instruction_bytes: 65_536,
-        }
-    }
+    pub instruction_bytes: Option<u64>,
 }
 
 impl ContextDiscoveryLimits {
     /// Rejects oversized, non-UTF-8 or NUL-containing instruction bodies.
     pub fn validate_instruction(self, bytes: &[u8]) -> Result<()> {
         self.validate()?;
-        if bytes.len() as u64 > self.instruction_bytes
+        if self
+            .instruction_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
             || std::str::from_utf8(bytes).is_err()
             || bytes.contains(&0)
         {
@@ -218,13 +212,13 @@ impl ContextDiscoveryLimits {
 
     #[doc(hidden)]
     pub fn validate(self) -> Result<()> {
-        if self.entries == 0
-            || self.directories == 0
-            || self.header_bytes == 0
-            || self.instruction_bytes == 0
+        if self.entries == Some(0)
+            || self.directories == Some(0)
+            || self.header_bytes == Some(0)
+            || self.instruction_bytes == Some(0)
         {
             return Err(Error::Invalid(
-                "discovery requires finite positive bounds".into(),
+                "configured discovery allowances must be positive".into(),
             ));
         }
         Ok(())

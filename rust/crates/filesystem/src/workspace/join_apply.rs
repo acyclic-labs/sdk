@@ -180,18 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> JoinPlan<A
             let resolution = self.git_resolution(&conflict.key, resolution).await?;
             self.git_delete_binding(conflict, &resolution, &mut resolutions)
                 .await?;
-            resolutions.insert(
-                kernel_conflict(
-                    &conflict.key,
-                    self.target_head
-                        .workspace
-                        .volume
-                        .config
-                        .limits
-                        .maximum_component_bytes,
-                )?,
-                resolution,
-            );
+            resolutions.insert(kernel_conflict(&conflict.key)?, resolution);
         }
         Ok(resolutions)
     }

@@ -180,7 +180,7 @@ async fn directory_page_aliases_cannot_enter_a_generation_closure()
     let tree_leaf = put_tree_page(
         &tree_store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?,
             file_id: child_id,
             kind: FileKind::Regular,
         }]),
@@ -191,11 +191,11 @@ async fn directory_page_aliases_cannot_enter_a_generation_closure()
         &tree_store,
         &TreePage::Internal(vec![
             Child {
-                first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+                first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?,
                 page: tree_leaf,
             },
             Child {
-                first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec())?,
                 page: tree_leaf,
             },
         ]),
@@ -245,7 +245,7 @@ async fn extent_page_aliases_cannot_enter_a_generation_closure()
     let namespace = put_tree_page(
         &extent_store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?,
             file_id: child_id,
             kind: FileKind::Regular,
         }]),
@@ -326,7 +326,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
     let first_tree_leaf = put_tree_page(
         &store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?,
             file_id: first_id,
             kind: FileKind::Regular,
         }]),
@@ -336,7 +336,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
     let second_tree_leaf = put_tree_page(
         &store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"z".to_vec())?,
             file_id: second_id,
             kind: FileKind::Regular,
         }]),
@@ -347,11 +347,11 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
         &store,
         &TreePage::Internal(vec![
             Child {
-                first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 255)?,
+                first: LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?,
                 page: first_tree_leaf,
             },
             Child {
-                first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec(), 255)?,
+                first: LogicalName::new(NameEncoding::Utf8, b"z".to_vec())?,
                 page: second_tree_leaf,
             },
         ]),

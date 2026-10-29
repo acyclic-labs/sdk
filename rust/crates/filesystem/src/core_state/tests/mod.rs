@@ -139,9 +139,12 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     let Some(root) = std::env::var_os("ACYCLIC_CORE_STATE_CHILD_ROOT") else {
         return Ok(());
     };
-    if let Some(ready) = std::env::var_os("ACYCLIC_CORE_STATE_CHILD_READY") {
+    if std::env::var_os("ACYCLIC_CORE_STATE_CHILD_READY").is_some() {
         let _owner = LocalCoreStateStore::open_owned(&root)?;
-        std::fs::write(ready, b"ready")?;
+        let mut notification = std::io::stdout().lock();
+        std::io::Write::write_all(&mut notification, b"\0acyclic-owner-ready\0")?;
+        std::io::Write::flush(&mut notification)?;
+        drop(notification);
         loop {
             std::thread::park();
         }

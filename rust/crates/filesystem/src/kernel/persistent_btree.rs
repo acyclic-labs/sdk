@@ -368,14 +368,8 @@ where
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
-    // Carry may visit right neighbours beyond the selected mutation paths.
-    let maximum_visited = usize::try_from(limits.maximum_visited_pages)
-        .map_err(|_| M::map_error(Error::InvalidLimits))?;
     let visited = if root.is_some() {
-        Some(VisitedObjectSet::new_with_accounting(
-            maximum_visited,
-            accounting,
-        )?)
+        Some(VisitedObjectSet::new_with_accounting(accounting)?)
     } else {
         None
     };

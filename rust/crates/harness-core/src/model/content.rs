@@ -171,7 +171,10 @@ impl ModelContent {
                 Err(invalid(work, "model text exceeds render limit"))
             };
         }
-        if self.parts().len() > limits.attachments.saturating_add(1) {
+        if limits
+            .attachments
+            .is_some_and(|maximum| self.parts().len().saturating_sub(1) > maximum.get())
+        {
             return Err(invalid(work, "model content exceeds attachment limit"));
         }
         for part in self.parts() {
@@ -217,7 +220,10 @@ impl ModelContent {
                 .checked_add(1)
                 .ok_or_else(|| invalid(work, "model content reference count overflow"))?;
         }
-        if references > limits.attachments.saturating_add(1) {
+        if limits
+            .attachments
+            .is_some_and(|maximum| references.saturating_sub(1) > maximum.get())
+        {
             return Err(invalid(
                 work,
                 "model content reference count exceeds attachment limit",
@@ -311,7 +317,10 @@ impl ToolResultContent {
         history_step(work, 1)?;
         limits.validate(work)?;
         if let Self::Parts { parts } = self {
-            if parts.len() > limits.attachments.saturating_add(1) {
+            if limits
+                .attachments
+                .is_some_and(|maximum| parts.len().saturating_sub(1) > maximum.get())
+            {
                 return Err(invalid(work, "tool result exceeds attachment limit"));
             }
             let mut references = 0usize;
@@ -334,7 +343,10 @@ impl ToolResultContent {
                     ModelDataPart::Text { .. } => {}
                 }
             }
-            if references > limits.attachments.saturating_add(1) {
+            if limits
+                .attachments
+                .is_some_and(|maximum| references.saturating_sub(1) > maximum.get())
+            {
                 return Err(invalid(work, "tool result reference count exceeds limit"));
             }
         }

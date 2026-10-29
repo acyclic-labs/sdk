@@ -225,7 +225,7 @@ fn changed_limits_revalidate_the_admitted_prefix() -> Result<()> {
         continuation
             .finish(
                 Limits {
-                    context_messages: 10,
+                    context_messages: std::num::NonZeroUsize::new(10),
                     ..Limits::default()
                 },
                 None

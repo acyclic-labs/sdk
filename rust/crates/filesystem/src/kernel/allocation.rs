@@ -507,18 +507,48 @@ impl AllocationLedger {
             _ => self.with_state(|state| state.release(bytes)),
         }
     }
-    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
-        self.ensure_active()?;
+    /// Temporary bytes, excluding independently retained value/control leases.
+    pub(crate) fn scratch_bytes(&self) -> u64 {
+        match &self.state {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.allocations.live_bytes - state.retained_bytes
+            }
+            _ => self.snapshot().live_bytes,
+        }
+    }
+
+    /// Retires only scratch beyond a caller's checkpoint. Owned leases may be
+    /// created or retired inside that scope, including the ledger's promotion.
+    pub(crate) fn release_scratch_to(&mut self, keep: u64) -> Result<(), AllocationError> {
+        let release = |state: &mut AllocationBytes, retained: u64| {
+            let keep = retained
+                .checked_add(keep)
+                .ok_or(AllocationError::Overflow)?;
+            let retired = state
+                .live_bytes
+                .checked_sub(keep)
+                .ok_or(AllocationError::ReleaseInvariant)?;
+            state.release(retired)
+        };
         match &mut self.state {
-            LedgerState::Shared(state) => {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.allocations.live_bytes = state.retained_bytes;
+                let retained = state.retained_bytes;
+                release(&mut state.allocations, retained)
             }
-            _ => self.with_state(|state| state.live_bytes = 0),
+            _ => self.with_state(|state| release(state, 0)),
         }
-        Ok(())
+    }
+
+    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
+        self.release_scratch_to(0)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
     }
 
     /// Consumes an immutable read frame after its physical state is destroyed.
@@ -678,7 +708,6 @@ pub(crate) mod effects;
 
 pub(crate) struct VisitedObjectSet {
     slots: Vec<Option<ObjectId>>,
-    maximum_entries: usize,
     length: usize,
     logical_bytes: u64,
 }
@@ -694,14 +723,10 @@ impl VisitedObjectSet {
     const INITIAL_ENTRIES: usize = 8;
 
     pub(crate) fn new_with_accounting(
-        maximum_entries: usize,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<super::persistent_point::Owned<Self>, crate::FsError> {
         use super::persistent_point::Owned;
-        if maximum_entries == 0 {
-            return Err(crate::FsError::PendingMutationAllocationFailed);
-        }
-        let slot_count = Self::slot_count(maximum_entries.min(Self::INITIAL_ENTRIES))
+        let slot_count = Self::slot_count(Self::INITIAL_ENTRIES)
             .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
         let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
         slots.value.resize(slot_count, None);
@@ -713,7 +738,6 @@ impl VisitedObjectSet {
         Ok(Owned::new(
             Self {
                 slots: value,
-                maximum_entries,
                 length: 0,
                 logical_bytes: bytes,
             },
@@ -758,9 +782,6 @@ impl VisitedObjectSet {
                         });
                     }
                     Some(_) => index = (index + 1) & mask,
-                    None if self.length == self.maximum_entries => {
-                        return Err(crate::FsError::PendingMutationAllocationFailed);
-                    }
                     None if self.length < self.entry_capacity() => {
                         *self.slots.get_mut(index).ok_or(WorkError::Overflow)? = Some(object);
                         self.length += 1;
@@ -787,8 +808,7 @@ impl VisitedObjectSet {
         let next_entries = self
             .entry_capacity()
             .checked_mul(2)
-            .ok_or(WorkError::Overflow)?
-            .min(self.maximum_entries);
+            .ok_or(WorkError::Overflow)?;
         let slot_count = Self::slot_count(next_entries)
             .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))?;
         let mut slots = Owned::<Vec<Option<ObjectId>>>::allocate(slot_count, accounting)?;
@@ -837,7 +857,7 @@ impl VisitedObjectSet {
     }
 
     fn entry_capacity(&self) -> usize {
-        (self.slots.len() / Self::LOAD_NUMERATOR).min(self.maximum_entries)
+        self.slots.len() / Self::LOAD_NUMERATOR
     }
 
     fn slot_count(entries: usize) -> Result<usize, AllocationError> {

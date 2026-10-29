@@ -6,21 +6,27 @@ use crate::{Error, Result, runtime::ToolContext, tool::ToolResult};
 use serde_json::{Map, Value};
 
 /// The call's scope limits that bound it: rendered bytes and path bytes.
-pub(super) fn limits(context: &ToolContext) -> (u64, usize) {
+pub(super) fn limits(context: &ToolContext) -> (u64, Option<std::num::NonZeroUsize>) {
     let limits = context.effective_scope().limits();
     (limits.render_bytes, limits.path_bytes)
 }
 
 /// Refuses an operand the model must correct: a command longer than one
 /// rendered part, or a shell `cwd` longer than a path.
-pub(super) fn operands(name: &str, arguments: &Value, (render, path): (u64, usize)) -> Result<()> {
+pub(super) fn operands(
+    name: &str,
+    arguments: &Value,
+    (render, path): (u64, Option<std::num::NonZeroUsize>),
+) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
     if text("command").len() as u64 > render {
         return Err(Error::Invalid(format!(
             "{name} command exceeds its {render}-byte bound"
         )));
     }
-    if text("cwd").len() > path {
+    if let Some(path) = path
+        && text("cwd").len() > path.get()
+    {
         return Err(Error::Invalid(format!(
             "{name} cwd exceeds its {path}-byte bound"
         )));
@@ -235,12 +241,19 @@ mod tests {
                 .unwrap()
                 .starts_with("{\"Paths\":[")
         );
-        assert!(operands("fs", &json!({"command": "x".repeat(257)}), (BOUND, 8)).is_err());
+        assert!(
+            operands(
+                "fs",
+                &json!({"command": "x".repeat(257)}),
+                (BOUND, std::num::NonZeroUsize::new(8))
+            )
+            .is_err()
+        );
         assert!(
             operands(
                 "shell",
                 &json!({"command": "ls", "cwd": "d".repeat(9)}),
-                (BOUND, 8)
+                (BOUND, std::num::NonZeroUsize::new(8))
             )
             .is_err()
         );

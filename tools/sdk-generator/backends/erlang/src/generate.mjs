@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -17,7 +17,7 @@ export const packageTemplates = new Map([
 ]);
 
 // Native command injection permits small offline staging and integrity controls.
-export function generate(args, { command = spawnSync, toolchain = pins,
+export function generate(args, { command = captureCommand, toolchain = pins,
   toolIndexBytes = readFileSync(join(directory, "../toolchains/generator-files.json")) } = {}) {
   const source = realpathSync(args["source-root"]), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["runtime-root"]), runtimeIndex = realpathSync(args["runtime-inventory"]);
@@ -57,7 +57,7 @@ export function generate(args, { command = spawnSync, toolchain = pins,
     const env = { HOME: home, PATH: [join(runtime, pin.roots[0], "bin"), "/usr/bin", "/bin"].join(":"),
       ERL_FLAGS: "+S 1:1 +fnu", LC_ALL: "C.UTF-8", REBAR_COLOR: "none" };
     const run = (executable, argv, cwd) => {
-      const result = command(executable, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+      const result = command(executable, argv, { cwd, env, encoding: "utf8", timeout: 180_000 });
       if (result.error || result.status !== 0) throw new Error("Erlang generation command failed: " + (result.stderr ?? ""));
       return result.stdout ?? "";
     };

@@ -97,7 +97,7 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
             operation_id: OperationId::new(),
             input: ModelContent::Text("input".into()),
             selected_context: None,
-            max_steps: turns + 1,
+            max_steps: Some(turns + 1),
         };
         let issuer = crate::core::AuthorityRoot::new(
             "continuation",
@@ -147,7 +147,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
         operation_id: OperationId::new(),
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(journal, &input).await?;
@@ -247,7 +247,7 @@ async fn continued_tool_results_stop_before_aggregate_render_overflow_is_publish
         operation_id: OperationId::new(),
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 11,
+        max_steps: Some(11),
     };
     let result = executor.execute(input, &journal).await;
     assert!(

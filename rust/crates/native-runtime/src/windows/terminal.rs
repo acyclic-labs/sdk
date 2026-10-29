@@ -1,7 +1,7 @@
 //! Checked console operations. The terminal owner controls worker lifetimes.
 use std::io;
 use std::mem::zeroed;
-use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::OnceLock;
 use std::time::Instant;
 use windows_sys::Win32::{
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
             SetConsoleCP, SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP,
         },
         IO::CancelSynchronousIo,
-        Threading::WaitForSingleObject,
+        Threading::{CreateEventW, SetEvent, WaitForMultipleObjects},
     },
 };
 
@@ -132,26 +132,70 @@ pub fn cancel_thread(worker: &std::thread::JoinHandle<()>) {
     }
 }
 
-/// Read VT bytes without consuming beyond the caller's capacity.
-pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Result<Vec<u8>> {
-    // At most 1024 bytes, so the length always fits ReadFile's u32 count.
-    let length = u16::try_from(capacity).unwrap_or(u16::MAX).min(1024);
-    let mut bytes = vec![0; usize::from(length)];
-    if bytes.is_empty() {
-        return Ok(bytes);
-    }
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(Vec::new());
+/// Monotonic close notification shared by the console owner and its reader.
+pub struct ConsoleClose(OwnedHandle);
+
+impl ConsoleClose {
+    /// Allocate the manual-reset event before publishing either console half.
+    pub fn new() -> io::Result<Self> {
+        // SAFETY: unnamed event, default security, initially nonsignalled.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
         }
-        let timeout = u32::try_from((deadline - now).as_millis()).unwrap_or(u32::MAX - 1);
+        // SAFETY: successful CreateEventW transfers one owned kernel handle.
+        Ok(Self(unsafe { OwnedHandle::from_raw_handle(event) }))
+    }
+
+    /// Publish the owner's close fence to every pending input wait.
+    pub fn close(&self) -> io::Result<()> {
+        // SAFETY: this object owns the event for the duration of the call.
+        if unsafe { SetEvent(self.0.as_raw_handle() as HANDLE) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+}
+
+/// Read VT bytes directly into caller storage, waiting on input or owner close.
+pub fn console_read(
+    input: usize,
+    closed: &ConsoleClose,
+    bytes: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<usize> {
+    // One native read is a chunk; the caller retains the unconsumed input.
+    let length = u16::try_from(bytes.len()).unwrap_or(u16::MAX).min(1024);
+    if bytes.is_empty() {
+        return Ok(0);
+    }
+    // Close precedes input so simultaneous readiness respects the close fence.
+    let handles = [closed.0.as_raw_handle() as HANDLE, input as HANDLE];
+    loop {
+        let timeout = match deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(0);
+                }
+                let remaining = deadline - now;
+                let millis =
+                    remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                // Finite deadlines may need successive native wait chunks;
+                // the reserved INFINITE value belongs only to None.
+                u32::try_from(millis)
+                    .unwrap_or(u32::MAX - 1)
+                    .min(u32::MAX - 1)
+            }
+            None => u32::MAX,
+        };
         // SAFETY: the OS checks the handle; event and count are writable stack
         // storage, and ReadFile receives the exact allocated slice capacity.
         unsafe {
-            match WaitForSingleObject(input as HANDLE, timeout) {
-                WAIT_TIMEOUT => return Ok(Vec::new()),
-                WAIT_OBJECT_0 => {}
+            match WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout) {
+                WAIT_TIMEOUT => continue,
+                WAIT_OBJECT_0 => return Err(io::ErrorKind::NotConnected.into()),
+                ready if ready == WAIT_OBJECT_0 + 1 => {}
                 _ => return Err(io::Error::last_os_error()),
             }
             let mut event: INPUT_RECORD = zeroed();
@@ -179,12 +223,55 @@ pub fn console_read(input: usize, capacity: usize, deadline: Instant) -> io::Res
                 {
                     return Err(io::Error::last_os_error());
                 }
-                bytes.truncate(count as usize);
-                return Ok(bytes);
+                return Ok(count as usize);
             }
             if ReadConsoleInputW(input as HANDLE, &mut event, 1, &mut count) == 0 {
                 return Err(io::Error::last_os_error());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, mpsc};
+
+    #[test]
+    fn owner_close_wakes_input_and_precedes_simultaneous_readiness() -> io::Result<()> {
+        let input = Arc::new(ConsoleClose::new()?);
+        let closed = Arc::new(ConsoleClose::new()?);
+        let reader_input = Arc::clone(&input);
+        let reader_closed = Arc::clone(&closed);
+        let (started, ready) = mpsc::sync_channel(0);
+        let worker = std::thread::spawn(move || {
+            started.send(()).map_err(io::Error::other)?;
+            console_read(
+                reader_input.0.as_raw_handle() as usize,
+                &reader_closed,
+                &mut [0; 1],
+                None,
+            )
+        });
+        ready.recv().map_err(io::Error::other)?;
+        closed.close()?;
+        assert_eq!(
+            worker
+                .join()
+                .map_err(|_| io::Error::other("input worker panicked"))?
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotConnected,
+        );
+        // A signalled input event is deliberately not a console handle. If
+        // close loses priority the attempted console read fails differently.
+        input.close()?;
+        assert_eq!(
+            console_read(input.0.as_raw_handle() as usize, &closed, &mut [0; 1], None)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::NotConnected,
+        );
+        Ok(())
     }
 }

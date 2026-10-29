@@ -199,7 +199,13 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         self.stock.limits.validate(&mut None)?;
         self.model_capacity()?;
-        if input.max_steps == 0 || input.max_steps as usize > self.stock.limits.model_steps {
+        if input.max_steps == Some(0)
+            || self.stock.limits.model_steps.is_some_and(|maximum| {
+                input
+                    .max_steps
+                    .is_none_or(|steps| steps as usize > maximum.get())
+            })
+        {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -213,7 +219,12 @@ impl StockExecution<'_> {
         validate_model_content_scope(&input.input, self.stock.limits, scope, self.io)?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, self.io)?;
-            if selected.messages.len() > self.stock.limits.context_messages {
+            if self
+                .stock
+                .limits
+                .context_messages
+                .is_some_and(|maximum| selected.messages.len() > maximum.get())
+            {
                 return Err(stock_boundary(
                     self.io,
                     crate::wire::ErrorCode::Invalid,
