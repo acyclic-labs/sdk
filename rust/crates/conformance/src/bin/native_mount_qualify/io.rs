@@ -120,7 +120,7 @@ fn verify_projected_seed(mount: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
-pub(super) fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
+pub(super) async fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
     let executable = std::env::current_exe()?;
     let mut children = Vec::with_capacity(count);
     for index in 0..count {
@@ -141,45 +141,55 @@ pub(super) fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(),
             }
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut remaining = count;
-    while remaining != 0 {
-        for index in 0..children.len() {
-            let Some(child) = children.get_mut(index).and_then(Option::as_mut) else {
-                continue;
-            };
-            if captured_child_output_exceeds_limit(child)? {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes{cleanup}"
-                )
-                .into());
-            }
-            let Some(status) = child.process.try_wait(None)? else {
-                continue;
-            };
-            let mut child = children
-                .get_mut(index)
-                .and_then(Option::take)
-                .ok_or("parallel child disappeared")?;
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            remaining -= 1;
-            if !output.status.success() {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} failed ({}): {}{}{cleanup}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-                .into());
-            }
+    wait_captured_children(&mut children, Instant::now() + Duration::from_secs(30)).await
+}
+
+/// Every accepted child owns one native exit subscription. A later child can
+/// fail while an earlier one remains blocked; neither a scan nor a prefix wait
+/// is needed. Dropping the wait retires subscriptions before sibling cleanup.
+pub(super) async fn wait_captured_children(
+    children: &mut [Option<CapturedChild>],
+    deadline: Instant,
+) -> Result<(), Failure> {
+    use futures::{StreamExt as _, stream::FuturesUnordered};
+
+    let completion = async {
+        let mut pending = FuturesUnordered::new();
+        for (index, slot) in children.iter_mut().enumerate() {
+            pending.push(async move {
+                let child = slot
+                    .as_mut()
+                    .ok_or("parallel child absent before waiting")?;
+                let status = loop {
+                    // Arm before observing exit. Captured output goes to files,
+                    // so this wait subscribes only to the actual child exit.
+                    let ready = child.process.readiness()?;
+                    if let Some(status) = child.process.try_wait(None)? {
+                        break status;
+                    }
+                    ready.await;
+                };
+                let child = slot.take().ok_or("parallel child disappeared")?;
+                let output = captured_child_output(status, child)?;
+                if !output.status.success() {
+                    let status = output.status;
+                    output.write_diagnostics(&format!("parallel I/O child {index}"))?;
+                    return Err(format!("parallel I/O child {index} failed ({status})").into());
+                }
+                Ok::<_, Failure>(())
+            });
         }
-        if remaining != 0 && Instant::now() >= deadline {
-            let cleanup = terminate_captured_children(&mut children);
-            return Err(format!("parallel I/O children exceeded 30 seconds{cleanup}").into());
+        while let Some(result) = pending.next().await {
+            result?;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        Ok::<_, Failure>(())
+    };
+    let result = tokio::time::timeout_at(deadline.into(), completion)
+        .await
+        .unwrap_or_else(|_| Err("parallel I/O children exceeded their deadline".into()));
+    if let Err(error) = result {
+        let cleanup = terminate_captured_children(children);
+        return Err(format!("{error}{cleanup}").into());
     }
     Ok(())
 }

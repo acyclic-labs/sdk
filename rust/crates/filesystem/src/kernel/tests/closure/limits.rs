@@ -1,8 +1,7 @@
 #[tokio::test]
-async fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
--> Result<(), Box<dyn std::error::Error>> {
+async fn typed_root_is_enforced_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, _, metadata) = minimal_generation(&store, None).await?;
+    let (_, _, metadata) = minimal_generation(&store, None).await?;
     let wrong_kind = prove_generation_closure(
         &store,
         metadata,
@@ -16,65 +15,6 @@ async fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     assert!(matches!(wrong_kind.error, ClosureError::WrongObjectKind));
     assert_eq!(*wrong_kind.work, WorkCounters::default());
 
-    let mut object_limited = limits();
-    object_limited.maximum_objects = 0;
-    let too_many_objects = prove_generation_closure(
-        &store,
-        generation,
-        object_limited,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("zero-object closure limit succeeded")?;
-    assert!(matches!(
-        too_many_objects.error,
-        ClosureError::TooManyObjects {
-            observed: 1,
-            maximum: 0,
-        }
-    ));
-    assert_eq!(*too_many_objects.work, WorkCounters::default());
-
-    let mut byte_limited = limits();
-    byte_limited.maximum_object_bytes = 0;
-    let too_many_bytes = prove_generation_closure(
-        &store,
-        generation,
-        byte_limited,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("zero-byte closure limit succeeded")?;
-    assert!(matches!(
-        too_many_bytes.error,
-        ClosureError::ClosureBytesExceeded { maximum: 0, .. }
-    ));
-    assert_eq!(too_many_bytes.work.object_probes, 1);
-
-    let mut file_limited = limits();
-    file_limited.maximum_files = 0;
-    let too_many_files = prove_generation_closure(
-        &store,
-        generation,
-        file_limited,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("zero-file closure limit succeeded")?;
-    assert!(matches!(
-        too_many_files.error,
-        ClosureError::TooManyFiles {
-            observed: 1,
-            maximum: 0,
-        }
-    ));
-    assert_eq!(too_many_files.work.page_reads, 1);
     Ok(())
 }
 

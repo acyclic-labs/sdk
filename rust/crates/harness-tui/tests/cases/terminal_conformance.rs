@@ -4,7 +4,7 @@
 use acyclic_harness_tui::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
-use acyclic_harness_tui::term::{Decoder, PROBE_LIMIT, encode_key};
+use acyclic_harness_tui::term::{Decoder, encode_key};
 use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use std::io;
@@ -180,7 +180,7 @@ fn legacy_control_and_printable_key_table() -> io::Result<()> {
     Ok(())
 }
 
-fn rejected_paste(length: usize) -> Vec<u8> {
+fn paste_frame(length: usize) -> Vec<u8> {
     let mut bytes = b"\x1b[200~".to_vec();
     bytes.resize(bytes.len() + length, b'p');
     bytes.extend_from_slice(b"\x1b[201~");
@@ -188,21 +188,18 @@ fn rejected_paste(length: usize) -> Vec<u8> {
 }
 
 #[test]
-fn rejected_pastes_drain_and_preserve_the_suffix() -> io::Result<()> {
-    for length in [PROBE_LIMIT, PROBE_LIMIT + 1, 17 * 1024, PROBE_LIMIT * 4] {
+fn paste_frames_drain_and_preserve_the_suffix() -> io::Result<()> {
+    for length in [16 * 1024, 16 * 1024 + 1, 17 * 1024, 1024 * 1024] {
         for chunk in [1, 5, 6, 1024, usize::MAX] {
-            let mut bytes = rejected_paste(length);
+            let mut bytes = paste_frame(length);
             bytes.extend_from_slice(b"x\x1b[15;5~\x1b[200~ok\x1b[201~");
             let mut decoder = Decoder::default();
             let errors = bytes
                 .chunks(chunk)
                 .filter(|part| decoder.feed(part).is_err())
                 .count();
-            assert_eq!(errors, usize::from(length > PROBE_LIMIT));
-            let mut expected = Vec::new();
-            if length == PROBE_LIMIT {
-                expected.push(InputEvent::Paste("p".repeat(length)));
-            }
+            assert_eq!(errors, 0);
+            let mut expected = vec![InputEvent::Paste("p".repeat(length))];
             expected.extend([
                 event(KeyCode::Char('x'), KeyModifiers::NONE),
                 event(KeyCode::F(5), KeyModifiers::CONTROL),
@@ -256,7 +253,9 @@ fn split_check(indices: &[usize], cuts: &[bool], broken: bool) -> Result<(), Tes
 
 fn recovery_check(extra: usize, broken: bool) -> Result<(), TestCaseError> {
     let mut decoder = Decoder::default();
-    let mut bytes = rejected_paste(PROBE_LIMIT + 1 + extra);
+    let mut bytes = b"\x1b[200~".to_vec();
+    bytes.resize(bytes.len() + extra, b'p');
+    bytes.extend_from_slice(b"\xff\x1b[201~");
     bytes.extend_from_slice(b"x\x1b[15~");
     prop_assert!(decoder.feed(&bytes).is_err());
     if broken {

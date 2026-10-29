@@ -302,13 +302,14 @@ impl MemoryStream {
         &self,
         state: &'a State,
         destinations: impl Iterator<Item = &'a StreamPath> + Clone + 'a,
+        explicit: impl Fn(&str) -> bool + Copy + 'a,
     ) -> Result<(Vec<(StreamPath, PathState)>, Allocation), StreamError> {
-        let count = missing_paths(state, destinations.clone()).count();
+        let count = missing_paths(state, destinations.clone(), explicit).count();
         let (mut paths, allocation) = self.vector(count)?;
         if count == 0 {
             return Ok((paths, allocation));
         }
-        for (destination, end) in missing_paths(state, destinations) {
+        for (destination, end) in missing_paths(state, destinations, explicit) {
             paths.push((
                 destination
                     .as_str()
@@ -431,8 +432,16 @@ impl MemoryStream {
     ) -> Result<CommitPlan, StreamError> {
         let (facts, facts_claim) = self.facts(state, &request.mutations, commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
-        let (paths, paths_claim) =
-            self.paths(state, request.mutations.iter().map(mutation_path))?;
+        let (paths, paths_claim) = self.paths(
+            state,
+            request.mutations.iter().map(mutation_path),
+            |prefix| {
+                request
+                    .mutations
+                    .binary_search_by(|mutation| mutation_path(mutation).as_str().cmp(prefix))
+                    .is_ok()
+            },
+        )?;
         let envelope = CommittedEnvelope {
             commit_id,
             committed_at_micros: time,

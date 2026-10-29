@@ -31,7 +31,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         publication: GitPublicationRecord,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut state = self.load().await?;
             let current = state.current().map_err(|_| GitCompatError::InvalidState)?;
             let head = current.head;
@@ -73,7 +73,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             if self.publish(state).await? {
                 return Ok(output);
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(GitCompatError::Contended)
     }
 }

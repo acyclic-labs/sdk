@@ -44,8 +44,8 @@ async fn exact_path_reads_only_required_frontiers_and_authenticates_absence()
 
     let missing = NamespacePath::new(
         vec![
-            LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
-            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"src".to_vec())?,
+            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec())?,
         ],
         config().limits,
     )?;
@@ -150,7 +150,7 @@ async fn unsupported_name_encoding_rejects_before_backend_work()
     let store = MemoryObjectStore::default();
     let (generation, _) = fixture(&store).await?;
     let path = NamespacePath::new(
-        vec![LogicalName::new(NameEncoding::PosixBytes, vec![0xff], 255)?],
+        vec![LogicalName::new(NameEncoding::PosixBytes, vec![0xff])?],
         config().limits,
     )?;
     let failure = lookup_path(
@@ -198,7 +198,7 @@ async fn profile_specific_name_encodings_reach_authenticated_absence()
         let mut profile_config = config();
         profile_config.profile = profile;
         let candidate = NamespacePath::new(
-            vec![LogicalName::new(encoding, bytes, 255)?],
+            vec![LogicalName::new(encoding, bytes)?],
             profile_config.limits,
         )?;
         let lookup = lookup_path(

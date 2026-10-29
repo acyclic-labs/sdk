@@ -71,13 +71,12 @@ async fn named_retention_preserves_the_exact_reference_without_a_cached_proof() 
                 crate::kernel::RetentionKind::Pin,
                 &label,
             );
+            let maximum_payload_bytes = work.accounting().remaining()?.authority_bytes_read;
             let ((_, payload), _) = authority
-                .head_payload(id, MAXIMUM_VOLUME_EVENT_BYTES, &mut work)
+                .head_payload(id, maximum_payload_bytes, &mut work)
                 .await?;
-            let retained = crate::kernel::decode_retention_created(
-                &payload.ok_or("missing retention record")?,
-                MAXIMUM_VOLUME_EVENT_BYTES,
-            )?;
+            let payload = payload.ok_or("missing retention record")?;
+            let retained = crate::kernel::decode_retention_created(&payload, payload.len() as u64)?;
             assert_eq!(retained.generation_root, reference);
         }
     }
@@ -248,7 +247,6 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.identity".to_vec(),
-        128,
     )?;
     assert!(
         checkout
@@ -439,29 +437,9 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
 }
 
 #[tokio::test]
-async fn facade_kind_and_read_bounds_fail_without_creating_files() -> TestResult {
+async fn facade_kind_guards_reject_detaching_directories() -> TestResult {
     let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    assert!(
-        create(
-            &mut checkout,
-            "oversized",
-            OwnedBytes::from_static(b"xx"),
-            &cancel
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        checkout
-            .lookup_no_follow(&path("oversized")?, B, &cancel)
-            .await?
-            .value
-            .record
-            .is_none()
-    );
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
     checkout
         .create(
             AuthoredMutation::CreateDirectory {
@@ -485,56 +463,6 @@ async fn facade_kind_and_read_bounds_fail_without_creating_files() -> TestResult
 }
 
 #[tokio::test]
-async fn detached_payload_bounds_and_authority_volume_identity_fail_closed() -> TestResult {
-    let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    let id = create(&mut checkout, "bounded", OwnedBytes::new(), &cancel).await?;
-    let attribute = AttributeName::new(
-        crate::kernel::AttributeClass::PosixXattr,
-        b"user.bounded".to_vec(),
-        128,
-    )?;
-    checkout
-        .change_named_attribute(
-            id,
-            &attribute,
-            Some((
-                &OwnedBytes::from_static(b"xx"),
-                NamedAttributeWriteMode::Create,
-            )),
-            B,
-            &cancel,
-        )
-        .await?;
-    let mut detached = checkout
-        .detach_regular_file(&path("bounded")?, B, &cancel)
-        .await?
-        .value;
-    assert!(matches!(
-        detached.read_named_attribute(&attribute, B, &cancel).await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
-    assert!(matches!(
-        detached
-            .change_content(
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: OwnedBytes::from_static(b"xx")
-                },
-                None,
-                B,
-                &cancel
-            )
-            .await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
+async fn authority_volume_identity_fails_closed() -> TestResult {
     assert_authority_volume_identity_fails_closed().await
 }

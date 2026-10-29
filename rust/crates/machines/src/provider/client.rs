@@ -94,9 +94,7 @@ impl Machine {
         offset: u64,
         limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
-        if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
-            return Err(ProviderError::Invalid("invalid console read limit".into()));
-        }
+        let limit = page_limit(u64::from(limit), MAX_OUTPUT_READ_BYTES)?;
         self.machines
             .provider
             .read_output(self.id, offset, limit)

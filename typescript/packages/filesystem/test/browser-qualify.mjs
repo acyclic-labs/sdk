@@ -9,6 +9,9 @@
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
 // CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
+import { connectBrowserProtocol as connect } from "../../../../scripts/browser-protocol.mjs";
+import { chromiumPageResult, waitForBrowserResult } from "../../../../scripts/browser-result.mjs";
+import { waitForFileValue } from "../../../../scripts/graphcoder-e2e/wait-path.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -109,15 +112,6 @@ async function serve() {
   return server;
 }
 
-async function until(deadline, description, probe) {
-  for (;;) {
-    const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
-  }
-}
-
 async function launchChrome(profile) {
   const chrome = spawn(
     chromeExecutable(),
@@ -137,24 +131,29 @@ async function launchChrome(profile) {
     ],
     { stdio: "ignore", windowsHide: true },
   );
-  const exited = new Promise((resolveExit) => chrome.once("exit", resolveExit));
-  // Chrome writes its chosen port and browser endpoint here once it listens.
+  const exited = new Promise(resolveExit => chrome.once("close", resolveExit));
+  const controller = new AbortController();
+  const failed = code => controller.abort(new Error(`Chrome exited with ${code}`));
+  const failedSpawn = error => controller.abort(error);
+  chrome.once("exit", failed);
+  chrome.once("error", failedSpawn);
+  // Chrome's complete endpoint may follow its initial file creation event.
   const activePort = join(profile, "DevToolsActivePort");
-  const [port, path] = await until(Date.now() + 30_000, "Chrome DevTools endpoint", () => {
-    if (chrome.exitCode !== null) throw new Error(`Chrome exited with ${chrome.exitCode}`);
-    if (!existsSync(activePort)) return undefined;
-    let lines;
+  const [port, path] = await waitForFileValue(activePort, file => {
     try {
-      lines = readFileSync(activePort, "utf8").split("\n");
+      const lines = readFileSync(file, "utf8").split("\n");
+      return lines.length >= 2 && lines[1] !== "" ? lines : undefined;
     } catch (error) {
       if (error.code === "EBUSY" || error.code === "ENOENT") return undefined;
       throw error;
     }
-    return lines.length >= 2 && lines[1] !== "" ? lines : undefined;
-  }).catch(async (error) => {
+  }, { timeoutMs: 30_000, signal: controller.signal }).catch(async error => {
     if (chrome.exitCode === null) chrome.kill();
     await exited;
     throw error;
+  }).finally(() => {
+    chrome.off("exit", failed);
+    chrome.off("error", failedSpawn);
   });
   return { chrome, exited, endpoint: `ws://127.0.0.1:${port}${path.trim()}` };
 }
@@ -206,7 +205,9 @@ async function launchFirefox(profile) {
     const observer = { events: [] };
     browser.listen(message => {
       if (message.method !== "log.entryAdded" || message.params.level !== "error") return;
-      observer.events.push(`${message.params.type === "javascript" ? "uncaught" : "console.error"}: ${message.params.text}`);
+      const uncaught = message.params.type === "javascript";
+      observer.events.push(`${uncaught ? "uncaught" : "console.error"}: ${message.params.text}`);
+      if (uncaught) observer.fail?.({ status: "failed", text: message.params.text });
     });
     return {
       chrome: driver, exited, browser, observer,
@@ -227,68 +228,24 @@ async function runFirefoxPage(browser, observer, origin, page) {
   const tab = await browser.request("POST", "/window/new", { type: "tab" });
   await browser.request("POST", "/window", { handle: tab.handle });
   let observed;
-  let last;
+  const failure = new Promise(resolveFailure => { observer.fail = resolveFailure; });
   try {
+    await browser.request("POST", "/timeouts", { script: PAGE_DEADLINE_MS });
     await browser.request("POST", "/url", { url: `${origin}/test/${page}` });
-    observed = await until(Date.now() + PAGE_DEADLINE_MS, `${page} result`, async () => {
-      const uncaught = events.find(event => event.startsWith("uncaught:"));
-      if (uncaught !== undefined) return { status: "failed", text: uncaught };
-      const value = await browser.request("POST", "/execute/sync", {
-        script: `return ${RESULT_EXPRESSION}`, args: [],
-      });
-      last = value;
-      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
-    }).catch(error => {
-      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
-    });
+    observed = await Promise.race([failure, browser.request("POST", "/execute/async", {
+      script: `(${waitForBrowserResult})(${PAGE_DEADLINE_MS}).then(arguments[arguments.length - 1]);`,
+      args: [],
+    })]);
+    const uncaught = events.find(event => event.startsWith("uncaught:"));
+    if (uncaught !== undefined) observed = { status: "failed", text: uncaught };
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
+    observer.fail = undefined;
     await browser.request("DELETE", "/window").catch(() => {});
     await browser.request("POST", "/window", { handle: original }).catch(() => {});
   }
   return { page, passed: observed.status === "passed", text: observed.text, events };
-}
-
-const RESULT_EXPRESSION = "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()";
-
-async function connect(endpoint) {
-  const socket = new WebSocket(endpoint);
-  await new Promise((resolveOpen, reject) => {
-    socket.addEventListener("open", resolveOpen, { once: true });
-    socket.addEventListener("error", () => reject(new Error("DevTools connection failed")), { once: true });
-  });
-  let sequence = 0;
-  const pending = new Map();
-  const listeners = new Set();
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id === undefined) {
-      for (const listener of listeners) listener(message);
-      return;
-    }
-    const handler = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error === undefined) handler?.resolve(message.result);
-    else handler?.reject(new Error(typeof message.error === "string"
-      ? `${message.error}: ${message.message}`
-      : `${message.error.message} (${message.error.code})`));
-  });
-  return {
-    send(method, params = {}, sessionId = undefined) {
-      const id = ++sequence;
-      return new Promise((resolveSend, reject) => {
-        pending.set(id, { resolve: resolveSend, reject });
-        socket.send(JSON.stringify({ id, method, params, sessionId }));
-      });
-    },
-    listen(listener) {
-      listeners.add(listener);
-    },
-    close() {
-      socket.close();
-    },
-  };
 }
 
 function describeException(details) {
@@ -316,36 +273,11 @@ function observe(browser) {
 async function runPage(browser, observer, origin, page) {
   observer.events = [];
   const events = observer.events;
-  // The page is navigated only once its session is observing it.
-  const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-  await browser.send("Runtime.enable", {}, sessionId);
-  await browser.send("Page.navigate", { url: `${origin}/test/${page}` }, sessionId);
-  const deadline = Date.now() + PAGE_DEADLINE_MS;
   let observed;
-  let last;
   try {
-    observed = await until(deadline, `${page} result`, async () => {
-      const uncaught = events.find((event) => event.startsWith("uncaught:"));
-      if (uncaught !== undefined) return { status: "failed", text: uncaught };
-      const evaluated = await browser.send(
-        "Runtime.evaluate",
-        {
-          expression: RESULT_EXPRESSION,
-          returnByValue: true,
-        },
-        sessionId,
-      );
-      const value = evaluated.result.value;
-      last = value;
-      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
-    }).catch((error) => {
-      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
-    });
+    observed = await chromiumPageResult(browser, `${origin}/test/${page}`, PAGE_DEADLINE_MS);
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
-  } finally {
-    await browser.send("Target.closeTarget", { targetId }).catch(() => {});
   }
   return { page, passed: observed.status === "passed", text: observed.text, events };
 }

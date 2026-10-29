@@ -129,7 +129,133 @@ test("cancelling a blocked body reader cancels the stream and rejects queued cal
   expect(invocations).toBe(0);
 });
 
-test("durable host receives the exact triple; validation rejects bounds before any host effect", async () => {
+test("initialization and exclusive sections gate every handler; failed or fenced heaps never revive", async () => {
+  let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  let initializations = 0, deliveries = 0;
+  const activation = new ActorActivation(async () => { initializations++; await held; return 42; });
+  const a = activation.deliver(state => { deliveries++; return state; });
+  const b = activation.deliver(state => { deliveries++; return state; });
+  expect(deliveries).toBe(0); release(); expect(await Promise.all([a,b])).toEqual([42,42]);
+  expect(initializations).toBe(1);
+  await expect(activation.blockConcurrencyWhile(() => { throw new Error("initialization failed"); })).rejects.toThrow();
+  await expect(activation.deliver(() => { deliveries++; })).rejects.toThrow(); expect(deliveries).toBe(2);
+  let finish!: () => void; const gate = new Promise<void>(resolve => { finish = resolve; });
+  const fenced = new ActorActivation(async () => { await gate; return 1; });
+  const pending = fenced.deliver(() => { deliveries++; }); fenced.fence(); finish();
+  await expect(pending).rejects.toThrow(); await expect(fenced.deliver(() => { deliveries++; })).rejects.toThrow();
+  expect(deliveries).toBe(2);
+});
+
+test("capture closes admission, drains reentrant handlers, then acquires exclusive state", async () => {
+  let reentered = 0, successorCalls = 0;
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  const attempting = Promise.withResolvers<void>();
+  const capturing = Promise.withResolvers<void>(), publish = Promise.withResolvers<void>();
+  const activation = new ActorActivation(() => ({ value: 0 }));
+  const delivery = activation.deliver(async () => {
+    entered.resolve();
+    await resume.promise;
+    attempting.resolve();
+    await activation.blockConcurrencyWhile(state => { reentered++; state.value++; });
+  });
+  await entered.promise;
+  const capture = activation.quiesce(async state => {
+    capturing.resolve();
+    await publish.promise;
+    return state.value;
+  });
+  const successor = activation.deliver(state => { successorCalls++; return ++state.value; });
+  try {
+    resume.resolve();
+    await attempting.promise;
+    // Hand the queue to the already admitted exclusive section once. Capture
+    // must not own that section while waiting for this handler to finish.
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect(reentered).toBe(1);
+    await delivery;
+    await capturing.promise;
+    expect(successorCalls).toBe(0);
+    publish.resolve();
+    expect(await capture).toBe(1);
+    expect(await successor).toBe(2);
+  } finally {
+    activation.fence(); resume.resolve(); publish.resolve();
+    await Promise.allSettled([delivery, capture, successor]);
+  }
+});
+
+test("queued admission belongs to its capture cut; host loss settles every current and late observer", async () => {
+  const initialize = Promise.withResolvers<number>();
+  const activation = new ActorActivation(() => initialize.promise);
+  const order: string[] = [];
+  const a = activation.deliver(() => { order.push("first"); });
+  const b = activation.quiesce(() => { order.push("capture"); });
+  const c = activation.deliver(() => { order.push("second"); });
+  const d = activation.quiesce(() => { order.push("capture-second"); });
+  initialize.resolve(1);
+  await Promise.all([a, b, c, d]);
+  expect(order).toEqual(["first", "capture", "second", "capture-second"]);
+
+  const held = Promise.withResolvers<number>(), entered = Promise.withResolvers<void>();
+  const lost = new ActorActivation(() => { entered.resolve(); return held.promise; });
+  let effects = 0;
+  const pending = [lost.deliver(() => { effects++; }), lost.quiesce(() => { effects++; }), lost.deliver(() => { effects++; })];
+  const settled = Promise.allSettled(pending);
+  const failures: unknown[] = [];
+  for (const operation of pending) void operation.catch(error => { failures.push(error); });
+  await entered.promise;
+  try {
+    lost.fence();
+    // Ownership loss synchronously rejects observers; observe that notification
+    // on the next microtask, before releasing the original blocked producer.
+    await Promise.resolve();
+    expect(failures).toHaveLength(3);
+    for (const result of await settled) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason.code).toBe("unavailable");
+    }
+    await expect(lost.deliver(() => { effects++; })).rejects.toMatchObject({ code: "unavailable" });
+    await expect(lost.quiesce(() => { effects++; })).rejects.toMatchObject({ code: "unavailable" });
+    expect(effects).toBe(0);
+  } finally {
+    held.resolve(1);
+    await settled;
+  }
+});
+
+test("capture registers constant completion work across admitted populations", async () => {
+  async function registrations(population: number): Promise<number> {
+    const activation = new ActorActivation(() => 1);
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let admitted = 0;
+    const deliveries = Array.from({ length: population }, () => activation.deliver(async () => {
+      if (++admitted === population) entered.resolve();
+      await release.promise;
+    }));
+    await entered.promise;
+    const then = Promise.prototype.then;
+    let count = 0;
+    Promise.prototype.then = function (...args) { count++; return then.apply(this, args); };
+    try {
+      const capture = activation.quiesce(state => state);
+      // Execute the already queued capture preparation before delivering the
+      // original handlers' completion event. This is one handoff, not a probe.
+      await new Promise<void>(resolve => queueMicrotask(resolve));
+      release.resolve();
+      expect(await capture).toBe(1);
+      return count;
+    } finally {
+      Promise.prototype.then = then;
+      release.resolve();
+      await Promise.all(deliveries);
+    }
+  }
+  const one = await registrations(1);
+  expect(await registrations(128)).toBe(one);
+  expect(await registrations(4096)).toBe(one);
+});
+
+test("durable host receives the exact triple and gates every delivery", async () => {
   const seen: string[] = [];
   const host = new Proxy({}, {get(_target, property) { return (address: Uint8Array) => {
     expect(ActorReference.decode(address).equals(reference())).toBe(true); seen.push(String(property));
@@ -137,13 +263,9 @@ test("durable host receives the exact triple; validation rejects bounds before a
   }; }}) as DurableHost;
   const state = new DurableObjectState(reference(), host);
   const socket = {} as WebSocket;
-  state.acceptWebSocket(socket, Array(10).fill("λ".repeat(256)));
-  expect(() => state.acceptWebSocket(socket, Array(11).fill(""))).toThrow();
-  expect(() => state.acceptWebSocket(socket, ["λ".repeat(257)])).toThrow();
-  state.serializeAttachment(socket, new Uint8Array(2048));
-  expect(() => state.serializeAttachment(socket, new Uint8Array(2049))).toThrow();
-  state.setWebSocketAutoResponse({request:"λ".repeat(2048),response:"ok"});
-  expect(() => state.setWebSocketAutoResponse({request:"",response:"λ".repeat(2049)})).toThrow();
+  state.acceptWebSocket(socket, ["live"]);
+  state.serializeAttachment(socket, new Uint8Array([1, 2, 3]));
+  state.setWebSocketAutoResponse({request:"ping",response:"pong"});
   expect(() => alarmInfo(0,true)).toThrow(); expect(alarmInfo(1)).toEqual({retryCount:1,isRetry:true});
   expect(seen).toEqual(["acceptWebSocket","serializeAttachment","setWebSocketAutoResponse"]);
   const delivered: string[] = [];
