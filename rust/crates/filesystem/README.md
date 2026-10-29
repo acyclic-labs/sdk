@@ -91,8 +91,10 @@ not pin all records forever or create another receipt service.
 
 M2's portable batch preparation uses `prepare_records` to stage roots, companion
 snapshots and refs against explicit observations, then seal one command. A local
-refusal preserves the caller's original conditions and held closures. Submission
-uses the existing Streams commit path. `reconcile_states` reads each original
+refusal preserves the caller's original conditions and held closures. Preparation
+validates and seals the disposable draft without copying its request containers
+again; public sealing still stages a copy before changing caller-owned state.
+Submission uses the existing Streams commit path. `reconcile_states` reads each original
 predicted position once, requiring every destination-bound state and header to
 match under one commit identity before releasing the original owner. Callers use
 unique operation keys. Missing records, separate commits, inherited source
@@ -124,6 +126,12 @@ discard idle state, but never replace a live actor. Final actor destruction
 retires its exact registration and index nodes; reopening reconstructs forgotten
 state from Streams. These bounds describe source structure, not measured RSS or
 latency at 100k volumes.
+
+Mounted checkouts keep an ordered snapshot vector and a direct path index.
+Routing probes only component ancestors and borrows their spellings; snapshots
+retain canonical order independently of hash-table iteration. Index lookup has
+the standard hash table's expected constant cost; no worst-case hash-table or
+runtime performance qualification is claimed.
 
 ### Caller and deletion inventory
 

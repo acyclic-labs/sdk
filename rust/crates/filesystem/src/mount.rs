@@ -6,7 +6,7 @@ use crate::foundation::{GenerationId, MountId, VolumeId};
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::model::{AccessMode, ConsistencyMode};
 use crate::path::{PathError, PortablePath};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use thiserror::Error;
 
 /// One independently configured checkout mounted into a composed view.
@@ -60,7 +60,8 @@ pub struct RoutedCheckout<'a, A: 'static, O: 'static> {
 
 /// Deterministic longest-prefix router that owns independently configured checkouts.
 pub struct MountedView<A: 'static, O: 'static> {
-    bindings: BTreeMap<PortablePath, MountedCheckout<A, O>>,
+    bindings: Vec<MountedCheckout<A, O>>,
+    by_path: HashMap<PortablePath, usize>,
 }
 
 impl<A: 'static, O: 'static> MountedView<A, O> {
@@ -73,14 +74,15 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
     /// Resolves one path by longest component-prefix match.
     #[must_use]
     pub fn resolve(&self, path: &PortablePath) -> Option<&MountedCheckout<A, O>> {
-        self.bindings.get(self.selected_path(path)?)
+        self.bindings.get(self.selected_index(path)?)
     }
 
     // Lookup visits only the supplied path's component ancestors. Unrelated
     // mounts do not add routing probes, and mutable routing need not clone a key.
-    fn selected_path<'a>(&self, path: &'a PortablePath) -> Option<&'a str> {
+    // The ordered snapshot vector is independent of this direct lookup index.
+    fn selected_index(&self, path: &PortablePath) -> Option<usize> {
         path.ancestors()
-            .find(|ancestor| self.bindings.contains_key(*ancestor))
+            .find_map(|ancestor| self.by_path.get(ancestor).copied())
     }
 
     /// Resolves and mutably borrows one checkout with a volume-relative path.
@@ -93,7 +95,7 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         &mut self,
         path: &PortablePath,
     ) -> Result<RoutedCheckout<'_, A, O>, MountError> {
-        let selected = self.selected_path(path).ok_or(MountError::UnmappedPath)?;
+        let selected = self.selected_index(path).ok_or(MountError::UnmappedPath)?;
         let binding = self
             .bindings
             .get_mut(selected)
@@ -117,7 +119,7 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         MountedViewSnapshot {
             bindings: self
                 .bindings
-                .values()
+                .iter()
                 .map(|binding| MountedGeneration {
                     mount_id: binding.mount_id,
                     path: binding.path.clone(),
@@ -196,9 +198,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedVie
         if !self.bindings.contains_key(PortablePath::ROOT) {
             return Err(MountError::MissingRoot);
         }
-        Ok(MountedView {
-            bindings: self.bindings,
-        })
+        let mut bindings = Vec::with_capacity(self.bindings.len());
+        let mut by_path = HashMap::with_capacity(self.bindings.len());
+        // Consume the builder's sorted entries. Each checkout has one dense
+        // position and the existing path owner moves into its lookup slot.
+        for (path, binding) in self.bindings {
+            by_path.insert(path, bindings.len());
+            bindings.push(binding);
+        }
+        Ok(MountedView { bindings, by_path })
     }
 }
 

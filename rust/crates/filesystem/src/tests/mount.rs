@@ -140,10 +140,7 @@ async fn mounted_checkout_accessors_and_snapshot_are_exact()
     let _ = routed.checkout;
     let binding = view
         .bindings
-        .get_mut(&PortablePath::parse(
-            "/",
-            crate::model::VolumeLimits::default(),
-        )?)
+        .first_mut()
         .ok_or("root binding disappeared")?;
     assert_eq!(binding.checkout_mut().generation_id(), expected_generation);
 
@@ -167,7 +164,8 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
     let path = PortablePath::parse("/unmapped", crate::model::VolumeLimits::default())?;
     let mut empty: MountedView<crate::MemoryAuthorityStore, crate::MemoryObjectStore> =
         MountedView {
-            bindings: BTreeMap::new(),
+            bindings: Vec::new(),
+            by_path: std::collections::HashMap::new(),
         };
     assert!(matches!(
         empty.route_mut(&path),
@@ -207,7 +205,7 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
     let checkouts = same_volume_checkouts(mount_paths.len()).await?;
     let expected_volume = checkouts.first().ok_or("missing checkout")?.volume_id();
     let mut builder = MountedView::builder();
-    for (path, checkout) in mount_paths.iter().zip(checkouts) {
+    for (path, checkout) in mount_paths.iter().rev().zip(checkouts) {
         builder = builder.mount(path, checkout)?;
     }
     let mut view = builder.build()?;
