@@ -90,16 +90,8 @@ pub fn prepare<T>(
     // even when another native process caller requested inheritance.
     invocation.inherit_environment = false;
     invocation.timeout_ms = input.timeout_ms()?;
-    let (command, standard_input) = match crate::tools::shell::PLATFORM.stdin_bootstrap {
-        Some(bootstrap) => (bootstrap.to_owned(), Some(input.command.into_bytes())),
-        None => (input.command, None),
-    };
-    invocation.argv = crate::tools::shell::PLATFORM
-        .arguments
-        .iter()
-        .map(|argument| (*argument).into())
-        .chain([command])
-        .collect();
+    let (arguments, standard_input) = crate::tools::shell::PLATFORM.prepare(input.command);
+    invocation.argv = arguments.collect();
     invocation.standard_input = standard_input;
     super::invocation::validate(
         &invocation.executable,
