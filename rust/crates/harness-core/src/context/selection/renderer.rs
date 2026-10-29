@@ -144,7 +144,9 @@ impl ContextStage for SelectionStage {
             validate_projected_context(&context, limits, io)?;
             crate::executor::with_history_io(io, |work| self.selection.validate(limits, work))?;
             if let ContextSourceValue::File { file } = &self.selection.source {
-                self.verifier.verify(file, limits.file_bytes, io)?.await?;
+                self.verifier
+                    .verify(file, file.descriptor().byte_length(), io)?
+                    .await?;
             }
             let messages = self
                 .renderer
