@@ -431,6 +431,7 @@ pub struct Reader {
     issues: BTreeMap<StreamPath, ReadIssue>,
     anchors: BTreeMap<StreamPath, Anchors>,
     follows: BTreeMap<StreamPath, u64>,
+    follow_changes: BTreeSet<StreamPath>,
     delivered: usize,
     next_id: u64,
     failures: u32,
@@ -470,6 +471,7 @@ impl Reader {
             issues: BTreeMap::new(),
             anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
+            follow_changes: BTreeSet::new(),
             delivered: 0,
             next_id: 1,
             failures: 0,
@@ -508,6 +510,7 @@ impl Reader {
         self.issues.clear();
         self.anchors.clear();
         self.follows.clear();
+        self.follow_changes.clear();
         self.hierarchy = None;
         self.failures = 0;
         self.since = None;
@@ -1340,10 +1343,20 @@ impl Reader {
             });
             next.insert(stream, from);
         }
+        for (path, from) in &next {
+            if self.follows.get(path) != Some(from) {
+                self.follow_changes.insert(path.clone());
+            }
+        }
+        for path in self.follows.keys() {
+            if !next.contains_key(path) {
+                self.follow_changes.insert(path.clone());
+            }
+        }
         self.follows = next;
     }
 
-    /// Wanted follows and their start positions, for the driver to diff.
+    /// Wanted follows and their current start positions.
     pub fn follows(&self) -> impl Iterator<Item = (&StreamPath, u64)> {
         self.follows.iter().map(|(path, from)| (path, *from))
     }
@@ -1421,7 +1434,11 @@ impl Reader {
     fn invalidate(&mut self, stream: &StreamPath, inherited: bool) {
         let affected = self.cache.remove_stream(stream, inherited);
         self.demand.retain(|key, _| !affected.contains(key.path()));
-        self.follows.retain(|path, _| !affected.contains(path));
+        for path in &affected {
+            if self.follows.remove(path).is_some() {
+                self.follow_changes.insert(path.clone());
+            }
+        }
         let cancelled: Vec<_> = self
             .inflight
             .iter()
