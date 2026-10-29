@@ -25,14 +25,14 @@ impl FileTool {
         } else {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,
-                scope.limits().file_bytes,
+                Some(scope.limits().file_bytes),
                 &mut None,
             )?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         crate::executor::json::json_byte_length(
             &invocation.arguments,
-            scope.limits().file_bytes,
+            Some(scope.limits().file_bytes),
             &mut None,
         )?;
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;

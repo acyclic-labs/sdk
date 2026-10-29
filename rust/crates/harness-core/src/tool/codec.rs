@@ -85,7 +85,7 @@ pub fn value<T: Serialize>(
     }
     let _ = work;
     if maximum_bytes != u64::MAX {
-        crate::executor::json::json_byte_length(value, maximum_bytes, &mut None)?;
+        crate::executor::json::json_byte_length(value, Some(maximum_bytes), &mut None)?;
     }
     serde_json::to_value(value)
         .map(|value| (value, None))

@@ -135,7 +135,7 @@ pub(super) fn value_bound(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
     inspect_value(value, maximum, work)?;
-    crate::executor::json::json_byte_length(value, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(value, Some(maximum), work).map(|_| ())
 }
 pub(super) fn result_bound(
     content: &ToolResultContent,
@@ -171,7 +171,7 @@ pub(super) fn result_bound(
             }
         }
     }
-    crate::executor::json::json_byte_length(content, maximum, work).map(|_| ())
+    crate::executor::json::json_byte_length(content, Some(maximum), work).map(|_| ())
 }
 
 pub(crate) fn hash_bytes(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {

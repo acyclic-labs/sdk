@@ -205,8 +205,8 @@ impl StockExecution<'_> {
         }
         let request_frame = if self.context_pipeline().has_optional() {
             with_history_io(self.io, |work| {
-                let request_bytes = json::json_byte_length(&request, u64::MAX, work)?;
-                let messages = json::json_byte_length(&request.messages, u64::MAX, work)?;
+                let request_bytes = json::json_byte_length(&request, None, work)?;
+                let messages = json::json_byte_length(&request.messages, None, work)?;
                 Ok::<_, Error>(request_bytes - messages)
             })?
         } else {

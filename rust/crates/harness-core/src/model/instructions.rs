@@ -174,7 +174,7 @@ impl super::instruction_sources::InstructionSources<'_> {
         for file in self.iter(io) {
             let file = file?;
             let metadata = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&**file, remaining, work)
+                crate::executor::json::json_byte_length(&**file, Some(remaining), work)
             })?;
             let overhead =
             r#"{"role":"user","content":{"kind":"file","file":,"policy":{"project_instructions":}}}"#
@@ -192,7 +192,7 @@ impl super::instruction_sources::InstructionSources<'_> {
                         volume: source.volume,
                         path: source.path,
                     },
-                    remaining,
+                    Some(remaining),
                     work,
                 )
             })?;
