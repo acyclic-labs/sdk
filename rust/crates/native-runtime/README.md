@@ -96,9 +96,27 @@ Capture setup and every handler callback run on the blocking service. The first
 turn takes ownership of the fixed control-signal set before invoking checks or
 output observers. Subsequent waits use those owned signals without invoking a
 handler on coordination. `take_wakes` moves a single inline signal or an existing
-vector with no allocation or signal clone; its compatibility default copies the signal owners
-once per capture. Setup shares the first turn's existing job, so this boundary
-adds no worker submission, pipe byte copy, flush or durability barrier.
+vector with no allocation or signal clone; its compatibility default copies the
+signal owners once per capture. Setup shares the first turn's existing job, so
+this boundary adds no worker submission, pipe byte copy, flush or durability barrier.
+
+`obs::WaitReport::snapshot()` captures owned observations before cancellation;
+later span settlement cannot erase them. `WaitSnapshot::try_write_to` transfers
+the snapshot and writer to one process-wide diagnostic worker, isolated from
+coordination, storage and capture. Initialize it with
+`obs::initialize_diagnostic_service()` at startup. It admits at most one physical
+report, including a blocked sink; concurrent submissions return `WouldBlock`
+without allocating an observer or accumulating a queue. Dropping the optional
+`DiagnosticCompletion` does not wait or release physical custody. Cancellation
+and cleanup must not await diagnostic output. Writer errors remain unchanged;
+producer loss and writer panic have typed `DiagnosticFailure` causes. The
+synchronous `report`/`write_to` entries remain explicit blocking operations.
+Snapshot and rendering visit O(W) captured waits; admission and ownership
+handoff have fixed work. Retiring a rejected snapshot visits its W owned
+references on the caller. Output flushes once per report, with no durability
+barrier. Span registration/retirement each takes one registry critical section
+and updates only the owned node and its two neighbors; snapshots acquire the
+registry once and never hold it during output.
 
 For S sources and W outstanding waits, successful arm/drop perform O(S) expected amortized
 hash work and one registry critical section. A deadline adds O(log W) tree

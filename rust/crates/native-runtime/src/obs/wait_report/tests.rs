@@ -115,3 +115,95 @@ fn output_can_close_a_wait_and_failure_does_not_hold_the_registry() {
     );
     assert!(snapshot(&report).is_empty());
 }
+
+#[test]
+fn span_registry_admission_and_retirement_do_not_scan_live_waits() -> io::Result<()> {
+    if crate::tests::passed_in_exclusive_process(
+        "obs::wait_report::tests::span_registry_admission_and_retirement_do_not_scan_live_waits",
+    )? {
+        return Ok(());
+    }
+    for count in [1, 100_000] {
+        let report = WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let mut waits = Vec::with_capacity(count);
+        tracing::dispatcher::with_default(&dispatch, || {
+            REGISTRY_LOCKS.set(0);
+            REGISTRY_ACQUIRE_NANOS.set(0);
+            let started = Instant::now();
+            let admitted = acyclic_test_support::measure(|| {
+                for _ in 0..count {
+                    waits.push(crate::obs::waiting(
+                        "channel-close",
+                        "same-key",
+                        std::future::pending::<()>(),
+                    ));
+                }
+            });
+            let arm = started.elapsed();
+            let arm_acquire = REGISTRY_ACQUIRE_NANOS.get();
+            #[cfg(target_os = "linux")]
+            let rss = std::fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .find(|line| line.starts_with("VmRSS:"))
+                .unwrap()
+                .to_owned();
+            #[cfg(not(target_os = "linux"))]
+            let rss = "RSS source unavailable on this platform";
+            assert_eq!(REGISTRY_LOCKS.get(), count);
+            REGISTRY_LOCKS.set(0);
+            REGISTRY_ACQUIRE_NANOS.set(0);
+            let captured = acyclic_test_support::measure(|| {
+                let snapshot = report.snapshot();
+                assert_eq!(snapshot.nodes.len(), count);
+            });
+            assert_eq!(REGISTRY_LOCKS.get(), 1);
+            assert_eq!(captured.count_total, 1);
+            assert_eq!(
+                captured.bytes_total,
+                (count * std::mem::size_of::<Arc<Node>>()) as u64
+            );
+            let snapshot = report.snapshot();
+            let growing = acyclic_test_support::measure(|| {
+                let mut copied = Vec::new();
+                for node in &snapshot.nodes {
+                    copied.push(Arc::clone(node));
+                }
+                std::hint::black_box(copied);
+            });
+            assert!(growing.bytes_total > captured.bytes_total);
+            drop(snapshot);
+            REGISTRY_LOCKS.set(0);
+            REGISTRY_ACQUIRE_NANOS.set(0);
+            let started = Instant::now();
+            let retired = acyclic_test_support::measure(|| {
+                while let Some(wait) = waits.pop() {
+                    drop(wait);
+                }
+            });
+            let drop_time = started.elapsed();
+            let close_acquire = REGISTRY_ACQUIRE_NANOS.get();
+            assert_eq!(REGISTRY_LOCKS.get(), count);
+            println!(
+                "span-registry waits={count} arm={arm:?} drop={drop_time:?} locks={count}/1/{count} arm-lock-acquire-ns={arm_acquire} close-lock-acquire-ns={close_acquire} rss={rss} admission-allocations={} admission-bytes={} retained-bytes={} snapshot-allocations={} snapshot-bytes={} retirement-allocations={} retirement-bytes={}",
+                admitted.count_total,
+                admitted.bytes_total,
+                admitted.bytes_current,
+                captured.count_total,
+                captured.bytes_total,
+                retired.count_total,
+                retired.bytes_total
+            );
+            // A historical/live-list scan added to each admission fails the
+            // same fixed-critical-section oracle, without relying on a timer.
+            let negative =
+                crate::obs::waiting("channel-close", "control", std::future::pending::<()>());
+            REGISTRY_LOCKS.set(0);
+            drop(report.snapshot());
+            drop(negative);
+            assert_ne!(REGISTRY_LOCKS.get(), 1);
+        });
+    }
+    Ok(())
+}

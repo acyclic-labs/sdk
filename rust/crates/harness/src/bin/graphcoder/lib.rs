@@ -44,6 +44,9 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
         eprintln!("graphcoder: diagnostics initialization failed: {error}");
         return ExitCode::FAILURE;
     }
+    // Retain initialization failure in the shared service; diagnostics must
+    // never replace the execution result or prevent owner cleanup.
+    let _ = acyclic_native_runtime::obs::initialize_diagnostic_service();
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
     let result = acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
@@ -52,14 +55,9 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
             let result = runtime.block_on(phase(|| async {
                 let shutdown = lifecycle::shutdown();
                 let operation = phase(|| run(args, seams, shutdown.clone()));
-                let (result, _) = lifecycle::observe(
-                    &report,
-                    &mut std::io::stderr(),
-                    shutdown,
-                    graceful,
-                    operation,
-                )
-                .await;
+                let (result, _) =
+                    lifecycle::observe(&report, std::io::stderr(), shutdown, graceful, operation)
+                        .await;
                 result
             }));
             runtime.shutdown_background();

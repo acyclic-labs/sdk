@@ -1,6 +1,76 @@
 use super::*;
 
 #[test]
+fn owned_batch_handoffs_keep_one_job_and_original_payloads() -> io::Result<()> {
+    for width in [1_usize, 16, 256] {
+        let temporary = tempfile::NamedTempFile::new()?;
+        let native =
+            NativeFile::from_file(temporary.reopen()?, None).map_err(|(error, _)| error)?;
+        let expected: Vec<_> = (0..width)
+            .map(|index| Bytes::from(index.to_le_bytes().to_vec()))
+            .collect();
+        let writes: Vec<_> = expected
+            .iter()
+            .enumerate()
+            .map(|(index, bytes)| OwnedWrite {
+                offset: (index * std::mem::size_of::<usize>()) as u64,
+                bytes: bytes.clone(),
+            })
+            .collect();
+        let original = writes.as_ptr();
+        let mut task = None;
+        let allocation = acyclic_test_support::measure(|| {
+            task = Some(native.write_all_batch_async(writes));
+        });
+        let task = task.unwrap();
+        let Some(NativeJob::Write { writes, .. }) = task.pending.as_ref() else {
+            panic!("batch lost its single owned write job")
+        };
+        assert_eq!(writes.as_ptr(), original);
+        for (write, bytes) in writes.iter().zip(&expected) {
+            assert_eq!(write.bytes.as_ptr(), bytes.as_ptr());
+        }
+        assert_eq!(allocation.count_total, 1);
+        complete(task)?;
+        let reads: Vec<_> = (0..width)
+            .map(|index| OwnedRead {
+                offset: (index * std::mem::size_of::<usize>()) as u64,
+                length: std::mem::size_of::<usize>(),
+            })
+            .collect();
+        let original = reads.as_ptr();
+        let task = native.read_batch_async(reads);
+        let Some(NativeJob::Read { reads, .. }) = task.pending.as_ref() else {
+            panic!("batch lost its single owned read job")
+        };
+        assert_eq!(reads.as_ptr(), original);
+        assert_eq!(complete(task)?, expected);
+        let copied = Bytes::copy_from_slice(expected.first().unwrap());
+        assert_ne!(copied.as_ptr(), expected.first().unwrap().as_ptr());
+        // Splitting into singleton submissions fails the unchanged one-job
+        // budget as soon as there is more than one required range.
+        let split: Vec<_> = (0..width)
+            .map(|_| {
+                native.read_batch_async(vec![OwnedRead {
+                    offset: 0,
+                    length: 1,
+                }])
+            })
+            .collect();
+        assert_eq!(
+            split.iter().filter(|task| task.pending.is_some()).count(),
+            width
+        );
+        assert_eq!(width == 1, split.len() == 1);
+        println!(
+            "owned-batch ranges={width} write-jobs=1 read-jobs=1 input-payload-copies=0 handoff-allocations={} handoff-bytes={} split-control-jobs={width}",
+            allocation.count_total, allocation.bytes_total
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn positional_io_preserves_cursor_and_bounds_ranges() -> io::Result<()> {
     let temporary = tempfile::NamedTempFile::new()?;
     let mut file = temporary.reopen()?;

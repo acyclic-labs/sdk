@@ -1,4 +1,4 @@
-use acyclic_native_runtime::obs::WaitReport;
+use acyclic_native_runtime::obs::{DiagnosticCompletion, WaitReport};
 use futures::{FutureExt as _, future::BoxFuture, future::Shared};
 use std::{future::Future, io, sync::Arc};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
@@ -57,16 +57,16 @@ pub(super) fn shutdown() -> Shutdown {
 // must not replace the operation's result or interrupt graceful owner cleanup.
 pub(super) async fn observe(
     report: &WaitReport,
-    output: &mut impl io::Write,
+    output: impl io::Write + Send + 'static,
     shutdown: Shutdown,
     graceful: bool,
     operation: impl Future<Output = Result<u8, Failure>>,
-) -> (Result<u8, Failure>, io::Result<()>) {
+) -> (Result<u8, Failure>, io::Result<DiagnosticCompletion>) {
     tokio::pin!(operation);
     tokio::select! {
-        result = &mut operation => (result, report.report(output)),
+        result = &mut operation => (result, report.snapshot().try_write_to(output)),
         stopped = shutdown => {
-            let diagnostic = report.report(output);
+            let diagnostic = report.snapshot().try_write_to(output);
             let result = if graceful {
                 operation.await
             } else {

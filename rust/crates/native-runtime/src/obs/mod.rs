@@ -5,10 +5,12 @@ use tracing::{Dispatch, Span};
 
 mod scoped;
 pub use scoped::Scoped;
+mod diagnostic;
 mod wait_report;
 mod waiting;
+pub use diagnostic::{DiagnosticCompletion, DiagnosticFailure, initialize_diagnostic_service};
 pub(crate) use tracing::field::Empty;
-pub use wait_report::WaitReport;
+pub use wait_report::{WaitReport, WaitSnapshot};
 pub use waiting::waiting;
 
 macro_rules! span {

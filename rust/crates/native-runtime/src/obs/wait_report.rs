@@ -10,7 +10,7 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 /// Collects the live [`super::waiting`] spans of one subscriber.
 ///
 /// Install this layer alongside the host's diagnostic layer, without applying
-/// the diagnostic verbosity filter to it. The process owner calls [`Self::report`]
+/// the diagnostic verbosity filter to it. The process owner calls [`Self::snapshot`]
 /// at shutdown or after its existing termination signal. This layer installs no
 /// signal handler, task, timer or readiness mechanism.
 ///
@@ -21,10 +21,23 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 #[derive(Clone, Default)]
 pub struct WaitReport(Arc<Mutex<Chain>>);
 
+#[cfg(test)]
+thread_local! {
+    static REGISTRY_LOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static REGISTRY_ACQUIRE_NANOS: std::cell::Cell<u128> = const { std::cell::Cell::new(0) };
+}
+
+/// An owned point-in-time observation, independent of later span settlement.
+pub struct WaitSnapshot {
+    nodes: Vec<Arc<Node>>,
+    captured: Instant,
+}
+
 #[derive(Default)]
 struct Chain {
     first: Option<Arc<Node>>,
     last: Weak<Node>,
+    len: usize,
 }
 
 struct Node {
@@ -84,7 +97,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
             elapsed: Instant::now(),
             links: Mutex::default(),
         });
-        let mut chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut chain = self.registry();
         if let Some(last) = chain.last.upgrade() {
             node.links
                 .lock()
@@ -98,6 +111,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
             chain.first = Some(Arc::clone(&node));
         }
         chain.last = Arc::downgrade(&node);
+        chain.len += 1;
         span.extensions_mut().insert(SpanWait(node));
     }
 
@@ -108,7 +122,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         let Some(SpanWait(node)) = span.extensions_mut().remove::<SpanWait>() else {
             return;
         };
-        let mut chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut chain = self.registry();
         let mut links = node.links.lock().unwrap_or_else(PoisonError::into_inner);
         let previous = links.previous.upgrade();
         let next = links.next.take();
@@ -130,31 +144,73 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         } else {
             chain.last = previous.as_ref().map_or_else(Weak::new, Arc::downgrade);
         }
+        chain.len -= 1;
     }
 }
 
 impl WaitReport {
+    fn registry(&self) -> std::sync::MutexGuard<'_, Chain> {
+        #[cfg(not(test))]
+        {
+            self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+        #[cfg(test)]
+        {
+            REGISTRY_LOCKS.with(|count| count.set(count.get() + 1));
+            let started = Instant::now();
+            let chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            REGISTRY_ACQUIRE_NANOS
+                .with(|elapsed| elapsed.set(elapsed.get() + started.elapsed().as_nanos()));
+            chain
+        }
+    }
+
+    /// Captures live observations before cancelling their producers.
+    ///
+    /// This visits the W live waits once under one registry critical section.
+    /// It clones owners, not strings or registry links. Output never holds the
+    /// registry lock, and later span closure does not erase the captured fields.
+    #[must_use]
+    pub fn snapshot(&self) -> WaitSnapshot {
+        let chain = self.registry();
+        let mut next = chain.first.clone();
+        let mut nodes = Vec::with_capacity(chain.len);
+        while let Some(node) = next {
+            next = node
+                .links
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .next
+                .clone();
+            nodes.push(node);
+        }
+        WaitSnapshot {
+            nodes,
+            captured: Instant::now(),
+        }
+    }
+
     /// Writes a snapshot of live primitive/key/start observations, then flushes.
     ///
-    /// A blocked or failed writer cannot hold the lock needed by a completing
-    /// producer. Output errors are returned unchanged to the process owner.
+    /// This synchronous compatibility entry may block the calling thread.
+    /// Coordination owners use [`Self::snapshot`] and
+    /// [`WaitSnapshot::try_write_to`] to keep cancellation independent of output.
     pub fn report(&self, output: &mut impl Write) -> io::Result<()> {
-        let nodes = {
-            let chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-            let mut next = chain.first.clone();
-            let mut nodes = Vec::new();
-            while let Some(node) = next {
-                next = node
-                    .links
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .next
-                    .clone();
-                nodes.push(node);
-            }
-            nodes
-        };
-        for node in nodes {
+        self.snapshot().write_to(output)
+    }
+}
+
+impl WaitSnapshot {
+    /// Whether the captured observation contains no live waits.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    /// Writes on the caller's thread, flushing once at the report boundary.
+    /// Output errors are returned unchanged; no registry lock is acquired.
+    pub fn write_to(&self, output: &mut impl Write) -> io::Result<()> {
+        for node in &self.nodes {
             let since = node.started.duration_since(UNIX_EPOCH).unwrap_or_default();
             writeln!(
                 output,
@@ -162,7 +218,9 @@ impl WaitReport {
                 node.fields.primitive,
                 node.fields.key,
                 since.as_secs_f64(),
-                node.elapsed.elapsed().as_secs_f64(),
+                self.captured
+                    .saturating_duration_since(node.elapsed)
+                    .as_secs_f64(),
             )?;
         }
         output.flush()
