@@ -129,6 +129,10 @@ async fn interrupted_mutation_retains_key_until_explicit_recovery()
         WatchReply::Items(Vec::new()),
         WatchReply::Items(vec![WatchItem::Error(Code::Unavailable)]),
         WatchReply::Reject(Code::Unknown),
+        WatchReply::Items(vec![WatchItem::State(operation_state(
+            OperationId::parse("00000000-0000-0000-0000-000000000043")?,
+            wire::OperationStatus::Succeeded,
+        ))]),
     ] {
         let (service, script, machine) = scripted_operation_service(
             vec![

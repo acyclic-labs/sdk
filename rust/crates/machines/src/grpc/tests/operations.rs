@@ -200,10 +200,10 @@ async fn operation_for_rejects_a_substituted_nested_admission_operation()
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
 
-    assert!(matches!(
+    assert_eq!(
         machines.recover_operation(key).await,
-        Err(ProviderError::Rejected(_))
-    ));
+        Err(ProviderError::Indeterminate(key))
+    );
 
     let _ = shutdown.send(());
     server.await??;

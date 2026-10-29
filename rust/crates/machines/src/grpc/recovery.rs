@@ -50,7 +50,8 @@ pub(super) async fn recovered_admission(
         .await
         .map_err(|error| recovery_error(key, &error))?
         .into_inner();
-    let operation = validate_recovered_admission(&value)?;
+    let operation =
+        validate_recovered_admission(&value).map_err(|_| ProviderError::Indeterminate(key))?;
     Ok((operation, value))
 }
 
@@ -78,7 +79,9 @@ pub(super) async fn wait(
                 .await
                 .map_err(|error| watch_error(key, &error))?
             {
-                let phase = decode_operation_observation(&value, operation)?.phase;
+                let phase = decode_operation_observation(&value, operation)
+                    .map_err(|_| ProviderError::Indeterminate(key))?
+                    .phase;
                 if let Some(outcome) = observed_outcome(key, phase) {
                     return outcome;
                 }
