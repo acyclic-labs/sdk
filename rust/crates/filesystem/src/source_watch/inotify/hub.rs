@@ -527,7 +527,7 @@ impl Hub {
                 if error.kind() == io::ErrorKind::Interrupted {
                     continue;
                 }
-                self.fail_all(error);
+                self.fail_all(&error);
                 return;
             }
             if descriptor.revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
@@ -536,7 +536,7 @@ impl Hub {
                 } else {
                     libc::EIO
                 };
-                self.fail_all(io::Error::from_raw_os_error(code));
+                self.fail_all(&io::Error::from_raw_os_error(code));
                 return;
             }
             #[cfg(test)]
@@ -546,14 +546,14 @@ impl Hub {
             #[cfg(test)]
             drop(paused);
             if let Err(error) = routed {
-                self.fail_all(error);
+                self.fail_all(&error);
                 return;
             }
         }
     }
 
     /// Terminal source loss is distinct from a recoverable queue overflow.
-    fn fail_all(&self, error: io::Error) {
+    fn fail_all(&self, error: &io::Error) {
         let code = error.raw_os_error().unwrap_or(libc::EIO);
         let watches = {
             let mut routes = self.routes.lock().unwrap_or_else(PoisonError::into_inner);
@@ -889,7 +889,7 @@ mod tests {
             assert!(returned.recv_timeout(Duration::from_secs(2))?);
             observer.join().expect("native observer");
         }
-        hub.fail_all(io::Error::from_raw_os_error(libc::EBADF));
+        hub.fail_all(&io::Error::from_raw_os_error(libc::EBADF));
         assert_eq!(
             hub.check().expect_err("terminal health").raw_os_error(),
             Some(libc::EIO)
