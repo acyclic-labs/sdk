@@ -46,7 +46,7 @@ pub(in crate::local::workspace) async fn bind(
         source_root: root.path().to_path_buf(),
         expected_root_identity: root.identity(),
         maximum_paths: None,
-        maximum_extent_spans: 1,
+        maximum_extent_spans: None,
     };
     let mut checkout = view
         .workspace()

@@ -352,7 +352,7 @@ export type CheckpointResult = ReadonlyDeep<WasmBinding.BrowserCheckpointResult>
 export interface MaterializeOptions {
   readonly destination: string;
   readonly maximumDirectoryEntries: number;
-  readonly maximumExtentSpans: number;
+  readonly maximumExtentSpans?: number;
   readonly transferBytes: bigint;
 }
 export interface MaterializationResult {
@@ -409,8 +409,8 @@ export type NativeWatchBatch =
       readonly work: WorkCounters;
     };
 export interface NativeWatcher {
-  reconcile(maximumPaths: number, maximumExtentSpans: number): Promise<WatchReconcileResult>;
-  pollCapture( maximumChanges: number, maximumPaths: number, maximumExtentSpans: number, ): Promise<WatchCaptureResult>;
+  reconcile(maximumPaths?: number, maximumExtentSpans?: number): Promise<WatchReconcileResult>;
+  pollCapture( maximumChanges: number, maximumPaths?: number, maximumExtentSpans?: number, ): Promise<WatchCaptureResult>;
 }
 export type GenerationExportManifest = ReadonlyDeep<WasmBinding.BrowserExportManifestResult>;
 export type GenerationTransferBatch = ReadonlyDeep<WasmBinding.GenerationTransferBatchResult>;
@@ -529,8 +529,8 @@ export interface FsCheckout {
   discard(): Promise<MutationResult>;
   mount?(destination: string, writable: boolean): NativeMount;
   materialize?(options: MaterializeOptions): Promise<MaterializationResult>;
-  capture?( sourceRoot: string, paths: readonly string[], maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
-  captureBaseline?( sourceRoot: string, maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
+  capture?( sourceRoot: string, paths: readonly string[], maximumPaths?: number, maximumExtentSpans?: number, ): Promise<CaptureResult>;
+  captureBaseline?( sourceRoot: string, maximumPaths?: number, maximumExtentSpans?: number, ): Promise<CaptureResult>;
   watch?( sourceRoot: string, recursive: boolean, ): NativeWatcher;
   cancel?(): void;
 }
@@ -599,8 +599,8 @@ export interface NativeFsWorkspace extends FsWorkspace {
 }
 export interface NativeSourceOptions {
   readonly mode: "pinned" | "tracking";
-  readonly maximumPaths: number;
-  readonly maximumExtentSpans: number;
+  readonly maximumPaths?: number;
+  readonly maximumExtentSpans?: number;
   /** Canonical absolute prefixes omitted from capture and deletion inference. */
   readonly excludedPaths?: readonly string[];
 }
