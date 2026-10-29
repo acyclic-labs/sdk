@@ -268,7 +268,7 @@ fn summary(source: &Context, through: usize) -> Result<ContextSummary> {
         step: 0,
         source_messages: u32::try_from(through)
             .map_err(|error| crate::Error::Invalid(error.to_string()))?,
-        source_digest: crate::executor::json::canonical_json_digest(&prefix, u64::MAX, &mut None)?,
+        source_digest: crate::executor::json::canonical_json_digest(&prefix, None, &mut None)?,
         output: message(ModelRole::System, "summary")?
             .content
             .file_refs()
