@@ -237,7 +237,7 @@ impl NativeCheckout {
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
             RebaseDecision::Safe { generation } => (
                 "safe",
-                Some(Buffer::from(generation.digest().into_bytes().to_vec())),
+                Some(Buffer::from(generation.to_bytes().to_vec())),
                 0,
                 false,
             ),
@@ -289,7 +289,7 @@ pub(in crate::bindings) fn commit_result(
             head,
         } => (
             "committed",
-            Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
+            Some(Buffer::from(generation_id.to_bytes().to_vec())),
             Some(bigint(head.epoch.get())),
             Some(bigint(head.sequence.get())),
             None,
@@ -299,7 +299,7 @@ pub(in crate::bindings) fn commit_result(
             head,
         } => (
             "already-committed",
-            Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
+            Some(Buffer::from(generation_id.to_bytes().to_vec())),
             Some(bigint(head.epoch.get())),
             Some(bigint(head.sequence.get())),
             None,
@@ -345,7 +345,7 @@ pub(in crate::bindings) fn live_mutation_result(
                 head,
             } => (
                 "committed",
-                Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
+                Some(Buffer::from(generation_id.to_bytes().to_vec())),
                 Some(bigint(head.epoch.get())),
                 Some(bigint(head.sequence.get())),
                 0,
@@ -357,7 +357,7 @@ pub(in crate::bindings) fn live_mutation_result(
                 head,
             } => (
                 "already-committed",
-                Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
+                Some(Buffer::from(generation_id.to_bytes().to_vec())),
                 Some(bigint(head.epoch.get())),
                 Some(bigint(head.sequence.get())),
                 0,

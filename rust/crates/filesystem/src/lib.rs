@@ -88,7 +88,7 @@ pub mod distributed;
 #[cfg(any(test, feature = "distributed"))]
 mod logical_objects;
 #[cfg(any(test, feature = "distributed"))]
-pub use logical_objects::LogicalObjectStore;
+pub use logical_objects::{LogicalObjectStore, ObjectSealer, PlainObjects};
 pub mod facade;
 #[macro_use]
 pub mod foundation;
@@ -382,8 +382,9 @@ pub use speculation::{
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
     CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectId,
-    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
-    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
+    ObjectIdBytes, ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
+    ObjectStorage, ObjectStoreError, PublicationPermit, PublicationReservation, ReplayLimit,
+    ReservationOutcome, object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,

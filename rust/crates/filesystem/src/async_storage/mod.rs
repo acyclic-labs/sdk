@@ -43,7 +43,10 @@ pub use objects::{AsyncObjectStore, PublicationScope};
 mod read_batch;
 pub(crate) use read_batch::object_error;
 pub use read_batch::read_many_sequential;
+pub(crate) use read_batch::read_many_stored_sequential;
 
 #[cfg(test)]
 #[path = "../tests/async_storage.rs"]
 mod tests;
+
+pub(crate) use objects::prepare_object;

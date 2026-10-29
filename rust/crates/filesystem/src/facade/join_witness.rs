@@ -160,7 +160,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let (root, head) = workspace
             .resolve_head_generation(accounting, cancellation)
             .await?;
-        Ok((GenerationId::new(root.digest), head))
+        Ok((GenerationId::from_root(root), head))
     }
 
     pub(crate) async fn workspace_operation_generation(
@@ -192,7 +192,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     return Err(FsError::InvalidAuthorityHistory);
                 }
                 generation_from_record(record, workspace.id, accounting)
-                    .map(|root| GenerationId::new(root.digest))
+                    .map(|root| GenerationId::from_root(root))
             })
             .transpose()?;
         Ok((generation.zip(record), allocation))
@@ -237,15 +237,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 return Ok(false);
             };
             let generation = generation_from_record(commit, target.id, &mut accounting)?;
-            if generation.digest != witness.result_generation.digest() {
+            if generation != witness.result_generation.object_id() {
                 return Ok(false);
             }
             let hashing = WorkCounters {
-                bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64
-                    + 3 * 16
-                    + 4 * 32
-                    + 1
-                    + 3 * 4,
+                bytes_hashed: super::join_request::workspace_join_context_bytes(
+                    witness.source_generation,
+                    witness.expected_target,
+                    witness.base_generation,
+                ),
                 ..WorkCounters::UNCHARGED
             };
             if !standalone {
@@ -261,10 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 epoch: witness.expected_head.epoch,
                 expected: witness.expected_head,
                 operation_id: witness.operation_id,
-                generation_root: ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: witness.result_generation.digest(),
-                },
+                generation_root: witness.result_generation.object_id(),
             };
             let mut unbounded;
             let fingerprint_accounting = if standalone {

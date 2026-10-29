@@ -16,6 +16,7 @@ fn id(value: u8) -> FileId {
 }
 fn object(kind: ObjectKind, value: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([value; 32]),
     }

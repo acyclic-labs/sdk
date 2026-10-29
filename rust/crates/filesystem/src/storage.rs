@@ -316,36 +316,120 @@ pub enum ObjectKindError {
 pub struct ObjectId {
     /// Object class.
     pub kind: ObjectKind,
-    /// Digest over object class and canonical bytes.
+    /// BLAKE3 of canonical plaintext bytes.
     pub digest: Digest,
+    /// Authenticated physical association, carried by the referring object.
+    pub storage: Option<ObjectStorage>,
+}
+
+/// Physical location of lineage-sealed bytes. The referring object's hash binds
+/// this association; the plaintext digest remains the filesystem identity.
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+pub struct ObjectStorage {
+    /// BLAKE3 of the exact sealed CAS payload.
+    pub locator: Digest,
+    /// Root directory identity selecting the sealing lineage.
+    pub root_file_id: crate::FileId,
+    /// Original generation authenticated by the seal, preserved when reused.
+    pub origin_generation: Digest,
 }
 
 impl ObjectId {
-    /// Length of the canonical `kind tag || digest` byte encoding.
-    pub const ENCODED_LEN: usize = 33;
+    /// Largest canonical object-reference encoding.
+    pub const ENCODED_LEN: usize = 113;
 
-    /// Returns the canonical `kind tag || digest` byte encoding.
+    /// Canonical bytes occupied by this reference.
     #[must_use]
-    pub fn to_bytes(self) -> [u8; Self::ENCODED_LEN] {
+    pub const fn encoded_len(self) -> usize {
+        if self.storage.is_some() { 113 } else { 33 }
+    }
+
+    /// Returns the canonical typed reference, including its sealed association.
+    #[must_use]
+    pub fn to_bytes(self) -> ObjectIdBytes {
         let mut bytes = [0; Self::ENCODED_LEN];
-        bytes[0] = self.kind.canonical_tag();
-        bytes[1..].copy_from_slice(self.digest.as_bytes());
-        bytes
+        bytes[0] = self.kind.canonical_tag() | if self.storage.is_some() { 128 } else { 0 };
+        bytes[1..33].copy_from_slice(self.digest.as_bytes());
+        if let Some(storage) = self.storage {
+            bytes[33..65].copy_from_slice(storage.locator.as_bytes());
+            bytes[65..81].copy_from_slice(&storage.root_file_id.into_bytes());
+            bytes[81..113].copy_from_slice(storage.origin_generation.as_bytes());
+        }
+        ObjectIdBytes {
+            bytes,
+            length: self.encoded_len(),
+        }
+    }
+
+    /// Fixed-width index key from the canonical encoding, padded with zeros.
+    pub(crate) fn index_key(self) -> [u8; Self::ENCODED_LEN] {
+        self.to_bytes().bytes
+    }
+}
+
+/// Stack-owned canonical object reference, with no allocation for serialization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectIdBytes {
+    bytes: [u8; ObjectId::ENCODED_LEN],
+    length: usize,
+}
+
+impl ObjectIdBytes {
+    /// Borrows the initialized canonical encoding.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.bytes[..self.length]
+    }
+}
+
+impl std::ops::Deref for ObjectIdBytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.as_slice()
     }
 }
 
 impl TryFrom<&[u8]> for ObjectId {
     type Error = ObjectIdError;
 
-    /// Parses the canonical `kind tag || digest` byte encoding.
+    /// Parses a canonical typed reference and its optional sealed association.
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let Some((&tag, digest)) = bytes.split_first() else {
+        let Some((&tag, _)) = bytes.split_first() else {
             return Err(ObjectIdError::Length);
         };
-        let digest = <[u8; 32]>::try_from(digest).map_err(|_| ObjectIdError::Length)?;
+        let sealed = tag & 128 != 0;
+        if bytes.len() != if sealed { 113 } else { 33 } {
+            return Err(ObjectIdError::Length);
+        }
+        let fixed = |range: std::ops::Range<usize>| bytes.get(range).ok_or(ObjectIdError::Length);
+        let digest = <[u8; 32]>::try_from(fixed(1..33)?).map_err(|_| ObjectIdError::Length)?;
+        let storage = if sealed {
+            Some(ObjectStorage {
+                locator: Digest::from_bytes(
+                    fixed(33..65)?
+                        .try_into()
+                        .map_err(|_| ObjectIdError::Length)?,
+                ),
+                root_file_id: crate::FileId::from_bytes(
+                    fixed(65..81)?
+                        .try_into()
+                        .map_err(|_| ObjectIdError::Length)?,
+                ),
+                origin_generation: Digest::from_bytes(
+                    fixed(81..113)?
+                        .try_into()
+                        .map_err(|_| ObjectIdError::Length)?,
+                ),
+            })
+        } else {
+            None
+        };
         Ok(Self {
-            kind: ObjectKind::from_canonical_tag(tag)?,
+            kind: ObjectKind::from_canonical_tag(tag & 127)?,
             digest: Digest::from_bytes(digest),
+            storage,
         })
     }
 }
@@ -353,8 +437,8 @@ impl TryFrom<&[u8]> for ObjectId {
 /// Canonical object-identity byte parsing failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum ObjectIdError {
-    /// The encoding is not exactly one tag byte and one 32-byte digest.
-    #[error("object identity must be exactly 33 bytes")]
+    /// The encoding has an invalid object-reference length.
+    #[error("invalid object reference length")]
     Length,
     /// The tag byte names no known object class.
     #[error(transparent)]
@@ -362,7 +446,7 @@ pub enum ObjectIdError {
 }
 
 /// Computes the canonical digest for one immutable object: the BLAKE3 of its
-/// bytes, which is also its blob digest. The kind is part of [`ObjectId`].
+/// plaintext bytes. The kind and sealed storage association are part of [`ObjectId`].
 #[must_use]
 pub fn object_digest(bytes: &[u8]) -> Digest {
     Digest::from_bytes(acyclic_stream::content_digest(bytes))
@@ -373,6 +457,7 @@ pub fn object_digest(bytes: &[u8]) -> Digest {
 pub struct HashedObject {
     kind: ObjectKind,
     sealed: acyclic_stream::SealedBytes,
+    storage: Option<(ObjectStorage, acyclic_stream::SealedBytes)>,
 }
 
 impl HashedObject {
@@ -381,6 +466,7 @@ impl HashedObject {
     pub fn new(kind: ObjectKind, bytes: acyclic_stream::OwnedBytes) -> Self {
         Self {
             kind,
+            storage: None,
             sealed: acyclic_stream::SealedBytes::new(bytes),
         }
     }
@@ -407,7 +493,11 @@ impl HashedObject {
         cancellation
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
-        Ok(Self { kind, sealed })
+        Ok(Self {
+            kind,
+            sealed,
+            storage: None,
+        })
     }
 
     /// Transfers a guarded vector into the physical immutable byte owner.
@@ -452,7 +542,11 @@ impl HashedObject {
         cancellation
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
-        Ok(Self { kind, sealed })
+        Ok(Self {
+            kind,
+            sealed,
+            storage: None,
+        })
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
@@ -470,6 +564,10 @@ impl HashedObject {
     pub const fn object_id(&self) -> ObjectId {
         ObjectId {
             kind: self.kind,
+            storage: match &self.storage {
+                Some((storage, _)) => Some(*storage),
+                None => None,
+            },
             digest: Digest::from_bytes(*self.sealed.digest()),
         }
     }
@@ -489,13 +587,47 @@ impl HashedObject {
     /// The bytes with the digest their hash proved, for layers that reuse it.
     #[must_use]
     pub const fn sealed(&self) -> &acyclic_stream::SealedBytes {
-        &self.sealed
+        match &self.storage {
+            Some((_, sealed)) => sealed,
+            None => &self.sealed,
+        }
     }
 
     /// Releases the identity and the sealed bytes.
     #[must_use]
-    pub fn into_sealed(self) -> (ObjectKind, acyclic_stream::SealedBytes) {
-        (self.kind, self.sealed)
+    pub fn into_sealed(self) -> (ObjectId, acyclic_stream::SealedBytes) {
+        (
+            self.object_id(),
+            match self.storage {
+                Some((_, sealed)) => sealed,
+                None => self.sealed,
+            },
+        )
+    }
+
+    /// Exact bytes submitted to CAS after optional lineage sealing.
+    #[must_use]
+    pub fn stored_bytes(&self) -> &acyclic_stream::OwnedBytes {
+        self.sealed().bytes()
+    }
+
+    /// Binds a physical hash proof to this already authenticated plaintext.
+    #[must_use]
+    pub fn seal(
+        mut self,
+        sealed: acyclic_stream::SealedBytes,
+        root_file_id: crate::FileId,
+        origin_generation: crate::GenerationId,
+    ) -> Self {
+        self.storage = Some((
+            ObjectStorage {
+                locator: Digest::from_bytes(*sealed.digest()),
+                root_file_id,
+                origin_generation: origin_generation.digest(),
+            },
+            sealed,
+        ));
+        self
     }
 
     /// Releases the identity and bytes.
@@ -649,6 +781,7 @@ mod object_id_codec_tests {
     #[test]
     fn object_id_bytes_round_trip_and_reject_malformed_input() {
         let id = ObjectId {
+            storage: None,
             kind: ObjectKind::TreePage,
             digest: Digest::from_bytes([7; 32]),
         };
@@ -662,13 +795,9 @@ mod object_id_codec_tests {
                 Err(ObjectIdError::Length)
             );
         }
-        let mut unknown = bytes;
+        let mut unknown = bytes.to_vec();
         unknown[0] = 0;
         let error = ObjectId::try_from(&unknown[..]);
         assert_eq!(error, Err(ObjectIdError::Kind(ObjectKindError::Unknown(0))));
-        assert_eq!(
-            ObjectIdError::Length.to_string(),
-            "object identity must be exactly 33 bytes"
-        );
     }
 }

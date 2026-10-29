@@ -397,7 +397,7 @@ async fn publication_drains_exactly_its_closure_and_keeps_the_rest_private()
     let objects = (0..count)
         .map(|index| {
             HashedObject::new(
-                ObjectKind::Blob,
+                ObjectKind::BlobChunk,
                 OwnedBytes::from(vec![u8::try_from(index % 251).unwrap_or(0); body_bytes]),
             )
         })
@@ -559,7 +559,10 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     let directory = tempfile::tempdir()?;
     let (store, _provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
-    let object = HashedObject::new(ObjectKind::Blob, OwnedBytes::from_static(b"proven body"));
+    let object = HashedObject::new(
+        ObjectKind::BlobChunk,
+        OwnedBytes::from_static(b"proven body"),
+    );
     let admitted = {
         let __object_args = (object.clone(), WorkBudget::UNBOUNDED, &token);
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
@@ -626,7 +629,7 @@ async fn concurrent_admissions_reads_and_publication_agree()
     let objects = (0..4 * usize::try_from(MAXIMUM_RESIDENT_BYTES)? / body_bytes)
         .map(|index| {
             HashedObject::new(
-                ObjectKind::Blob,
+                ObjectKind::BlobChunk,
                 OwnedBytes::from(vec![u8::try_from(index % 251).unwrap_or(0); body_bytes]),
             )
         })

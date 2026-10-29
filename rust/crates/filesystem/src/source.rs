@@ -563,7 +563,7 @@ async fn conflict_head_reuses_checkout_base<A: AsyncAuthorityStore, O: AsyncObje
             "conflicting volume publication belongs to another volume".to_owned(),
         ));
     }
-    Ok(published.generation_root.digest == checkout_generation.digest())
+    Ok(published.generation_root == checkout_generation.object_id())
 }
 
 async fn rebase_source_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1139,8 +1139,8 @@ async fn published_generation_for_key<A: AsyncAuthorityStore, O: AsyncObjectStor
     {
         return Err(SourceError::IdempotencyConflict);
     }
-    Ok(Some(crate::GenerationId::new(
-        published.generation_root.digest,
+    Ok(Some(crate::GenerationId::from_root(
+        published.generation_root,
     )))
 }
 

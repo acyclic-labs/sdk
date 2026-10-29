@@ -13,10 +13,15 @@ use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "logical_objects/sealed.rs"]
+mod sealed;
+
 fn write(bytes: &'static [u8]) -> ObjectWrite {
     let bytes = OwnedBytes::from_static(bytes);
     ObjectWrite {
         object_id: ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(&bytes),
         },

@@ -121,17 +121,14 @@ async fn authenticated_native_batch_keeps_the_raw_batch_boundary_and_footer()
     let baseline = original.live_allocation_bytes();
     let store = store(4)?;
     let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"body"));
-    let before = original.receipt();
-    assert!(matches!(
-        store
-            .put_many_hashed(
-                std::slice::from_ref(&object),
-                &mut AuthorityWork::native(&original, &cancel)
-            )
-            .await,
-        Err(ObjectStoreError::NativeUnavailable)
-    ));
-    assert_eq!(original.receipt(), before);
+    store
+        .put_many_hashed(
+            std::slice::from_ref(&object),
+            &mut AuthorityWork::native(&original, &cancel),
+        )
+        .await?;
+    assert_eq!(original.receipt().object_bytes_written, 4);
+    assert_eq!(original.receipt().bytes_hashed, 0);
     assert_eq!(original.live_allocation_bytes(), baseline);
     let writes = [ObjectWrite {
         object_id: object.object_id(),

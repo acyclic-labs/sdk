@@ -838,7 +838,12 @@ impl VisitedObjectSet {
 
 fn object_hash(object: ObjectId) -> usize {
     let mut prefix = [0_u8; 8];
-    prefix.copy_from_slice(&object.digest.as_bytes()[..8]);
+    prefix.copy_from_slice(
+        &object
+            .storage
+            .map_or(object.digest, |storage| storage.locator)
+            .as_bytes()[..8],
+    );
     let value = u64::from_le_bytes(prefix) ^ u64::from(object.kind.canonical_tag());
     #[cfg(target_pointer_width = "64")]
     {

@@ -17,6 +17,7 @@ fn fifo_record(byte: u8) -> FileRecord {
         kind: FileKind::Fifo,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -54,6 +55,7 @@ fn kind_payload_mismatches_fail_before_identity() {
         kind: FileKind::Directory,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::ZERO,
         },
@@ -90,10 +92,12 @@ fn kind_payload_mismatches_fail_before_identity() {
 #[test]
 fn every_file_record_payload_and_typed_reference_is_validated() {
     let metadata = ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: Digest::from_bytes([9; 32]),
     };
     let typed = |kind| ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([10; 32]),
     };
@@ -210,12 +214,14 @@ fn record_round_trip_is_canonical() -> Result<(), Box<dyn std::error::Error>> {
         kind: FileKind::Regular,
         link_count: 2,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([2; 32]),
         },
         payload: FilePayload::Regular {
             logical_bytes: 99,
             extents: ObjectId {
+                storage: None,
                 kind: ObjectKind::ExtentPage,
                 digest: Digest::from_bytes([3; 32]),
             },
@@ -251,6 +257,7 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([5; 32]),
         },
@@ -357,6 +364,7 @@ fn batch_error_and_authenticated_child_bound_mapping_is_total() {
 fn every_payload_shape_round_trips_through_full_and_shape_decoders()
 -> Result<(), Box<dyn std::error::Error>> {
     let typed = |kind, byte| ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([byte; 32]),
     };
@@ -494,6 +502,7 @@ fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
         kind: FileKind::Fifo,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -502,6 +511,7 @@ fn file_table_page_invariants_fail_at_encoding_and_identity_boundaries() {
     let child = |byte, kind| Child {
         first: FileId::from_bytes([byte; 16]),
         page: ObjectId {
+            storage: None,
             kind,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -568,6 +578,7 @@ fn malformed_file_table_tags_and_bounds_fail_in_shape_and_full_decoders()
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::ZERO,
         },
@@ -714,6 +725,7 @@ async fn cold_file_table_frames_deny_before_storage_and_preserve_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::FileTablePage,
         digest: Digest::ZERO,
     };
@@ -839,6 +851,7 @@ async fn file_lookup_limits_kinds_and_authenticated_bounds_fail_exactly()
     let wrong = lookup_file_record(
         &store,
         ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([55; 32]),
         },

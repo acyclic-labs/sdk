@@ -48,7 +48,10 @@ pub(crate) trait Format: Send + Sync + 'static {
             PageRef::Internal(children) => {
                 for child in *children {
                     bytes = bytes
-                        .checked_add(Self::internal_item_encoded_length(&child.first)?)
+                        .checked_add(Self::internal_item_encoded_length(
+                            &child.first,
+                            child.page,
+                        )?)
                         .ok_or(CanonicalDecodeError::LengthOverflow)?;
                 }
             }
@@ -56,7 +59,10 @@ pub(crate) trait Format: Send + Sync + 'static {
         Ok(bytes)
     }
     fn leaf_item_encoded_length(value: &Self::Value) -> Result<usize, CanonicalDecodeError>;
-    fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError>;
+    fn internal_item_encoded_length(
+        key: &Self::Key,
+        page: ObjectId,
+    ) -> Result<usize, CanonicalDecodeError>;
     fn key_nested_bytes(key: &Self::Key) -> u64;
     fn value_nested_bytes(value: &Self::Value) -> u64;
     fn key_owned_bytes(key: &Self::Key) -> u64;

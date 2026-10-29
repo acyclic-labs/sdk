@@ -33,10 +33,7 @@ impl BrowserOperationWindowLease {
         Ok(OperationWindowLease {
             workspace_id: WorkspaceId::from_bytes(fixed_16(&self.workspace_id)?),
             lease_id: OperationLeaseId::from_bytes(fixed_16(&self.lease_id)?),
-            pinned_parent: acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                &self.pinned_parent,
-                "pinned parent",
-            )?)),
+            pinned_parent: decode_generation_id(&self.pinned_parent)?,
             expires_at_millis: self.expires_at_millis,
         })
     }
@@ -60,7 +57,7 @@ impl From<OperationWindowLease> for BrowserOperationWindowLease {
         Self {
             workspace_id: lease.workspace_id.into_bytes().to_vec().into(),
             lease_id: lease.lease_id.into_bytes().to_vec().into(),
-            pinned_parent: lease.pinned_parent.digest().into_bytes().to_vec().into(),
+            pinned_parent: lease.pinned_parent.to_bytes().to_vec().into(),
             expires_at_millis: lease.expires_at_millis,
         }
     }
@@ -143,14 +140,11 @@ impl From<BrowserOperationReconcileOptions> for OperationReconcileLimits {
 }
 
 fn generation_bytes(value: acyclic_fs::GenerationId) -> serde_bytes::ByteBuf {
-    value.digest().into_bytes().to_vec().into()
+    value.to_bytes().to_vec().into()
 }
 
 fn generation(value: &[u8]) -> Result<acyclic_fs::GenerationId, JsValue> {
-    Ok(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-        value,
-        "generation",
-    )?)))
+    decode_generation_id(value)
 }
 
 #[wasm_bindgen]

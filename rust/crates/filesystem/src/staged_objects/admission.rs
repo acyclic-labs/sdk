@@ -1,6 +1,62 @@
 use super::*;
 
 impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
+    fn requires_child_first_publication(&self) -> bool {
+        self.inner.requires_child_first_publication()
+    }
+    fn maximum_reference_bytes(&self) -> usize {
+        self.inner.maximum_reference_bytes()
+    }
+    async fn prepare_hashed(
+        &self,
+        object: crate::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::HashedObject, ObjectStoreError> {
+        self.inner.prepare_hashed(object, context).await
+    }
+
+    async fn put_stored(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        if id.storage.is_none() {
+            return self.put(id, bytes, work).await;
+        }
+        let unswept = self.collection.unswept().await;
+        self.collection.writing(&unswept, [id]);
+        self.inner.put_stored(id, bytes, work).await
+    }
+    async fn read_stored(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        if id.storage.is_none() {
+            return self.read(id, maximum, work).await;
+        }
+        self.inner.read_stored(id, maximum, work).await
+    }
+    async fn read_many_stored(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        let unstaged = {
+            let index = self.index();
+            index.objects.is_empty()
+                || requests
+                    .iter()
+                    .all(|request| !index.objects.contains_key(&request.object_id))
+        };
+        if unstaged {
+            return self.inner.read_many_stored(requests, work).await;
+        }
+        crate::async_storage::read_many_stored_sequential(self, requests, work).await
+    }
+
     fn decoded_cache_get(
         &self,
         key: DecodedCacheKey,
@@ -61,7 +117,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let native = work.original;
-        if object.length() > MAXIMUM_DRAIN_BYTES {
+        if object.object_id().storage.is_some() || object.length() > MAXIMUM_DRAIN_BYTES {
             let future = async {
                 let unswept = self.collection.unswept().await;
                 self.collection.writing(&unswept, [object.object_id()]);
@@ -110,9 +166,6 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         objects: &[HashedObject],
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        if work.is_native() {
-            return Err(ObjectStoreError::NativeUnavailable);
-        }
         if objects.is_empty() {
             return Err(ObjectStoreError::Rejected(
                 "object write batch is empty".to_owned(),

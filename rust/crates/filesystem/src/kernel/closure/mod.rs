@@ -205,6 +205,17 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<GenerationProof, GenerationProofFailure> {
+    generation_closure(store, generation_root, limits, budget, cancellation, false).await
+}
+
+pub(super) async fn generation_closure<S: crate::AsyncObjectStore>(
+    store: &S,
+    generation_root: ObjectId,
+    limits: ClosureLimits,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    publication_order: bool,
+) -> Result<GenerationProof, GenerationProofFailure> {
     if generation_root.kind != ObjectKind::GenerationRoot {
         return Err(OperationFailure::before_work(ClosureError::WrongObjectKind));
     }
@@ -218,9 +229,13 @@ pub async fn prove_generation_closure<S: crate::AsyncObjectStore>(
     }
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;
-    let result = ProofContext::new(store, limits, meter.clone())
-        .prove(generation_root)
-        .await;
+    let context = ProofContext::new(store, limits, meter.clone());
+    let mut context = if publication_order {
+        context.publication_order()
+    } else {
+        context
+    };
+    let result = context.prove(generation_root).await;
     let (proof, guard) =
         result.map_err(|error| OperationFailure::new(closure_error(error), meter.work()))?;
     drop(guard);

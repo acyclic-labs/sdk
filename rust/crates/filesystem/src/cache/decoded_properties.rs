@@ -6,6 +6,7 @@ use proptest::test_runner::TestCaseResult;
 fn key(id: u8) -> DecodedCacheKey {
     DecodedCacheKey::new::<u64>(
         ObjectId {
+            storage: None,
             kind: crate::ObjectKind::FileTablePage,
             digest: crate::Digest::from_bytes([id / 2; 32]),
         },

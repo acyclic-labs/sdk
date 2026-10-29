@@ -6,6 +6,7 @@ fn object(suffix: u8) -> ObjectId {
     let mut digest = [0_u8; 32];
     digest[8] = suffix;
     ObjectId {
+        storage: None,
         kind: ObjectKind::ExtentPage,
         digest: Digest::from_bytes(digest),
     }

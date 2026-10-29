@@ -19,7 +19,7 @@ proptest! {
         bytes in 1..=u64::MAX, chunk in 1..=u32::MAX,
         width in 2u32..=1024, level in 0usize..=6,
     ) {
-        let index = BlobIndexBuilder::new(options(bytes, chunk, width));
+        let index = BlobIndexBuilder::new(options(bytes, chunk, width), 33);
         let divisor = u128::from(chunk) * u128::from(width).pow(level as u32);
         let expected = u128::from(bytes).div_ceil(divisor).min(u128::from(width));
         prop_assert_eq!(index.capacity(level) as u128, expected);
@@ -54,7 +54,7 @@ fn small_blob_reservations_do_not_depend_on_page_width() -> Result<(), Box<dyn s
         let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
         let store = crate::memory::MemoryObjectStore::default();
         let mut batching = BlobBatchStore::new(&store, &mut accounting)?;
-        let mut index = BlobIndexBuilder::new(options(1, 1024 * 1024, 1024));
+        let mut index = BlobIndexBuilder::new(options(1, 1024 * 1024, 1024), 33);
         if overreserve {
             // Fault the production allocation path with its former reservation.
             reserve_blob_vec(&mut index.leaf, index.width, &mut accounting)?;

@@ -107,8 +107,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut records = work.vec(usize::from(generation.is_some()))?;
         if let Some(generation) = generation {
             records.push(
-                work.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?
-                    .into(),
+                work.stream_bytes(
+                    LINEAGE_DOMAIN,
+                    &[generation.object_id().to_bytes().as_slice()],
+                )?
+                .into(),
             );
         }
         let inherited = source

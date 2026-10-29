@@ -15,7 +15,8 @@ import { GIT_COMPAT_COMMAND_VARIANTS } from "../generated/git-compat-contract.js
 
 const workspace = Uint8Array.from({ length: 16 }, (_, index) => index);
 const workspaceUuid = "00010203-0405-0607-0809-0a0b0c0d0e0f";
-const generation = Uint8Array.from({ length: 32 }, (_, index) => index);
+const generation = Uint8Array.from([6, ...Array.from({ length: 32 }, (_, index) => index)]);
+const snapshot = generation.subarray(1);
 const commit = "ab".repeat(32);
 const exactTree = { kind: "exact" as const, workspace_id: workspace, generation };
 const exactTreeJson = { kind: "exact", workspace_id: Array.from(workspace), generation: Array.from(generation) };
@@ -92,6 +93,24 @@ describe("Git compatibility command codec", () => {
     } });
   });
 
+  test("preserves sealed generation references and rejects digest aliases", () => {
+    const sealed = Uint8Array.from([0x86, ...new Uint8Array(112).fill(7)]);
+    for (const reference of [generation, sealed]) {
+      const value = parseGitCompatOutputJson(JSON.stringify({ Filesystem: { Applied: {
+        tree: { ...exactTreeJson, generation: Array.from(reference) }, tracked_paths: null,
+      } } }));
+      expect(value).toEqual({ Filesystem: { Applied: {
+        tree: { ...exactTree, generation: reference }, tracked_paths: undefined,
+      } } });
+    }
+    for (const reference of [new Uint8Array(32), Uint8Array.from([5, ...new Uint8Array(32)]),
+      sealed.subarray(0, 33), new Uint8Array(114)]) {
+      expect(() => parseGitCompatOutputJson(JSON.stringify({ Filesystem: { Applied: {
+        tree: { ...exactTreeJson, generation: Array.from(reference) }, tracked_paths: null,
+      } } }))).toThrow(TypeError);
+    }
+  });
+
   test("round-trips prepared actions and executor results as byte arrays", () => {
     const action: GitFilesystemAction = { RestoreGeneration: {
       tree: exactTree,
@@ -133,10 +152,10 @@ describe("Git compatibility command codec", () => {
 
   test("preserves lazy trees, tracked paths, and issued capture proofs", () => {
     const lazyTreeJson = {
-      kind: "lazy", id: Array.from(generation), workspace_id: Array.from(workspace),
+      kind: "lazy", id: Array.from(snapshot), workspace_id: Array.from(workspace),
       authored_generation: Array.from(generation),
       source: { identity: Array.from(workspace), epoch: 7 },
-      overlay: Array.from(generation), shadows: Array.from(generation),
+      overlay: Array.from(snapshot), shadows: Array.from(snapshot),
     };
     const prepared = parseGitCompatOutputJson(JSON.stringify({ Prepared: {
       transition: workspaceUuid,
@@ -150,9 +169,9 @@ describe("Git compatibility command codec", () => {
       transition: workspace,
       action: { CaptureCommit: {
         workspace_tree: {
-          kind: "lazy", id: generation, workspace_id: workspace,
+          kind: "lazy", id: snapshot, workspace_id: workspace,
           authored_generation: generation, source: { identity: workspace, epoch: 7n },
-          overlay: generation, shadows: generation,
+          overlay: snapshot, shadows: snapshot,
         },
         head_tree: exactTree, head_workspace_tree: exactTree,
         tracked_paths: ["kept.txt"], message: "commit", author: "agent",
@@ -179,9 +198,9 @@ describe("Git compatibility command codec", () => {
   test("preserves a full u64 lazy source epoch", () => {
     const epoch = 18_446_744_073_709_551_615n;
     const lazy = {
-      kind: "lazy" as const, id: generation, workspace_id: workspace,
+      kind: "lazy" as const, id: snapshot, workspace_id: workspace,
       authored_generation: generation,
-      source: { identity: workspace, epoch }, overlay: generation, shadows: generation,
+      source: { identity: workspace, epoch }, overlay: snapshot, shadows: snapshot,
     };
     const result: GitFilesystemResult = { Applied: { tree: lazy, tracked_paths: undefined } };
     const wire = stringifyGitFilesystemResult(result);

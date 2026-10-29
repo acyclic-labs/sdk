@@ -91,7 +91,7 @@ impl S3ListCursor {
     pub fn encode(&self) -> String {
         format!(
             "v1.{}.{}.{}.{}",
-            hex::encode(self.generation.digest().into_bytes()),
+            hex::encode(self.generation.to_bytes().as_slice()),
             hex::encode(self.query.into_bytes()),
             if self.after_prefix { "p" } else { "o" },
             hex::encode(self.after.as_bytes())
@@ -105,7 +105,13 @@ impl S3ListCursor {
         if version != "v1" {
             return Err(S3Error::InvalidContinuation);
         }
-        let generation = decode_fixed::<32>(fields.next())?;
+        let generation = fields.next().ok_or(S3Error::InvalidContinuation)?;
+        if generation.len() > crate::ObjectId::ENCODED_LEN * 2 {
+            return Err(S3Error::InvalidContinuation);
+        }
+        let generation = hex::decode(generation).map_err(|_| S3Error::InvalidContinuation)?;
+        let generation =
+            crate::GenerationId::from_bytes(&generation).ok_or(S3Error::InvalidContinuation)?;
         let query = decode_fixed::<32>(fields.next())?;
         let after_prefix = match fields.next() {
             Some("o") => false,
@@ -122,7 +128,7 @@ impl S3ListCursor {
             return Err(S3Error::InvalidContinuation);
         }
         Ok(Self {
-            generation: crate::GenerationId::new(crate::Digest::from_bytes(generation)),
+            generation,
             after,
             after_prefix,
             query: crate::Digest::from_bytes(query),

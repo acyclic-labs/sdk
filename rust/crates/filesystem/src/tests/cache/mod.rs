@@ -7,6 +7,7 @@ fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from_static(value);
     (
         ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(&bytes),
         },

@@ -1,6 +1,6 @@
 import type { JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters, WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseResult, WorkspaceRebaseStatus } from "./contracts.js";
 import type { MergeConflictResult } from "../generated/wasm/acyclic_fs_wasm.js";
-import { copyFixedBytes, copyName } from "./binding-values.js";
+import { copyObjectReference, copyName } from "./binding-values.js";
 
 export function decodeMergeConflict(raw: unknown): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new TypeError("binding returned a malformed conflict");
@@ -30,7 +30,7 @@ export function parseMergePreparation(
     readonly work: WorkCounters;
   },
 ): MergePreparationResult {
-  const generationId = copyFixedBytes(value.generationId, 32, "generation identity");
+  const generationId = copyObjectReference(value.generationId, "generation identity", 6);
   if (value.status === "prepared" && generationId !== undefined &&
       value.conflicts.length === 0 && !value.truncated) {
     return { status: "prepared", generationId,
@@ -73,7 +73,7 @@ function parseResult<Status extends string>(
   if (!isStatus(statuses, value.status)) throw new TypeError("binding result has an invalid status");
   return {
     status: value.status,
-    generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
+    generationId: copyObjectReference(value.generationId, "generation identity", 6),
     conflicts: value.conflicts.map(decodeMergeConflict),
     truncated: value.truncated,
   };
@@ -98,5 +98,5 @@ export function parseWorkspaceCommit(value: unknown): WorkspaceCommit {
   if (typeof candidate.status !== "string" || !isStatus(commitStatuses, candidate.status)) {
     throw new TypeError("workspace commit has an invalid status");
   }
-  return { status: candidate.status, generationId: copyFixedBytes(candidate.generationId, 32, "generation identity") };
+  return { status: candidate.status, generationId: copyObjectReference(candidate.generationId, "generation identity", 6) };
 }

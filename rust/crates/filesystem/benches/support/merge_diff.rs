@@ -87,6 +87,7 @@ async fn generation(store: &Store, root: &GenerationRoot) -> ObjectId {
     )
     .unwrap_or_else(fail);
     let id = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: acyclic_fs::storage::object_digest(&bytes),
     };

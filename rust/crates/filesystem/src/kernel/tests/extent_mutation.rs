@@ -298,6 +298,7 @@ async fn content_offsets_advance_across_leaf_boundaries() -> Result<(), Box<dyn 
     let store = MemoryObjectStore::default();
     let (root, _) = three_leaf_tree(&store).await?;
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([7; 32]),
     };
@@ -643,6 +644,7 @@ async fn shape_valid_malformed_page_releases_decoded_allocation()
     )?;
     malformed[23..31].fill(0);
     let malformed_id = ObjectId {
+        storage: None,
         kind: ObjectKind::ExtentPage,
         digest: object_digest(&malformed),
     };
@@ -674,6 +676,7 @@ async fn extent_pages_split_on_byte_bound_before_item_bound()
     let store = MemoryObjectStore::default();
     let root = put(&store, &ExtentPage::Leaf(vec![hole(0, 100)]), 8).await?;
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([6; 32]),
     };
@@ -747,6 +750,7 @@ async fn extent_pages_split_on_byte_bound_before_item_bound()
 fn overlapping_ordered_edits_normalize_content_offsets_exactly()
 -> Result<(), Box<dyn std::error::Error>> {
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([8; 32]),
     };

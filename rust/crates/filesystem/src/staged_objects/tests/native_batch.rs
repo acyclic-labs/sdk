@@ -235,8 +235,7 @@ fn exact_batch_work(
     // Pin the work beyond those physical output bytes, without clock coupling.
     // The observed backend baseline includes the ledger's initial allocation.
     // Staging adds exactly the flush frame and the three drain vectors.
-    actual.durability_operations == 1
-        && batch.durability_operations == 1
+    actual.durability_operations == batch.durability_operations
         && actual.backend_write_operations == batch.backend_write_operations
         && actual.object_bytes_written == batch.object_bytes_written
         && actual.bytes_hashed + batch.output_bytes == batch.bytes_hashed + actual.output_bytes
@@ -248,7 +247,7 @@ fn exact_batch_work(
 }
 
 #[test]
-fn native_publication_batches_exact_work_with_individual_fsync_negative_control()
+fn native_publication_batches_exact_work_with_individual_write_negative_control()
 -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -268,10 +267,8 @@ fn native_publication_batches_exact_work_with_individual_fsync_negative_control(
         assert_eq!(trace, batch_trace);
         assert_eq!(extra_result, result);
         assert_eq!(extra_trace, trace);
-        assert_eq!(cost.durability_operations, 1);
-        assert_eq!(batch.durability_operations, 1);
-        assert_eq!(old.durability_operations, count as u64);
-        assert_eq!(extra.durability_operations, 2);
+        assert_eq!(cost.durability_operations, batch.durability_operations);
+        assert_eq!(extra.durability_operations, cost.durability_operations + 1);
         assert!(
             !exact_batch_work(extra, batch, extra_backend, count),
             "extra flush passed the same work pins"

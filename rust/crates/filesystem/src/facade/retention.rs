@@ -51,7 +51,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let accounting = &mut accounting;
 
             accounting.check()?;
-            let generation_root = ObjectId { kind: ObjectKind::GenerationRoot, digest: generation_id.digest() };
+            let generation_root = generation_id.object_id();
             let hashed = WorkCounters { bytes_hashed: (b"acyclic-fs-retention-authority-v1\0".len() + 16 + 1 + 8 + label.value.len()) as u64, bytes_copied: 16, ..WorkCounters::UNCHARGED };
             accounting.admit(hashed)?;
             let authority_id = retention_authority_id(volume.id, kind, &label.value);
@@ -207,7 +207,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     ) -> FsResult<GenerationId> {
         let checkpoint = self.checkpoint_root(budget, cancellation).await?;
         Ok(OperationReceipt {
-            value: GenerationId::new(checkpoint.value.digest),
+            value: GenerationId::from_root(checkpoint.value),
             work: checkpoint.work,
         })
     }

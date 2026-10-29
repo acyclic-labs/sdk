@@ -7,9 +7,27 @@ fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let authority = AuthorityId::from_bytes([7; 16]);
-    for generation in [None, Some(GenerationId::new(Digest::from_bytes([9; 32])))] {
-        let fixed = b"fs/authorities/".len() + 32 + if generation.is_some() { 64 } else { 0 };
-        for length in [fixed, 127, 128, 129, acyclic_stream::MAX_PATH_BYTES] {
+    let sealed = GenerationId::from_root(ObjectId {
+        kind: crate::ObjectKind::GenerationRoot,
+        digest: Digest::from_bytes([9; 32]),
+        storage: Some(crate::storage::ObjectStorage {
+            locator: Digest::from_bytes([10; 32]),
+            root_file_id: crate::FileId::from_bytes([11; 16]),
+            origin_generation: Digest::from_bytes([12; 32]),
+        }),
+    });
+    for generation in [
+        None,
+        Some(GenerationId::new(Digest::from_bytes([9; 32]))),
+        Some(sealed),
+    ] {
+        let fixed = b"fs/authorities/".len()
+            + 32
+            + generation.map_or(0, |generation| generation.to_bytes().len() * 2);
+        for length in [fixed, 127, 128, 129, acyclic_stream::MAX_PATH_BYTES]
+            .into_iter()
+            .filter(|length| *length >= fixed)
+        {
             let suffix = "x".repeat(length - fixed);
             let mut work = AuthorityWork::new(BUDGET, &cancellation);
             let path = work.path(
@@ -49,13 +67,27 @@ proptest::proptest! {
     fn small_scratch_matches_full_scratch_bytes_and_receipts(
         identity in proptest::prelude::any::<[u8; 16]>(),
         digest in proptest::option::of(proptest::prelude::any::<[u8; 32]>()),
+        storage in proptest::option::of((
+            proptest::prelude::any::<[u8; 32]>(),
+            proptest::prelude::any::<[u8; 16]>(),
+            proptest::prelude::any::<[u8; 32]>(),
+        )),
         suffix in "[a-z]{0,256}",
         limit in 0u8..7,
     ) {
         let authority = AuthorityId::from_bytes(identity);
-        let generation = digest.map(|bytes| GenerationId::new(Digest::from_bytes(bytes)));
+        let generation = digest.map(|bytes| GenerationId::from_root(ObjectId {
+            kind: crate::ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes(bytes),
+            storage: storage.map(|(locator, root_file_id, origin_generation)| crate::storage::ObjectStorage {
+                locator: Digest::from_bytes(locator),
+                root_file_id: crate::FileId::from_bytes(root_file_id),
+                origin_generation: Digest::from_bytes(origin_generation),
+            }),
+        }));
+        let reference = generation.map(GenerationId::to_bytes);
         let expected = format!("fs/authorities/{}{}{}", hex::encode(identity), suffix,
-            digest.map_or_else(String::new, hex::encode));
+            reference.as_ref().map_or_else(String::new, |reference| hex::encode(reference.as_slice())));
         let length = expected.len();
         let writes = codec_work(length as u64, (b"fs/authorities/".len() + suffix.len()) as u64, 0);
         let mut budget = BUDGET;
@@ -75,7 +107,7 @@ proptest::proptest! {
         let cancellation = CancellationToken::new();
         let mut old = AuthorityWork::new(budget, &cancellation);
         let old_result = old.admit(writes).and_then(|()| old.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
-            b"fs/authorities/", authority, &suffix, digest.as_ref().map(|bytes| bytes.as_slice()), length, writes));
+            b"fs/authorities/", authority, &suffix, reference.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
         let actual = work.path(&AuthorityPlacement::default(), authority, &suffix, generation);
         match (actual, old_result) {

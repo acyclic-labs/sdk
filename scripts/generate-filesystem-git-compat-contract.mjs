@@ -105,13 +105,14 @@ function readRustContract(stdout) {
   }
   for (const [name, values] of [
     ["timestamp fields", contract.timestamp_fields],
+    ["generation fields", contract.generation_fields],
     ["UUID paths", contract.uuid_paths],
     ["opaque paths", contract.opaque_paths],
     ["pending fields", contract.pending_fields],
   ]) {
     if (!Array.isArray(values) || !values.every(value => typeof value === "string" && value.length > 0) ||
         new Set(values).size !== values.length) {
-      throw new Error(`filesystem Git contract has invalid ${name}`);
+      throw new Error(`filesystem Git step=contract-${name.replaceAll(" ", "-")} invalid; recovery=bun scripts/generate-contracts.mjs write filesystem`);
     }
   }
   if (!Array.isArray(contract.public_aliases) ||
@@ -150,6 +151,7 @@ export function render([stdout]) {
     `export const GIT_COMPAT_DIRTY_STATE_WIRE = Object.freeze(${JSON.stringify(dirtyStateWire)});\n` +
     `export const GIT_COMPAT_IDENTITY_LENGTHS = Object.freeze(${JSON.stringify(identityLengths)});\n` +
     `export const GIT_COMPAT_BYTE_FIELDS = Object.freeze(${JSON.stringify(byteFields)});\n` +
+    `export const GIT_COMPAT_GENERATION_FIELDS = Object.freeze(new Set(${JSON.stringify(contract.generation_fields)}));\n` +
     `export const GIT_COMPAT_TIMESTAMP_FIELDS = Object.freeze(new Set(${JSON.stringify(contract.timestamp_fields)}));\n` +
     `export const GIT_COMPAT_UUID_PATHS = Object.freeze(new Set(${JSON.stringify(contract.uuid_paths)}));\n` +
     `export const GIT_COMPAT_OPAQUE_PATHS = Object.freeze(new Set(${JSON.stringify(contract.opaque_paths)}));\n` +
@@ -208,6 +210,7 @@ export function render([stdout]) {
     `export declare const GIT_COMPAT_DIRTY_STATE_WIRE: Readonly<Record<GitDirtyState, string>>;\n` +
     `export declare const GIT_COMPAT_IDENTITY_LENGTHS: Readonly<{\n${fields}\n}>;\n` +
     `export declare const GIT_COMPAT_BYTE_FIELDS: Readonly<Record<string, number | null>>;\n` +
+    `export declare const GIT_COMPAT_GENERATION_FIELDS: ReadonlySet<string>;\n` +
     `export declare const GIT_COMPAT_TIMESTAMP_FIELDS: ReadonlySet<string>;\n` +
     `export declare const GIT_COMPAT_UUID_PATHS: ReadonlySet<string>;\n` +
     `export declare const GIT_COMPAT_OPAQUE_PATHS: ReadonlySet<string>;\n` +

@@ -212,6 +212,10 @@ impl Encoder {
         self.bytes.extend_from_slice(value);
     }
 
+    pub(crate) fn object(&mut self, value: crate::ObjectId) {
+        self.fixed(&value.to_bytes());
+    }
+
     pub(crate) fn bounded_bytes(&mut self, value: &[u8]) -> Result<(), CanonicalDecodeError> {
         let length =
             u32::try_from(value.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
@@ -363,6 +367,49 @@ impl<'a> Decoder<'a> {
             .map_err(|_| CanonicalDecodeError::Truncated)?;
         observe(ReadAllocationStep::Copied(copied))?;
         Ok(value)
+    }
+
+    pub(crate) fn object<E: From<CanonicalDecodeError>>(
+        &mut self,
+        kind: crate::ObjectKind,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<crate::ObjectId, E> {
+        let object = self.any_object(observe)?;
+        if object.kind != kind {
+            return Err(CanonicalDecodeError::Invariant(CanonicalInvariant::Static(
+                "object reference has the wrong kind",
+            ))
+            .into());
+        }
+        Ok(object)
+    }
+
+    pub(crate) fn any_object<E: From<CanonicalDecodeError>>(
+        &mut self,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<crate::ObjectId, E> {
+        let tag = self.u8(observe)?;
+        let digest = crate::Digest::from_bytes(self.fixed::<32, E>(observe)?);
+        let kind = crate::ObjectKind::from_canonical_tag(tag & 127).map_err(|_| {
+            CanonicalDecodeError::UnknownTag {
+                field: "object kind",
+                tag,
+            }
+        })?;
+        let storage = if tag & 128 == 0 {
+            None
+        } else {
+            Some(crate::storage::ObjectStorage {
+                locator: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
+                root_file_id: crate::FileId::from_bytes(self.fixed::<16, E>(observe)?),
+                origin_generation: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
+            })
+        };
+        Ok(crate::ObjectId {
+            kind,
+            digest,
+            storage,
+        })
     }
 
     pub(crate) fn bounded_slice<E: From<CanonicalDecodeError>>(

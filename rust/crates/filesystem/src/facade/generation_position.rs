@@ -73,8 +73,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 if record.sequence.get() != after.get() + 1 || record.sequence > head {
                     return Err(FsError::InvalidAuthorityHistory);
                 }
-                if generation_from_record(record, self.volume.id, accounting)?.digest
-                    == generation.digest()
+                if generation_from_record(record, self.volume.id, accounting)?
+                    == generation.object_id()
                 {
                     // Only the first occurrence found from genesis enters
                     // the cache. A restored head may repeat an older root.

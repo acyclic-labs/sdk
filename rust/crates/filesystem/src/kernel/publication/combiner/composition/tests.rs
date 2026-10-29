@@ -126,6 +126,7 @@ async fn core(
         .await?
         .value;
     let root_id = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: checkout.generation_id().digest(),
     };
@@ -281,7 +282,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
     let mut collector = None;
     if matches!(delivery, Delivery::Collected) {
         let orphan = crate::kernel::GenerationRoot {
-            parents: vec![crate::GenerationId::new(root.digest)],
+            parents: vec![crate::GenerationId::from_root(root)],
             ..core.base.value.clone()
         };
         let encoded = crate::kernel::encode_generation_root(

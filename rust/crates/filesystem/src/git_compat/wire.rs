@@ -74,32 +74,24 @@ pub fn parse_git_public_command(input: &str) -> Result<GitCommand, String> {
 pub const GIT_COMPAT_IDENTITY_WIRE_FIELDS: &[(&str, usize)] = &[
     ("workspace_id", std::mem::size_of::<WorkspaceId>()),
     ("source_workspace", std::mem::size_of::<WorkspaceId>()),
-    ("generation", std::mem::size_of::<GenerationId>()),
-    ("id", std::mem::size_of::<GenerationId>()),
-    ("authored_generation", std::mem::size_of::<GenerationId>()),
+    ("id", std::mem::size_of::<crate::LazySnapshotId>()),
     ("identity", std::mem::size_of::<WorkspaceId>()),
-    ("overlay", std::mem::size_of::<GenerationId>()),
-    ("shadows", std::mem::size_of::<GenerationId>()),
-    ("initial_generation", std::mem::size_of::<GenerationId>()),
+    ("overlay", std::mem::size_of::<crate::LazyOverlayId>()),
+    ("shadows", std::mem::size_of::<crate::LazyShadowId>()),
 ];
+
+/// Fields carrying the canonical variable-width generation-root reference.
+pub const GIT_COMPAT_GENERATION_WIRE_FIELDS: &[&str] =
+    &["generation", "authored_generation", "initial_generation"];
 
 /// Field names that language bindings decode as owned byte arrays. `None`
 pub const GIT_COMPAT_BYTE_WIRE_FIELDS: &[(&str, Option<usize>)] = &[
     ("workspace_id", Some(std::mem::size_of::<WorkspaceId>())),
     ("source_workspace", Some(std::mem::size_of::<WorkspaceId>())),
-    ("generation", Some(std::mem::size_of::<GenerationId>())),
-    ("id", Some(std::mem::size_of::<GenerationId>())),
-    (
-        "authored_generation",
-        Some(std::mem::size_of::<GenerationId>()),
-    ),
+    ("id", Some(std::mem::size_of::<crate::LazySnapshotId>())),
     ("identity", Some(std::mem::size_of::<WorkspaceId>())),
-    ("overlay", Some(std::mem::size_of::<GenerationId>())),
-    ("shadows", Some(std::mem::size_of::<GenerationId>())),
-    (
-        "initial_generation",
-        Some(std::mem::size_of::<GenerationId>()),
-    ),
+    ("overlay", Some(std::mem::size_of::<crate::LazyOverlayId>())),
+    ("shadows", Some(std::mem::size_of::<crate::LazyShadowId>())),
     ("patch", None),
 ];
 

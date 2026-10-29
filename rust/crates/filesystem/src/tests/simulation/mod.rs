@@ -105,6 +105,7 @@ fn object(bytes: &[u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::copy_from_slice(bytes);
     (
         ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(&bytes),
         },

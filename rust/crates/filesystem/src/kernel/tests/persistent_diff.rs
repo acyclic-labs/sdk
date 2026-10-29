@@ -39,6 +39,7 @@ fn file_record(id: u8) -> Result<FileRecord, Box<dyn std::error::Error>> {
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([id; 32]),
         },
@@ -104,6 +105,7 @@ async fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         assert_eq!(*failure.work, WorkCounters::default());
     }
     let wrong = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([7; 32]),
     };
@@ -501,6 +503,7 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     let store = MemoryObjectStore::default();
     let valid = put(&store, &TreePage::Leaf(vec![entry("a", 1)?]), 8).await?;
     let missing = ObjectId {
+        storage: None,
         kind: ObjectKind::TreePage,
         digest: Digest::from_bytes([99; 32]),
     };
@@ -524,6 +527,7 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
 
     let malformed_bytes = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed = ObjectId {
+        storage: None,
         kind: ObjectKind::TreePage,
         digest: crate::storage::object_digest(&malformed_bytes),
     };

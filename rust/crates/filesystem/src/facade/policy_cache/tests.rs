@@ -12,6 +12,7 @@ fn compiled() -> TestResult<CompiledPolicy> {
 }
 fn revision(value: u8) -> Revision {
     Revision::Value(ObjectId {
+        storage: None,
         kind: crate::ObjectKind::TreePage,
         digest: Digest::from_bytes([value; 32]),
     })

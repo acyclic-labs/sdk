@@ -542,7 +542,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let captured = probe
                 .0
                 .capture_many_with_accounting(
-                    GenerationId::new(self.root.base.digest),
+                    GenerationId::from_root(self.root.base),
                     input,
                     self.volume.config.limits.maximum_checkout_dependencies,
                     accounting,

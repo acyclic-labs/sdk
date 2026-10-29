@@ -33,6 +33,7 @@ mod io;
 use io::{read_spilled, staged_native_read, staged_owned_bytes, staged_vector};
 use read::resident_read;
 mod admission;
+mod ordering;
 mod publication;
 mod read;
 mod spill;

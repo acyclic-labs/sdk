@@ -67,10 +67,7 @@ impl NativeCheckout {
         let maximum_changes = maximum_changes.into_inner();
         let maximum_conflicts = maximum_conflicts.into_inner();
 
-        let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &theirs,
-            "merge generation identity",
-        )?));
+        let theirs = decode_generation_id(&theirs)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout_call!(
             self,

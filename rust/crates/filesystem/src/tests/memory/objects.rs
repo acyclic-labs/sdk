@@ -5,6 +5,7 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
 {
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(b"abcdef"),
     };
@@ -34,10 +35,12 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
 async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(b"first"),
     };
     let second = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(b"second"),
     };
@@ -97,6 +100,7 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(b"authentic"),
     };
@@ -156,6 +160,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     ));
     let store = MemoryObjectStore::new(4)?;
     let object_id = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: object_digest(b"data"),
     };
@@ -217,6 +222,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
         })
     ));
     let missing = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,
         digest: Digest::from_bytes([31; 32]),
     };

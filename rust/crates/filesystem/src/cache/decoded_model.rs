@@ -5,6 +5,7 @@ const _: fn(Mutex<()>) -> loom::sync::Mutex<()> = |lock| lock;
 fn key(id: u8) -> DecodedCacheKey {
     DecodedCacheKey::new::<u64>(
         ObjectId {
+            storage: None,
             kind: crate::ObjectKind::FileTablePage,
             digest: crate::Digest::from_bytes([id; 32]),
         },

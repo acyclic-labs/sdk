@@ -115,7 +115,6 @@ impl StateRecord {
             .map_err(|_| corrupt())?;
         let start = tag_index + 1;
         let state = if tag == 0 {
-            let end = start + 48;
             let root_file_id = FileId::from_bytes(
                 bytes
                     .get(start..start + 16)
@@ -123,20 +122,26 @@ impl StateRecord {
                     .try_into()
                     .map_err(|_| corrupt())?,
             );
-            let digest = crate::Digest::from_bytes(
-                bytes
-                    .get(start + 16..end)
-                    .ok_or_else(corrupt)?
-                    .try_into()
-                    .map_err(|_| corrupt())?,
-            );
+            let reference = start + 16;
+            let length = if bytes.get(reference).ok_or_else(corrupt)? & 128 == 0 {
+                33
+            } else {
+                ObjectId::ENCODED_LEN
+            };
+            let end = reference + length;
+            let file_table = ObjectId::try_from(bytes.get(reference..end).ok_or_else(corrupt)?)
+                .map_err(|_| corrupt())?;
+            if file_table.kind != ObjectKind::FileTablePage
+                || file_table
+                    .storage
+                    .is_some_and(|storage| storage.root_file_id != root_file_id)
+            {
+                return Err(corrupt());
+            }
             Self::Volume {
                 root: PortableRoot {
                     root_file_id,
-                    file_table: ObjectId {
-                        kind: ObjectKind::FileTablePage,
-                        digest,
-                    },
+                    file_table,
                 },
                 companion: bytes.slice(end..),
             }
@@ -166,7 +171,10 @@ impl crate::AuthorityWork<'_> {
         let (tag, root, payload) = record.fields()?;
         let length = DOMAIN
             .len()
-            .checked_add(3 + operation.as_bytes().len() + usize::from(root.is_some()) * 48)
+            .checked_add(
+                3 + operation.as_bytes().len()
+                    + root.map_or(0, |root| 16 + root.file_table.encoded_len()),
+            )
             .and_then(|n| n.checked_add(payload.len()))
             .ok_or(crate::WorkError::Overflow)?;
         if length > acyclic_stream::MAX_RECORD_BYTES {
@@ -184,7 +192,7 @@ impl crate::AuthorityWork<'_> {
                     operation.as_bytes(),
                     &tag,
                     &root.root_file_id.into_bytes(),
-                    root.file_table.digest.as_bytes(),
+                    &root.file_table.to_bytes(),
                     payload,
                 ],
             ),

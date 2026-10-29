@@ -1,3 +1,4 @@
+import { isObjectReference } from "./binding-values.js";
 import { type Client, ConnectError, Code } from "@connectrpc/connect";
 import { type FilesystemService, OperationOptionsSchema } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { create } from "@bufbuild/protobuf";
@@ -148,4 +149,19 @@ export function validateMergeLimits(value: Pick<JoinOptions, "maximumGenerations
   positiveU32(value.maximumGenerations, "maximum generations");
   positiveU32(value.maximumChanges, "maximum changes");
   positiveU32(value.maximumConflicts, "maximum conflicts");
+}
+
+export function requireReference(value: unknown, name: string, kind?: number): asserts value is Uint8Array {
+  if (!isObjectReference(value, kind)) {
+    throw new HostedFsError("invalid_response", `${name} must contain a canonical object reference`);
+  }
+}
+
+export function referenceBytes(value: Uint8Array, name: string, kind?: number): Uint8Array {
+  requireReference(value, name, kind);
+  return Uint8Array.from(value);
+}
+
+export function optionalReferenceBytes(value: Uint8Array | undefined, name: string, kind?: number): Uint8Array | undefined {
+  return value === undefined ? undefined : referenceBytes(value, name, kind);
 }

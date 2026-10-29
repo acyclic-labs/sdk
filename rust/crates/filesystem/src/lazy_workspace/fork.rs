@@ -136,7 +136,7 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         ctx.charge(WorkCounters {
-            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+            bytes_hashed: LazySnapshotRef::hash_bytes(original_generation),
             ..WorkCounters::UNCHARGED
         })?;
         let snapshot = LazySnapshotRef::new(

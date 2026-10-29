@@ -1,5 +1,6 @@
 /** Public control-plane contracts shared by native, hosted, and plugin adapters. */
 
+import { requireObjectReference } from "./binding-values.js";
 import type {
   FsWorkspace,
   WorkspaceRebaseOptions,
@@ -8,6 +9,7 @@ import type {
 import {
   GIT_COMPAT_ACTION_VARIANTS as gitCompatActionVariants,
   GIT_COMPAT_BYTE_FIELDS,
+  GIT_COMPAT_GENERATION_FIELDS,
   GIT_COMPAT_DIRTY_STATE_WIRE,
   GIT_COMPAT_OPAQUE_PATHS,
   GIT_COMPAT_OUTPUT_VARIANTS as gitCompatOutputVariants,
@@ -435,6 +437,11 @@ function hydrateGitCompatValue(value: unknown, parentPath: string): unknown {
   }
   if (Array.isArray(value)) {
     const field = parentPath.split(".").at(-1) ?? "";
+    if (GIT_COMPAT_GENERATION_FIELDS.has(field)) {
+      const reference = Uint8Array.from(bytes(value, undefined, `Git ${parentPath}`));
+      requireObjectReference(reference, `Git ${parentPath}`, 6);
+      return reference;
+    }
     const width = GIT_COMPAT_BYTE_FIELDS[field];
     if (width !== undefined) return Uint8Array.from(bytes(value, width ?? undefined, `Git ${parentPath}`));
     return value.map((item, index) => hydrateGitCompatValue(item, `${parentPath}[${index}]`));

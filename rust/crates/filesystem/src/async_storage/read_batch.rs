@@ -1,7 +1,25 @@
 use super::*;
 
 /// Reads a batch sequentially when the backend has no multi-get primitive.
-pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
+pub fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
+    store: &S,
+    requests: &[ObjectReadRequest],
+    context: &mut AuthorityWork<'_>,
+) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>>
++ acyclic_stream::ProviderTask {
+    read_many_representation::<false, S>(store, requests, context)
+}
+
+pub(crate) fn read_many_stored_sequential<S: AsyncObjectStore + ?Sized>(
+    store: &S,
+    requests: &[ObjectReadRequest],
+    context: &mut AuthorityWork<'_>,
+) -> impl Future<Output = Result<(Vec<ObjectRead>, AuthorityAllocation), crate::ObjectStoreError>>
++ acyclic_stream::ProviderTask {
+    read_many_representation::<true, S>(store, requests, context)
+}
+
+async fn read_many_representation<const STORED: bool, S: AsyncObjectStore + ?Sized>(
     store: &S,
     requests: &[ObjectReadRequest],
     context: &mut AuthorityWork<'_>,
@@ -38,9 +56,15 @@ pub async fn read_many_sequential<S: AsyncObjectStore + ?Sized>(
             .map_err(crate::ObjectStoreError::from)?;
         for request in requests {
             let mut read_work = batch.operation().map_err(crate::ObjectStoreError::from)?;
-            let read = store
-                .read(request.object_id, request.maximum_bytes, &mut read_work)
-                .await;
+            let read = if STORED {
+                store
+                    .read_stored(request.object_id, request.maximum_bytes, &mut read_work)
+                    .await
+            } else {
+                store
+                    .read(request.object_id, request.maximum_bytes, &mut read_work)
+                    .await
+            };
             if !batch.is_native() {
                 batch.work = batch
                     .work

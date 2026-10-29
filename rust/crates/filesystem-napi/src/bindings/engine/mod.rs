@@ -83,10 +83,7 @@ impl NativeFs {
         options: NativeSpeculationOptions,
     ) -> Result<NativeSpeculation> {
         let volume_id = VolumeId::from_bytes(fixed_16(&volume_id)?);
-        let generation_id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &generation_id,
-            "generation identity",
-        )?));
+        let generation_id = decode_generation_id(&generation_id)?;
         let controller = SpeculationController::new(
             native_speculation_options(&options)?,
             volume_id,

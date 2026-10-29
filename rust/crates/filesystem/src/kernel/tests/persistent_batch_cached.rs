@@ -31,6 +31,7 @@ fn select_cached(
     let original = page.clone();
     let mut accounting = KernelAccounting::native(&work, &cancellation);
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
     };

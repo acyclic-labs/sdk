@@ -8,6 +8,7 @@ async fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Err
             offset: 0,
             length: 1,
             content: ObjectId {
+                storage: None,
                 kind: ObjectKind::Metadata,
                 digest: object_digest(b"wrong"),
             },

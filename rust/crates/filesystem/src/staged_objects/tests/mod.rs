@@ -54,7 +54,8 @@ async fn reopen_contains(
 
 fn blob(bytes: OwnedBytes) -> (ObjectId, OwnedBytes) {
     let object_id = ObjectId {
-        kind: ObjectKind::Blob,
+        storage: None,
+        kind: ObjectKind::BlobChunk,
         digest: object_digest(&bytes),
     };
     (object_id, bytes)
@@ -135,3 +136,5 @@ async fn advance_spill_past_bound<S>(store: &StagedObjects<S>) -> std::io::Resul
     store.index_mut().spill_end += MAXIMUM_SPILL_BYTES;
     Ok(())
 }
+
+mod dependencies;

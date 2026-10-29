@@ -15,7 +15,7 @@ fn generation_ref_for<A, O>(
 ) -> wire::GenerationRef {
     wire::GenerationRef {
         workspace: Some(workspace_ref(workspace)),
-        generation_id: generation.digest().into_bytes().to_vec(),
+        generation_id: generation.to_bytes().to_vec(),
     }
 }
 
@@ -34,7 +34,7 @@ fn join_common_ancestor_ref<A, O>(
     };
     wire::GenerationRef {
         workspace,
-        generation_id: plan.common_ancestor().digest().into_bytes().to_vec(),
+        generation_id: plan.common_ancestor().to_bytes().to_vec(),
     }
 }
 
@@ -78,7 +78,7 @@ fn observed_mutation<A, O>(
         wire::MutationStatus::Committed,
         Some(wire::GenerationRef {
             workspace: Some(workspace_ref(workspace)),
-            generation_id: root.digest.into_bytes().to_vec(),
+            generation_id: root.to_bytes().to_vec(),
         }),
         None,
     ))
@@ -114,7 +114,7 @@ async fn generation_message<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         .into_iter()
         .map(|id| wire::GenerationRef {
             workspace: workspace.clone(),
-            generation_id: id.digest().into_bytes().to_vec(),
+            generation_id: id.to_bytes().to_vec(),
         })
         .collect();
     Ok(wire::GenerationResponse {

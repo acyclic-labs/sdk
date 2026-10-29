@@ -181,9 +181,9 @@ impl ResolutionKey {
     ) -> Self {
         let mut hasher = blake3::Hasher::new();
         hasher.update(RESOLUTION_KEY_DOMAIN);
-        hasher.update(base.digest().as_bytes());
-        hasher.update(ours.digest().as_bytes());
-        hasher.update(theirs.digest().as_bytes());
+        hasher.update(&base.to_bytes());
+        hasher.update(&ours.to_bytes());
+        hasher.update(&theirs.to_bytes());
         hash_conflict_key(&mut hasher, conflict);
         hasher.update(
             &u64::try_from(driver_fingerprint.len())
@@ -716,6 +716,32 @@ mod tests {
         let mut cache = MemoryMergeResolutionCache::default();
         let first = resolve_merge_plan(plan.clone(), &registry, &mut cache, false)
             .expect("initial resolution");
+        let key = |plan: &MergePlan| {
+            ResolutionKey::new(
+                plan.base,
+                plan.ours,
+                plan.theirs,
+                &plan.conflicts[0].key,
+                registry.select("file.txt").unwrap().fingerprint(),
+            )
+        };
+        assert!(cache.get(key(&plan)).is_some());
+        for side in 0..3 {
+            let mut alias = plan.clone();
+            let target = match side {
+                0 => &mut alias.base,
+                1 => &mut alias.ours,
+                _ => &mut alias.theirs,
+            };
+            let mut root = target.object_id();
+            root.storage = Some(crate::ObjectStorage {
+                locator: crate::Digest::from_bytes([189; 32]),
+                root_file_id: FileId::from_bytes([190; 16]),
+                origin_generation: root.digest,
+            });
+            *target = GenerationId::from_root(root);
+            assert!(cache.get(key(&alias)).is_none());
+        }
         assert_eq!(
             resolve_merge_plan(plan, &registry, &mut cache, true).expect("exact cache reuse"),
             first

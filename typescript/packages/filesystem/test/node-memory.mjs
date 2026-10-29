@@ -24,7 +24,7 @@ try {
   const lookup = await checkout.lookupNoFollow("/typed/data");
   if (lookup.fileId?.byteLength !== 16) throw new Error(`public volume checkout lost file identity: create=${created.fileId?.byteLength}, exists=${lookup.exists}, resolved=${lookup.resolvedComponents}`);
   const checkpoint = await checkout.checkpoint();
-  if (checkpoint.generationId.byteLength !== 32) {
+  if (checkpoint.generationId.byteLength !== 33) {
     throw new Error("public volume checkout returned a malformed generation identity");
   }
   const read = await checkout.readFileRange("/typed/data", 0n, 9n);

@@ -40,8 +40,48 @@ pub(super) fn compose_backend(
     Ok(())
 }
 impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
+    fn requires_child_first_publication(&self) -> bool {
+        self.store.requires_child_first_publication()
+    }
+
+    fn maximum_reference_bytes(&self) -> usize {
+        self.store.maximum_reference_bytes()
+    }
+
+    async fn prepare_hashed(
+        &self,
+        object: crate::HashedObject,
+        work: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::HashedObject, ObjectStoreError> {
+        self.store.prepare_hashed(object, work).await
+    }
+
     fn supports_decoded_cache(&self) -> bool {
         self.store.supports_decoded_cache()
+    }
+
+    async fn put_stored(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.store.put_stored(id, bytes, context).await
+    }
+    async fn read_many_stored(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        self.store.read_many_stored(requests, context).await
+    }
+    async fn read_stored(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, ObjectStoreError> {
+        self.store.read_stored(id, maximum, context).await
     }
 
     fn decoded_cache_get(

@@ -135,10 +135,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let publication = self
                 .retention_publication_with_accounting(
                     volume,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: generation.digest(),
-                    },
+                    generation.object_id(),
                     &mut accounting,
                     cancellation,
                 )
@@ -196,17 +193,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await
             .map_err(WorkspaceError::engine)?;
-        let current = GenerationId::new(current.digest);
+        let current = GenerationId::from_root(current);
         if current != expected {
             return Ok(crate::WorkspaceRestore::Stale(current));
         }
         if current == generation {
             return Ok(crate::WorkspaceRestore::Current(current));
         }
-        let generation_root = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
+        let generation_root = generation.object_id();
         let (root, _) = read_generation_root(
             &self.inner.objects,
             generation_root,
@@ -251,7 +245,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )
                     .await
                     .map_err(WorkspaceError::engine)?;
-                crate::WorkspaceRestore::Stale(GenerationId::new(actual.digest))
+                crate::WorkspaceRestore::Stale(GenerationId::from_root(actual))
             }
             AppendOutcome::Fenced { .. } => crate::WorkspaceRestore::Fenced,
             AppendOutcome::IdempotencyConflict { .. } => {
@@ -299,6 +293,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 original,
                 cancellation,
             )?;
+            let hashed = crate::async_storage::prepare_object(
+                &self.inner.objects,
+                hashed,
+                accounting,
+                cancellation,
+            )
+            .await?;
             let object = hashed.object_id();
             let mut work = authority_work(accounting, cancellation)?;
             self.inner.objects.put_hashed(hashed, &mut work).await?;
@@ -326,6 +327,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let hashed = HashedObject::new(kind, bytes);
         accounting.record_completed(hashing)?;
+        let hashed = crate::async_storage::prepare_object(
+            &self.inner.objects,
+            hashed,
+            accounting,
+            cancellation,
+        )
+        .await?;
         let object = hashed.object_id();
         let mut object_work = authority_work(accounting, cancellation)?;
         let result = self

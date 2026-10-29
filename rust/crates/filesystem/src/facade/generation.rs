@@ -122,10 +122,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = async {
             let (root, allocation) = crate::kernel::read_generation_root_with_accounting(
                 &self.inner.objects,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 volume.config,
                 &mut accounting,
                 cancellation,
@@ -181,10 +178,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             None
         };
         let root = match selector {
-            GenerationSelector::Exact(id) => ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: id.digest(),
-            },
+            GenerationSelector::Exact(id) => id.object_id(),
             GenerationSelector::Head => head.as_ref().ok_or(FsError::NotFound)?.0,
         };
         Ok((root, head.map(|(_, head)| head)))
@@ -246,10 +240,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let result = async {
             let (root, _allocation) = crate::kernel::read_generation_root_with_accounting(
                 &self.inner.objects,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 config,
                 &mut accounting,
                 cancellation,

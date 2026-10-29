@@ -19,6 +19,7 @@ fn page(
             kind: FileKind::Fifo,
             link_count: 1,
             metadata: ObjectId {
+                storage: None,
                 kind: ObjectKind::Metadata,
                 digest: crate::Digest::ZERO,
             },
@@ -38,6 +39,7 @@ fn page(
 fn key() -> DecodedCacheKey {
     DecodedCacheKey::new::<Page<FileTableFormat>>(
         ObjectId {
+            storage: None,
             kind: ObjectKind::FileTablePage,
             digest: crate::Digest::ZERO,
         },

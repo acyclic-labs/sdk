@@ -94,8 +94,11 @@ impl Format for AttributeFormat {
         attribute_leaf_item_encoded_length(value)
     }
 
-    fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError> {
-        attribute_internal_item_encoded_length(key)
+    fn internal_item_encoded_length(
+        key: &Self::Key,
+        page: ObjectId,
+    ) -> Result<usize, CanonicalDecodeError> {
+        attribute_internal_item_encoded_length(key, page)
     }
 
     fn key_nested_bytes(key: &Self::Key) -> u64 {

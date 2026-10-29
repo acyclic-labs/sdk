@@ -13,10 +13,12 @@ fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
     let chunk = acyclic_stream::OwnedBytes::from_static(b"transfer-chunk");
     let root_body = acyclic_stream::OwnedBytes::from_static(b"transfer-root");
     let chunk_id = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(&chunk),
     };
     let root_id = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(&root_body),
     };
@@ -25,7 +27,7 @@ fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
             volume_id: VolumeId::from_bytes([7; 16]),
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             generation_root: root_id,
-            generation_id: GenerationId::new(root_id.digest),
+            generation_id: GenerationId::from_root(root_id),
             objects: vec![chunk_id, root_id],
             file_count: 1,
         },
@@ -418,5 +420,8 @@ async fn manifest_construction_rejects_foreign_volume_after_complete_authenticat
     assert_eq!(manifest.value.volume_id, actual_volume);
     assert_eq!(manifest.value.generation_root, generation);
     assert_eq!(manifest.value.file_count, 1);
+    assert_eq!(manifest.value.objects.last(), Some(&generation));
+    assert_eq!(manifest.work.backend_read_operations, 4);
+    assert_eq!(manifest.work.page_reads, 2);
     Ok(())
 }

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 fn revision(head: Head) -> MetadataField<ObjectId> {
     MetadataField::Value(ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: head.digest,
     })

@@ -28,10 +28,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let config = source.workspace.volume.config;
         accounting.check()?;
         let proven_at = self.inner.objects.collection_sweeps();
-        let source_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: source.id.digest(),
-        };
+        let source_object = source.id.object_id();
         let (source_root, allocation) = read_generation_root_with_accounting(
             &self.inner.objects,
             source_object,
@@ -422,7 +419,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Some(crate::GenerationForkSource {
             authority: volume_authority_id(source.workspace.volume.id),
             generation: source.id,
-            lineage: if root.digest == source.id.digest() {
+            lineage: if root == source.id.object_id() {
                 crate::GenerationFork::PublishedPrefix
             } else {
                 crate::GenerationFork::Independent

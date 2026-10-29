@@ -169,6 +169,27 @@ async fn attach_open_and_fork_demand_no_source_work() {
     )
     .await
     .unwrap();
+    let cut = reopened.snapshot(accounting!()).await.unwrap();
+    let sealed_generation = crate::GenerationId::from_root(crate::ObjectId {
+        storage: Some(crate::storage::ObjectStorage {
+            locator: crate::Digest::from_bytes([31; 32]),
+            root_file_id: FileId::from_bytes([32; 16]),
+            origin_generation: cut.authored_generation.digest(),
+        }),
+        ..cut.authored_generation.object_id()
+    });
+    let sealed_cut = LazySnapshotRef::new(
+        cut.workspace_id,
+        sealed_generation,
+        cut.source,
+        cut.overlay,
+        cut.shadows,
+    );
+    assert_ne!(sealed_cut.id, cut.id);
+    assert_eq!(
+        LazySnapshotRef::hash_bytes(sealed_generation),
+        LazySnapshotRef::hash_bytes(cut.authored_generation) + 80
+    );
     let (child, original) = reopened
         .fork(
             "child",

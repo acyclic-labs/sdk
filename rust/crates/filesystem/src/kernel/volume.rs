@@ -3,7 +3,7 @@
 use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep};
 
 use crate::WorkCounters;
-use crate::foundation::{AuthorityId, Digest, VolumeId};
+use crate::foundation::{AuthorityId, VolumeId};
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, Lifecycle, UnicodePolicy, VolumeConfig,
     VolumeConfigError, VolumeLimits,
@@ -74,10 +74,11 @@ where
     };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
-    let length = DOMAIN.len() + 2 + 16 + CONFIG_ENCODED_BYTES + 1 + 32;
+    let length =
+        DOMAIN.len() + 2 + 16 + CONFIG_ENCODED_BYTES + value.initial_generation_root.encoded_len();
     observe(EncodeWorkStep::Admit(WorkCounters {
         bytes_encoded: length as u64,
-        bytes_copied: 48,
+        bytes_copied: (16 + value.initial_generation_root.encoded_len()) as u64,
         ..WorkCounters::UNCHARGED
     }))?;
     observe(EncodeWorkStep::Check)?;
@@ -99,15 +100,10 @@ where
         bytes_encoded: CONFIG_ENCODED_BYTES as u64,
         ..WorkCounters::UNCHARGED
     }))?;
-    encoder.u8(value.initial_generation_root.kind.canonical_tag());
+    encoder.object(value.initial_generation_root);
     observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 1,
-        ..WorkCounters::UNCHARGED
-    }))?;
-    encoder.fixed(value.initial_generation_root.digest.as_bytes());
-    observe(EncodeWorkStep::Completed(WorkCounters {
-        bytes_encoded: 32,
-        bytes_copied: 32,
+        bytes_encoded: value.initial_generation_root.encoded_len() as u64,
+        bytes_copied: value.initial_generation_root.encoded_len() as u64,
         ..WorkCounters::UNCHARGED
     }))?;
     Ok(encoder.finish())
@@ -128,15 +124,7 @@ where
         .validate()
         .map_err(VolumeCreatedError::from)
         .map_err(E::from)?;
-    let kind = ObjectKind::from_canonical_tag(decoder.u8(observe)?)
-        .map_err(|_| invariant("unknown initial-generation object kind"))?;
-    if kind != ObjectKind::GenerationRoot {
-        return Err(invariant("initial volume object is not a generation root").into());
-    }
-    let initial_generation_root = ObjectId {
-        kind,
-        digest: Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
-    };
+    let initial_generation_root = decoder.object(ObjectKind::GenerationRoot, observe)?;
     decoder.finish()?;
     Ok(VolumeCreated {
         volume_id,

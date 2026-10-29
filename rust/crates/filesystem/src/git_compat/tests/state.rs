@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn commit_identity_authenticates_every_generation_locator() {
+    let generation = |locator| {
+        GenerationId::from_root(crate::ObjectId {
+            kind: crate::ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([183; 32]),
+            storage: Some(crate::ObjectStorage {
+                locator: Digest::from_bytes([locator; 32]),
+                root_file_id: crate::FileId::from_bytes([184; 16]),
+                origin_generation: Digest::from_bytes([185; 32]),
+            }),
+        })
+    };
+    let tree = GitTreeRef::exact(workspace(), generation(186));
+    let other = GitTreeRef::exact(workspace(), generation(187));
+    let commit = GitCommit::new(
+        tree,
+        tree,
+        Some(GitCaptureProof {
+            fork_parent: tree,
+            initial_generation: generation(186),
+            operation_id: OperationId::from_bytes([188; 16]),
+        }),
+        BTreeSet::new(),
+        Vec::new(),
+        "author",
+        0,
+        "message",
+    );
+    assert_eq!(commit.id, commit.hash_id());
+    for field in 0..4 {
+        let mut alias = commit.clone();
+        match field {
+            0 => alias.tree = other,
+            1 => alias.workspace_tree = other,
+            2 => alias.capture_proof.as_mut().unwrap().fork_parent = other,
+            _ => alias.capture_proof.as_mut().unwrap().initial_generation = generation(187),
+        }
+        assert_ne!(alias.hash_id(), commit.id);
+    }
+}
+
+#[test]
 fn current_state_round_trips_and_obsolete_versions_are_rejected() {
     let state = GitCompatState::new("main", WorkspaceId::from_bytes([1; 16]));
     let encoded = serde_json::to_vec(&state).expect("encode current state");

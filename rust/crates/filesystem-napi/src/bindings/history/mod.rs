@@ -81,13 +81,13 @@ impl NativeJoinPlan {
     #[must_use]
     #[napi(getter, js_name = targetHead)]
     pub fn target_head(&self) -> Buffer {
-        Buffer::from(self.inner.target_head().digest().into_bytes().to_vec())
+        Buffer::from(self.inner.target_head().to_bytes().to_vec())
     }
 
     #[must_use]
     #[napi(getter, js_name = commonAncestor)]
     pub fn common_ancestor(&self) -> Buffer {
-        Buffer::from(self.inner.common_ancestor().digest().into_bytes().to_vec())
+        Buffer::from(self.inner.common_ancestor().to_bytes().to_vec())
     }
 
     #[napi]
@@ -96,10 +96,7 @@ impl NativeJoinPlan {
         if_target: Buffer,
         idempotency_key: Option<Buffer>,
     ) -> Result<NativeJoinResult> {
-        let if_target = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &if_target,
-            "target generation identity",
-        )?));
+        let if_target = decode_generation_id(&if_target)?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         self.inner
             .apply(
@@ -122,7 +119,7 @@ impl NativeJoinPlan {
         idempotency_key: Option<Buffer>,
         selections: Vec<NativeMergeSelection>,
     ) -> Result<NativeJoinResult> {
-        let if_target = generation_id(&if_target)?;
+        let if_target = decode_generation_id(&if_target)?;
         let idempotency_key = native_idempotency_key(idempotency_key)?;
         let mut resolved = BTreeMap::new();
         for selection in selections {
@@ -168,7 +165,7 @@ impl NativeGeneration {
     #[must_use]
     #[napi(getter)]
     pub fn id(&self) -> Buffer {
-        Buffer::from(self.inner.id().digest().into_bytes().to_vec())
+        Buffer::from(self.inner.id().to_bytes().to_vec())
     }
 
     #[must_use]

@@ -11,7 +11,7 @@ use super::{
 use crate::CancellationToken;
 use crate::foundation::GenerationId;
 use crate::performance::WorkBudget;
-use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
+use crate::storage::{ObjectId, ObjectStoreError};
 
 pub(crate) struct Marker<'a, S> {
     store: &'a S,
@@ -121,10 +121,7 @@ impl<'a, S: crate::AsyncObjectStore> Marker<'a, S> {
         &mut self,
         generation: GenerationId,
     ) -> Result<GenerationRoot, MarkError> {
-        let object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
+        let object = generation.object_id();
         self.marked.insert(object);
         let read = {
             let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, self.cancellation);

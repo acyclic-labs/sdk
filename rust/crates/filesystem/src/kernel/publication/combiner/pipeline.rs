@@ -103,7 +103,7 @@ impl Ticket {
         let Some(authenticated) = authenticated else {
             return Ok(None);
         };
-        if authenticated.value.proof.generation_id.digest() != root.digest {
+        if authenticated.value.proof.generation_id.object_id() != root {
             return Ok(None);
         }
         let Retained { value, allocation } = authenticated;

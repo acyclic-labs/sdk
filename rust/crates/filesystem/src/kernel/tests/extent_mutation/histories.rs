@@ -167,6 +167,7 @@ fn next(seed: &mut u64) -> u64 {
 async fn generated_sparse_histories_match_independent_byte_model()
 -> Result<(), Box<dyn std::error::Error>> {
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([9; 32]),
     };

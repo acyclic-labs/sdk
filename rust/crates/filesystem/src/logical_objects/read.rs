@@ -31,21 +31,42 @@ fn native_payload_bytes(error: &acyclic_objects::NativeObjectsError) -> Result<u
         .as_ref()
         .map_or(0, |object| object.body().len() as u64))
 }
-impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
-    pub(super) async fn fetch(
+impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
+    fn read_representation<const STORED: bool>(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        maximum: u64,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedBytes, crate::FsError> {
+        if STORED {
+            // The destination opens the seal once. Here the reference's CAS
+            // digest authenticates the exact transfer representation.
+            let physical = ObjectId {
+                digest: id.storage.map_or(id.digest, |value| value.locator),
+                storage: None,
+                ..id
+            };
+            hash(physical, &bytes, bytes.len() as u64, work)?;
+            Ok(bytes)
+        } else {
+            self.open_stored(id, bytes, maximum, work)
+        }
+    }
+    pub(super) async fn fetch<const STORED: bool>(
         &self,
         id: ObjectId,
         maximum: u64,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
+        let plaintext_maximum = maximum.min(self.maximum_object_bytes);
+        let maximum = self.sealer.stored_limit(id, plaintext_maximum)?;
         let remaining = work.remaining()?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.native_work().is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        let maximum = maximum
-            .min(self.maximum_object_bytes)
-            .min(remaining.object_bytes_read);
+        let maximum = maximum.min(remaining.object_bytes_read);
         let maximum = if native {
             maximum
         } else {
@@ -106,8 +127,8 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             work.release_owned(&mut body_custody, maximum - observed)?;
         }
         completed?;
-        hash(id, value.body(), observed, work)?;
-        let body = value.into_body();
+        let body =
+            self.read_representation::<STORED>(id, value.into_body(), plaintext_maximum, work)?;
         Ok((
             ObjectRead {
                 retention: retained(&body, work),
@@ -116,7 +137,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             body_custody,
         ))
     }
-    pub(super) async fn fetch_batch(
+    pub(super) async fn fetch_batch<const STORED: bool>(
         &self,
         requests: &[ObjectReadRequest],
         work: &mut KernelAccounting<'_>,
@@ -131,7 +152,10 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             incoming.push((
                 blob(request.object_id),
                 ByteRange::FULL,
-                request.maximum_bytes.min(self.maximum_object_bytes),
+                self.sealer.stored_limit(
+                    request.object_id,
+                    request.maximum_bytes.min(self.maximum_object_bytes),
+                )?,
             ));
         }
         let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
@@ -153,7 +177,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             for request in requests {
                 let read = {
                     let (read, _allocation) = self
-                        .fetch(request.object_id, request.maximum_bytes, work)
+                        .fetch::<STORED>(request.object_id, request.maximum_bytes, work)
                         .await?;
                     read
                 };
@@ -187,7 +211,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                     ..WorkCounters::UNCHARGED
                 })?;
                 let results = future.await.map_err(native_error)?;
-                values = self.finish_reads(
+                values = self.finish_reads::<STORED>(
                     results.map(|value| value.map_err(native_error)),
                     requests,
                     quota,
@@ -206,7 +230,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                 release(work, custody, request_bytes)?;
                 let records = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(records)?;
-                let result = self.finish_reads(
+                let result = self.finish_reads::<STORED>(
                     results
                         .into_iter()
                         .map(|value| value.map_err(service_error)),
@@ -223,7 +247,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
         }
         Ok((values, output))
     }
-    fn finish_reads(
+    fn finish_reads<const STORED: bool>(
         &self,
         results: impl ExactSizeIterator<Item = Result<Object, ObjectStoreError>>,
         requests: &[ObjectReadRequest],
@@ -237,12 +261,16 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
         let mut observed = 0u64;
         let mut failure = None;
         for (index, result) in results.enumerate() {
-            let maximum = requests.get(index).map_or(0, |request| {
-                request
-                    .maximum_bytes
-                    .min(self.maximum_object_bytes)
-                    .min(left)
-            });
+            let maximum = match requests.get(index) {
+                Some(request) => self
+                    .sealer
+                    .stored_limit(
+                        request.object_id,
+                        request.maximum_bytes.min(self.maximum_object_bytes),
+                    )?
+                    .min(left),
+                None => 0,
+            };
             left -= maximum;
             match result {
                 Ok(value) => {
@@ -289,13 +317,15 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                 quota.checked_sub(observed).ok_or(WorkError::Overflow)?,
             )?;
         }
-        for (value, request) in values.iter().zip(requests) {
-            hash(
+        for (value, request) in values.iter_mut().zip(requests) {
+            let bytes = self.read_representation::<STORED>(
                 request.object_id,
-                &value.bytes,
-                value.bytes.len() as u64,
+                value.bytes.clone(),
+                request.maximum_bytes.min(self.maximum_object_bytes),
                 work,
             )?;
+            value.retention = retained(&bytes, work);
+            value.bytes = bytes;
         }
         Ok(values)
     }

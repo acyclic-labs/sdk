@@ -130,10 +130,7 @@ impl NativeSpeculation {
     ) -> Result<NativeResidencyAdmission> {
         let operation_id = OperationId::from_bytes(fixed_16(&observation.operation_id)?);
         let volume_id = VolumeId::from_bytes(fixed_16(&observation.volume_id)?);
-        let generation_id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &observation.generation_id,
-            "generation identity",
-        )?));
+        let generation_id = decode_generation_id(&observation.generation_id)?;
         let hint = ResidencyHint {
             request: ObjectReadRequest {
                 object_id: decode_object_id(&observation.object_id)?,
@@ -261,10 +258,7 @@ impl NativeSpeculation {
         &self,
         generation_id: Buffer,
     ) -> Result<NativeSpeculationPreemption> {
-        let generation_id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &generation_id,
-            "generation identity",
-        )?));
+        let generation_id = decode_generation_id(&generation_id)?;
         let preemption = self
             .controller
             .lock()

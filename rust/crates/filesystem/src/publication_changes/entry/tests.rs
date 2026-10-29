@@ -9,6 +9,7 @@ fn record(number: u8) -> FileRecord {
         kind: FileKind::Regular,
         link_count: 1,
         metadata: crate::ObjectId {
+            storage: None,
             kind: crate::ObjectKind::Metadata,
             digest: crate::Digest::from_bytes([number; 32]),
         },

@@ -102,10 +102,7 @@ async fn check(
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let (mut increments, mut has_published) = (0, false);
     for (index, generation) in generations.iter().copied().enumerate() {
-        let root = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
+        let root = generation.object_id();
         let cancellation = CancellationToken::new();
         let meter = ProofMeter::standalone(WorkBudget::UNBOUNDED, &cancellation)?;
         let (proof, guard, pending) = ProofContext::new(store, limits, meter)
@@ -113,6 +110,7 @@ async fn check(
                 root,
                 Some(&cache),
                 reuse_baseline.then(|| ObjectId {
+                    storage: None,
                     kind: ObjectKind::GenerationRoot,
                     digest: settled.id().digest(),
                 }),
@@ -158,6 +156,7 @@ async fn check(
             pending.publish(&committed(index as u64 + 1));
             if index != 0 && published.get(index - 1).copied().unwrap_or(true) {
                 let older = ObjectId {
+                    storage: None,
                     kind: ObjectKind::GenerationRoot,
                     digest: generations[index - 1].digest(),
                 };
@@ -257,6 +256,7 @@ fn next_proof(
             unbounded!(transaction, write(path, bytes::Bytes::from(body)))?;
             match commit(&mut transaction).await? {
                 TransactionCommit::Committed(generation) => Ok::<_, Box<dyn Error>>(ObjectId {
+                    storage: None,
                     kind: ObjectKind::GenerationRoot,
                     digest: generation.id().digest(),
                 }),

@@ -84,12 +84,12 @@ impl BrowserChangeSet {
 impl BrowserJoinPlan {
     #[wasm_bindgen(getter, js_name = targetHead)]
     pub fn target_head(&self) -> Vec<u8> {
-        self.engine.target_head().digest().into_bytes().to_vec()
+        self.engine.target_head().to_bytes().to_vec()
     }
 
     #[wasm_bindgen(getter, js_name = commonAncestor)]
     pub fn common_ancestor(&self) -> Vec<u8> {
-        self.engine.common_ancestor().digest().into_bytes().to_vec()
+        self.engine.common_ancestor().to_bytes().to_vec()
     }
 
     #[wasm_bindgen]
@@ -98,10 +98,7 @@ impl BrowserJoinPlan {
         if_target: Vec<u8>,
         idempotency_key: Option<Vec<u8>>,
     ) -> Result<Ts<BrowserJoinResult>, JsValue> {
-        let if_target = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &if_target,
-            "target generation identity",
-        )?));
+        let if_target = decode_generation_id(&if_target)?;
         let idempotency_key = idempotency_key.map_or_else(
             || Ok(IdempotencyKey::new()),
             |value| fixed_16(&value).map(IdempotencyKey::from_bytes),
@@ -128,7 +125,7 @@ impl BrowserJoinPlan {
 impl BrowserGeneration {
     #[wasm_bindgen(getter)]
     pub fn id(&self) -> Vec<u8> {
-        self.engine.id().digest().into_bytes().to_vec()
+        self.engine.id().to_bytes().to_vec()
     }
 
     #[wasm_bindgen(getter, js_name = workspaceId)]
@@ -223,13 +220,12 @@ pub(in crate::bindings) async fn browser_join_generation<
 >(
     workspace: &Workspace<A, O>,
     id: Option<&[u8]>,
-    label: &str,
 ) -> Result<Generation<A, O>, JsValue> {
     match id {
         Some(id) => {
             workspace
                 .generation(
-                    acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(id, label)?)),
+                    decode_generation_id(id)?,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
@@ -284,7 +280,7 @@ pub(in crate::bindings) fn browser_join_result<A, O>(
     };
     BrowserJoinResult {
         status,
-        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        generation_id: generation.map(|value| value.id().to_bytes().to_vec().into()),
         conflicts: Vec::new(),
         truncated: false,
     }

@@ -5,6 +5,7 @@ fn id(value: u8) -> ObjectId {
     let mut bytes = [0; 32];
     bytes[0] = value;
     ObjectId {
+        storage: None,
         kind: crate::ObjectKind::Blob,
         digest: crate::Digest::from_bytes(bytes),
     }

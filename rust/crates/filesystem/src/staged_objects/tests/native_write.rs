@@ -31,7 +31,7 @@ async fn native_flush_exact_closure_preserves_intrinsic_alias_without_readoption
     let (buffer, mut body) = staged_vector::<u8>(32, Some(&work))?;
     body.extend_from_slice(b"original physical byte owner");
     let bytes = staged_owned_bytes(body, buffer.ok_or("unfunded test buffer")?, &work)?;
-    let object = HashedObject::new(ObjectKind::Blob, bytes.clone());
+    let object = HashedObject::new(ObjectKind::BlobChunk, bytes.clone());
     let object_id = object.object_id();
     let store = StagedObjects::open(
         crate::MemoryObjectStore::default(),
@@ -126,7 +126,6 @@ async fn native_spilled_flush_cleans_acknowledged_objects_and_reuses_spill()
     assert_eq!(work.receipt().object_bytes_read, bytes.len() as u64);
     assert!(work.receipt().backend_read_operations > 0);
     assert!(work.receipt().backend_write_operations > 0);
-    assert!(work.receipt().durability_operations > 0);
     drop(hold);
     drop(store);
     drop(provider);

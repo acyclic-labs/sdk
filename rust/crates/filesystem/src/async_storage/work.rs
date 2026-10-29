@@ -328,7 +328,8 @@ impl<'a> AuthorityWork<'a> {
             .map_err(authority_error)
     }
 
-    pub(crate) fn accounting(&mut self) -> crate::kernel::allocation::KernelAccounting<'_> {
+    /// Borrows the caller's original allocation ledger and work allowance.
+    pub fn accounting(&mut self) -> crate::kernel::allocation::KernelAccounting<'_> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             return crate::kernel::allocation::KernelAccounting::native(

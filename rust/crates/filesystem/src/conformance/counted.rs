@@ -13,8 +13,51 @@ use acyclic_stream::{
 use std::{future::Future, sync::Arc};
 
 impl<P: AsyncObjectStore> AsyncObjectStore for Counted<P> {
+    fn requires_child_first_publication(&self) -> bool {
+        self.inner().requires_child_first_publication()
+    }
+
+    fn maximum_reference_bytes(&self) -> usize {
+        self.inner().maximum_reference_bytes()
+    }
+
+    fn prepare_hashed(
+        &self,
+        object: HashedObject,
+        work: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<HashedObject, ObjectStoreError>> + ProviderTask {
+        self.inner().prepare_hashed(object, work)
+    }
+
     fn supports_decoded_cache(&self) -> bool {
         self.inner().supports_decoded_cache()
+    }
+
+    async fn put_stored(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.record(RequestClass::Data);
+        self.inner().put_stored(id, bytes, context).await
+    }
+    async fn read_many_stored(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        self.record(RequestClass::Data);
+        self.inner().read_many_stored(requests, context).await
+    }
+    async fn read_stored(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, ObjectStoreError> {
+        self.record(RequestClass::Data);
+        self.inner().read_stored(id, maximum, context).await
     }
 
     fn decoded_cache_get(

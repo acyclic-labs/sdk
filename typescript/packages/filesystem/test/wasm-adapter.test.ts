@@ -102,7 +102,7 @@ describe("WASM adapter canonical boundaries", () => {
   });
 
   test("copies native Buffer generation identities at shared result boundaries", () => {
-    const generationId = Buffer.alloc(32, 6);
+    const generationId = Buffer.from([6, ...Buffer.alloc(32, 6)]);
     const join = parseJoinResult({ status: "applied", generationId, conflicts: [], truncated: false });
     const rebase = parseWorkspaceRebaseResult({ status: "rebased", generationId, conflicts: [], truncated: false });
     const commit = parseWorkspaceCommit({ status: "committed", generationId });
@@ -138,13 +138,13 @@ describe("WASM adapter canonical boundaries", () => {
 
   test("uses one merge-preparation status and byte ownership boundary", () => {
     const work = {} as WorkCounters;
-    const generationId = Buffer.alloc(32, 7);
+    const generationId = Buffer.from([0x86, ...Buffer.alloc(112, 7)]);
     const prepared = parseMergePreparation(
       { status: "prepared", generationId, conflicts: [], truncated: false, work },
     );
     expect(prepared.status).toBe("prepared");
     prepared.generationId?.fill(9);
-    expect(generationId[0]).toBe(7);
+    expect(generationId[0]).toBe(0x86);
 
     const directoryId = Buffer.from(identity(8));
     const name = Buffer.from([97]);

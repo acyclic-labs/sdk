@@ -26,7 +26,6 @@ use thiserror::Error;
 const DOMAIN: &[u8; 8] = b"ACYFSBLB";
 const VERSION: u16 = 1;
 const BLOB_PAGE_HEADER_BYTES: usize = 8 + 2 + 8 + 8 + 1 + 4;
-const BLOB_PAGE_ITEM_BYTES: usize = 8 + 8 + 32;
 
 /// One authenticated fixed-size content chunk reference.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

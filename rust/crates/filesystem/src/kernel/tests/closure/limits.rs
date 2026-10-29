@@ -83,6 +83,7 @@ async fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let missing_store = MemoryObjectStore::default();
     let missing_blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([9; 32]),
     };
@@ -210,6 +211,7 @@ async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn
 {
     let store = MemoryObjectStore::default();
     let missing = ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: Digest::from_bytes([7; 32]),
     };

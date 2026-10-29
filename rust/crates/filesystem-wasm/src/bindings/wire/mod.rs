@@ -247,12 +247,6 @@ pub(in crate::bindings) fn wasm_u32(value: &JsValue) -> Result<u32, JsValue> {
     acyclic_fs::exact_u32_from_f64(number).map_err(js_error)
 }
 
-pub(in crate::bindings) fn fixed_32(bytes: &[u8], label: &str) -> Result<[u8; 32], JsValue> {
-    bytes
-        .try_into()
-        .map_err(|_| js_error(format_args!("{label} must be exactly 32 bytes")))
-}
-
 pub(in crate::bindings) fn closed_error() -> JsValue {
     js_error("browser filesystem is closed")
 }
@@ -273,7 +267,7 @@ pub(in crate::bindings) fn encode_checkpoint_result(
     receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<Ts<BrowserCheckpointResult>, JsValue> {
     ts(BrowserCheckpointResult {
-        generation_id: receipt.value.digest().into_bytes().to_vec(),
+        generation_id: receipt.value.to_bytes().to_vec(),
         work: browser_work(receipt.work),
     })
 }
@@ -299,4 +293,11 @@ pub(in crate::bindings) fn empty_special_kind(kind: &str) -> Result<FileKind, Js
 
 pub(in crate::bindings) fn device_kind(kind: &str) -> Result<FileKind, JsValue> {
     acyclic_fs::binding_contract::device_kind(kind).map_err(js_error)
+}
+
+pub(in crate::bindings) fn decode_generation_id(
+    bytes: &[u8],
+) -> Result<acyclic_fs::GenerationId, JsValue> {
+    acyclic_fs::GenerationId::from_bytes(bytes)
+        .ok_or_else(|| js_error("invalid generation reference"))
 }

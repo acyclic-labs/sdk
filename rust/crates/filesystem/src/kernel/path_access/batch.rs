@@ -10,7 +10,8 @@ pub(super) fn active_order(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Ordering, crate::FsError> {
     examine_item(accounting, None, || {
-        compare_object_id(&left.directory, &right.directory)
+        left.directory
+            .cmp(&right.directory)
             .then_with(|| left.path_index.cmp(&right.path_index))
     })
 }

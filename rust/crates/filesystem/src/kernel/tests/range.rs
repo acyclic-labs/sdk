@@ -264,6 +264,7 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
     )
     .await?;
     let content = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: crate::foundation::Digest::from_bytes([9; 32]),
     };
@@ -356,6 +357,7 @@ async fn sparse_seek_distinguishes_holes_allocated_data_content_and_eof()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let content = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: crate::foundation::Digest::from_bytes([19; 32]),
     };
@@ -547,6 +549,7 @@ fn range_terminal_and_lower_layer_error_translation_is_total()
     }
 
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::ExtentPage,
         digest: crate::foundation::Digest::from_bytes([91; 32]),
     };
@@ -703,6 +706,7 @@ async fn range_and_seek_admission_reject_every_invalid_request_before_storage()
     let invalid = [
         ExtentRangeRequest {
             root: ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: root.digest,
             },

@@ -25,6 +25,7 @@ fn child(byte: u8) -> Result<Child<LogicalName>, crate::kernel::TreePageError> {
 
 fn root(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([byte; 32]),
     }

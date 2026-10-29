@@ -29,14 +29,8 @@ impl BrowserVolume {
     ) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
 
-        let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &before,
-            "before generation identity",
-        )?));
-        let after = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &after,
-            "after generation identity",
-        )?));
+        let before = decode_generation_id(&before)?;
+        let after = decode_generation_id(&after)?;
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine

@@ -88,7 +88,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker
-                            .generation(GenerationId::new(base.digest))
+                            .generation(GenerationId::from_root(base))
                             .await
                             .map_err(mark_error)?;
                         marker.working(&working).await.map_err(mark_error)?;
@@ -100,7 +100,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     crate::collection::Held::Generation { root, config } => {
                         marker.set_limits(DecodeLimits::for_volume(config));
                         marker
-                            .generation(GenerationId::new(root.digest))
+                            .generation(GenerationId::from_root(root))
                             .await
                             .map_err(mark_error)?;
                     }
@@ -282,7 +282,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         *widest = widest_limits(*widest, limits);
         marker.set_limits(limits);
         marker
-            .generation(GenerationId::new(retained.generation_root.digest))
+            .generation(GenerationId::from_root(retained.generation_root))
             .await
             .map_err(mark_error)?;
         Ok(())
@@ -335,7 +335,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 );
                 let generation = generation_from_record(record, volume_id, &mut accounting)?;
                 marker
-                    .generation(GenerationId::new(generation.digest))
+                    .generation(GenerationId::from_root(generation))
                     .await
                     .map_err(mark_error)?;
             }

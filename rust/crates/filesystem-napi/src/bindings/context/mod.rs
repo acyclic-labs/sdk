@@ -107,7 +107,7 @@ pub(in crate::bindings) fn native_workspace_lineage_record(
             .parent_workspace_id
             .map(|id| Buffer::from(id.into_bytes().to_vec())),
         parent_workspace_name: record.parent_workspace_name,
-        fork_generation: Buffer::from(record.fork_generation.digest().into_bytes().to_vec()),
-        initial_generation: Buffer::from(record.initial_generation.digest().into_bytes().to_vec()),
+        fork_generation: Buffer::from(record.fork_generation.to_bytes().to_vec()),
+        initial_generation: Buffer::from(record.initial_generation.to_bytes().to_vec()),
     }
 }

@@ -13,6 +13,7 @@ pub(super) fn quote(
         .as_ref()
         .map(|data| data.as_slice());
     let composed_length = publication_payload_length_with_evidence(
+        request.generation_root,
         evidence,
         Some(PublicationOrigin {
             expected: request.expected,

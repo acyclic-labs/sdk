@@ -376,7 +376,7 @@ async fn creation_rejects_missing_and_foreign_namespace_seals_without_side_effec
         fingerprint: Digest::ZERO,
         payload: Bytes::new(),
     };
-    let generation = GenerationId::new(creation.initial_generation_root.digest);
+    let generation = GenerationId::from_root(creation.initial_generation_root);
     assert!(
         store
             .publication_changes(

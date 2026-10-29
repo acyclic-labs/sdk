@@ -231,7 +231,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     let state = probe
                         .0
                         .probe_async_with_accounting(
-                            GenerationId::new(this.root.base.digest),
+                            GenerationId::from_root(this.root.base),
                             &region.0,
                             accounting,
                             cancellation,

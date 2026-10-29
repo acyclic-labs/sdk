@@ -239,6 +239,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
                 .map_err(std::io::Error::other)?,
             FileMetadata {
                 named_attributes: MetadataField::Value(crate::ObjectId {
+                    storage: None,
                     kind: crate::ObjectKind::AttributePage,
                     digest: crate::Digest::from_bytes([7; 32]),
                 }),

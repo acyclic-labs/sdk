@@ -70,8 +70,7 @@ fn raw_operation_bytes(value: &[u8]) -> Result<[u8; 16], Status> {
 }
 
 fn generation_id(value: &[u8]) -> Result<GenerationId, Status> {
-    let bytes: [u8; 32] = value
-        .try_into()
-        .map_err(|_| Status::invalid_argument("generation_id must contain 32 bytes"))?;
-    Ok(GenerationId::new(Digest::from_bytes(bytes)))
+    GenerationId::from_bytes(value).ok_or_else(|| {
+        Status::invalid_argument("generation_id must be a canonical generation-root reference")
+    })
 }

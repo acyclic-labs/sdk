@@ -198,7 +198,7 @@ project!(GenerationTransferError, {
 project!(GenerationExportManifestError, {
     E::Config(_) => Code::InvalidArgument,
     E::Decode(error) => kernel_code(error),
-    E::WrongRootKind | E::GenerationMismatch | E::MissingRoot | E::NonCanonicalObjectOrder => Code::DataLoss,
+    E::WrongRootKind | E::GenerationMismatch | E::MissingRoot => Code::DataLoss,
     E::TooManyObjects | E::TooManyFiles => Code::ResourceExhausted,
 });
 project!(CanonicalDecodeError, {

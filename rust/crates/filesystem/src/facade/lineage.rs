@@ -70,14 +70,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         result
     }
 
-    /// Computes the immutable source-parent identity used by a true merge
+    /// Computes the plaintext source-parent digest used by a true merge.
     pub(crate) async fn workspace_normalized_join_parent(
         &self,
         source: &crate::Generation<A, O>,
         target: &crate::Generation<A, O>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<GenerationId, WorkspaceError> {
+    ) -> Result<Digest, WorkspaceError> {
         accounting.check()?;
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
@@ -87,10 +87,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let source_root = read_generation_root_with_accounting(
             &self.inner.objects,
-            ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: source.id.digest(),
-            },
+            source.id.object_id(),
             source.workspace.volume.config,
             accounting,
             cancellation,
@@ -98,10 +95,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         .await?;
         let target_root = read_generation_root_with_accounting(
             &self.inner.objects,
-            ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: target.id.digest(),
-            },
+            target.id.object_id(),
             target.workspace.volume.config,
             accounting,
             cancellation,
@@ -134,7 +128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting.admit(hashing)?;
         let digest = object_digest(&encoded.0);
         accounting.record_completed(hashing)?;
-        Ok(GenerationId::new(digest))
+        Ok(digest)
     }
 
     /// Resolves where a fork stands against the parent it was forked from:
@@ -186,10 +180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let Some(parent) = root.parents.first() else {
                 return Err(WorkspaceError::NotFork);
             };
-            cursor = ObjectId {
-                kind: ObjectKind::GenerationRoot,
-                digest: parent.digest(),
-            };
+            cursor = parent.object_id();
         }
         let Some((base_object, base_root)) = adopted else {
             return Err(WorkspaceError::LineageLimit);
@@ -230,7 +221,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .rebase_lineage(target, maximum_generations, &CancellationToken::new())
             .await?;
         Ok((lineage.source_object != lineage.base_object)
-            .then(|| GenerationId::new(lineage.source_object.digest)))
+            .then(|| GenerationId::from_root(lineage.source_object)))
     }
 }
 
@@ -328,10 +319,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
             }
             let decoded = crate::kernel::read_generation_root_with_accounting(
                 objects,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 config,
                 accounting,
                 cancellation,
@@ -418,10 +406,7 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
             }
             let decoded = crate::kernel::read_generation_root_with_accounting(
                 objects,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 config,
                 accounting,
                 cancellation,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ObjectKind;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::VolumeId;
 use crate::kernel::{
@@ -64,7 +65,7 @@ async fn fixture(
         },
     )
     .await?;
-    Ok((GenerationId::new(root.digest), file_id, metadata))
+    Ok((GenerationId::from_root(root), file_id, metadata))
 }
 
 async fn non_regular_fixture(
@@ -78,6 +79,7 @@ async fn non_regular_fixture(
     let reparse_id = FileId::from_bytes([15; 16]);
     let empty_tree = put_tree_page(store, &TreePage::Leaf(Vec::new()), 8).await?;
     let absent_blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([16; 32]),
     };
@@ -139,7 +141,7 @@ async fn non_regular_fixture(
     )
     .await?;
     Ok((
-        GenerationId::new(root.digest),
+        GenerationId::from_root(root),
         vec![symbolic_link_id, empty_id, device_id, reparse_id],
     ))
 }
@@ -266,7 +268,7 @@ async fn sparse_probe_fixture(
     )
     .await?;
     Ok(SparseProbeFixture {
-        generation: GenerationId::new(root.digest),
+        generation: GenerationId::from_root(root),
         root_id,
         inline_id,
         regular_id,

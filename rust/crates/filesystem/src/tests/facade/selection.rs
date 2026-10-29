@@ -265,6 +265,7 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
     })
     .await?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: source.id().digest(),
     });

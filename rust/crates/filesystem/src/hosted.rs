@@ -6,7 +6,7 @@
 
 use crate::model::FilesystemProfile as EmbeddedProfile;
 use crate::{
-    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, Digest, FILESYSTEM_PROTOCOL_VERSION, GenerationId,
+    DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES, FILESYSTEM_PROTOCOL_VERSION, GenerationId,
     HostedSourceInvalidation, HostedSourceResult, HostedSourceState, IdempotencyKey,
 };
 pub use acyclic_auth::credential::CredentialProvider;

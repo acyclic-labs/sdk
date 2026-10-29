@@ -1,4 +1,4 @@
-import { copyOptionalBytes, ownBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
+import { requireObjectReference, copyOptionalBytes, ownBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import type { FsChangeSet, FsVolumeEngine, FsVolume, FsCheckout, FsGeneration, FsJoinPlan, FsTransaction, FsWorkspace, NativeFsWorkspace, GenerationExportManifest, GenerationTransferBatch, GenerationTransferCursor, ObjectCacheStats, Speculation, SpeculationMetrics, ResolvedFile } from "./contracts.js";
 import type { WasmRawGeneration, WasmRawChangeSet, WasmRawFs, WasmRawVolume, WasmRawCheckout, WasmRawSpeculation, WasmRawWorkspace } from "./binding-types.js";
 import type { BrowserGenerationDiffResult, BrowserResolvedFile, BrowserTransaction } from "../generated/wasm/acyclic_fs_wasm.js";
@@ -258,7 +258,7 @@ export function createFilesystemAdapter(extensions: {
       get id() { return new Uint8Array(raw.id); },
       async head() { return Uint8Array.from(await raw.head()); },
       async generation(id) {
-        requireIdentity(id, 32, "generation identity");
+        requireObjectReference(id, "generation identity", 6);
         return adaptGeneration(await raw.generation(Uint8Array.from(id)));
       },
       async sync() { return adaptGeneration(await raw.sync()); },

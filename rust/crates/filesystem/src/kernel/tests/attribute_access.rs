@@ -21,6 +21,7 @@ fn entry(byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
         name: name(byte)?,
         value_bytes: u64::from(byte),
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -166,6 +167,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([88; 32]),
     };
@@ -188,6 +190,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
 
     let malformed = OwnedBytes::from_static(b"not a canonical attribute page");
     let malformed_id = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: object_digest(&malformed),
     };
@@ -335,6 +338,7 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     let store = MemoryObjectStore::default();
     let root = two_level_tree(&store).await?;
     let wrong_root = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([77; 32]),
     };

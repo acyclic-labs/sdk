@@ -72,6 +72,10 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
         .pop()
         .ok_or("manifest closure is empty")?;
     let mut wrong_file_count = manifest.clone();
+    let mut duplicate = manifest.clone();
+    duplicate.objects.insert(0, duplicate.objects[0]);
+    let mut reordered = manifest.clone();
+    reordered.objects.swap(0, 1);
     wrong_file_count.file_count = wrong_file_count
         .file_count
         .checked_add(1)
@@ -79,7 +83,9 @@ async fn manifest_transfer_restores_only_after_the_complete_closure_authenticate
     for (label, invalid, expected_backend_reads) in [
         ("volume", wrong_volume, true),
         ("generation", wrong_generation, false),
-        ("objects", wrong_objects, true),
+        ("objects", wrong_objects, false),
+        ("duplicate", duplicate, true),
+        ("dependency-order", reordered, true),
         ("file-count", wrong_file_count, true),
     ] {
         let failure = (destination.restore_volume(

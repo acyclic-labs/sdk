@@ -1,26 +1,37 @@
 use super::*;
 use acyclic_stream::SealedBytes;
-impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
-    /// Hashes caller bytes once; the seal carries that digest to the store.
-    pub(super) fn validate_write(
+impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
+    /// One admission boundary for raw, authenticated and transferred writes.
+    fn admit_write(
         &self,
         id: ObjectId,
-        bytes: OwnedBytes,
+        stored: &OwnedBytes,
+        plaintext: &OwnedBytes,
+        authenticated: Option<&SealedBytes>,
         work: &mut KernelAccounting<'_>,
     ) -> Result<SealedBytes, crate::FsError> {
         work.check()?;
-        self.limit(bytes.len() as u64)?;
-        let delta = WorkCounters {
-            bytes_hashed: bytes.len() as u64,
-            ..WorkCounters::UNCHARGED
-        };
-        work.admit(delta)?;
-        let body = SealedBytes::new(bytes);
-        let completed = work.record_completed(delta);
+        if authenticated.is_none() && id.storage.is_some() {
+            // Raw writes carry plaintext; sealed writes need prepared CAS bytes.
+            return Err(ObjectStoreError::DigestMismatch.into());
+        }
+        self.limit(plaintext.len() as u64)?;
+        let maximum = self.sealer.stored_limit(id, plaintext.len() as u64)?;
+        if stored.len() as u64 > maximum {
+            return Err(ObjectStoreError::TooLarge {
+                observed: stored.len() as u64,
+                maximum,
+            }
+            .into());
+        }
+        if let Some(body) = authenticated {
+            return Ok(body.clone());
+        }
+        let body = seal(stored.clone(), work)?;
         if crate::Digest::from_bytes(*body.digest()) != id.digest {
             return Err(ObjectStoreError::DigestMismatch.into());
         }
-        completed.map(|()| body)
+        Ok(body)
     }
     fn limit(&self, length: u64) -> Result<(), crate::FsError> {
         if length > self.maximum_object_bytes {
@@ -35,13 +46,15 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     pub(super) async fn publish(
         &self,
         id: ObjectId,
-        body: SealedBytes,
+        bytes: OwnedBytes,
+        plaintext: &OwnedBytes,
+        authenticated: Option<&SealedBytes>,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
-        work.check()?;
-        let length = body.bytes().len() as u64;
-        self.limit(length)?;
-        let custody = guard(work)?;
+        let body = self.admit_write(id, &bytes, plaintext, authenticated, work)?;
+        let length = bytes.len() as u64;
+        let (references, custody) = children(id, plaintext, work)?;
+        let reference_bytes = (references.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
         work.admit(WorkCounters {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
@@ -53,7 +66,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                 let receipt = self
                     .provider
                     .put_native(
-                        packet((body, Vec::new()), custody, original)?,
+                        packet((body, references), custody, original)?,
                         original.runtime_meter(),
                     )
                     .map_err(native_error)?
@@ -66,14 +79,14 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let put = self.provider.put_sealed(body, Vec::new()).await;
-                release(work, custody, 0)?;
+                let put = self.provider.put_sealed(body, references).await;
+                release(work, custody, reference_bytes)?;
                 put.map_err(ObjectStoreError::LogicalObjects)?
             }
         };
-        settle(id, length, put)?;
+        let written = settle(id, length, put)?;
         self.published([id]);
-        record_write(work, length)?;
+        record_write(work, written)?;
         work.check()
     }
     pub(super) async fn publish_batch<T: Write>(
@@ -85,21 +98,19 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
         if writes.is_empty() {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
-        let (mut requests, custody) = vector::<PutRequest>(writes.len(), work)?;
-        let request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
+        let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
+        let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
-            let (id, bytes) = write.parts();
-            let body = if let Some(body) = write.sealed() {
-                // HashedObject already authenticated these immutable bytes.
-                work.check()?;
-                self.limit(bytes.len() as u64)?;
-                body.clone()
-            } else {
-                self.validate_write(id, bytes.clone(), work)?
-            };
+            let (id, bytes, plaintext) = write.parts();
+            let body = self.admit_write(id, bytes, plaintext, write.sealed(), work)?;
             // Equal identities carry equal bytes; the store dedupes them.
-            requests.push((body, Vec::new()));
+            let (references, mut reference_custody) = children(id, plaintext, work)?;
+            request_bytes = request_bytes
+                .checked_add((references.capacity() * size_of::<acyclic_objects::Digest>()) as u64)
+                .ok_or(WorkError::Overflow)?;
+            custody.absorb(&mut reference_custody)?;
+            requests.push((body, references));
             total = total
                 .checked_add(bytes.len() as u64)
                 .ok_or(WorkError::Overflow)?;
@@ -157,7 +168,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     }
 }
 
-impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
+impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
     /// Retains `scope` under `root` within the caller's work, before the
     /// publication's record is written.
     ///
@@ -243,9 +254,15 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
 }
 
 /// Accepts only a verified outcome for exactly these bytes.
-fn settle(id: ObjectId, length: u64, put: Put) -> Result<(), ObjectStoreError> {
+fn settle(id: ObjectId, length: u64, put: Put) -> Result<u64, ObjectStoreError> {
     match put.verified() {
-        Some(verified) if verified.digest == blob(id) && verified.length == length => Ok(()),
+        Some(verified) if verified.digest == blob(id) && verified.length == length => {
+            Ok(if matches!(put, Put::Created { .. }) {
+                length
+            } else {
+                0
+            })
+        }
         Some(_) => Err(ObjectStoreError::Corrupt),
         None => Err(ObjectStoreError::LogicalObjects(
             wire::ErrorCode::OutcomeUnknown.into(),
@@ -263,16 +280,10 @@ fn finish_writes<T: Write>(
     }
     let mut failure = None;
     for (write, result) in writes.iter().zip(results) {
-        let (id, body) = write.parts();
+        let (id, body, _) = write.parts();
         let length = body.len() as u64;
-        // Only the put that created the blob wrote its bytes.
-        let created = result.and_then(|put| {
-            let created = matches!(put, Put::Created { .. });
-            settle(id, length, put).map(|()| created)
-        });
-        match created {
-            Ok(true) => record_write(work, length)?,
-            Ok(false) => {}
+        match result.and_then(|put| settle(id, length, put)) {
+            Ok(written) => record_write(work, written)?,
             Err(error) => {
                 failure.get_or_insert(error);
             }
@@ -284,27 +295,38 @@ fn finish_writes<T: Write>(
     }
 }
 
-/// One object a batch publishes.
+/// A single canonical reference with its authenticated immutable bytes.
 pub(super) trait Write {
-    fn parts(&self) -> (ObjectId, &OwnedBytes);
-    /// The seal a caller already proved, so the batch hashes nothing again.
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes);
     fn sealed(&self) -> Option<&SealedBytes>;
 }
-
 impl Write for ObjectWrite {
-    fn parts(&self) -> (ObjectId, &OwnedBytes) {
-        (self.object_id, &self.bytes)
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
+        (self.object_id, &self.bytes, &self.bytes)
     }
     fn sealed(&self) -> Option<&SealedBytes> {
         None
     }
 }
-
-impl Write for crate::storage::HashedObject {
-    fn parts(&self) -> (ObjectId, &OwnedBytes) {
-        (self.object_id(), self.bytes())
+impl Write for crate::HashedObject {
+    fn parts(&self) -> (ObjectId, &OwnedBytes, &OwnedBytes) {
+        (self.object_id(), self.stored_bytes(), self.bytes())
     }
     fn sealed(&self) -> Option<&SealedBytes> {
-        Some(crate::storage::HashedObject::sealed(self))
+        Some(self.sealed())
     }
+}
+
+pub(super) fn seal(
+    bytes: OwnedBytes,
+    work: &mut KernelAccounting<'_>,
+) -> Result<SealedBytes, crate::FsError> {
+    let delta = WorkCounters {
+        bytes_hashed: bytes.len() as u64,
+        ..WorkCounters::UNCHARGED
+    };
+    work.admit(delta)?;
+    let sealed = SealedBytes::new(bytes);
+    work.record_completed(delta)?;
+    Ok(sealed)
 }

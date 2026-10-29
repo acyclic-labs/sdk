@@ -13,6 +13,7 @@ fn publication_payload_keeps_original_credit_until_the_last_retained_bytes_drop(
         expected: Head::genesis(Epoch::GENESIS),
         operation_id: OperationId::from_bytes([128; 16]),
         generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::ZERO,
         },
@@ -182,6 +183,45 @@ async fn publication_evidence_preserves_original_complete_closure_and_every_perm
             encoded
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn publication_evidence_codec_preserves_the_complete_sealed_root_reference() -> TestResult {
+    let (mut request, mut proof, mut append, config) = evidence_fixture().await?;
+    let plaintext_root = request.generation_root;
+    request.generation_root.storage = Some(crate::ObjectStorage {
+        locator: Digest::from_bytes([81; 32]),
+        root_file_id: proof.root.root_file_id,
+        origin_generation: plaintext_root.digest,
+    });
+    proof.generation_id = crate::GenerationId::from_root(request.generation_root);
+    *proof
+        .objects
+        .iter_mut()
+        .find(|id| **id == plaintext_root)
+        .ok_or("missing root")? = request.generation_root;
+    let cancel = CancellationToken::new();
+    append.commit = prepare_publication_commit(
+        request,
+        None,
+        None,
+        None,
+        &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel),
+        &cancel,
+    )?;
+    let encoded =
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024)?;
+    let decoded =
+        decode_generation_publication_evidence(&encoded.bytes, &encoded.sha256, 64 * 1024, 64)?;
+    assert_eq!(decoded.request, request);
+    assert_eq!(decoded.manifest.generation_id, proof.generation_id);
+    assert_eq!(decoded.manifest.objects, proof.objects);
+    proof.generation_id = crate::GenerationId::from_root(plaintext_root);
+    assert!(matches!(
+        encode_generation_publication_evidence(&request, &proof, &append, config, 64 * 1024),
+        Err(PublicationEvidenceError::Mismatch)
+    ));
     Ok(())
 }
 

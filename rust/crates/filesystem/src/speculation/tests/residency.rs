@@ -17,6 +17,7 @@ async fn object(
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let bytes = OwnedBytes::from(vec![byte; 64]);
     let object_id = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: object_digest(&bytes),
     };

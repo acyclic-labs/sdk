@@ -96,10 +96,7 @@ impl BrowserCheckout {
         let maximum_changes = wasm_u32(&maximum_changes)?;
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 
-        let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &theirs,
-            "merge generation identity",
-        )?));
+        let theirs = decode_generation_id(&theirs)?;
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
@@ -160,7 +157,7 @@ pub(in crate::bindings) fn encode_merge_preparation(
     };
     ts(BrowserMergePreparationResult {
         status: status,
-        generation_id: generation.map(|value| value.digest().into_bytes().to_vec().into()),
+        generation_id: generation.map(|value| value.to_bytes().to_vec().into()),
         conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
         truncated,
         work: browser_work(work),

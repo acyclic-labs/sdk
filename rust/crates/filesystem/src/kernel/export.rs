@@ -2,10 +2,9 @@
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
-use crate::foundation::{Digest, GenerationId, VolumeId, usize_to_u64};
+use crate::foundation::{GenerationId, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
-use std::cmp::Ordering;
 use thiserror::Error;
 
 const DOMAIN: &[u8] = b"acyclic-fs-generation-export-v1\0";
@@ -22,7 +21,9 @@ pub struct GenerationExportManifest {
     pub generation_root: ObjectId,
     /// Content-addressed generation identity.
     pub generation_id: GenerationId,
-    /// Stable sorted complete closure, including `generation_root`.
+    /// Complete references in the original proof order. Transfer producers
+    /// order dependencies before parents and end at `generation_root`;
+    /// restoration authenticates exact order and membership before publication.
     pub objects: Vec<ObjectId>,
     /// Number of reachable path-independent file records.
     pub file_count: u64,
@@ -40,15 +41,12 @@ pub enum GenerationExportManifestError {
     /// The selected root is not a generation-root object.
     #[error("export manifest root is not a generation root")]
     WrongRootKind,
-    /// Generation identity must equal the generation-root digest.
+    /// Generation identity must equal the complete generation-root reference.
     #[error("export manifest generation identity does not match its root")]
     GenerationMismatch,
-    /// Closure must contain the selected generation root.
-    #[error("export manifest closure omits its generation root")]
+    /// Closure must include the selected generation root.
+    #[error("export manifest closure does not include its generation root")]
     MissingRoot,
-    /// Object identities must be in strict canonical order without duplicates.
-    #[error("export manifest objects are not strictly canonically ordered")]
-    NonCanonicalObjectOrder,
     /// Closure exceeds either the volume or caller item bound.
     #[error("export manifest object count exceeds its bound")]
     TooManyObjects,
@@ -71,7 +69,6 @@ pub fn encode_generation_export_manifest(
     encoder.fixed(&manifest.volume_id.into_bytes());
     encode_config(&mut encoder, manifest.config);
     encode_object_id(&mut encoder, manifest.generation_root);
-    encoder.fixed(manifest.generation_id.digest().as_bytes());
     encoder.u64(manifest.file_count);
     encoder.u32(count);
     for object in &manifest.objects {
@@ -97,9 +94,7 @@ pub fn decode_generation_export_manifest(
     })?
     .validate()?;
     let generation_root = decode_object_id(&mut decoder)?;
-    let generation_id = GenerationId::new(Digest::from_bytes(
-        decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    ));
+    let generation_id = GenerationId::from_root(generation_root);
     let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
@@ -128,8 +123,31 @@ pub fn decode_generation_export_manifest(
     Ok(manifest)
 }
 
-/// Validates one decoded or caller-constructed manifest without backend work.
+/// Validates bounded complete-manifest fields without backend work.
 pub fn validate_generation_export_manifest(
+    manifest: &GenerationExportManifest,
+    maximum_objects: u64,
+) -> Result<(), GenerationExportManifestError> {
+    validate_envelope(manifest, maximum_objects)?;
+    if !manifest.objects.contains(&manifest.generation_root) {
+        return Err(GenerationExportManifestError::MissingRoot);
+    }
+    Ok(())
+}
+
+// A page touches only its own slice. Full membership is authenticated once on restore.
+pub(super) fn validate_transfer_manifest(
+    manifest: &GenerationExportManifest,
+    maximum_objects: u64,
+) -> Result<(), GenerationExportManifestError> {
+    validate_envelope(manifest, maximum_objects)?;
+    if manifest.objects.last() != Some(&manifest.generation_root) {
+        return Err(GenerationExportManifestError::MissingRoot);
+    }
+    Ok(())
+}
+
+fn validate_envelope(
     manifest: &GenerationExportManifest,
     maximum_objects: u64,
 ) -> Result<(), GenerationExportManifestError> {
@@ -137,7 +155,7 @@ pub fn validate_generation_export_manifest(
     if manifest.generation_root.kind != ObjectKind::GenerationRoot {
         return Err(GenerationExportManifestError::WrongRootKind);
     }
-    if manifest.generation_id.digest() != manifest.generation_root.digest {
+    if manifest.generation_id.object_id() != manifest.generation_root {
         return Err(GenerationExportManifestError::GenerationMismatch);
     }
     if manifest.file_count > manifest.config.limits.maximum_files_per_generation {
@@ -147,45 +165,15 @@ pub fn validate_generation_export_manifest(
     if count > maximum_objects || count > manifest.config.limits.maximum_objects_per_generation {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
-    if !manifest.objects.contains(&manifest.generation_root) {
-        return Err(GenerationExportManifestError::MissingRoot);
-    }
-    if manifest.objects.windows(2).any(|pair| {
-        let [left, right] = pair else {
-            unreachable!("windows(2) always yields exactly two elements")
-        };
-        compare_object_id(*left, *right) != Ordering::Less
-    }) {
-        return Err(GenerationExportManifestError::NonCanonicalObjectOrder);
-    }
     Ok(())
 }
 
-fn compare_object_id(left: ObjectId, right: ObjectId) -> Ordering {
-    left.kind
-        .canonical_tag()
-        .cmp(&right.kind.canonical_tag())
-        .then_with(|| left.digest.cmp(&right.digest))
-}
-
 fn encode_object_id(encoder: &mut Encoder, object: ObjectId) {
-    encoder.u8(object.kind.canonical_tag());
-    encoder.fixed(object.digest.as_bytes());
+    encoder.object(object);
 }
 
 fn decode_object_id(decoder: &mut Decoder<'_>) -> Result<ObjectId, CanonicalDecodeError> {
-    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let kind =
-        ObjectKind::from_canonical_tag(tag).map_err(|_| CanonicalDecodeError::UnknownTag {
-            field: "object kind",
-            tag,
-        })?;
-    Ok(ObjectId {
-        kind,
-        digest: Digest::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        ),
-    })
+    decoder.any_object(&mut |_| Ok::<_, CanonicalDecodeError>(()))
 }
 
 #[cfg(test)]

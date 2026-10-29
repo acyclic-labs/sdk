@@ -220,12 +220,9 @@ impl<'a> AuthorityWork<'a> {
         generation: Option<GenerationId>,
     ) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
         match generation {
-            Some(generation) => self.identity_path(
-                placement,
-                authority,
-                suffix,
-                Some(generation.digest().as_bytes()),
-            ),
+            Some(generation) => {
+                self.identity_path(placement, authority, suffix, Some(&generation.to_bytes()))
+            }
             None => self.identity_path(placement, authority, suffix, None),
         }
     }

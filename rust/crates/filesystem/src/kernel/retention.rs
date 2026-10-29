@@ -4,7 +4,7 @@ use super::codec::{CanonicalDecodeError, Decoder, EncodeWorkStep, Encoder};
 
 use super::volume::{CONFIG_ENCODED_BYTES, decode_config, encode_config};
 use crate::WorkCounters;
-use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
+use crate::foundation::{AuthorityId, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
@@ -115,7 +115,14 @@ pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCr
     };
     observe(EncodeWorkStep::Admit(item))?;
     observe(EncodeWorkStep::Completed(item))?;
-    let length = DOMAIN.len() + 2 + 16 + 1 + 4 + value.label.len() + 1 + 32 + CONFIG_ENCODED_BYTES;
+    let length = DOMAIN.len()
+        + 2
+        + 16
+        + 1
+        + 4
+        + value.label.len()
+        + value.generation_root.encoded_len()
+        + CONFIG_ENCODED_BYTES;
     let mut encoder = Encoder::with_exact_capacity(
         DOMAIN,
         VERSION,
@@ -124,16 +131,16 @@ pub fn encode_retention_created<E: From<CanonicalDecodeError> + From<RetentionCr
         allocation_error,
     )?;
     let fields = WorkCounters {
-        bytes_encoded: (16 + 1 + 4 + value.label.len() + 1 + 32) as u64,
-        bytes_copied: (48 + value.label.len()) as u64,
+        bytes_encoded: (16 + 1 + 4 + value.label.len() + value.generation_root.encoded_len())
+            as u64,
+        bytes_copied: (16 + value.generation_root.encoded_len() + value.label.len()) as u64,
         ..WorkCounters::UNCHARGED
     };
     observe(EncodeWorkStep::Admit(fields))?;
     encoder.fixed(&value.volume_id.into_bytes());
     encoder.u8(value.kind.tag());
     encoder.bounded_bytes(value.label.as_bytes())?;
-    encoder.u8(value.generation_root.kind.canonical_tag());
-    encoder.fixed(value.generation_root.digest.as_bytes());
+    encoder.object(value.generation_root);
     observe(EncodeWorkStep::Completed(fields))?;
     let config = WorkCounters {
         bytes_encoded: CONFIG_ENCODED_BYTES as u64,
@@ -163,16 +170,9 @@ pub fn decode_retention_created(
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?)
     .map_err(|_| RetentionCreatedError::InvalidLabel)?;
-    let object_kind = ObjectKind::from_canonical_tag(
-        decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-    )
-    .map_err(|_| RetentionCreatedError::WrongObjectKind)?;
-    let generation_root = ObjectId {
-        kind: object_kind,
-        digest: Digest::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        ),
-    };
+    let generation_root = decoder.object(ObjectKind::GenerationRoot, &mut |_| {
+        Ok::<_, CanonicalDecodeError>(())
+    })?;
     let config = decode_config(&mut decoder, &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?

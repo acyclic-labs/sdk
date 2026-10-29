@@ -3,6 +3,7 @@ use proptest::prelude::*;
 
 fn object(kind: crate::ObjectKind, number: u8) -> crate::ObjectId {
     crate::ObjectId {
+        storage: None,
         kind,
         digest: crate::Digest::from_bytes([number; 32]),
     }

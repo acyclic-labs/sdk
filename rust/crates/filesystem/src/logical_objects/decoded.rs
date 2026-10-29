@@ -3,14 +3,24 @@ use crate::kernel::{FileKind, FilePayload, FileRecord, FileTablePage, encode_fil
 
 async fn scenario(share_narrowed_cache: bool) -> Result<bool, Box<dyn std::error::Error>> {
     let store = store(4096)?;
+    let cancellation = CancellationToken::new();
+    let metadata = crate::kernel::encode_file_metadata(
+        Default::default(),
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?;
+    let metadata = HashedObject::new(ObjectKind::Metadata, metadata.into());
+    store
+        .put_hashed(
+            metadata.clone(),
+            &mut AuthorityWork::new(BUDGET, &cancellation),
+        )
+        .await?;
     let value = FileRecord {
         file_id: crate::FileId::from_bytes([7; 16]),
         kind: FileKind::Fifo,
         link_count: 1,
-        metadata: crate::ObjectId {
-            kind: ObjectKind::Metadata,
-            digest: crate::Digest::ZERO,
-        },
+        metadata: metadata.object_id(),
         payload: FilePayload::Empty,
     };
     let bytes = encode_file_table_page(
@@ -20,7 +30,6 @@ async fn scenario(share_narrowed_cache: bool) -> Result<bool, Box<dyn std::error
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     let object = HashedObject::new(ObjectKind::FileTablePage, bytes.into());
-    let cancellation = CancellationToken::new();
     store
         .put_hashed(
             object.clone(),

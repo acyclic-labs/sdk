@@ -142,11 +142,10 @@ fn encode_multipart_part(
     operation: IdempotencyKey,
     etag_value: &str,
 ) -> Bytes {
-    let mut output = Vec::with_capacity(2 + 4 + 1 + 32 + 8 + 16 + 32);
+    let mut output = Vec::with_capacity(2 + 4 + staged.root().encoded_len() + 8 + 16 + 32);
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 2]);
     output.extend_from_slice(&part_number.to_le_bytes());
-    output.push(staged.root().kind.canonical_tag());
-    output.extend_from_slice(staged.root().digest.as_bytes());
+    output.extend_from_slice(&staged.root().to_bytes());
     output.extend_from_slice(&staged.logical_bytes().to_le_bytes());
     output.extend_from_slice(&operation.into_bytes());
     let mut etag_digest = [0_u8; 32];
@@ -174,9 +173,9 @@ fn encode_multipart_completing(parts: &[(u32, String)]) -> S3Result<Bytes> {
 }
 
 fn encode_multipart_completed(generation: crate::GenerationId) -> Bytes {
-    let mut output = Vec::with_capacity(34);
+    let mut output = Vec::with_capacity(2 + generation.object_id().encoded_len());
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 4]);
-    output.extend_from_slice(generation.digest().as_bytes());
+    output.extend_from_slice(&generation.to_bytes());
     Bytes::from(output)
 }
 
@@ -304,9 +303,7 @@ fn decode_multipart(
         match tag {
             2 => {
                 let part_number = cursor.u32()?;
-                let kind = ObjectKind::from_canonical_tag(cursor.u8()?)
-                    .map_err(|_| s3s::s3_error!(InvalidRequest))?;
-                let digest = Digest::from_bytes(cursor.array32()?);
+                let root = cursor.object()?;
                 let logical_bytes = cursor.u64()?;
                 let operation = cursor.array16()?;
                 let etag_digest = cursor.array32()?;
@@ -327,10 +324,7 @@ fn decode_multipart(
                 parts.insert(
                     part_number,
                     MultipartPart {
-                        staged: StagedContent::from_canonical_parts(
-                            ObjectId { kind, digest },
-                            logical_bytes,
-                        ),
+                        staged: StagedContent::from_canonical_parts(root, logical_bytes),
                         etag,
                     },
                 );
@@ -351,7 +345,9 @@ fn decode_multipart(
                 terminal = Some(MultipartTerminal::Completing(selected));
             }
             4 => {
-                let generation = crate::GenerationId::new(Digest::from_bytes(cursor.array32()?));
+                let generation =
+                    crate::GenerationId::from_bytes(cursor.take(record.len().saturating_sub(2))?)
+                        .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
                 cursor.finish()?;
                 if !matches!(terminal, Some(MultipartTerminal::Completing(_))) {
                     return Err(s3s::s3_error!(InvalidRequest));
@@ -397,6 +393,18 @@ impl<'a> RecordCursor<'a> {
             .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
         self.offset = end;
         Ok(value)
+    }
+
+    fn object(&mut self) -> S3Result<ObjectId> {
+        let start = self.offset;
+        let tag = self.u8()?;
+        self.offset = start;
+        ObjectId::try_from(self.take(if tag & 128 == 0 {
+            33
+        } else {
+            ObjectId::ENCODED_LEN
+        })?)
+        .map_err(|_| s3s::s3_error!(InvalidRequest))
     }
 
     fn u8(&mut self) -> S3Result<u8> {

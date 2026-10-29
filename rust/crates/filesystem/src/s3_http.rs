@@ -8,9 +8,8 @@ use crate::WorkBudget;
 use crate::kernel::{AsyncBlobSource, ClosureLimits, DecodeLimits};
 use crate::model::FilesystemProfile;
 use crate::{
-    AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest, IdempotencyKey,
-    ObjectId, ObjectKind, S3Error, S3ListCursor, S3ListOptions, StagedContent,
-    StreamAuthorityStore, Workspace,
+    AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, IdempotencyKey, ObjectId,
+    S3Error, S3ListCursor, S3ListOptions, StagedContent, StreamAuthorityStore, Workspace,
 };
 use acyclic_stream::StreamProvider;
 use acyclic_stream::StreamProviderExt as _;

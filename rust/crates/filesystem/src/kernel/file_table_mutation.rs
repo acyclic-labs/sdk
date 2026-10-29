@@ -78,8 +78,11 @@ impl Format for FileTableFormat {
         file_record_encoded_length(*value)
     }
 
-    fn internal_item_encoded_length(_key: &Self::Key) -> Result<usize, CanonicalDecodeError> {
-        Ok(16 + 32)
+    fn internal_item_encoded_length(
+        _key: &Self::Key,
+        page: ObjectId,
+    ) -> Result<usize, CanonicalDecodeError> {
+        Ok(16 + page.encoded_len())
     }
 
     fn key_nested_bytes(_key: &Self::Key) -> u64 {

@@ -1,6 +1,90 @@
 use super::*;
 
 #[tokio::test]
+async fn named_retention_preserves_the_exact_reference_without_a_cached_proof() -> TestResult {
+    let cancellation = CancellationToken::new();
+    let objects = Arc::new(crate::MemoryObjectStore::default());
+    let authority = Arc::new(crate::MemoryAuthorityStore::default());
+    let fs = Fs::new(
+        authority.clone(),
+        objects.clone(),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let volume = fs.create_volume(config(), B, &cancellation).await?.value;
+    let checkout = volume
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            B,
+            &cancellation,
+        )
+        .await?
+        .value;
+    let mut work = crate::AuthorityWork::new(B, &cancellation);
+    let plain = checkout.generation_id().object_id();
+    let body = objects
+        .read(plain, config().limits.maximum_object_bytes, &mut work)
+        .await?;
+    let root = crate::kernel::decode_generation_root::<CanonicalDecodeError>(
+        &body.bytes,
+        Default::default(),
+        |_| Ok(()),
+    )?;
+    let mut reference = plain;
+    reference.storage = Some(crate::ObjectStorage {
+        locator: Digest::from_bytes([181; 32]),
+        root_file_id: root.root_file_id,
+        origin_generation: plain.digest,
+    });
+    objects.put(reference, body.bytes, &mut work).await?;
+    for (label, target, succeeds) in [
+        ("exact", reference, true),
+        (
+            "alias",
+            ObjectId {
+                storage: Some(crate::ObjectStorage {
+                    locator: Digest::from_bytes([182; 32]),
+                    ..reference.storage.ok_or("missing association")?
+                }),
+                ..reference
+            },
+            false,
+        ),
+    ] {
+        let label = label.to_owned();
+        let bytes = label.capacity() as u64;
+        let result = fs
+            .retain_workspace_generation(
+                &volume,
+                GenerationId::from_root(target),
+                crate::kernel::RetentionKind::Pin,
+                Owned::new(label.clone(), KernelOwnedAllocation::Standalone, bytes),
+                None,
+                B,
+                &cancellation,
+            )
+            .await;
+        assert_eq!(result.is_ok(), succeeds);
+        if succeeds {
+            let id = crate::kernel::retention_authority_id(
+                volume.id(),
+                crate::kernel::RetentionKind::Pin,
+                &label,
+            );
+            let ((_, payload), _) = authority
+                .head_payload(id, MAXIMUM_VOLUME_EVENT_BYTES, &mut work)
+                .await?;
+            let retained = crate::kernel::decode_retention_created(
+                &payload.ok_or("missing retention record")?,
+                MAXIMUM_VOLUME_EVENT_BYTES,
+            )?;
+            assert_eq!(retained.generation_root, reference);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range() -> TestResult
 {
     let cancel = CancellationToken::new();

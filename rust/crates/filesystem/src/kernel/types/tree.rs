@@ -174,8 +174,10 @@ pub enum TreePageError {
     InvalidCanonicalField(&'static str),
 }
 
+#[cfg(test)]
 pub(crate) fn digest_object(kind: ObjectKind, digest: [u8; 32]) -> ObjectId {
     ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes(digest),
     }

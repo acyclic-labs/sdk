@@ -460,6 +460,7 @@ mod laws {
 
     fn object_of(kind: ObjectKind) -> impl Strategy<Value = MetadataField<ObjectId>> {
         field_of((0_u8..2).prop_map(move |byte| ObjectId {
+            storage: None,
             kind,
             digest: Digest::from_bytes([byte; 32]),
         }))
@@ -607,7 +608,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
         ..root(1, 1, 0)
     };
     let request = stored_request(&store, base, ours, theirs).await?;
-    let second_parent = GenerationId::new(request.theirs_generation.digest);
+    let second_parent = GenerationId::from_root(request.theirs_generation);
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -629,7 +630,7 @@ async fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage
     else {
         return Err("independent native additions conflicted".into());
     };
-    assert_eq!(generation_id, GenerationId::new(generation_root.digest));
+    assert_eq!(generation_id, GenerationId::from_root(generation_root));
     assert_eq!(root.parents.len(), 2);
     assert_eq!(root.parents.get(1), Some(&second_parent));
     let KernelOwnedAllocation::NativeOriginal(guard) = allocation else {

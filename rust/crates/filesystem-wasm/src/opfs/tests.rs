@@ -8,6 +8,7 @@ fn object(bytes: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from(bytes.to_vec());
     (
         ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(&bytes),
         },
@@ -147,6 +148,7 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
             let bytes = OwnedBytes::from(vec![index; 1_024]);
             ObjectWrite {
                 object_id: ObjectId {
+                    storage: None,
                     kind: ObjectKind::BlobChunk,
                     digest: object_digest(&bytes),
                 },

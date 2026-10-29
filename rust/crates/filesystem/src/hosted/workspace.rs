@@ -189,17 +189,9 @@ impl HostedWorkspace {
             .as_ref()
             .map(|generation| {
                 validate_generation(generation, &self.reference)?;
-                let bytes: [u8; 32] =
-                    generation
-                        .generation_id
-                        .as_slice()
-                        .try_into()
-                        .map_err(|_| {
-                            HostedFsError::InvalidResponse(
-                                "generation identity has the wrong length",
-                            )
-                        })?;
-                Ok::<GenerationId, HostedFsError>(GenerationId::new(Digest::from_bytes(bytes)))
+                GenerationId::from_bytes(&generation.generation_id).ok_or(
+                    HostedFsError::InvalidResponse("invalid generation-root reference"),
+                )
             })
             .transpose()?;
         Ok(HostedSourceResult {

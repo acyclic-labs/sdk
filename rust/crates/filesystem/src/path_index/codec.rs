@@ -16,10 +16,9 @@ pub(crate) fn cache_key(
     let mut hasher = blake3::Hasher::new();
     for bytes in [
         b"acyclic-generation-path-root-v2\0".as_slice(),
-        generation.digest().as_bytes(),
+        &generation.to_bytes(),
         &root.into_bytes(),
-        &[table.kind.canonical_tag()],
-        table.digest.as_bytes(),
+        &table.to_bytes(),
     ] {
         let delta = WorkCounters {
             bytes_hashed: bytes.len() as u64,
@@ -50,7 +49,7 @@ pub(crate) fn encode_records(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Option<Vec<u8>>, KernelOwnedAllocation), FsError> {
     accounting.check()?;
-    let mut length = HEADER_BYTES + 32;
+    let mut length = HEADER_BYTES + generation.object_id().encoded_len();
     let mut items = 1_u64;
     let mut next = 0;
     for id in ids {
@@ -130,7 +129,7 @@ pub(crate) fn encode_records(
                 ..WorkCounters::UNCHARGED
             };
             observe(EncodeWorkStep::Admit(delta))?;
-            encoder.fixed(generation.digest().as_bytes());
+            encoder.object(generation.object_id());
             let mut next = 0;
             for id in ids {
                 while records.get(next).is_some_and(|entry| entry.0 < *id) {
@@ -187,7 +186,9 @@ fn document<'a>(
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), FsError>,
 ) -> Result<Decoder<'a>, FsError> {
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, MAXIMUM_VALUE_BYTES as u64, observe)?;
-    if decoder.fixed::<32, FsError>(observe)? != *generation.digest().as_bytes() {
+    if decoder.object::<FsError>(crate::ObjectKind::GenerationRoot, observe)?
+        != generation.object_id()
+    {
         return Err(CanonicalDecodeError::WrongDomain.into());
     }
     Ok(decoder)

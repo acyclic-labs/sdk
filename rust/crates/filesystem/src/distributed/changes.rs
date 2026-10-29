@@ -158,8 +158,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 "publication has no authenticated namespace changes",
             ))?;
         if volume_authority_id(seal.volume()) != authority
-            || seal.root().kind != crate::ObjectKind::GenerationRoot
-            || seal.root().digest != generation.digest()
+            || seal.root() != generation.object_id()
             || seal.base() != base
         {
             return Err(AuthorityStoreError::RejectedStatic(

@@ -394,12 +394,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     authority_corrupt("generation locator selects an empty lineage", work)
                 })?;
                 let entry = view.value(self, lineage, from, work).await?;
-                if work.decode_fixed::<32>(
-                    &entry.0,
-                    LINEAGE_DOMAIN,
-                    "invalid Stream generation lineage record",
-                )? != *generation.digest().as_bytes()
-                {
+                if decode_lineage_generation(&entry.0)? != generation {
                     return Err(authority_corrupt(
                         "generation locator selected another generation",
                         work,
@@ -421,7 +416,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                 conditions.push(CommitCondition::Absent {
                     path: locator.clone(),
                 });
-                let entry = work.stream_bytes(LINEAGE_DOMAIN, &[generation.digest().as_bytes()])?;
+                let entry = work.stream_bytes(
+                    LINEAGE_DOMAIN,
+                    &[generation.object_id().to_bytes().as_slice()],
+                )?;
                 work.append_record(mutations, lineage, [entry])?;
                 let location = work.stream_bytes(
                     LINEAGE_TAIL_DOMAIN,

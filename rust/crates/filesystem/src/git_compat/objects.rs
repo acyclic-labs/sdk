@@ -142,7 +142,7 @@ impl GitCommit {
         if let Some(proof) = &self.capture_proof {
             hasher.update(&[1]);
             hash_tree_ref(&mut hasher, proof.fork_parent);
-            hasher.update(proof.initial_generation.digest().as_bytes());
+            hasher.update(&proof.initial_generation.to_bytes());
             hasher.update(&proof.operation_id.into_bytes());
         }
         hasher.update(
@@ -173,7 +173,7 @@ pub(super) fn hash_tree_ref(hasher: &mut blake3::Hasher, tree: GitTreeRef) {
         GitTreeRef::Exact(reference) => {
             hasher.update(&[0]);
             hasher.update(&reference.workspace_id.into_bytes());
-            hasher.update(reference.generation.digest().as_bytes());
+            hasher.update(&reference.generation.to_bytes());
         }
         GitTreeRef::Lazy(reference) => {
             hasher.update(&[1]);

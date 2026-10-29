@@ -93,13 +93,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             .await
     }
 
-    /// Performs the operation under the supplied limits.
+    /// Computes the plaintext digest of the source parent normalized to `target`.
     pub async fn normalized_join_parent_for<W: crate::facade::FsWork>(
         &self,
         target: &Self,
         work: W,
         cancellation: &CancellationToken,
-    ) -> W::Output<GenerationId, WorkspaceError> {
+    ) -> W::Output<crate::Digest, WorkspaceError> {
         let mut accounting = work.accounting(cancellation);
         let result = self
             .workspace

@@ -325,7 +325,7 @@ fn extent_leaf_chunk_end(
 ) -> Result<(usize, u64), ExtentMutationError> {
     extent_chunk_end(extents, start, limits, |extent| match extent.kind {
         ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
-        ExtentKind::Content { .. } => 8 + 8 + 1 + 32 + 8,
+        ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
     })
 }
 
@@ -334,7 +334,9 @@ fn extent_internal_chunk_end(
     start: usize,
     limits: DecodeLimits,
 ) -> Result<(usize, u64), ExtentMutationError> {
-    extent_chunk_end(children, start, limits, |_| 8 + 8 + 32)
+    extent_chunk_end(children, start, limits, |child| {
+        8 + 8 + child.page.encoded_len()
+    })
 }
 
 fn extent_chunk_end<T>(
@@ -444,6 +446,8 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
             original,
             cancellation,
         )?;
+        let hashed =
+            crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
         let object = hashed.object_id();
         accounting.charge(WorkCounters {
             page_writes: u64::from(kind != ObjectKind::BlobChunk),
@@ -472,6 +476,8 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         page_writes: u64::from(kind != ObjectKind::BlobChunk),
         ..WorkCounters::UNCHARGED
     })?;
+    let hashed =
+        crate::async_storage::prepare_object(store, hashed, accounting, cancellation).await?;
     let object = hashed.object_id();
     let receipt = {
         let mut object_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);

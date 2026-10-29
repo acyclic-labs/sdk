@@ -13,6 +13,7 @@ fn path(value: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([byte; 32]),
     }
@@ -44,6 +45,7 @@ fn mixed_batch_compiles_shared_ancestors_once() -> Result<(), Box<dyn std::error
         Mutation::SetMetadata {
             path: path("/workspace/src/b")?,
             metadata: ObjectId {
+                storage: None,
                 kind: ObjectKind::Metadata,
                 digest: Digest::from_bytes([1; 32]),
             },

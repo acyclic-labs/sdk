@@ -8,6 +8,7 @@ fn classes_and_raw_names_round_trip() -> Result<(), Box<dyn std::error::Error>> 
         name: AttributeName::new(AttributeClass::PosixXattr, b"user.test".to_vec(), 255)?,
         value_bytes: 4,
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([9; 32]),
         },
@@ -64,10 +65,12 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
     let first = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec(), 8)?;
     let second = AttributeName::new(AttributeClass::WindowsStream, b"b".to_vec(), 8)?;
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([1; 32]),
     };
     let attribute_page = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([2; 32]),
     };
@@ -81,6 +84,7 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
             name: second.clone(),
             value_bytes: 0,
             value: ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: Digest::from_bytes([3; 32]),
             },
@@ -94,6 +98,7 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
         Child {
             first: second.clone(),
             page: ObjectId {
+                storage: None,
                 kind: ObjectKind::AttributePage,
                 digest: Digest::from_bytes([4; 32]),
             },
@@ -169,10 +174,12 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let name = AttributeName::new(AttributeClass::PosixXattr, b"a".to_vec(), 8)?;
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([1; 32]),
     };
     let wrong = ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: Digest::from_bytes([2; 32]),
     };
@@ -211,6 +218,7 @@ fn malformed_attribute_pages_fail_at_every_public_boundary()
         AttributePage::Internal(vec![Child {
             first: name,
             page: ObjectId {
+                storage: None,
                 kind: ObjectKind::AttributePage,
                 digest: Digest::from_bytes([3; 32]),
             },

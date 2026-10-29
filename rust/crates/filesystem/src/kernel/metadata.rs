@@ -1,7 +1,6 @@
 //! Canonical cross-profile metadata with explicit unavailable fields.
 
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
-use super::types::digest_object;
 use crate::WorkCounters;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
@@ -155,9 +154,8 @@ where
         metadata.security_descriptor,
     ]
     .into_iter()
-    .filter(|field| matches!(field, MetadataField::Value(_)))
-    .count() as u64
-        * 32;
+    .map(object_payload_length)
+    .sum();
     observe(EncodeWorkStep::Admit(WorkCounters {
         items_examined: 12,
         bytes_encoded: length as u64,
@@ -186,7 +184,7 @@ fn file_metadata_encoded_len(metadata: FileMetadata) -> Result<usize, CanonicalD
     fn object(value: MetadataField<ObjectId>) -> usize {
         match value {
             MetadataField::Unavailable => 1,
-            MetadataField::Value(value) => 1 + value.digest.as_bytes().len(),
+            MetadataField::Value(value) => 1 + value.encoded_len(),
         }
     }
     [
@@ -243,9 +241,24 @@ fn encode_metadata_fields<E>(
     field!(metadata.modified_ns, 8, 0, encode_i64);
     field!(metadata.accessed_ns, 8, 0, encode_i64);
     field!(metadata.changed_ns, 8, 0, encode_i64);
-    field!(metadata.named_attributes, 32, 32, encode_object);
-    field!(metadata.acl, 32, 32, encode_object);
-    field!(metadata.security_descriptor, 32, 32, encode_object);
+    field!(
+        metadata.named_attributes,
+        object_payload_length(metadata.named_attributes),
+        object_payload_length(metadata.named_attributes),
+        encode_object
+    );
+    field!(
+        metadata.acl,
+        object_payload_length(metadata.acl),
+        object_payload_length(metadata.acl),
+        encode_object
+    );
+    field!(
+        metadata.security_descriptor,
+        object_payload_length(metadata.security_descriptor),
+        object_payload_length(metadata.security_descriptor),
+        encode_object
+    );
     Ok(())
 }
 
@@ -295,6 +308,7 @@ pub fn file_metadata_id(metadata: FileMetadata) -> Result<ObjectId, CanonicalDec
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: object_digest(&bytes),
     })
@@ -335,7 +349,7 @@ fn encode_object(encoder: &mut Encoder, field: MetadataField<ObjectId>) {
         MetadataField::Unavailable => encoder.u8(0),
         MetadataField::Value(object) => {
             encoder.u8(1);
-            encoder.fixed(object.digest.as_bytes());
+            encoder.object(object);
         }
     }
 }
@@ -384,10 +398,7 @@ fn decode_object<E: From<CanonicalDecodeError>>(
 ) -> Result<MetadataField<ObjectId>, E> {
     match decoder.u8(observe)? {
         0 => Ok(MetadataField::Unavailable),
-        1 => Ok(MetadataField::Value(digest_object(
-            kind,
-            decoder.fixed::<32, E>(observe)?,
-        ))),
+        1 => Ok(MetadataField::Value(decoder.object(kind, observe)?)),
         tag => Err(CanonicalDecodeError::UnknownTag { field, tag }.into()),
     }
 }
@@ -410,3 +421,10 @@ fn validate_object(
 #[cfg(test)]
 #[path = "tests/metadata.rs"]
 mod tests;
+
+fn object_payload_length(field: MetadataField<ObjectId>) -> u64 {
+    match field {
+        MetadataField::Unavailable => 0,
+        MetadataField::Value(object) => object.encoded_len() as u64,
+    }
+}

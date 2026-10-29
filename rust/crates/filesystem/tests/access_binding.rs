@@ -13,7 +13,7 @@ proptest! {
         let caller = principal();
         let policy = policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
         let head = GenerationId::new(Digest::from_bytes(policy_id));
-        let revision = MetadataField::Value(ObjectId {
+        let revision = MetadataField::Value(ObjectId { storage: None,
             kind: ObjectKind::Metadata, digest: Digest::from_bytes(policy_id),
         });
         let build = |data| PathTrie::compile(&policy, &caller, resource(&caller.lineage, "", 1),
@@ -26,7 +26,7 @@ proptest! {
         prop_assert!(view.matches_policy_revision(head, revision));
         let mut changed = policy_id;
         changed[0] ^= 1;
-        prop_assert!(!view.matches_policy_revision(head, MetadataField::Value(ObjectId {
+        prop_assert!(!view.matches_policy_revision(head, MetadataField::Value(ObjectId { storage: None,
             kind: ObjectKind::Metadata, digest: Digest::from_bytes(changed),
         })), "a data pin must not replace the policy fence");
     }

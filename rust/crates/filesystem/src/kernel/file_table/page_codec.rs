@@ -138,10 +138,11 @@ where
         }
         prior = Some(file_id);
     }
-    let item_bytes = children
-        .len()
-        .checked_mul(16 + 32)
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let item_bytes = children.clone().try_fold(0usize, |bytes, (_, page)| {
+        bytes
+            .checked_add(16 + page.encoded_len())
+            .ok_or(CanonicalDecodeError::LengthOverflow)
+    })?;
     let length = (DOMAIN.len() + 2 + 1 + 4)
         .checked_add(item_bytes)
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -168,26 +169,30 @@ where
     for (file_id, page) in children {
         observe(EncodeWorkStep::Check)?;
         let encoded = WorkCounters {
-            bytes_encoded: 48,
-            bytes_copied: 48,
+            bytes_encoded: usize_to_u64(16 + page.encoded_len()),
+            bytes_copied: usize_to_u64(16 + page.encoded_len()),
             ..WorkCounters::default()
         };
         observe(EncodeWorkStep::Admit(encoded))?;
         encoder.fixed(&file_id.into_bytes());
-        encoder.fixed(page.digest.as_bytes());
+        encoder.object(page);
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
 }
 
 pub(super) fn record_copied_bytes(record: FileRecord) -> u64 {
-    16 + 32
+    16 + usize_to_u64(record.metadata.encoded_len())
         + match record.payload {
             FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
-            FilePayload::Regular { .. }
-            | FilePayload::Directory { .. }
-            | FilePayload::SymbolicLink { .. }
-            | FilePayload::ReparsePoint { .. } => 32,
+            FilePayload::Regular {
+                extents: object, ..
+            }
+            | FilePayload::Directory { entries: object }
+            | FilePayload::SymbolicLink { target: object, .. }
+            | FilePayload::ReparsePoint {
+                payload: object, ..
+            } => usize_to_u64(object.encoded_len()),
             FilePayload::Empty | FilePayload::Device { .. } => 0,
         }
 }
@@ -213,17 +218,18 @@ pub(crate) fn file_table_page_decode_shape(
                     decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                let _: [u8; 32] =
-                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.any_object(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 match decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
                     1 | 3 | 6 => {
                         decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                        let _: [u8; 32] = decoder
-                            .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                        decoder.any_object(&mut |_| {
+                            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                        })?;
                     }
                     2 => {
-                        let _: [u8; 32] = decoder
-                            .fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                        decoder.any_object(&mut |_| {
+                            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+                        })?;
                     }
                     4 => {}
                     5 => {
@@ -256,8 +262,7 @@ pub(crate) fn file_table_page_decode_shape(
             for _ in 0..item_count {
                 let _: [u8; 16] =
                     decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-                let _: [u8; 32] =
-                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.any_object(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
             }
             DecodedPageKind::Internal
         }
@@ -279,19 +284,23 @@ pub(crate) fn file_table_page_decode_shape(
 pub(crate) fn file_record_encoded_length(
     record: FileRecord,
 ) -> Result<usize, CanonicalDecodeError> {
-    const PREFIX: usize = 16 + 1 + 8 + 32 + 1;
+    let prefix = 16 + 1 + 8 + record.metadata.encoded_len() + 1;
     let payload = match record.payload {
         FilePayload::InlineRegular(data) => 1_usize
             .checked_add(data.as_bytes().len())
             .ok_or(CanonicalDecodeError::LengthOverflow)?,
-        FilePayload::Regular { .. }
-        | FilePayload::SymbolicLink { .. }
-        | FilePayload::ReparsePoint { .. } => 8 + 32,
-        FilePayload::Directory { .. } => 32,
+        FilePayload::Regular {
+            extents: object, ..
+        }
+        | FilePayload::SymbolicLink { target: object, .. }
+        | FilePayload::ReparsePoint {
+            payload: object, ..
+        } => 8 + object.encoded_len(),
+        FilePayload::Directory { entries } => entries.encoded_len(),
         FilePayload::Empty => 0,
         FilePayload::Device { .. } => 8,
     };
-    PREFIX
+    prefix
         .checked_add(payload)
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
@@ -300,7 +309,7 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
     encoder.fixed(&record.file_id.into_bytes());
     encoder.u8(record.kind.tag());
     encoder.u64(record.link_count);
-    encoder.fixed(record.metadata.digest.as_bytes());
+    encoder.object(record.metadata);
     match record.payload {
         FilePayload::InlineRegular(data) => {
             encoder.u8(7);
@@ -313,11 +322,11 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
         } => {
             encoder.u8(1);
             encoder.u64(logical_bytes);
-            encoder.fixed(extents.digest.as_bytes());
+            encoder.object(extents);
         }
         FilePayload::Directory { entries } => {
             encoder.u8(2);
-            encoder.fixed(entries.digest.as_bytes());
+            encoder.object(entries);
         }
         FilePayload::SymbolicLink {
             target_bytes,
@@ -325,7 +334,7 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
         } => {
             encoder.u8(3);
             encoder.u64(target_bytes);
-            encoder.fixed(target.digest.as_bytes());
+            encoder.object(target);
         }
         FilePayload::Empty => encoder.u8(4),
         FilePayload::Device { major, minor } => {
@@ -339,7 +348,7 @@ fn encode_record(encoder: &mut Encoder, record: FileRecord) {
         } => {
             encoder.u8(6);
             encoder.u64(payload_bytes);
-            encoder.fixed(payload.digest.as_bytes());
+            encoder.object(payload);
         }
     }
 }
@@ -466,8 +475,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
-                let page =
-                    digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(observe)?);
+                let page = decoder.object(ObjectKind::FileTablePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -499,18 +507,18 @@ fn decode_record<E: From<CanonicalDecodeError>, T>(
     let file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
     let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
     let link_count = decoder.u64(observe)?;
-    let metadata = digest_object(ObjectKind::Metadata, decoder.fixed::<32, E>(observe)?);
+    let metadata = decoder.object(ObjectKind::Metadata, observe)?;
     let payload = match decoder.u8(observe)? {
         1 => FilePayload::Regular {
             logical_bytes: decoder.u64(observe)?,
-            extents: digest_object(ObjectKind::ExtentPage, decoder.fixed::<32, E>(observe)?),
+            extents: decoder.object(ObjectKind::ExtentPage, observe)?,
         },
         2 => FilePayload::Directory {
-            entries: digest_object(ObjectKind::TreePage, decoder.fixed::<32, E>(observe)?),
+            entries: decoder.object(ObjectKind::TreePage, observe)?,
         },
         3 => FilePayload::SymbolicLink {
             target_bytes: decoder.u64(observe)?,
-            target: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+            target: decoder.object(ObjectKind::Blob, observe)?,
         },
         4 => FilePayload::Empty,
         5 => FilePayload::Device {
@@ -519,7 +527,7 @@ fn decode_record<E: From<CanonicalDecodeError>, T>(
         },
         6 => FilePayload::ReparsePoint {
             payload_bytes: decoder.u64(observe)?,
-            payload: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+            payload: decoder.object(ObjectKind::Blob, observe)?,
         },
         7 => {
             let length = decoder.u8(observe)?;
@@ -568,6 +576,7 @@ pub fn file_table_page_id(
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::FileTablePage,
         digest: object_digest(&bytes),
     })

@@ -203,13 +203,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
     assert_eq!(diff.value.files.len() + diff.value.bindings.len(), 3);
     let manifest = sweep_read_only!(ours.export_manifest(B, &cancellation));
     assert_eq!(manifest.value.volume_id, volume.id());
-    assert_eq!(
-        manifest.value.generation_root,
-        ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: ours_generation.digest(),
-        }
-    );
+    assert_eq!(manifest.value.generation_root, ours_generation.object_id());
     let prepared = sweep_read_only!(ours.prepare_merge(theirs_generation, 8, 8, B, &cancellation,));
     assert!(matches!(prepared.value, MergePreparation::Prepared { .. }));
     assert!(ours.has_pending_mutations());

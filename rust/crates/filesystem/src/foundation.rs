@@ -233,22 +233,97 @@ uuid_identity!(
     "Stable path-independent identity of one file record."
 );
 
-/// Content-addressed identity of one immutable volume generation.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct GenerationId(Digest);
+/// Content-addressed generation identity and its authenticated storage association.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct GenerationId {
+    digest: Digest,
+    storage: Option<crate::ObjectStorage>,
+}
+
+impl Serialize for GenerationId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_bytes().as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GenerationId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Reference;
+        impl<'de> serde::de::Visitor<'de> for Reference {
+            type Value = GenerationId;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a canonical generation-root reference")
+            }
+
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut bytes = [0; crate::ObjectId::ENCODED_LEN];
+                let mut length = 0;
+                while let Some(byte) = sequence.next_element::<u8>()? {
+                    let slot = bytes.get_mut(length).ok_or_else(|| {
+                        serde::de::Error::custom("generation reference is too long")
+                    })?;
+                    *slot = byte;
+                    length += 1;
+                }
+                GenerationId::from_bytes(&bytes[..length]).ok_or_else(|| {
+                    serde::de::Error::custom("invalid canonical generation-root reference")
+                })
+            }
+        }
+        deserializer.deserialize_seq(Reference)
+    }
+}
 
 impl GenerationId {
-    /// Constructs a generation identity from its authenticated root digest.
+    /// Constructs an unsealed generation identity.
     #[must_use]
     pub const fn new(digest: Digest) -> Self {
-        Self(digest)
+        Self {
+            digest,
+            storage: None,
+        }
     }
 
-    /// Returns the authenticated root digest.
+    /// Preserves the complete authenticated generation-root reference.
+    #[must_use]
+    pub const fn from_root(root: crate::ObjectId) -> Self {
+        Self {
+            digest: root.digest,
+            storage: root.storage,
+        }
+    }
+
+    /// Returns the complete reference needed to reopen this generation.
+    #[must_use]
+    pub const fn object_id(self) -> crate::ObjectId {
+        crate::ObjectId {
+            kind: crate::ObjectKind::GenerationRoot,
+            digest: self.digest,
+            storage: self.storage,
+        }
+    }
+
+    /// Encodes the complete canonical generation-root reference.
+    #[must_use]
+    pub fn to_bytes(self) -> crate::ObjectIdBytes {
+        self.object_id().to_bytes()
+    }
+
+    /// Decodes a canonical generation-root reference, rejecting other object kinds.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        let root = crate::ObjectId::try_from(bytes).ok()?;
+        (root.kind == crate::ObjectKind::GenerationRoot).then(|| Self::from_root(root))
+    }
+
+    /// Returns the authenticated plaintext root digest.
     #[must_use]
     pub const fn digest(self) -> Digest {
-        self.0
+        self.digest
     }
 }
 

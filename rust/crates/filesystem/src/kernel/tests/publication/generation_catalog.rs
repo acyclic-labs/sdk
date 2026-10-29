@@ -257,9 +257,10 @@ async fn fixture_with_fence(
     for id in 1..=count {
         let mut candidate = base.clone();
         if !repeat {
-            candidate.parents = vec![crate::GenerationId::new(root.digest)];
+            candidate.parents = vec![crate::GenerationId::from_root(root)];
             let bytes = encode_generation_root(&candidate, accept, allocation_failed)?;
             root = ObjectId {
+                storage: None,
                 kind: ObjectKind::GenerationRoot,
                 digest: object_digest(&bytes),
             };
@@ -842,12 +843,11 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
                     .map_err(|(error, _)| error)?;
             let mut setup = measured(native, &original, &cancel);
             let generation = decode_published_generation(&first.commit.payload, u64::MAX, accept)?
-                .generation_root
-                .digest;
+                .generation_root;
             let locator = acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/generations/{}",
                 hex::encode(first.authority_id.into_bytes()),
-                hex::encode(generation.as_bytes())
+                hex::encode(generation.to_bytes().as_ref())
             ))?;
             let provider = store.provider();
             let outcome = provider

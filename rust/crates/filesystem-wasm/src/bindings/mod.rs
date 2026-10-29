@@ -98,7 +98,7 @@ use acyclic_fs::path::PortablePath;
 use acyclic_fs::workspace_context_wire;
 use acyclic_fs::{
     ApplyOptions, AuthoredMutation, ByteRange, CachedObjectStore, CancellationToken, ChangeSet,
-    Checkout, DependencyRegion, DependencyState, DependencyUse, Digest, DirectoryPage,
+    Checkout, DependencyRegion, DependencyState, DependencyUse, DirectoryPage,
     EmbeddedCapabilities, FileCloneRequest, FileId, ForkOptions, Fs, Generation,
     GenerationExportManifest, IdempotencyKey, JoinHistory, JoinOutcome, JoinPlan,
     LiveMutationOutcome, LivePublicationObservation, LogicalObjectStore,

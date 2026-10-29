@@ -388,6 +388,7 @@ async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing_chunk = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([88; 32]),
     };

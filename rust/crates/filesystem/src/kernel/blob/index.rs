@@ -8,10 +8,10 @@ pub(super) struct BlobIndexBuilder {
 }
 
 impl BlobIndexBuilder {
-    pub(super) fn new(options: BlobBuildOptions) -> Self {
+    pub(super) fn new(options: BlobBuildOptions, reference_bytes: usize) -> Self {
         Self {
             options,
-            width: effective_page_width(options).unwrap_or(0),
+            width: effective_page_width(options, reference_bytes).unwrap_or(0),
             leaf: empty_blob_vec(),
             levels: empty_blob_vec(),
         }
@@ -237,12 +237,15 @@ impl BlobIndexBuilder {
 #[path = "index_tests.rs"]
 mod tests;
 
-pub(super) fn effective_page_width(options: BlobBuildOptions) -> Option<usize> {
+pub(super) fn effective_page_width(
+    options: BlobBuildOptions,
+    reference_bytes: usize,
+) -> Option<usize> {
     let item_bound = usize::try_from(options.page_items).ok()?;
     let byte_bound = usize::try_from(options.page_bytes)
         .ok()?
         .checked_sub(BLOB_PAGE_HEADER_BYTES)?
-        / BLOB_PAGE_ITEM_BYTES;
+        / (16 + reference_bytes);
     let width = item_bound.min(byte_bound);
     (width >= 2).then_some(width)
 }
@@ -273,8 +276,7 @@ pub(super) async fn put_blob_page<S: AsyncObjectStore>(
             return Err(error);
         }
     };
-    let page = object.object_id();
-    store
+    let page = store
         .put(object, retained, accounting, cancellation)
         .await?;
     Ok(page)

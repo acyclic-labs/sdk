@@ -3,6 +3,7 @@ use crate::storage::{ObjectId, ObjectKind};
 
 fn object(byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: crate::foundation::Digest::from_bytes([byte; 32]),
     }

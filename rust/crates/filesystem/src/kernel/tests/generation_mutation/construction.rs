@@ -4,6 +4,7 @@ use super::*;
 fn transaction_construction_rejects_every_contradictory_sparse_seed()
 -> Result<(), Box<dyn std::error::Error>> {
     let metadata = ObjectId {
+        storage: None,
         kind: ObjectKind::Metadata,
         digest: Digest::ZERO,
     };
@@ -154,6 +155,7 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
     )?;
     let conflicting_first = FileRecord {
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([1; 32]),
         },

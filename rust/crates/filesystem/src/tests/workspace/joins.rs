@@ -92,6 +92,22 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         &CancellationToken::new()
     ))?;
     assert!(unbounded!(main, verify_join_commit(&witness))?);
+    for change_result in [false, true] {
+        let mut altered = witness;
+        let generation = if change_result {
+            &mut altered.result_generation
+        } else {
+            &mut altered.source_generation
+        };
+        let mut reference = generation.object_id();
+        reference.storage = Some(crate::ObjectStorage {
+            locator: crate::Digest::from_bytes([7; 32]),
+            root_file_id: crate::FileId::from_bytes([8; 16]),
+            origin_generation: crate::Digest::from_bytes([9; 32]),
+        });
+        *generation = crate::GenerationId::from_root(reference);
+        assert!(!unbounded!(main, verify_join_commit(&altered))?);
+    }
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
         serde_json::to_value(crate::GenerationId::new(crate::Digest::ZERO))?;

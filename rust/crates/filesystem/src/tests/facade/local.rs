@@ -239,6 +239,7 @@ async fn local_facade_shares_bounded_object_acceleration_across_handles()
         .await?
         .value;
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: checkout.generation_id().digest(),
     };

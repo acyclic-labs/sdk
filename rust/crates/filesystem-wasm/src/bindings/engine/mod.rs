@@ -105,10 +105,7 @@ impl BrowserFs {
         let controller = SpeculationController::new(
             browser_speculation_options(&options),
             VolumeId::from_bytes(fixed_16(volume_id)?),
-            acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                generation_id,
-                "generation identity",
-            )?)),
+            decode_generation_id(generation_id)?,
         )
         .map_err(js_error)?;
         Ok(BrowserSpeculation {
@@ -389,7 +386,7 @@ pub async fn open_browser_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
         acyclic_stream::BrowserStreamLimits::default(),
     )
     .await
-    .map_err(js_error)?;
+    .map_err(JsValue::from)?;
     let object_cache = browser_object_cache_options(&options.object_cache);
     let (objects, immutable_objects) = match options.object_acceleration {
         Acceleration::Indexeddb => (

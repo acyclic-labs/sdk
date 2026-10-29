@@ -36,6 +36,7 @@ fn page(count: u8) -> FileTablePage {
                 kind: FileKind::Fifo,
                 link_count: 1,
                 metadata: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Metadata,
                     digest: acyclic_fs::Digest::from_bytes([key; 32]),
                 },

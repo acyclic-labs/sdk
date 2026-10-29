@@ -3,6 +3,21 @@ use super::*;
 pub(super) const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] =
     b"acyclic-fs-workspace-join-operation-v1\0";
 
+pub(super) fn workspace_join_context_bytes(
+    source: GenerationId,
+    target: GenerationId,
+    base: GenerationId,
+) -> u64 {
+    (WORKSPACE_JOIN_OPERATION_DOMAIN.len()
+        + 3 * 16
+        + source.object_id().encoded_len()
+        + target.object_id().encoded_len()
+        + base.object_id().encoded_len()
+        + 32
+        + 1
+        + 3 * 4) as u64
+}
+
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
     AlreadyApplied(GenerationId),
@@ -66,11 +81,11 @@ pub(super) fn workspace_join_context(
     let mut hasher = blake3::Hasher::new();
     hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
     hasher.update(&source_workspace.into_bytes());
-    hasher.update(source_generation.digest().as_bytes());
+    hasher.update(&source_generation.to_bytes());
     hasher.update(&target_workspace.into_bytes());
-    hasher.update(expected_target.digest().as_bytes());
+    hasher.update(&expected_target.to_bytes());
     hasher.update(&base.volume_id.into_bytes());
-    hasher.update(base.id.digest().as_bytes());
+    hasher.update(&base.id.to_bytes());
     hasher.update(&[match history {
         crate::workspace::JoinHistory::Merge => 1,
         crate::workspace::JoinHistory::Rebase => 2,

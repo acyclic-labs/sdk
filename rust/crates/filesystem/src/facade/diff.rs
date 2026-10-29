@@ -38,10 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (base_root, base_root_allocation) =
                 crate::kernel::read_generation_root_with_accounting(
                     &self.inner.objects,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: base.digest(),
-                    },
+                    base.object_id(),
                     config,
                     &mut accounting,
                     cancellation,
@@ -55,10 +52,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let (source_root, source_root_allocation) =
                 crate::kernel::read_generation_root_with_accounting(
                     &self.inner.objects,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: source.id.digest(),
-                    },
+                    source.id.object_id(),
                     config,
                     &mut accounting,
                     cancellation,
@@ -121,10 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             let (before_root, before_root_allocation) =
                 crate::kernel::read_generation_root_with_accounting(
                     &self.fs.inner.objects,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: before.digest(),
-                    },
+                    before.object_id(),
                     self.config,
                     &mut accounting,
                     cancellation,
@@ -137,10 +128,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             let (after_root, after_root_allocation) =
                 crate::kernel::read_generation_root_with_accounting(
                     &self.fs.inner.objects,
-                    ObjectId {
-                        kind: ObjectKind::GenerationRoot,
-                        digest: after.digest(),
-                    },
+                    after.object_id(),
                     self.config,
                     &mut accounting,
                     cancellation,

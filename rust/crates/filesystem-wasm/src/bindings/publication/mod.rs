@@ -204,12 +204,9 @@ impl BrowserCheckout {
             .await
             .map_err(js_error)?;
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
-            RebaseDecision::Safe { generation } => (
-                "safe",
-                Some(generation.digest().into_bytes().to_vec()),
-                0,
-                false,
-            ),
+            RebaseDecision::Safe { generation } => {
+                ("safe", Some(generation.to_bytes().to_vec()), 0, false)
+            }
             RebaseDecision::Conflicted {
                 conflicts,
                 truncated,
@@ -258,7 +255,7 @@ pub(in crate::bindings) fn commit_value(
             head,
         } => (
             "committed",
-            Some(generation_id.digest().into_bytes().to_vec()),
+            Some(generation_id.to_bytes().to_vec()),
             Some(head.epoch.get()),
             Some(head.sequence.get()),
             None,
@@ -268,7 +265,7 @@ pub(in crate::bindings) fn commit_value(
             head,
         } => (
             "already-committed",
-            Some(generation_id.digest().into_bytes().to_vec()),
+            Some(generation_id.to_bytes().to_vec()),
             Some(head.epoch.get()),
             Some(head.sequence.get()),
             None,
@@ -314,7 +311,7 @@ pub(in crate::bindings) fn live_mutation_value(
                 head,
             } => (
                 "committed",
-                Some(generation_id.digest().into_bytes().to_vec()),
+                Some(generation_id.to_bytes().to_vec()),
                 Some(head.epoch.get()),
                 Some(head.sequence.get()),
                 0,
@@ -326,7 +323,7 @@ pub(in crate::bindings) fn live_mutation_value(
                 head,
             } => (
                 "already-committed",
-                Some(generation_id.digest().into_bytes().to_vec()),
+                Some(generation_id.to_bytes().to_vec()),
                 Some(head.epoch.get()),
                 Some(head.sequence.get()),
                 0,

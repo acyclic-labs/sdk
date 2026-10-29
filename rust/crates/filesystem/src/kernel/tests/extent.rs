@@ -19,6 +19,7 @@ fn holes_allocated_zero_and_content_remain_distinct() -> Result<(), Box<dyn std:
             length: 4,
             kind: ExtentKind::Content {
                 object: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Blob,
                     digest: Digest::from_bytes([9; 32]),
                 },
@@ -88,6 +89,7 @@ fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std
         length: 4,
         kind: ExtentKind::Content {
             object: ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: Digest::from_bytes([1; 32]),
             },
@@ -203,6 +205,7 @@ fn malformed_extent_tags_and_item_bounds_fail_closed() -> Result<(), Box<dyn std
 #[test]
 fn every_invalid_extent_page_shape_rejects_before_identity() {
     let typed = |kind| ObjectId {
+        storage: None,
         kind,
         digest: Digest::ZERO,
     };

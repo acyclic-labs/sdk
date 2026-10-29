@@ -47,7 +47,7 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
 ) -> Result<BlobBuild, FsError> {
     accounting.check()?;
     if options.chunk_bytes == 0
-        || effective_page_width(options).is_none()
+        || effective_page_width(options, store.maximum_reference_bytes()).is_none()
         || options.maximum_blob_bytes == 0
     {
         return Err(BlobBuildError::InvalidOptions.into());
@@ -55,7 +55,7 @@ pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlob
     let chunk_capacity =
         usize::try_from(options.chunk_bytes).map_err(|_| BlobBuildError::InvalidOptions)?;
     let mut batching = BlobBatchStore::new(store, accounting)?;
-    let mut index = BlobIndexBuilder::new(options);
+    let mut index = BlobIndexBuilder::new(options, store.maximum_reference_bytes());
     let result = async {
         let mut logical_bytes = 0_u64;
         loop {
@@ -305,8 +305,7 @@ pub(super) async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
                 return Err(error);
             }
         };
-    let chunk_id = object.object_id();
-    batching
+    let chunk_id = batching
         .put(object, retained, accounting, cancellation)
         .await?;
     index
@@ -361,31 +360,12 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            let mut writes = empty_blob_vec();
-            let result = async {
-                reserve_blob_vec(&mut writes, self.writes.value.len(), accounting)?;
-                // Only scalar identities and zero-copy byte aliases are transferred.
-                for object in &self.writes.value {
-                    writes.value.push(crate::storage::ObjectWrite {
-                        object_id: object.object_id(),
-                        bytes: object.bytes().clone(),
-                    });
-                }
-                {
-                    let __object_args = (&writes.value, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
-
-                    self.inner
-                        .put_many(__object_args.0, &mut __object_work)
-                        .await
-                }
-                .map_err(FsError::from)
-            }
-            .await;
-            let cleanup = release_blob_vec(writes, accounting);
-            result?;
-            cleanup?;
+            self.inner
+                .put_many_hashed(
+                    &self.writes.value,
+                    &mut crate::AuthorityWork::native(original, cancellation),
+                )
+                .await?;
             self.writes.value.clear();
             self.bytes = 0;
             return Ok(());
@@ -416,7 +396,11 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         retained: u64,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(), FsError> {
+    ) -> Result<ObjectId, FsError> {
+        let object =
+            crate::async_storage::prepare_object(self.inner, object, accounting, cancellation)
+                .await?;
+        let id = object.object_id();
         self.bytes = self
             .bytes
             .checked_add(retained)
@@ -425,7 +409,7 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         if self.writes.value.len() >= BLOB_BATCH_OBJECTS || self.bytes >= BLOB_BATCH_BYTES {
             self.flush(accounting, cancellation).await?;
         }
-        Ok(())
+        Ok(id)
     }
 
     pub(super) fn release(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {

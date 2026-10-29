@@ -277,9 +277,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
         Self::require_kind(root, F::kind())?;
         let mut pending: ProofVec<'_, (PendingPage<F::Key>, Option<ObjectId>)> =
             ProofVec::new(&self.meter);
-        pending.push(((root, None, None), before))?;
+        pending.push(((root, None, None, false), before))?;
         let mut pages = ProofVec::new(&self.meter);
-        while let Some(((id, lower, upper), before)) = pending.values.pop() {
+        while let Some(((id, lower, upper, _), before)) = pending.values.pop() {
             self.examine(1)?;
             if !set_insert(&mut pages, id)? {
                 return Err(ClosureError::RoutingAlias.into());
@@ -378,7 +378,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                         } else {
                             before
                         };
-                        pending.push(((child.page, Some(lower), upper), prior))?;
+                        pending.push(((child.page, Some(lower), upper, false), prior))?;
                     }
                 }
             }

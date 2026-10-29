@@ -15,6 +15,7 @@ fn store(entries: u32, fills: u32) -> CachedObjectStore<()> {
 
 fn object(id: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind: crate::ObjectKind::FileTablePage,
         digest: crate::Digest::from_bytes([id; 32]),
     }

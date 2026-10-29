@@ -420,7 +420,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &self,
         generation: GenerationId,
     ) -> Option<PublicationClosure<A, O>> {
-        if self.generation_root.digest != generation.digest() {
+        if self.generation_root != generation.object_id() {
             return None;
         }
         self.publication_closure.clone()
@@ -435,10 +435,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         mut prepared_roots: Option<PreparedCheckoutRoots>,
     ) -> Result<LivePublicationObservation, FsError> {
         let generation_id = retained.0.proof.generation_id;
-        let checkpoint_root = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation_id.digest(),
-        };
+        let checkpoint_root = generation_id.object_id();
         self.publication_closure = if matches!(
             retained.0.outcome,
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)
@@ -605,7 +602,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     return Err(FsError::NoPendingMutations);
                 }
                 if let Some(last) = self.observed_generation.commit()
-                    && last.generation_id == GenerationId::new(self.generation_root.digest)
+                    && last.generation_id == GenerationId::from_root(self.generation_root)
                 {
                     return Ok(LivePublicationObservation::AlreadyCommitted {
                         generation_id: last.generation_id,
@@ -639,7 +636,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             let generation_root = generation_from_record(commit, self.volume.id, &mut accounting)?;
             Ok(if generation_root == self.generation_root {
                 LivePublicationObservation::AlreadyCommitted {
-                    generation_id: GenerationId::new(generation_root.digest),
+                    generation_id: GenerationId::from_root(generation_root),
                     head,
                 }
             } else {

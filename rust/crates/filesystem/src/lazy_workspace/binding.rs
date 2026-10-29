@@ -175,7 +175,7 @@ impl<
         let state = self.state(ctx).await?;
         let head = self.head(ctx).await?;
         ctx.charge(WorkCounters {
-            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+            bytes_hashed: LazySnapshotRef::hash_bytes(head.id()),
             ..WorkCounters::UNCHARGED
         })?;
         Ok(LazySnapshotRef::new(
@@ -382,7 +382,7 @@ impl<
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
         ctx.charge(WorkCounters {
-            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+            bytes_hashed: LazySnapshotRef::hash_bytes(cut.authored_generation),
             ..WorkCounters::UNCHARGED
         })?;
         if cut.workspace_id != self.workspace.id()

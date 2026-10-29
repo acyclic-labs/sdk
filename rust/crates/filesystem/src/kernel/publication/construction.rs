@@ -68,7 +68,8 @@ pub(super) fn construct_publication_commit(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(Owned<Vec<u8>>, Digest), crate::FsError> {
     accounting.check()?;
-    let payload_length = publication_payload_length_with_evidence(original_evidence, None)?;
+    let payload_length =
+        publication_payload_length_with_evidence(request.generation_root, original_evidence, None)?;
     let input_length = fingerprint_input_length(operation_context)
         .checked_sub(publication_payload_length())
         .and_then(|length| length.checked_add(payload_length))
@@ -119,7 +120,11 @@ fn construct_payload(
     origin: Option<PublicationOrigin>,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<Owned<Vec<u8>>, crate::FsError> {
-    let payload_length = publication_payload_length_with_evidence(original_evidence, origin)?;
+    let payload_length = publication_payload_length_with_evidence(
+        publication.generation_root,
+        original_evidence,
+        origin,
+    )?;
     let evidence = if let Some(bytes) = original_evidence {
         let hashing = WorkCounters {
             bytes_hashed: usize_to_u64(EVIDENCE_DOMAIN.len())

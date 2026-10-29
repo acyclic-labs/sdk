@@ -305,19 +305,12 @@ fn probe_slots_with_charge<const CHARGE: bool>(
 }
 pub(super) fn object_hash(object_id: ObjectId) -> usize {
     let mut hash = usize::from(object_id.kind.canonical_tag());
-    for byte in object_id.digest.as_bytes() {
+    for byte in object_id.to_bytes().iter() {
         hash ^= usize::from(*byte);
         hash = hash.wrapping_mul(16_777_619);
     }
     hash
 }
-pub(super) fn compare_object_id(left: &ObjectId, right: &ObjectId) -> Ordering {
-    left.kind
-        .canonical_tag()
-        .cmp(&right.kind.canonical_tag())
-        .then_with(|| left.digest.cmp(&right.digest))
-}
-
 #[cfg(test)]
 #[cfg(loom)]
 mod loom_tests;

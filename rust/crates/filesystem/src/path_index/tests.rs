@@ -33,6 +33,7 @@ fn fixture() -> (
         kind: FileKind::Fifo,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: crate::storage::ObjectKind::Metadata,
             digest: Digest::from_bytes([9; 32]),
         },
@@ -101,10 +102,68 @@ fn finite_codec_preserves_opaque_names_absence_and_candidate_identity() -> Resul
         .is_none()
     );
     let table = ObjectId {
+        storage: None,
         kind: crate::storage::ObjectKind::FileTablePage,
         digest: Digest::from_bytes([1; 32]),
     };
     let first = cache_key(generation, ids[0], table, &ids, &mut accounting)?;
+    let storage = Some(crate::storage::ObjectStorage {
+        locator: Digest::from_bytes([11; 32]),
+        root_file_id: ids[0],
+        origin_generation: generation.digest(),
+    });
+    let sealed = GenerationId::from_root(ObjectId {
+        storage,
+        ..generation.object_id()
+    });
+    assert_ne!(
+        first,
+        cache_key(sealed, ids[0], table, &ids, &mut accounting)?
+    );
+    assert_ne!(
+        first,
+        cache_key(
+            generation,
+            ids[0],
+            ObjectId { storage, ..table },
+            &ids,
+            &mut accounting
+        )?
+    );
+    assert!(
+        decode(
+            &bytes,
+            sealed,
+            &ids,
+            VolumeLimits::default(),
+            &mut accounting
+        )?
+        .value
+        .is_none()
+    );
+    let (sealed_bytes, sealed_guard) = encode_records(sealed, &ids, &records, &mut accounting)?;
+    let sealed_bytes = sealed_bytes.unwrap();
+    let sealed_paths = decode(
+        &sealed_bytes,
+        sealed,
+        &ids,
+        VolumeLimits::default(),
+        &mut accounting,
+    )?;
+    assert_eq!(sealed_paths.value.as_ref().unwrap(), &decoded);
+    assert!(
+        decode(
+            &sealed_bytes,
+            generation,
+            &ids,
+            VolumeLimits::default(),
+            &mut accounting
+        )?
+        .value
+        .is_none()
+    );
+    drop(sealed_paths);
+    drop(sealed_guard);
     assert_ne!(
         first,
         cache_key(generation, ids[1], table, &ids, &mut accounting)?

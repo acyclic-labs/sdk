@@ -12,6 +12,7 @@ use crate::test_support::{
 
 fn object(kind: ObjectKind, byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([byte; 32]),
     }

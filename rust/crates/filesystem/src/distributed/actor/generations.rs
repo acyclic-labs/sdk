@@ -27,7 +27,7 @@ struct GenerationFact {
 }
 
 pub(super) struct GenerationCatalog {
-    facts: std::sync::Mutex<FixedIndex<GenerationFact, 32>>,
+    facts: std::sync::Mutex<FixedIndex<GenerationFact, { ObjectId::ENCODED_LEN }>>,
 }
 
 pub(in crate::distributed) enum GenerationKnowledge {
@@ -57,7 +57,7 @@ impl Projection {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fact = facts
-            .get(*generation.digest().as_bytes(), &mut work.accounting())
+            .get(generation.object_id().index_key(), &mut work.accounting())
             .map_err(authority_error)?;
         Ok(match fact {
             None => GenerationKnowledge::Absent,
@@ -100,11 +100,7 @@ impl GenerationCatalog {
     ) -> Result<GenerationIdentity, AuthorityStoreError> {
         let identity = GenerationIdentity::new(work)?;
         for (offset, row) in rows.iter().enumerate() {
-            let generation = GenerationId::new(Digest::from_bytes(work.decode_fixed::<32>(
-                &row.value,
-                LINEAGE_DOMAIN,
-                "invalid prepared generation lineage record",
-            )?));
+            let generation = decode_lineage_generation(&row.value)?;
             let tail = start
                 .checked_add(crate::foundation::usize_to_u64(offset))
                 .and_then(|value| value.checked_add(1))
@@ -133,7 +129,7 @@ impl GenerationCatalog {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let fact = facts
             .get_or_try_insert_with(
-                *generation.digest().as_bytes(),
+                generation.object_id().index_key(),
                 &mut work.accounting(),
                 |_| {
                     Ok(GenerationFact {

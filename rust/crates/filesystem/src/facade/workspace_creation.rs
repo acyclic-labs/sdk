@@ -169,7 +169,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Owned::new(root, allocation, bytes).retire(accounting)?;
         Ok(crate::Generation {
             workspace,
-            id: GenerationId::new(generation_root.digest),
+            id: GenerationId::from_root(generation_root),
             publication_closure: None,
         })
     }

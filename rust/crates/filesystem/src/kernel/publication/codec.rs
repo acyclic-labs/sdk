@@ -44,22 +44,7 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
         &mut observe,
     )?;
     let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
-    let kind = ObjectKind::from_canonical_tag(decoder.u8(&mut observe)?).map_err(|_| {
-        E::from(CanonicalDecodeError::Invariant(
-            crate::kernel::codec::CanonicalInvariant::Static("unknown publication object kind"),
-        ))
-    })?;
-    if kind != ObjectKind::GenerationRoot {
-        return Err(E::from(CanonicalDecodeError::Invariant(
-            crate::kernel::codec::CanonicalInvariant::Static(
-                "publication object is not a generation root",
-            ),
-        )));
-    }
-    let generation_root = ObjectId {
-        kind,
-        digest: Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?),
-    };
+    let generation_root = decoder.object(ObjectKind::GenerationRoot, &mut observe)?;
     let publication = PublishedGeneration {
         volume_id,
         generation_root,
@@ -87,9 +72,12 @@ pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
             crate::kernel::codec::CanonicalInvariant::Static("empty original publication evidence"),
         )));
     }
-    let envelope_bytes = usize_to_u64(publication_payload_length())
-        .checked_add(4 + 32 + if origin.is_some() { 80 } else { 0 })
-        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let envelope_bytes =
+        usize_to_u64(publication_payload_length() + generation_root.encoded_len() - 33)
+            .checked_add(usize_to_u64(
+                4 + 32 + origin.map_or(0, |origin| 48 + origin.generation_root.encoded_len()),
+            ))
+            .ok_or(CanonicalDecodeError::LengthOverflow)?;
     let maximum =
         u32::try_from(maximum_payload_bytes.saturating_sub(envelope_bytes)).unwrap_or(u32::MAX);
     if length > maximum {
@@ -141,10 +129,7 @@ fn read_origin<E: From<CanonicalDecodeError>>(
             sequence: crate::Sequence::new(decoder.u64(observe)?),
             digest: Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
         },
-        generation_root: ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
-        },
+        generation_root: decoder.object(ObjectKind::GenerationRoot, observe)?,
     }))
 }
 
@@ -250,11 +235,12 @@ pub(super) const fn publication_payload_length() -> usize {
 }
 
 pub(super) fn publication_payload_length_with_evidence(
+    generation_root: ObjectId,
     evidence: Option<&[u8]>,
     origin: Option<PublicationOrigin>,
 ) -> Result<usize, crate::FsError> {
-    let base = publication_payload_length()
-        .checked_add(if origin.is_some() { 80 } else { 0 })
+    let base = (publication_payload_length() + generation_root.encoded_len() - 33)
+        .checked_add(origin.map_or(0, |origin| 48 + origin.generation_root.encoded_len()))
         .ok_or(WorkError::Overflow)?;
     let Some(evidence) = evidence else {
         return base
@@ -313,13 +299,12 @@ pub(super) fn write_publication_payload(
         .to_le_bytes(),
     );
     bytes.extend_from_slice(&volume_id.into_bytes());
-    bytes.push(generation_root.kind.canonical_tag());
-    bytes.extend_from_slice(generation_root.digest.as_bytes());
+    bytes.extend_from_slice(&generation_root.to_bytes());
     if let Some(origin) = origin {
         bytes.extend_from_slice(&origin.expected.epoch.get().to_le_bytes());
         bytes.extend_from_slice(&origin.expected.sequence.get().to_le_bytes());
         bytes.extend_from_slice(origin.expected.digest.as_bytes());
-        bytes.extend_from_slice(origin.generation_root.digest.as_bytes());
+        bytes.extend_from_slice(&origin.generation_root.to_bytes());
     }
     if let Some((evidence, digest)) = evidence {
         bytes.extend_from_slice(&(evidence.len() as u32).to_le_bytes());

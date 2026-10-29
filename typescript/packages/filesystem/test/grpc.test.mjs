@@ -13,7 +13,7 @@ import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 const cert = readFileSync(new URL("../../machines/test/fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("../../machines/test/fixtures/server-key.pem", import.meta.url), "utf8");
 const workspace = { workspaceId: new Uint8Array(16).fill(1), name: "fixture" };
-const generation = { workspace, generationId: new Uint8Array(16).fill(2) };
+const generation = { workspace, generationId: Uint8Array.of(6, ...new Uint8Array(32).fill(2)) };
 const operationId = new Uint8Array(16).fill(3);
 const operation = { idempotencyKey: operationId };
 const responses = {

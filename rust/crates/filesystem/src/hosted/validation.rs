@@ -66,11 +66,9 @@ fn validate_generation(
     generation: &wire::GenerationRef,
     workspace: &wire::WorkspaceRef,
 ) -> Result<(), HostedFsError> {
-    exact_len(
-        &generation.generation_id,
-        32,
-        "generation identity has the wrong length",
-    )?;
+    GenerationId::from_bytes(&generation.generation_id).ok_or(HostedFsError::InvalidResponse(
+        "invalid generation-root reference",
+    ))?;
     let owner = generation
         .workspace
         .as_ref()

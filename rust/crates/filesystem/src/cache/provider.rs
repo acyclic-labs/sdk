@@ -1,6 +1,45 @@
 use super::*;
 
 impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
+    fn requires_child_first_publication(&self) -> bool {
+        self.inner.requires_child_first_publication()
+    }
+    fn maximum_reference_bytes(&self) -> usize {
+        self.inner.maximum_reference_bytes()
+    }
+    async fn prepare_hashed(
+        &self,
+        object: crate::HashedObject,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::HashedObject, ObjectStoreError> {
+        self.inner.prepare_hashed(object, context).await
+    }
+
+    async fn put_stored(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.inner.put_stored(id, bytes, context).await
+    }
+    async fn read_many_stored(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        self.inner.read_many_stored(requests, context).await
+    }
+
+    async fn read_stored(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, ObjectStoreError> {
+        self.inner.read_stored(id, maximum, context).await
+    }
+
     fn decoded_cache_get(
         &self,
         key: DecodedCacheKey,
@@ -87,6 +126,17 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         self.inner.flush_before_publish(scope, context).await
     }
 
+    async fn put_many_hashed(
+        &self,
+        objects: &[crate::HashedObject],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.inner.put_many_hashed(objects, context).await?;
+        for object in objects {
+            self.insert(object.object_id(), object.bytes().clone())?;
+        }
+        Ok(())
+    }
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
