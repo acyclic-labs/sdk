@@ -78,7 +78,9 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     throw new HostedFsError("protocol", "filesystem capabilities contain an unbounded byte limit");
   }
   negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
-  positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
+  if (advertised.maximumTransactionMutations !== undefined) {
+    positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
+  }
   positiveSafeInteger(advertised.maximumPageItems, "maximum page items");
   const profiles = advertised.profiles.map(profileFromWire);
   const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumPayloadResponseBytes)

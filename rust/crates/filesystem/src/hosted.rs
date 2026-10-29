@@ -352,7 +352,12 @@ impl HostedFs {
     }
 
     fn require_transaction_bound(&self, value: usize) -> Result<(), HostedFsError> {
-        if value == 0 || value > self.capabilities.maximum_transaction_mutations as usize {
+        if value == 0
+            || self
+                .capabilities
+                .maximum_transaction_mutations
+                .is_some_and(|maximum| u32::try_from(value).map_or(true, |value| value > maximum))
+        {
             Err(HostedFsError::LimitExceeded("transaction mutations"))
         } else {
             Ok(())
