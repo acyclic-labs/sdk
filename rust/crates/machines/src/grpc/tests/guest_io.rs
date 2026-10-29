@@ -611,7 +611,7 @@ async fn exec_drop_and_bad_frame_release_only_their_rpc() {
         let commands = io.commands.lock().unwrap();
         let accepted = commands.first().unwrap();
         assert_eq!(accepted.argv, argv);
-        assert_eq!(accepted.timeout_ms, u32::MAX);
+        assert_eq!(accepted.start.timeout_ms, u32::MAX);
     }
     let active_sender = io.sender();
     let stopped = machine.exec(command(60_000)).await.unwrap();
