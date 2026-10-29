@@ -131,7 +131,8 @@ export class Processes {
     const observed = (report, outcome) => {
       try {
         this.#onReport?.({ request_id: report.requestId, generation: report.generation,
-          outcome, cause: report.termination?.report_cause });
+          outcome, acknowledged: report.termination?.report_acknowledged === true,
+          cause: report.termination?.report_cause });
       } catch (error) { observationError ??= error; }
     };
     try {
