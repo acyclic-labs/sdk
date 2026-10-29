@@ -100,10 +100,13 @@ pub mod unsettled_resume {
     }
 }
 mod tool_resolution;
+mod tool_settlement;
 pub(crate) use content::verify_model_contents_scoped;
 #[cfg(all(any(test, feature = "test-support"), feature = "filesystem"))]
 #[doc(hidden)]
 pub use content::verify_model_contents_with_summary_authorization;
+pub(crate) use tool_settlement::tool_settlement_key;
+pub use tool_settlement::{ToolSettlement, ToolSettlementQuery, ToolTerminalOutcome};
 mod retained;
 mod turn;
 pub(crate) use phase::DispatchPhase;

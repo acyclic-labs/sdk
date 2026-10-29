@@ -26,6 +26,21 @@ impl ToolInvocation {
         arguments: Value,
         work: crate::NativeWork<'_>,
     ) -> Result<Self> {
+        let operation_id = Self::model_call_operation(parent, step, &call_id, work)?;
+        Ok(Self {
+            operation_id,
+            call_id,
+            name,
+            arguments,
+        })
+    }
+
+    pub(crate) fn model_call_operation(
+        parent: OperationId,
+        step: u32,
+        call_id: &str,
+        work: crate::NativeWork<'_>,
+    ) -> Result<OperationId> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             let hashed = (b"harness:tool-call:v2".len() as u64)
@@ -50,12 +65,7 @@ impl ToolInvocation {
         let digest = hasher.finalize();
         let mut identity = [0_u8; 16];
         identity.copy_from_slice(&digest.as_bytes()[..16]);
-        Ok(Self {
-            operation_id: OperationId::from_bytes(identity),
-            call_id,
-            name,
-            arguments,
-        })
+        Ok(OperationId::from_bytes(identity))
     }
 
     /// Validates a call ID and its tool name when already selected.

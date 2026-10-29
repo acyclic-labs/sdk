@@ -145,7 +145,8 @@ impl TurnContext for LocalContext {
             };
             let context = local
                 .harness
-                .agent_context(&authority.grants, authority.content.clone())?;
+                .agent_context(&authority.grants, authority.content.clone())?
+                .with_execution_journal(Arc::clone(&authority.journal));
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?

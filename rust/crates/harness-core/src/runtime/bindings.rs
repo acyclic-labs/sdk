@@ -69,6 +69,7 @@ impl AgentHarness {
             harness: Arc::clone(self),
             scope,
             output_content: private,
+            journal: None,
         })
     }
 }

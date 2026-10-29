@@ -129,6 +129,21 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Ok(None)
     }
 
+    /// Observes one original tool's terminal record without replaying history.
+    /// `None` leaves the request unresolved; it never authorizes retirement.
+    fn tool_settlement<'a>(
+        &'a self,
+        query: ToolSettlementQuery<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ToolSettlement>>> {
+        query.validate(io)?;
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no authenticated tool settlement lookup",
+        ))
+    }
+
     /// Appends one reconstructable observation on the original optional ledger.
     fn append<'a>(
         &'a self,

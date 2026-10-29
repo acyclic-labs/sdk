@@ -429,9 +429,7 @@ impl StockExecution<'_> {
         }) {
             return Err(Error::Indeterminate(operation_id));
         }
-        let key = with_history_io(self.io, |work| {
-            preparation_format(format_args!("tool:{step}:{call_id}:completed"), work)
-        })?;
+        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Completed, self.io)?;
         let event = ExecutionEvent::ToolCompleted {
             step,
             call_id: stock_string_copy(call_id, self.io)?,

@@ -87,6 +87,18 @@ where
             .map(Some)
     }
 
+    fn tool_settlement<'a>(
+        &'a self,
+        query: crate::executor::ToolSettlementQuery<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<'a, Option<crate::executor::ToolSettlement>>,
+    > {
+        crate::conversation::BoundedContentFuture::new(io, || {
+            self.observe_tool_settlement(query, io)
+        })
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_execution(
         &self,

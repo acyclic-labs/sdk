@@ -331,6 +331,17 @@ impl ToolContext {
     pub const fn operation_id(&self) -> OperationId {
         self.operation_id
     }
+
+    /// Original model call identity to retain with a reconstructable request.
+    #[must_use]
+    pub fn settlement_query(&self) -> crate::executor::ToolSettlementQuery<'_> {
+        crate::executor::ToolSettlementQuery {
+            turn: self.model_turn.0,
+            step: self.model_turn.1,
+            call_id: &self.call_id,
+            effect: self.operation_id,
+        }
+    }
 }
 
 impl std::ops::Deref for ToolContext {

@@ -181,14 +181,9 @@ where
             cache: None,
         };
         let key = crate::model::hash_bytes(retry.as_bytes(), io)?;
-        let read = reader
-            .get(state.roots[0], &key)
+        let cell = retry_entry(&reader, state, key)
             .await?
             .ok_or_else(|| changed(io))?;
-        let persistent_index::node::Node::Leaf { value, .. } = read.node(io)? else {
-            return Err(corrupt(io));
-        };
-        let cell = <(u64, [u8; 32])>::decode(value, io)?;
         let digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
@@ -311,6 +306,25 @@ where
         }
         Ok(roots)
     }
+}
+
+pub(super) async fn retry_entry<P: StreamProvider + ?Sized>(
+    reader: &Reader<'_, P>,
+    state: checkpoint::IndexState,
+    retry: [u8; 32],
+) -> Result<Option<(u64, [u8; 32])>> {
+    let io = reader.io;
+    let Some(read) = reader.get(state.roots[0], &retry).await? else {
+        return Ok(None);
+    };
+    let persistent_index::node::Node::Leaf { value, .. } = read.node(io)? else {
+        return Err(corrupt(io));
+    };
+    let entry = <(u64, [u8; 32])>::decode(value, io)?;
+    if entry.0 == 0 || entry.0 > state.tail {
+        return Err(corrupt(io));
+    }
+    Ok(Some(entry))
 }
 
 fn corrupt(io: Option<&PreparationIo>) -> Error {

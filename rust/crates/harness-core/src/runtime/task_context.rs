@@ -6,9 +6,42 @@ pub struct TaskContext {
     pub(crate) harness: Arc<AgentHarness>,
     pub(super) scope: RuntimeScope,
     pub(super) output_content: ContentBindings,
+    pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
 }
 
 impl TaskContext {
+    /// Retains the same finalized journal supplied to this turn's executor.
+    #[must_use]
+    pub fn with_execution_journal(
+        mut self,
+        journal: Arc<dyn crate::executor::ExecutionJournal>,
+    ) -> Self {
+        self.journal = Some(journal);
+        self
+    }
+
+    /// Authenticates an original model call's committed terminal observation.
+    /// Missing bindings, unreadable records and foreign identities refuse;
+    /// an absent terminal record remains unresolved.
+    pub fn tool_settlement<'a>(
+        &'a self,
+        query: crate::executor::ToolSettlementQuery<'a>,
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<
+        crate::conversation::BoundedContentFuture<'a, Option<crate::executor::ToolSettlement>>,
+    > {
+        self.journal
+            .as_ref()
+            .ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "task has no original execution journal",
+                )
+            })?
+            .tool_settlement(query, io)
+    }
+
     /// Returns the exact effective authority.
     #[must_use]
     pub const fn scope(&self) -> &RuntimeScope {
