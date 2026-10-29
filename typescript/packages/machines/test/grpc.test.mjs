@@ -156,6 +156,7 @@ async function exec(client, request, options) {
 }
 
 test("Cloud create, exec, console read and destroy retain exact identities", async t => {
+  const argv = ["/bin/echo", "sdk-token", "é".repeat(4097), ...Array(65).fill("a".repeat(512))];
   const request = create(wire.CreateMachineRequestSchema, {
     protocol, idempotencyKey: identity(3),
     image: { kind: wire.ImageKind.MANAGED_OCI, immutableReference: { case: "managedDigest", value: new Uint8Array(32).fill(4) } },
@@ -180,8 +181,8 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
     },
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, commandRequest({ protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
-      assert.ok(context.timeoutMs() > 30000);
+      assert.deepEqual(query, commandRequest({ protocol, machine, argv, timeoutMs: 0xffff_ffff }));
+      assert.ok(context.timeoutMs() > 0 && context.timeoutMs() <= 1000);
       calls.push("exec");
       yield { machine, output: channelData(new TextEncoder().encode("sdk-token\n")) };
       yield { machine, output: { case: "exitCode", value: 0 } };
@@ -205,7 +206,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
   const observation = await machines.inspectMachine({ protocol, machine: admission.machine });
   assert.equal(observation.status, wire.MachineStatus.RUNNING);
   assert.equal(observation.createdAtUnixMs, 9007199254740993n);
-  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }), 0);
+  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv, timeoutMs: 0xffff_ffff }, { timeoutMs: 1000 }), 0);
   assert.equal(new TextDecoder().decode((await machines.readOutput({ protocol, machine: admission.machine, offset: 0n, limit: MAX_OUTPUT_READ_BYTES })).data), "sdk-token\n");
   assert.deepEqual((await machines.destroyMachine({ protocol, machine: admission.machine, idempotencyKey: identity(6) })).machine, admission.machine);
   assert.deepEqual(calls, ["create", "inspect", "exec", "read", "destroy"]);
@@ -396,6 +397,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   const { machines } = await fixture(t, {
     readOutput(query, context) {
       authenticate(context);
+      assert.ok(query.limit > 0 && query.limit <= MAX_OUTPUT_READ_BYTES);
       seen.push(query.offset);
       return { machine, offset: query.offset + (seen.length === 1 ? 4n : 0n), data: seen.length === 2 ? new Uint8Array() : new Uint8Array([0, 255]) };
     },
@@ -407,6 +409,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   assert.equal((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data.length, 0);
   assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data, first.data);
   assert.deepEqual(seen, [offset, next, next]);
+  assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 0xffff_ffff })).data, first.data);
 });
 
 test("an exec RPC deadline cancels the pending call without redispatch", async t => {
@@ -436,9 +439,9 @@ test("exec and console request bounds fail before reaching the server", async t 
   for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"]]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
-  for (const timeoutMs of [0, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const timeoutMs of [0, -1, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
   for (const cwd of ["", "a\0b"]) await assert.rejects(exec(machines, { ...request, cwd }), RangeError);
-  for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
+  for (const limit of [0, Number.MAX_SAFE_INTEGER + 1, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
   assert.equal(attempts, 0);
 });
@@ -587,13 +590,13 @@ test("invalid transport configuration is rejected before opening a session", () 
   for (const endpoint of ["http://example.test", "https://user@example.test", "https://example.test?q=1", "https://example.test/#fragment"]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, endpoint }), TypeError);
   }
-  for (const token of [" ", "a\nb", "a\rb", "a\0b", "é".repeat(6145)]) {
+  for (const token of [" ", "a\nb", "a\rb", "a\0b"]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, token }), TypeError);
   }
   for (const maximumMessageBytes of [0, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, maximumMessageBytes }), RangeError);
   }
-  for (const caCertificate of ["", "x".repeat(65537)]) {
+  for (const caCertificate of [""]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, caCertificate }), RangeError);
   }
 });

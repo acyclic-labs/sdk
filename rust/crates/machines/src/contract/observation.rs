@@ -164,7 +164,7 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
-    /// Checks argv admission and a positive command deadline.
+    /// Requires a program, NUL-free arguments and a positive caller deadline.
     pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)

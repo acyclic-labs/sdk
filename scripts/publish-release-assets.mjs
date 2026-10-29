@@ -1,5 +1,5 @@
+import { commandOutput } from "./process-capture.mjs";
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +28,7 @@ async function digest(file) {
   return `sha256:${hash.digest('hex')}`;
 }
 
-export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }) } = {}) {
+export async function publish({ env = process.env, directory = env.RELEASE_ASSET_DIR, gh = (...args) => commandOutput('gh', args, { encoding: 'utf8' }) } = {}) {
   if (!directory) throw new Error('An explicit qualified release asset directory is required');
   const files = assets(directory);
   if (!files.length) throw new Error('Qualified release asset directory is empty');

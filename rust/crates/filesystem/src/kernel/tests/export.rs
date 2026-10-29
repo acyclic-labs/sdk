@@ -30,6 +30,10 @@ fn manifest_round_trip_is_canonical_and_bounded() -> Result<(), Box<dyn std::err
         decode_generation_export_manifest(&encoded, encoded.len() as u64, 2)?,
         value
     );
+    assert_eq!(
+        decode_generation_export_manifest(&encoded, None, None)?,
+        value
+    );
     assert!(matches!(
         decode_generation_export_manifest(&encoded, encoded.len() as u64, 1),
         Err(GenerationExportManifestError::TooManyObjects)
@@ -44,17 +48,6 @@ fn manifest_rejects_mismatch_missing_root_duplicates_and_disorder() {
     assert_eq!(
         validate_generation_export_manifest(&value, u64::MAX),
         Err(GenerationExportManifestError::WrongRootKind)
-    );
-
-    let mut value = manifest();
-    value.file_count = value
-        .config
-        .limits
-        .maximum_files_per_generation
-        .saturating_add(1);
-    assert_eq!(
-        validate_generation_export_manifest(&value, u64::MAX),
-        Err(GenerationExportManifestError::TooManyFiles)
     );
 
     let value = manifest();
@@ -87,4 +80,19 @@ fn manifest_rejects_mismatch_missing_root_duplicates_and_disorder() {
         encode_generation_export_manifest(&value),
         Err(GenerationExportManifestError::NonCanonicalObjectOrder)
     ));
+}
+
+#[test]
+fn manifest_count_requires_present_identity_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let value = manifest();
+    let mut encoded = encode_generation_export_manifest(&value)?;
+    let count_offset = encoded.len() - value.objects.len() * 33 - 4;
+    encoded[count_offset..count_offset + 4].copy_from_slice(&1_000_000_u32.to_le_bytes());
+    assert_eq!(
+        decode_generation_export_manifest(&encoded, None, None),
+        Err(GenerationExportManifestError::Decode(
+            CanonicalDecodeError::Truncated
+        )),
+    );
+    Ok(())
 }

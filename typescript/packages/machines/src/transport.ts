@@ -1,3 +1,4 @@
+import { pageSize } from "./wasm-runtime.js";
 import { ownedStream } from "./owned-stream.js";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Transport } from "@connectrpc/connect";
@@ -78,7 +79,7 @@ export function createMachinesClient(transport: Transport) {
       async readOutput(request: MessageInitShape<typeof wire.ReadOutputRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ReadOutputRequestSchema, request);
         if (query.offset < 0n || query.offset > MAX_OFFSET) throw new RangeError("offset must be uint64");
-        if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > MAX_OUTPUT_READ_BYTES) throw new RangeError("limit must be 1..65536");
+        query.limit = pageSize(query.limit, MAX_OUTPUT_READ_BYTES);
         const result = await machines.readOutput(query, callOptions);
         checkIdentity(query.machine, result.machine, "machine");
         if (result.offset < query.offset || result.data.byteLength > query.limit || result.offset + BigInt(result.data.byteLength) > MAX_OFFSET) throw new ConnectError("invalid console output range", Code.DataLoss);

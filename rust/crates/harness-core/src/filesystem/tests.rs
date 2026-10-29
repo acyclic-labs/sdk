@@ -110,20 +110,12 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let read = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, &mut None)?;
     let write = ContentGrant::verify(
         &verifier,
         &scope,
         &volume,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let first = host
@@ -449,15 +441,7 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         &mut None,
     )?;
     assert!(
-        ContentGrant::verify(
-            &verifier,
-            &scope,
-            &other,
-            VolumeOperation::Read,
-            u64::MAX,
-            &mut None
-        )
-        .is_err()
+        ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, &mut None).is_err()
     );
     Ok(())
 }
