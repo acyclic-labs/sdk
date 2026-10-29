@@ -6,7 +6,12 @@ enum Decision<T, F> {
 }
 
 impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
-    fn install(self, core: &MemoryStream, state: &mut State, durable: bool) -> Result<T, StreamError> {
+    fn install(
+        self,
+        core: &MemoryStream,
+        state: &mut State,
+        durable: bool,
+    ) -> Result<T, StreamError> {
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
@@ -87,10 +92,9 @@ impl MemoryStream {
         use crate::{WriteOutcome, WriteRequest};
         let _publication = self.publication.lock().await;
         #[cfg(loom)]
-        let _publication = (!crate::verification::fault_is(
-            crate::verification::Fault::ReleasePendingPublication,
-        ))
-        .then_some(_publication);
+        let _publication =
+            (!crate::verification::fault_is(crate::verification::Fault::ReleasePendingPublication))
+                .then_some(_publication);
         let mut state = self.state.write().await;
         match &canonical.command {
             WriteRequest::Append(request) => self
