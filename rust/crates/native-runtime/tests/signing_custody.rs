@@ -11,6 +11,8 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
         let record = std::env::var_os("CUSTODY_CONTROL_RECORD").ok_or(io::ErrorKind::InvalidInput)?;
         return match operation.to_str() {
             Some("probe-native") => {
+                #[cfg(target_os = "macos")]
+                let _interaction = security_framework::os::macos::keychain::SecKeychain::disable_user_interaction().map_err(io::Error::other)?;
                 match SigningKeyReference::create() {
                     Ok(key) => {
                         key.reference().with_seed(|_| ())?;
