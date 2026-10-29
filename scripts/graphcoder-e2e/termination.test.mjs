@@ -1,27 +1,61 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createInterface } from "node:readline";
+import { isAbsolute } from "node:path";
 import { Processes } from "./process.mjs";
 
-test("deadline termination retains primitive diagnostics then physically drains", { skip: process.platform === "win32" }, async () => {
-  for (const owned of [false, true]) for (const reports of [true, false]) {
+// This is the actual native report producer from the compiled test target,
+// rather than a hand-authored external protocol transcript.
+const probe = process.env.E2E_REPORT_TEST_BINARY;
+const selector = "obs::report_port::tests::inherited_report_port_joins_the_selected_real_process";
+
+function launch(scope, owned, mode) {
+  assert.ok(probe && isAbsolute(probe), "report-control step=admit failed; recovery command: cargo test --locked -p acyclic-native-runtime --lib --no-run; set E2E_REPORT_TEST_BINARY to its emitted executable");
+  const start = owned ? scope.startOwned.bind(scope) : scope.start.bind(scope);
+  return start(probe, ["--exact", selector, "--nocapture"], {
+    scopeReport: true, env: { ...process.env, ACYCLIC_REPORT_PORT_CHILD: mode },
+  });
+}
+
+async function ready(running) {
+  await Promise.race([running.reportReady, running.closed.then(() => {
+    throw new Error("report-control step=ready failed; recovery command: inspect the compiled native report producer's stderr and executable binding");
+  })]);
+}
+
+test("selected report acknowledgement distinguishes live, empty, refusal and producer loss before physical drain", { skip: process.platform === "win32" }, async () => {
+  for (const owned of [false, true]) for (const [mode, expected] of [
+    ["live", "report"], ["1", "empty"], ["expired", "unsupported"],
+    ["crash", "owner-exited"], ["hold", "unacknowledged"],
+  ]) {
     const scope = new Processes();
-    const script = `process.on('SIGTERM', () => { ${reports ? "process.stderr.write('waiting: provider-event opaque-1 since 1.125 (0.1s elapsed)\\n', () => process.exit(143));" : ""} }); require('node:net').createServer().listen(0, '127.0.0.1', () => process.stdout.write('ready\\n'));`;
-    const running = (owned ? scope.startOwned.bind(scope) : scope.start.bind(scope))(process.execPath, ["-e", script], { scopeReportSignal: "SIGTERM" });
-    const ready = createInterface({ input: running.child.stdout });
-    await new Promise((resolve, reject) => { ready.once("line", resolve); running.closed.then(() => reject(new Error("producer exited before readiness"))); });
-    ready.close();
+    const running = launch(scope, owned, mode);
+    try {
+      await ready(running);
+      if (mode === "expired") await running.requestReport(0);
+      // Closing stderr must not alter delivery on the dedicated control port.
+      if (mode === "live") running.child.stderr.destroy();
+      await scope.close();
+      const result = await running.closed;
+      assert.equal(result.termination.report_requested, true);
+      assert.equal(result.termination.report_outcome, expected);
+      assert.equal(result.termination.missing_wait_report, !["report", "empty"].includes(expected));
+      if (expected === "report") assert.equal(result.termination.stuck_on[0].primitive, "channel-close");
+      else assert.deepEqual(result.termination.stuck_on, []);
+      assert.equal(scope.children.size, 0, "acknowledgement never substitutes for physical retirement");
+    } finally { await scope.close(); }
+  }
+});
+
+test("rejected control delivery remains a sink failure and still retires the same owner", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "1");
+  try {
+    await ready(running);
+    running.child.stdio[3].destroy(new Error("deliberately withdrawn report sink"));
     await scope.close();
     const result = await running.closed;
-    assert.equal(result.termination.report_requested, true);
-    assert.equal(result.termination.missing_wait_report, !reports);
-    if (reports) {
-      assert.deepEqual(result.termination.stuck_on, [{ primitive: "provider-event", key: "opaque-1", since: 1.125 }]);
-      assert.equal(result.code, 143);
-    } else {
-      assert.ok(owned ? result.code === 124 : result.signal === "SIGKILL", "an unresponsive report producer must still be physically retired");
-      assert.deepEqual(result.termination.stuck_on, []);
-    }
+    assert.equal(result.termination.report_outcome, "sink-failed");
+    assert.equal(result.termination.missing_wait_report, true);
     assert.equal(scope.children.size, 0);
-  }
+  } finally { await scope.close(); }
 });

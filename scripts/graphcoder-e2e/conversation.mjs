@@ -5,7 +5,7 @@ import { Spool } from "./process.mjs";
 // when a turn settles; child reports become a later parent turn, not a wait tool.
 export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}) {
   const active = processes.start(binary, [...fixture.args, "--operation", input.operation,
-    "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReportSignal: "SIGTERM" });
+    "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   // One reply per turn, keyed by the turn's id: a repeated id fails the spool.
   const replies = new Spool(active.child.stdout, active.closed, { key: event => [event.id], unique: true });
   const ended = active.closed.then(result => {

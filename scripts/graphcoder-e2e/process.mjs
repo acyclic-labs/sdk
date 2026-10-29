@@ -7,6 +7,7 @@ import { stripVTControlCharacters } from "node:util";
 import assert from "node:assert/strict";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ProcessReport } from "./process-report.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -29,14 +30,19 @@ export class Processes {
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReportSignal, ...spawnOptions } = options;
-    const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, ...spawnOptions } = options;
+    const report = scopeReport ? new ProcessReport() : undefined;
+    const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
+      ...(report ? { stdio: ["pipe", "pipe", "pipe", "pipe"], env: {
+        ...(spawnOptions.env ?? process.env), ACYCLIC_REPORT_FD: "3", ACYCLIC_REPORT_GENERATION: report.generation,
+      } } : {}),
+    });
+    report?.attach(child);
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
       if (scopeTreeControl) { child.stdin.end(); return; }
       child.kill(scopeKillSignal);
     };
-    let reportRequested = false;
     const index = this.started++;
     const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
     const written = Promise.all([transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)]);
@@ -64,18 +70,17 @@ export class Processes {
         // Settle only after both transcripts are complete on disk.
         written.then(() => {
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (reportRequested) {
-            const stuck_on = waitDetails(result.stderr + "\n" + result.stdout);
-            result.termination = { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 };
-          }
+          if (report?.termination) result.termination = report.termination;
           resolve(result);
         }, () => {});
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    this.children.set(child, { kill, reaped, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
-    return { child, exited, closed, killExecutable: () => child.kill("SIGKILL") };
+    this.children.set(child, { kill, reaped, report });
+    return { child, exited, closed, reportReady: report?.ready,
+      requestReport: report ? deadline => report.request(deadline) : undefined,
+      killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
     const process = this.start(program, args, options);
@@ -102,7 +107,7 @@ export class Processes {
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
   startTerminal(binary, args, options = {}) {
     const env = { ...(options.env ?? process.env), TERM: "xterm-256color" };
-    if (process.platform !== "win32") return this.startOwned(binary, args, { scopeReportSignal: "SIGTERM", ...options, env, scopePty: true });
+    if (process.platform !== "win32") return this.startOwned(binary, args, { scopeReport: true, ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
     return this.startOwned(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
@@ -122,9 +127,10 @@ export class Processes {
       // permits diagnostics before the same physical termination barrier.
       let force;
       const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
-      for (const child of reporting) child.report();
-      try { await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]); }
+      const deadline = Date.now() + 500;
+      try { await Promise.race([Promise.all(reporting.map(child => child.report.request(deadline))), forced]); }
       finally { clearTimeout(force); }
+      for (const child of reporting) child.report.expire();
     }
     for (const child of children) child.kill();
     await Promise.all(children.map(child => child.reaped));

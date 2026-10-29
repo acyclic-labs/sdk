@@ -31,9 +31,13 @@ subtle.workspace = true
 getrandom = { workspace = true, features = ["std"] }
 zeroize.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
-tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
+tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync", "io-util"] }
 tokio-util = { workspace = true, features = ["codec"] }
+
+[target.'cfg(unix)'.dependencies]
+tokio = { version = "1.48.0", default-features = false, features = ["net"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-keyutils = { version = "0.2.5", features = ["std"] }
