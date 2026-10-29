@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { waitForFile, waitForFileValue } from './wait-path.mjs';
 
@@ -27,10 +29,21 @@ test('observes an atomic publication through newly created ancestors', async () 
   try {
     const path = join(root, 'new', 'nested', 'ready');
     const ready = waitForFile(path, { timeoutMs: 2000 });
+    const child = spawn(process.execPath, [fileURLToPath(new URL('./wait-path.mjs', import.meta.url)), path], {
+      windowsHide: true, stdio: 'ignore',
+    });
+    const terminal = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => {
+        if (code === 0) resolve();
+        else reject(new Error(`file wait failed: ${code ?? signal}`));
+      });
+    });
     mkdirSync(join(root, 'new', 'nested'), { recursive: true });
     writeFileSync(join(root, 'staged'), 'committed');
     renameSync(join(root, 'staged'), path);
     await ready;
+    await terminal;
     await waitForFile(path, { timeoutMs: 2000 });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
