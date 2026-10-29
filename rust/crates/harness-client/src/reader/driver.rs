@@ -403,6 +403,7 @@ mod tests {
             wait_at: usize,
             calls: Arc<AtomicUsize>,
             receive: Mutex<Option<oneshot::Receiver<()>>>,
+            revoke_on_loss: bool,
         }
         impl CredentialRequest for Request {
             fn token(&self) -> &str {
@@ -415,10 +416,16 @@ mod tests {
                 if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.wait_at {
                     let receive = self.receive.lock().unwrap().take().unwrap();
                     let lease = self.lease.clone();
+                    let revoke_on_loss = self.revoke_on_loss;
                     CredentialAction::Pending(Box::pin(async move {
-                        receive.await.map_err(|_| {
-                            CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
-                        })?;
+                        if receive.await.is_err() {
+                            if revoke_on_loss {
+                                lease.reject().await?;
+                            }
+                            return Err(CredentialError::Provider(Box::new(
+                                CredentialCacheError::Unavailable,
+                            )));
+                        }
                         lease.check().await
                     }))
                 } else {
@@ -448,7 +455,15 @@ mod tests {
             let head = stream.head(path.clone()).await.unwrap();
             // The first check admits the original request. Lose the producer
             // at each read or follow boundary on the actual provider.
-            for (follow, wait_at) in [(false, 2), (false, 3), (true, 2), (true, 3), (true, 4)] {
+            for (follow, wait_at, revoke_on_loss) in [
+                (false, 2, false),
+                (false, 3, false),
+                (true, 2, false),
+                (true, 3, false),
+                (true, 4, false),
+                (false, 2, true),
+                (false, 3, true),
+            ] {
                 let provider: CredentialProvider = CredentialCache::new(
                     |_| async {
                         CredentialSnapshot::new(
@@ -470,6 +485,7 @@ mod tests {
                     wait_at,
                     calls: calls.clone(),
                     receive: Mutex::new(Some(receive)),
+                    revoke_on_loss,
                 })
                 .await
                 .unwrap();
@@ -507,10 +523,14 @@ mod tests {
                 assert!(driver.aborts.is_empty());
                 assert!(reader.cache().record(&path, 0).is_none());
                 assert!(reader.issues().next().is_none());
-                assert!(matches!(
-                    reader.connectivity(),
-                    Connectivity::Degraded { .. }
-                ));
+                if revoke_on_loss {
+                    assert!(!reader.readable());
+                } else {
+                    assert!(matches!(
+                        reader.connectivity(),
+                        Connectivity::Degraded { .. }
+                    ));
+                }
             }
         });
     }

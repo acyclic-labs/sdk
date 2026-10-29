@@ -985,14 +985,14 @@ impl Reader {
     /// Fold one op's outcome into the cache. Late or cancelled outcomes are
     /// ignored; malformed ones count as refusals.
     pub fn complete(&mut self, id: u64, outcome: Outcome, now: u64) {
-        if !self.readable() {
-            return;
-        }
         let Some(flight) = self.inflight.remove(&id) else {
             return;
         };
-        self.generation += 1;
         self.keys.remove(&flight.key);
+        if !self.readable() {
+            return;
+        }
+        self.generation += 1;
         let rtt = now.saturating_sub(flight.issued);
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
