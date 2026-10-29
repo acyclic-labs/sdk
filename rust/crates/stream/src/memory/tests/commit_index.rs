@@ -183,7 +183,12 @@ async fn commit_index_work_is_admitted_before_append_or_coordinated_publication(
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
         };
-        provider.append(request.clone()).await?;
+        provider
+            .append(AppendRequest {
+                idempotency_key: crate::IdempotencyKey::unique(),
+                ..request.clone()
+            })
+            .await?;
         let snapshot = provider.encode_state().await;
         let denied = Arc::new(Meter::default());
         denied

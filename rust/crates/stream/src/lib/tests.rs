@@ -233,7 +233,10 @@ mod replay_tests {
             })
             .await
             .unwrap();
-        let restored = Arc::new(MemoryStream::default());
+        let authority = provider.revisions.current();
+        let restored = Arc::new(
+            MemoryStream::default().with_authority(authority.scope, authority.incarnation),
+        );
         restored
             .install_state(&provider.encode_state().await)
             .await
