@@ -56,6 +56,14 @@ pub(super) struct CaptureSourceGate {
     ever_used: bool,
 }
 
+#[derive(Default)]
+pub(super) struct CaptureSourceSignal {
+    gate: StdMutex<CaptureSourceGate>,
+    quiesced: std::sync::Condvar,
+    // Retain original funding until the last producer or cancellation waker drops.
+    _allocation: Option<crate::NativeAllocation>,
+}
+
 /// Blocking native callback adapter over one async canonical checkout.
 pub struct CheckoutMountSource<A: 'static, O: 'static> {
     checkout: Arc<SharedCheckout<A, O>>,
@@ -66,14 +74,12 @@ pub struct CheckoutMountSource<A: 'static, O: 'static> {
     folds_names: bool,
     folded_directories: folded_cache::FoldedDirectoryCache<folded_names::FoldedKeys>,
     cancellation: CancellationToken,
-    capture_gate: Arc<StdMutex<CaptureSourceGate>>,
-    capture_quiesced: Arc<std::sync::Condvar>,
+    capture_signal: Arc<CaptureSourceSignal>,
     runtime: CallbackRuntime,
     native_original: Option<crate::NativeMaterializationWork>,
     native_io_original: Option<crate::NativeMaterializationWork>,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
-    _namespace_allocation: Option<crate::NativeAllocation>,
     _source_allocation: Option<crate::NativeAllocation>,
 }
 

@@ -153,7 +153,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                 },
                 |checkout, candidate, prepared| {
                     let gate = self
-                        .capture_gate
+                        .capture_signal
+                        .gate
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner);
                     if gate.cancelled {
