@@ -233,7 +233,8 @@ impl WireSession {
             validate_subscription(&path, &subscription)?;
             if let Some(existing) = self.views.get(&path)
                 && (existing.request.credential != subscription.credential
-                    || existing.request.kind != subscription.kind)
+                    || existing.request.kind != subscription.kind
+                    || existing.request.filter != subscription.filter)
             {
                 // Keeping a cursor must never silently retain another principal
                 // or downgrade a checked follow's immutable history anchor.
@@ -265,7 +266,7 @@ impl WireSession {
         let opening = opening_resources
             + requested
                 .keys()
-                .filter(|path| !self.follows.contains_key(*path))
+                .filter(|path| !self.views.contains_key(*path))
                 .count();
         // A replacement can change composition (for example focus) while its
         // stream membership is unchanged. Fence renderer caches in that case too.
@@ -292,10 +293,10 @@ impl WireSession {
                 staged_resources.push((resource.clone(), view, follow));
             }
         }
-        // A requested stream whose follow ended (one that did not exist yet,
-        // say) opens again; only a live follow keeps its cursor.
+        // Terminal views keep their output and cursor until explicit reopen.
+        // Initially absent streams wait through the provider's creation event.
         for (path, subscription) in requested {
-            if self.follows.contains_key(&path) {
+            if self.views.contains_key(&path) {
                 continue;
             }
             revision += 1;

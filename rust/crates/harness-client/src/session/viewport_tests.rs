@@ -285,6 +285,25 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             ));
             assert_eq!(session.revision(), revision);
             assert_eq!(view(&session), retained);
+            let (mut streams, mut resources) = tree.visible(0);
+            let filter = Some(wire::SessionFilter {
+                keys: vec![wire::KeyRange {
+                    start: Bytes::from_static(b"restricted"),
+                    end: Bytes::from_static(b"restricted\0"),
+                }],
+                ..Default::default()
+            });
+            if resource {
+                resources[0].filter = filter;
+            } else {
+                streams[0].1.filter = filter;
+            }
+            assert!(matches!(
+                session.replace_interests(streams, resources),
+                Err(WireSessionError::InvalidSubscription)
+            ));
+            assert_eq!(session.revision(), revision);
+            assert_eq!(view(&session), retained);
             if resource {
                 session.begin_resource(request).unwrap();
                 assert_eq!(session.resource_view(&name).unwrap().retained_bytes(), 0);
@@ -296,26 +315,4 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             scheduler.tasks.lock().unwrap().clear();
         }
     }
-}
-
-#[test]
-fn replacement_reopens_a_requested_stream_whose_follow_ended() {
-    let tree = Tree::new(1);
-    let (mut session, _scheduler) = client();
-    let (streams, _) = tree.visible(0);
-    let path = streams[0].0.clone();
-    session.replace_streams(streams.clone()).unwrap();
-    let live = session.revision();
-    // A live follow keeps its cursor: the same request opens nothing.
-    session.replace_streams(streams.clone()).unwrap();
-    assert_eq!(session.revision(), live + 1);
-    assert!(session.is_following(&path));
-    // A follow that ended (its stream did not exist yet) keeps only its
-    // final view. Negative control: the former replacement skipped any path
-    // with a retained view, so this stream was never followed again.
-    session.follows.remove(&path);
-    assert!(!session.is_following(&path));
-    session.replace_streams(streams).unwrap();
-    assert!(session.is_following(&path));
-    assert_eq!(session.revision(), live + 3);
 }

@@ -520,6 +520,13 @@ fn subscription(
                     wire::SessionDelivery::All
                 } as i32,
                 bootstrap_head: status,
+                // Conversation streams may not exist before the first turn.
+                // Their creation is a provider event, never a viewport retry.
+                when_absent: if status {
+                    wire::WhenAbsent::NotFound
+                } else {
+                    wire::WhenAbsent::Wait
+                } as i32,
                 ..Default::default()
             },
         )),

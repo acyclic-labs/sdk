@@ -52,6 +52,41 @@ async fn status(client: &mut AgentClient) -> Result<StatusRecord, AgentClientErr
 }
 
 #[tokio::test]
+async fn empty_conversation_waits_for_creation_without_selection_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let memory = Arc::new(MemoryStream::default());
+    let agent = AgentPath::root(&AgentId::from_bytes([9; 16]));
+    let path = agent.conversation()?;
+    let pool = Client::with_transport(
+        Arc::new(Endpoint(memory.clone())),
+        Arc::new(|_| Box::pin(async { Err(StreamError::Unavailable) })),
+        Arc::new(PlatformExecutor),
+    );
+    pool.register_credential(0, session::testing::credential())?;
+    // Admission completes while the stream is absent. Creation must wake the
+    // same subscription; no viewport replacement or second open is involved.
+    let mut follow = pool.subscribe(subscription(&path, 0, 0, false)).await?;
+    append(&memory, path, vec!["created".into()]).await?;
+    while let Some(frame) = follow.next().await {
+        match frame?.body {
+            Some(wire::session_frame::Body::Data(wire::SessionData {
+                item: Some(wire::session_data::Item::Record(record)),
+                ..
+            })) => {
+                assert_eq!(record.sequence, 0);
+                assert_eq!(record.value.as_ref(), b"created");
+                return Ok(());
+            }
+            Some(wire::session_frame::Body::Closed(_)) => {
+                return Err("creation interest closed before its record".into());
+            }
+            _ => {}
+        }
+    }
+    Err("creation interest ended before its record".into())
+}
+
+#[tokio::test]
 async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_payload()
 -> Result<(), Box<dyn std::error::Error>> {
     // The deadline bounds a broken event path; readiness always comes from the
