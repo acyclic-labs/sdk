@@ -249,6 +249,7 @@ async fn asked(
                 from: human.clone(),
                 id,
                 body: Box::new(body),
+                attachments: None,
             }),
         )
         .await?;

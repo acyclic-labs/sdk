@@ -642,6 +642,7 @@ impl NativeAgents {
                 from: Sender::Host { host: HOST.into() },
                 id: id.clone(),
                 body: Box::new(body),
+                attachments: None,
             }),
         )
         .await

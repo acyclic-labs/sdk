@@ -65,6 +65,11 @@ mod traits;
 use summary::*;
 use summary_cache::SummaryCache;
 
+/// Bound on one journal payload. A journal records harness-owned
+/// execution state, not admitted content, so it takes no content bound;
+/// this is the largest exactly representable length.
+pub(crate) const MAXIMUM_PAYLOAD_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
+
 /// Durable observations and private payload references for one exact agent-private volume.
 pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     cache_identity: crate::executor::ExecutionJournalCacheId,
@@ -73,7 +78,6 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     volume: VolumeRef,
     verifier: AuthorityVerifier,
     scope: Scope,
-    maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     /// The one model context an agent turn may dispatch, built by its turn host
     /// from the agent's own conversation stream; any other selection is refused.

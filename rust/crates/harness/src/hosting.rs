@@ -64,6 +64,19 @@ pub trait Platform: ProviderPlatform + 'static {
     fn admitted(&self) -> BoxProviderFuture<'_, Result<(), StreamError>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// The attachment manifest of the files a prompt's `@` mentions in
+    /// `text` name (see [`Message::attachments`]), staged once for the
+    /// message `key` identifies, so a resend replays it exactly. A platform
+    /// with no project of its own to read attaches none.
+    fn attachments<'a>(
+        &'a self,
+        key: &'a [u8],
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
+        let _ = (key, text);
+        Box::pin(async { Ok(None) })
+    }
 }
 
 /// The routing URL of every agent command; a host dispatches on the command.
@@ -348,14 +361,25 @@ where
             }
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
+                let text = text(body)?;
                 let body = self
                     .bound
-                    .stage_text(agent, "message", by, id, text(body)?)
+                    .stage_text(agent, "message", by, id, text)
                     .await?;
+                // The message's own identity, as the inbox keys it: its
+                // recipient, sender and intent.
+                let key = crate::contract::canonical_json_bytes(&(agent, by, id))
+                    .map_err(|_| Error::Record("message identity does not encode"))?;
+                let attachments = self
+                    .platform
+                    .attachments(&key, text)
+                    .await
+                    .map_err(|error| Error::Turn(Box::new(error)))?;
                 let record = InboxRecord::Message(Message {
                     from: by.clone(),
                     id: id.clone(),
                     body: Box::new(body),
+                    attachments: attachments.map(Box::new),
                 });
                 Ok(AgentReply::Delivered {
                     delivery: agents.send(agent, by, &record).await?,

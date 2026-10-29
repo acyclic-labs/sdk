@@ -1,5 +1,9 @@
 use super::*;
 
+/// Media type of an attachment manifest: a canonical JSON list of
+/// [`Attachment`]s, read whole by its exact version.
+pub const ATTACHMENT_MANIFEST_MEDIA_TYPE: &str = "application/vnd.acyclic.harness.attachments+json";
+
 /// Immutable file plus optional user-visible label.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -139,8 +143,7 @@ pub fn decode_attachment_manifest(
 ) -> Result<Vec<Attachment>> {
     crate::executor::with_history_io(io, |work| {
         reference.validate(work)?;
-        if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json"
-        {
+        if reference.descriptor().media_type() != ATTACHMENT_MANIFEST_MEDIA_TYPE {
             return Err(content_error(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -293,7 +296,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
     io: Option<&'a ContentIo>,
 ) -> Result<(Vec<Attachment>, Option<ContentHold<'a>>)> {
     crate::executor::with_history_io(io, |work| {
-        limits.validate_file(reference, work)?;
+        limits.validate_record(reference, work)?;
         if item_count as usize > limits.attachments {
             return Err(conversation_error(
                 work,
@@ -357,9 +360,7 @@ impl ReferencedAttachments {
             }
             Self::Manifest { manifest, .. } => {
                 manifest.validate(work)?;
-                if manifest.descriptor().media_type()
-                    != "application/vnd.acyclic.harness.attachments+json"
-                {
+                if manifest.descriptor().media_type() != ATTACHMENT_MANIFEST_MEDIA_TYPE {
                     return Err(conversation_error(
                         work,
                         crate::wire::ErrorCode::Invalid,

@@ -27,6 +27,10 @@ pub enum TurnInput {
         /// Body.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         body: Box<FileRef>,
+        /// Pinned files the body mentions (see [`super::Message::attachments`]).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
+        attachments: Option<Box<FileRef>>,
     },
     /// A child finished.
     ChildDone {
@@ -91,6 +95,7 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             from: message.from,
             id: message.id,
             body: message.body,
+            attachments: message.attachments,
         }),
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),

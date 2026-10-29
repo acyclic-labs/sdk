@@ -193,7 +193,8 @@ impl ContextManifest {
     ) -> Result<FileRef> {
         let bytes = self.encode(limits)?;
         crate::conversation::validate_content_path(path, &mut None)?;
-        if path.len() > limits.path_bytes || bytes.len() as u64 > limits.file_bytes {
+        // Bounded by what it renders (`encode`), not by the file bound.
+        if path.len() > limits.path_bytes {
             return Err(Error::Invalid(
                 "context manifest publication exceeds file bounds".into(),
             ));
@@ -209,7 +210,7 @@ impl ContextManifest {
             )?
             .await?;
         reference.descriptor().verify(&bytes, &mut None)?;
-        limits.validate_file(&reference, &mut None)?;
+        limits.validate_record(&reference, &mut None)?;
         if reference.volume() != publisher.volume()
             || reference.path() != path
             || reference.descriptor().media_type() != "application/json"

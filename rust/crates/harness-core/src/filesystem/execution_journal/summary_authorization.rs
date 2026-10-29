@@ -37,7 +37,7 @@ where
                     &self.scope,
                     &self.volume,
                     VolumeOperation::Read,
-                    self.maximum_payload_bytes,
+                    super::MAXIMUM_PAYLOAD_BYTES,
                     work,
                 )
             })?;
@@ -58,7 +58,7 @@ where
                         volume: &self.volume,
                         key: &retry,
                         expected_path: Some(&path),
-                        maximum_bytes: self.maximum_payload_bytes,
+                        maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
                         internal_class: Some(InternalContentClass::Execution),
                         purpose: super::super::PublicationPurpose::Content,
                         scope: &self.scope,

@@ -272,7 +272,6 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
             volume: &first.volume,
             verifier: &first.verifier,
             scope: &first.scope,
-            maximum_bytes: first.maximum_payload_bytes,
             io: None,
         },
     )?;

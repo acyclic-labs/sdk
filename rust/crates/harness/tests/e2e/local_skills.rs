@@ -1,7 +1,6 @@
 use super::TestResult;
 use acyclic_harness::{
     LocalHarness, LocalHarnessConfig,
-    agent::IntentId,
     context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
     model::{Model, ModelContent},
     native_settings::SettingsConfig,

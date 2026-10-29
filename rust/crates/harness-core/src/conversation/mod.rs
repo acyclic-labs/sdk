@@ -142,6 +142,26 @@ impl Limits {
         Ok(())
     }
 
+    /// Checks a harness-owned record, such as a context or attachment
+    /// manifest, against these limits. A record is bounded by what it
+    /// renders or lists, not by the file bound on admitted content.
+    pub fn validate_record(
+        &self,
+        file: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        self.validate(work)?;
+        file.validate(work)?;
+        if file.path().len() > self.path_bytes {
+            return Err(conversation_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "record path exceeds harness limits",
+            ));
+        }
+        Ok(())
+    }
+
     /// Checks every directly named file and attachment count before admission.
     pub fn validate_message(
         &self,
@@ -190,8 +210,9 @@ mod selection;
 mod state;
 mod volumes;
 pub use attachments::{
-    Attachment, ReferencedAttachments, decode_attachment_manifest, encode_attachment_manifest,
-    load_manifest, verified_attachment_manifest, verified_content_bytes,
+    ATTACHMENT_MANIFEST_MEDIA_TYPE, Attachment, ReferencedAttachments, decode_attachment_manifest,
+    encode_attachment_manifest, load_manifest, verified_attachment_manifest,
+    verified_content_bytes,
 };
 use buffers::*;
 pub(crate) use content::content_error;
@@ -419,7 +440,7 @@ fn deserialize_manifest_file<'de, D: Deserializer<'de>>(
     decoder: D,
 ) -> std::result::Result<FileRef, D::Error> {
     let file = FileRef::deserialize(decoder)?;
-    if file.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
+    if file.descriptor().media_type() != ATTACHMENT_MANIFEST_MEDIA_TYPE {
         return Err(serde::de::Error::custom(
             "attachment manifest metadata is invalid",
         ));

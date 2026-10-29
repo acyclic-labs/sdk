@@ -93,7 +93,6 @@ where
             volume,
             verifier,
             scope,
-            maximum_bytes: maximum_payload_bytes,
             io,
         } = binding;
         let invalid = |reason: &'static str| {
@@ -107,13 +106,8 @@ where
             Error::Invalid(reason.into())
         };
         crate::model::charge_items(io, 1)?;
-        if volume.class() != VolumeClass::AgentPrivate
-            || volume.provider() != &host.provider
-            || maximum_payload_bytes == 0
-        {
-            return Err(invalid(
-                "execution journal requires a private volume and positive limit",
-            ));
+        if volume.class() != VolumeClass::AgentPrivate || volume.provider() != &host.provider {
+            return Err(invalid("execution journal requires a private volume"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             let maximum = io
@@ -148,7 +142,6 @@ where
             volume,
             verifier,
             scope,
-            maximum_payload_bytes,
             input_verifier: None,
             bound_selection: None,
             stop: None,

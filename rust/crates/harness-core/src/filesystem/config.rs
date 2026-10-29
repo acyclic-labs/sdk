@@ -9,8 +9,6 @@ pub struct FilesystemJournalBinding<'a> {
     pub verifier: &'a AuthorityVerifier,
     /// Original content authority.
     pub scope: &'a Scope,
-    /// Maximum journal payload size.
-    pub maximum_bytes: u64,
     /// Original preparation accounting, when present.
     pub io: Option<&'a PreparationIo>,
 }

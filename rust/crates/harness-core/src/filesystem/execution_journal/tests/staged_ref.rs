@@ -57,7 +57,6 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,
             scope: &scope,
-            maximum_bytes: 4096,
             io: None,
         },
     )?;

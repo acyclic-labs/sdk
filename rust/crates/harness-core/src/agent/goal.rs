@@ -102,6 +102,7 @@ pub async fn settle(
             },
             id,
             body: Box::new(view.source),
+            attachments: None,
         }),
     }))
 }

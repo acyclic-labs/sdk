@@ -243,6 +243,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
                 from: from.clone(),
                 id: intent("question")?,
                 body: Box::new(body),
+                attachments: None,
             }),
         )
         .await

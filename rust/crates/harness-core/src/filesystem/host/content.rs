@@ -131,7 +131,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant,
                 path,
                 &bytes,
-                "application/vnd.acyclic.harness.attachments+json",
+                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
                 "attachments.json",
                 maximum_bytes,
                 idempotency_key,

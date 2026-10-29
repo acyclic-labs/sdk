@@ -86,6 +86,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
                     },
                     id,
                     body,
+                    attachments: None,
                 }),
             }),
             TurnEffect::Archive { target, id } => Some(Out::Archive { target, id }),

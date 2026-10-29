@@ -53,12 +53,14 @@ impl LocalHarness {
         let (reference, _) = publisher
             .observe_staged_once(
                 manifest_operation(operation),
-                self.limits.file_bytes,
+                // The manifest is a harness record bounded by what it
+                // renders, not admitted content under the file bound.
+                crate::conversation::MAX_EXACT_JS_INTEGER,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
         if let Some(reference) = &reference {
-            self.limits.validate_file(reference, &mut None)?;
+            self.limits.validate_record(reference, &mut None)?;
         }
         if reference
             .as_ref()
@@ -239,6 +241,242 @@ impl LocalHarness {
         };
         discovery.skills = self.skills_with_work(Some(&generation), work).await?;
         Ok(discovery)
+    }
+}
+
+impl LocalHarness {
+    /// The attachment manifest of the files a prompt's `@` mentions name,
+    /// pinned as it is sent: a checkout's mentioned files are captured at one
+    /// snapshot onto the root's private volume, a volume project's are read
+    /// at its current generation. Each resolves and projects through the one
+    /// mention path. `key` is the message's own identity: the manifest is
+    /// staged once for it, beside its copies, so a resend replays it exactly
+    /// whatever has happened to the files since, and the message carries one
+    /// reference however many files it names.
+    pub(super) async fn prompt_attachments(
+        &self,
+        key: &[u8],
+        text: &str,
+    ) -> Result<Option<FileRef>> {
+        if crate::client::file_mention_paths(text)?.is_empty() {
+            return Ok(None);
+        }
+        // The manifest's own encoding bounds it: it lists files already
+        // admitted under the content bounds, so it takes no content bound.
+        let publisher =
+            self.input_publisher_with_limit(crate::conversation::MAX_EXACT_JS_INTEGER)?;
+        let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
+        if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
+            return Ok(Some(manifest));
+        }
+        let reader = self.client_reader()?;
+        let base = format!("inputs/mentions/{}", blake3::hash(key));
+        let items = self
+            .resolve_attachments(&base, text, &*reader)
+            .await?
+            .into_iter()
+            .map(|file| crate::conversation::Attachment { file, label: None })
+            .collect::<Vec<_>>();
+        let bytes = crate::conversation::encode_attachment_manifest(&items)?;
+        let path = format!("{base}/{}.json", blake3::hash(&bytes));
+        let staged = publisher
+            .stage_once(
+                operation,
+                &path,
+                &bytes,
+                crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE,
+                "attachments.json",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        match staged {
+            Ok((manifest, _)) => Ok(Some(manifest)),
+            // A concurrent first send pinned its manifest first: that one stands.
+            Err(error) => self
+                .observe_manifest(operation, &*publisher)
+                .await?
+                .map(Some)
+                .ok_or(error),
+        }
+    }
+
+    async fn observe_manifest(
+        &self,
+        operation: OperationId,
+        publisher: &dyn ContentPublisher,
+    ) -> Result<Option<FileRef>> {
+        let (manifest, _) = publisher
+            .observe_staged_once(
+                operation,
+                crate::conversation::MAX_EXACT_JS_INTEGER,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await?;
+        Ok(manifest)
+    }
+
+    async fn resolve_attachments(
+        &self,
+        base: &str,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<Vec<FileRef>> {
+        // Mentioned files are copied beside the manifest on the private
+        // volume, which every fork of the agent inherits: a child forks a
+        // volume project, so the original project would not carry them.
+        let root = match self.checkout_mentions(base, text).await? {
+            Some(root) => root,
+            None => self.project_mentions(base, text, reader).await?,
+        };
+        self.resolve_at(&root, text, reader).await
+    }
+
+    /// A volume project's mentioned files, read at its head and copied onto
+    /// the root's private volume below `base`: their root.
+    async fn project_mentions(
+        &self,
+        base: &str,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<crate::context::ContextRoot> {
+        let project = crate::context::ContextRoot {
+            volume: self.project.clone(),
+            directory: String::new(),
+        };
+        let mut copies = std::collections::BTreeMap::new();
+        for file in self.resolve_at(&project, text, reader).await? {
+            let bytes = reader
+                .read(&file, file.descriptor().byte_length(), None, None)?
+                .await?;
+            copies.insert(file.path().trim_start_matches('/').to_owned(), bytes);
+        }
+        Ok(crate::context::ContextRoot {
+            volume: self.journal.clone(),
+            directory: self.publish_mention_copies(base, copies).await?,
+        })
+    }
+
+    /// Publishes mentioned files' `copies` by path into one content-addressed
+    /// directory below `base` on the private volume and names it.
+    async fn publish_mention_copies(
+        &self,
+        base: &str,
+        copies: std::collections::BTreeMap<String, acyclic_stream::OwnedBytes>,
+    ) -> Result<String> {
+        let mut address = blake3::Hasher::new();
+        for (path, bytes) in &copies {
+            address.update(&(path.len() as u64).to_le_bytes());
+            address.update(path.as_bytes());
+            address.update(blake3::hash(bytes.as_ref()).as_bytes());
+        }
+        let directory = format!("{base}/{}", address.finalize());
+        // Every copy lands in one generation of the private volume, so a
+        // prompt costs one commit however many files it mentions. A retry
+        // of the same bytes replays that generation.
+        let mut directories = std::collections::BTreeSet::new();
+        let mut files = Vec::with_capacity(copies.len());
+        for (path, bytes) in copies {
+            let destination = format!("/{directory}/{path}");
+            if let Some((parent, _)) = destination.rsplit_once('/') {
+                directories.insert(parent.to_owned());
+            }
+            files.push(crate::filesystem::WorkspaceMutation::PutFile {
+                path: destination,
+                bytes,
+            });
+        }
+        let mutations = directories
+            .into_iter()
+            .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
+            .chain(files)
+            .collect::<Vec<_>>();
+        let journal = crate::filesystem::workspace_ref(
+            self.journal.provider().clone(),
+            &self.journal.storage_name(&mut None)?,
+        )?;
+        self.files
+            .apply(
+                &journal,
+                None,
+                &mutations,
+                &crate::contract::IdempotencyKey::new(format!(
+                    "mention-copies-{}",
+                    blake3::hash(directory.as_bytes())
+                ))?,
+            )
+            .await?;
+        Ok(directory)
+    }
+
+    /// The files `text` mentions, resolved at the head of `root`'s volume,
+    /// in mention order.
+    async fn resolve_at(
+        &self,
+        root: &crate::context::ContextRoot,
+        text: &str,
+        reader: &dyn ContentResidencyVerifier,
+    ) -> Result<Vec<FileRef>> {
+        let workspace = crate::filesystem::workspace_ref(
+            root.volume.provider().clone(),
+            &root.volume.storage_name(&mut None)?,
+        )?;
+        let generation = self.files.resolve(&workspace, None).await?.generation;
+        let mentions = crate::client::resolve_file_mentions(
+            text,
+            root,
+            &generation,
+            reader,
+            self.limits.file_bytes,
+        )
+        .await?;
+        let content = crate::command_request::CommandResolution::Prompt {
+            text: text.into(),
+            source: None,
+            mentions,
+        }
+        .into_model_input()?;
+        // The leading part is the prompt text, which the message body carries.
+        Ok(match content {
+            crate::model::ModelContent::Parts(parts) => parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    crate::model::ModelContentPart::File { file, .. } => Some(file),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        })
+    }
+}
+
+impl LocalHarness {
+    /// A checkout's mentioned files, copied onto the root's private volume
+    /// below the message's `base` directory: their root.
+    #[cfg(any(test, feature = "native-execution"))]
+    async fn checkout_mentions(
+        &self,
+        base: &str,
+        text: &str,
+    ) -> Result<Option<crate::context::ContextRoot>> {
+        let Some(workspace) = &self.workspace else {
+            return Ok(None);
+        };
+        let directory = self
+            .capture_checkout_mentions(workspace, text, base)
+            .await?;
+        Ok(Some(crate::context::ContextRoot {
+            volume: self.journal.clone(),
+            directory,
+        }))
+    }
+
+    #[cfg(not(any(test, feature = "native-execution")))]
+    async fn checkout_mentions(
+        &self,
+        _: &str,
+        _: &str,
+    ) -> Result<Option<crate::context::ContextRoot>> {
+        Ok(None)
     }
 }
 

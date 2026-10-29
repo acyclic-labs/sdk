@@ -49,7 +49,6 @@ async fn check_cold_recovery(native: bool) -> Result<()> {
                 volume: &original.volume,
                 verifier: &original.verifier,
                 scope: &original.scope,
-                maximum_bytes: original.maximum_payload_bytes,
                 io: None,
             },
         )?;

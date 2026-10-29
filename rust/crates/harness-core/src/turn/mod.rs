@@ -101,7 +101,7 @@ pub fn prepare_turn(
                 "turn attachments exceed harness limits".into(),
             ));
         }
-        limits.validate_file(manifest, &mut None)?;
+        limits.validate_record(manifest, &mut None)?;
     }
 
     let user_id = user_id_override.unwrap_or_else(|| derived_uuid(operation_id, "user"));

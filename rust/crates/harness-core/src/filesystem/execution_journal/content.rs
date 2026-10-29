@@ -58,7 +58,7 @@ where
                     volume: &self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: self.maximum_payload_bytes,
+                    maximum_bytes: super::MAXIMUM_PAYLOAD_BYTES,
                     internal_class: Some(InternalContentClass::Execution),
                     purpose: super::super::PublicationPurpose::Content,
                     scope: &self.scope,
@@ -109,7 +109,7 @@ where
         media_type: &'static str,
         io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
-        if bytes.len() as u64 > self.maximum_payload_bytes {
+        if bytes.len() as u64 > super::MAXIMUM_PAYLOAD_BYTES {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -151,7 +151,7 @@ where
                 bytes,
                 media_type,
                 "execution.json",
-                self.maximum_payload_bytes,
+                super::MAXIMUM_PAYLOAD_BYTES,
                 &key,
                 InternalContentClass::Execution,
                 io,
@@ -199,7 +199,7 @@ where
         }
         let bytes = self
             .host
-            .read_pinned_receipt_io(reference, self.maximum_payload_bytes, io)
+            .read_pinned_receipt_io(reference, super::MAXIMUM_PAYLOAD_BYTES, io)
             .await?
             .retain()
             .await?;
@@ -355,7 +355,7 @@ where
                             )?;
                             let _canonical_hold;
                             let canonical =
-                                io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
+                                io.encode(&parsed.0, super::MAXIMUM_PAYLOAD_BYTES, true)?;
                             _canonical_hold = io.guard_bytes(&canonical)?;
                             if canonical.as_ref() != bytes {
                                 return Err(canonical_boundary(
@@ -388,7 +388,7 @@ where
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        if reference.descriptor().byte_length() > self.maximum_payload_bytes {
+        if reference.descriptor().byte_length() > super::MAXIMUM_PAYLOAD_BYTES {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -404,7 +404,7 @@ where
                 )
             })?;
             return verifier
-                .verify(reference, self.maximum_payload_bytes, io)?
+                .verify(reference, super::MAXIMUM_PAYLOAD_BYTES, io)?
                 .await;
         }
         if let Some(io) = io {
@@ -449,7 +449,7 @@ where
             let _bytes_hold;
             let bytes = self
                 .host
-                .read_pinned_io(reference, self.maximum_payload_bytes, Some(io))
+                .read_pinned_io(reference, super::MAXIMUM_PAYLOAD_BYTES, Some(io))
                 .await?;
             _bytes_hold = io.guard_owned(io.owned_since(before)?)?;
             drop(bytes);
@@ -464,12 +464,12 @@ where
                     &self.scope,
                     reference.volume(),
                     VolumeOperation::Read,
-                    self.maximum_payload_bytes,
+                    super::MAXIMUM_PAYLOAD_BYTES,
                     &mut None,
                 )?
             };
             self.host
-                .read_content(reference, &grant, self.maximum_payload_bytes, None)
+                .read_content(reference, &grant, super::MAXIMUM_PAYLOAD_BYTES, None)
                 .await?;
         }
         Ok(())
@@ -517,7 +517,7 @@ where
         }
         let mut references = Vec::with_capacity(count);
         for (file, binding) in content.file_bindings() {
-            if file.descriptor().byte_length() > self.maximum_payload_bytes {
+            if file.descriptor().byte_length() > super::MAXIMUM_PAYLOAD_BYTES {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,

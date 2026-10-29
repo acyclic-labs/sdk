@@ -290,6 +290,16 @@ fn root_grants(volumes: &[VolumeBinding], external: &[FileRef]) -> Result<Vec<St
             .any(|binding| binding.volume == *file.volume())
         {
             grants.push(file.read_capability(&mut None)?);
+            // An attachment manifest's files are copies in its own directory,
+            // so one grant reaches them however many it lists.
+            if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
+                && let Some((directory, _)) = file.path().rsplit_once('/')
+            {
+                grants.push(
+                    file.volume()
+                        .directory_read_capability(directory, &mut None)?,
+                );
+            }
         }
     }
     Ok(grants)
@@ -424,7 +434,7 @@ where
             Some(file) => {
                 let bytes = content
                     .reader
-                    .read(file, self.limits.maximum_bytes, None, None)?
+                    .read(file, file.descriptor().byte_length(), None, None)?
                     .await?;
                 crate::contract::json_from_slice::<ApprovalPolicy>(&bytes)
                     .map_err(|error| Error::Invalid(error.to_string()))?
@@ -576,11 +586,15 @@ where
             verifier,
             private,
         } = admitted.authority(external)?;
+        // The turn's reader and writer take no content bound of their own:
+        // each caller states its bound, and harness-owned records (manifests,
+        // settled outputs, policies) are read at their pinned length, so a
+        // configured file bound limits admitted content, never the turn.
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.host),
             &verifier,
             &scope,
-            self.limits.maximum_bytes,
+            crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
         let writer = FilesystemContentPublisher::new(
@@ -588,7 +602,7 @@ where
             &private.volume,
             &verifier,
             &scope,
-            self.limits.maximum_bytes,
+            crate::conversation::MAX_EXACT_JS_INTEGER,
             None,
         )?;
         let journal = FilesystemExecutionJournal::new(
@@ -598,7 +612,6 @@ where
                 volume: &private.volume,
                 verifier: &verifier,
                 scope: &scope,
-                maximum_bytes: self.limits.maximum_bytes,
                 io: None,
             },
         )?
@@ -749,13 +762,12 @@ impl<'a> TurnContext<'a> {
         self,
         agent: &AgentState,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        input: &ModelContent,
     ) -> Result<Option<SelectedModelContext>> {
         let Self {
             prompt,
             settled,
             turn,
-            input,
             ..
         } = self;
         if settled.is_empty() && prompt.is_none() {
@@ -771,12 +783,14 @@ impl<'a> TurnContext<'a> {
             message_ids.push(prompt_id(prompt));
         }
         for (settled, content, output) in settled {
-            let bytes = reader.read(&output, maximum_bytes, None, None)?.await?;
+            let bytes = reader
+                .read(&output, output.descriptor().byte_length(), None, None)?
+                .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
-                content,
+                content: crate::agent::expand_attachments(content, reader).await?,
             });
             message_ids.push(message_id(settled, ModelRole::User));
             messages.push(ModelMessage {
@@ -834,6 +848,10 @@ where
             for file in &external {
                 crate::conversation::ContentGrant::verify_read(&verifier, &bindings.scope, file)?;
             }
+            // The executor runs the input with its attachments listed, read
+            // under the grant above at the manifest's pinned length.
+            let input =
+                &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
             let effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
@@ -868,7 +886,7 @@ where
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = context
-                .select(agent, &*authority.content.reader, self.limits.maximum_bytes)
+                .select(agent, &*authority.content.reader, input)
                 .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
@@ -887,6 +905,7 @@ where
                 effects,
                 goal,
                 outputs,
+                input: Some(input.clone()),
             })
         })
     }

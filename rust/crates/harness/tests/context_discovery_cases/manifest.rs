@@ -433,9 +433,24 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         ..Default::default()
     };
     let (publisher, reader, _, _) = storage(&fixture).await?;
+    // A manifest is bounded by what it renders and by its path, never by
+    // the file bound on admitted content.
+    assert!(
+        base.publish(
+            publisher.as_ref(),
+            OperationId::new(),
+            "context/unbounded-file.json",
+            Limits {
+                file_bytes: 1,
+                ..limits
+            },
+        )
+        .await
+        .is_ok()
+    );
     for bound in [
         Limits {
-            file_bytes: 1,
+            render_bytes: 1,
             ..limits
         },
         Limits {
