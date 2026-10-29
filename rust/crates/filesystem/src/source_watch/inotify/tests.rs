@@ -509,19 +509,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     assert!(!watch.shared.stopping.load(Ordering::Acquire));
     assert!(!watch.is_stopped());
 
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
     assert!(watch.shared.physically_cleared());
     assert!(
@@ -533,7 +521,7 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     );
     let terminal = original.lock().receipt();
 
-    watch.stop_with_cleanup_wait(&wait)?;
+    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
     assert_eq!(original.lock().receipt(), terminal);
     drop(watch);
 
@@ -567,29 +555,33 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
 
     let stopping = Arc::clone(&watch);
     let caller_wait = wait.clone();
+    let (admitted, admission) = std::sync::mpsc::channel();
     let (finished, received) = std::sync::mpsc::channel();
     let stopper = std::thread::spawn(move || {
+        AFTER_STOP_ADMISSION.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                let _ = admitted.send(());
+            }));
+        });
         let result = stopping.stop_with_cleanup_wait(&caller_wait);
         assert!(finished.send(result).is_ok(), "live test controller");
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.stopping.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    let started = watch.shared.stopping.load(Ordering::Acquire);
+    let started = admission.recv_timeout(std::time::Duration::from_secs(5));
     wait.cancel();
     let premature = received.try_recv();
     let terminal_before_release = watch.is_stopped();
     drop(state);
     let result = match premature {
         Ok(result) => result,
-        Err(std::sync::mpsc::TryRecvError::Empty) => received.recv()?,
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            received.recv_timeout(std::time::Duration::from_secs(5))?
+        }
         Err(error) => return Err(error.into()),
     };
     stopper
         .join()
         .map_err(|_| "actual native stop controller panicked")?;
-    assert!(started);
+    started?;
     assert!(!terminal_before_release);
     assert!(matches!(result, Err(DemandError::Cancelled)));
     assert!(watch.is_stopped());
@@ -819,19 +811,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
         Ok(()) | Err(DemandError::Cancelled)
     ));
     assert_eq!(original.lock().receipt(), prefix);
-    let wait = CancellationToken::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match watch.stop_with_cleanup_wait(&wait) {
-            Err(DemandError::WorkerUnavailable) if std::time::Instant::now() < deadline => {
-                std::thread::yield_now();
-            }
-            result => {
-                result?;
-                break;
-            }
-        }
-    }
+    watch.stop_accepted_cleanup()?;
     assert!(watch.is_stopped());
 
     assert_eq!(original.lock().receipt().items_returned, 1);
@@ -1192,9 +1172,19 @@ fn a_held_cursor_never_stalls_delivery_to_other_watches() -> Result<(), Box<dyn 
 }
 
 std::thread_local! {
+    /// Runs once after the controller accepts cleanup, before physical work.
+    static AFTER_STOP_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+
     /// Runs once at the controller's unsubscribe, after its credit check.
     static BEFORE_UNSUBSCRIBE_RECORD: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn after_stop_admission() {
+    if let Some(hook) = AFTER_STOP_ADMISSION.with(|hook| hook.borrow_mut().take()) {
+        hook();
+    }
 }
 
 pub(super) fn before_unsubscribe_record() {
