@@ -1775,3 +1775,8 @@ Qualification330 attempted input `c202e234266d8e6a4d6b15ae7ccdf3cebf603345`, fin
 
 | MAX_OUTPUT_READ_BYTES | `typescript/packages/machines/src/transport.ts:7` | 2 output/file chunk and console page size | KEEP65536-byte physical chunks/pages. The shared Machines transport normalizes one console page with canonical pageSize; callers continue by returned offset. Exec output accepts further frames without a cumulative total. Original malformed frame, offset overflow, cancellation and explicit output-capacity controls remain. |
 | MAX_OFFSET | `typescript/packages/machines/src/transport.ts:8` | 4 exact wire representation | KEEPuint64 offset encoding guard. Rejecting arithmetic outside the protocol representation cannot be replaced by truncation or lossy Number conversion. It adds no lifetime byte/command count policy. |
+
+
+## Merged journal and guest-authority composition
+
+The signed lane rebases onto actual merged main `aefd8df65ba7b1936f7668a36de11574a56df381` (#1815/#1771), preserving one owned `Replicated<PgJournal>` and the original guest-authority seam. Namespace keys remain fixed32-byte digests with exact original spelling checked on generation admission; SQL reads/publication/locks and cancellation controls share that key. There is no borrowed Session reconstruction or duplicate namespace/clock owner. Local format/diff checks pass; exact-source compilation and runtime remain pending. Earlier329 qualifies its recorded input only;330 returned no compiler/test result.
