@@ -63,15 +63,16 @@ machine_mutations! {
                 let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
                 let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
-                let mut request = Request::new(stream::iter(input::encode(machine, command)));
+                let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
+                let mut request = Request::new(input);
                 request.set_timeout(deadline.remaining());
                 let output = deadline.run(client.exec(request)).await
                     .ok_or(ProviderError::CommandIndeterminate(machine))?
                     .map_err(|error| command_error(machine, &error))?
                     .into_inner();
                 let output = stream::try_unfold(
-                    (output, false, deadline),
-                    move |(mut output, mut exited, deadline)| async move {
+                    (output, false, deadline, input_guard),
+                    move |(mut output, mut exited, deadline, input_guard)| async move {
                         if exited {
                             return Ok(None);
                         }
@@ -82,7 +83,7 @@ machine_mutations! {
                             None => Err(ProviderError::CommandIndeterminate(machine)),
                             Some(frame) => {
                                 let frame = decode_exec_output(frame, machine, &mut exited)?;
-                                Ok(Some((frame, (output, exited, deadline))))
+                                Ok(Some((frame, (output, exited, deadline, input_guard))))
                             }
                         }
                     },

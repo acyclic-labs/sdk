@@ -182,17 +182,14 @@ async fn file_stream_receipts_progress_before_input_eof_and_drop_releases_input(
         ($method:ident, $query:expr, $expected:expr) => {{
             let (sender, input) = mpsc::channel(1);
             sender.send($query).await.unwrap();
-            let mut output = client
-                .clone()
-                .$method(ReceiverStream::new(input))
-                .await
-                .unwrap()
-                .into_inner();
+            let (input, input_guard) = duplex::input(ReceiverStream::new(input));
+            let mut output = client.clone().$method(input).await.unwrap().into_inner();
             assert_eq!(output.message().await.unwrap().unwrap(), $expected);
             sender.send($query).await.unwrap();
             assert_eq!(output.message().await.unwrap().unwrap(), $expected);
             // The response must not depend on closing the still-live producer.
             drop(output);
+            drop(input_guard);
             sender.closed().await;
         }};
     }

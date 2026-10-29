@@ -15,11 +15,13 @@ impl GrpcProvider {
         access.validate_range(limit as usize)?;
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut client = self.file_client(&deadline).await?;
-        let mut request = Request::new(stream::iter(std::iter::once(wire::ReadFileRequest {
-            protocol: Some(protocol()),
-            access: Some(encode_access(machine, &access)),
-            limit,
-        })));
+        let (input, _input_guard) =
+            duplex::input(stream::iter(std::iter::once(wire::ReadFileRequest {
+                protocol: Some(protocol()),
+                access: Some(encode_access(machine, &access)),
+                limit,
+            })));
+        let mut request = Request::new(input);
         request.set_timeout(deadline.remaining());
         let mut output = deadline
             .run(client.read_file(request))
@@ -60,12 +62,14 @@ impl GrpcProvider {
         let length = data.len();
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut client = self.file_client(&deadline).await?;
-        let mut request = Request::new(stream::iter(std::iter::once(wire::WriteFileRequest {
-            protocol: Some(protocol()),
-            access: Some(encode_access(machine, &access)),
-            data,
-            truncate,
-        })));
+        let (input, _input_guard) =
+            duplex::input(stream::iter(std::iter::once(wire::WriteFileRequest {
+                protocol: Some(protocol()),
+                access: Some(encode_access(machine, &access)),
+                data,
+                truncate,
+            })));
+        let mut request = Request::new(input);
         request.set_timeout(deadline.remaining());
         let mut output = deadline
             .run(client.write_file(request))
