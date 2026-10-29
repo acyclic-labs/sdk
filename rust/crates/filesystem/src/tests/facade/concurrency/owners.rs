@@ -149,6 +149,9 @@ impl AsyncAuthorityStore for ForeignOwner {
         if matches!(result, Ok(crate::AppendGroupOutcome::Rejected { .. })) {
             self.forbid_probe.store(true, Ordering::SeqCst);
         }
+        if let Some(gate) = &self.dispatch_gate {
+            gate.completed.notify_one();
+        }
         result
     }
 }
@@ -544,6 +547,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
 struct DispatchGate {
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    completed: tokio::sync::Notify,
     active: std::sync::atomic::AtomicBool,
     preflights: std::sync::atomic::AtomicUsize,
     quotes: std::sync::atomic::AtomicUsize,
@@ -854,11 +858,18 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
         } else {
             abort_b.abort();
         }
-        assert!(
-            matches!(futures::poll!(joined.as_mut()), std::task::Poll::Pending),
-            "a dropped reply aborted another admitted writer"
-        );
-        gate.release.notify_one();
+        if explicit_cancellation {
+            // Complete the owned append before polling the cancelled reply:
+            // cancellation must not depend on reply delivery marking loss.
+            gate.release.notify_one();
+            gate.completed.notified().await;
+        } else {
+            assert!(
+                matches!(futures::poll!(joined.as_mut()), std::task::Poll::Pending),
+                "a dropped reply aborted another admitted writer"
+            );
+            gate.release.notify_one();
+        }
         let (first, second) = joined.await;
         let (withdrawn, delivered) = if dropped == 0 {
             (first, second)

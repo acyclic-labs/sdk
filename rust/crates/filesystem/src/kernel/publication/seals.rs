@@ -56,8 +56,14 @@ where
         let slot = Arc::clone(&slot);
         let owner_work = invocation.clone();
         let boxed = crate::heap_future::native_future(&original, || async move {
+            // Cancellation withdraws this seal even if reply delivery has not
+            // yet polled and marked the member withdrawn in the group.
+            if owner_work.cancellation().is_cancelled() {
+                return Ok(());
+            }
             match owner(&owner_work).await {
                 Ok(()) => Ok(()),
+                Err(_) if owner_work.cancellation().is_cancelled() => Ok(()),
                 Err(error) => {
                     *slot
                         .error
