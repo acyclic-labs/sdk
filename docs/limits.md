@@ -115,7 +115,7 @@ Qualification uses the same accepted-byte/count/digest oracle for candidate and 
 | `MAX_EVENTS_PER_MACHINE` | `rust/crates/machines-daytona/src/ops.rs:29` | 1 | Deleted the default ceiling, its refusal checks and cap-only tests. Explicit caller budgets and structural validation remain. |
 | `MAX_SAFE_INTEGER` | `rust/crates/machines-wasm/src/lib.rs:16` | 4 | Keep exact wire/OS/integer representation invariant; no smaller product ceiling. |
 | `MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS` | `rust/crates/machines/src/grpc/mod.rs:16` | 1 | Deleted unknown-observation retry ceiling. Recovery polls the same admitted operation with delayed retries; original identity and cancellation remain. |
-| `MAX_MESSAGE_BYTES` | `rust/crates/machines/src/grpc/mod.rs:17` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
+| `MAX_MESSAGE_BYTES` | `rust/crates/machines/src/grpc/native.rs:11` (formerly `grpc/mod.rs:17`) | 1 | OPEN:64MiB remains the native unary request/response ceiling. Carry growing argv/config/metadata through credited chunks and one final logical publication; retain actual frame validation and explicit finite caller allowances. Do not relabel a whole-value refusal as protective. |
 | `MAX_PAGE_SIZE` | `rust/crates/machines/src/lib.rs:45` | 2 | Keep batching/window; verify continuation never refuses total work. |
 | `MAX_BEARER_TOKEN_BYTES` | `rust/crates/machines/src/lib.rs:47` | 1 | Deleted the default ceiling, its refusal checks and cap-only tests. Explicit caller budgets and structural validation remain. |
 | `MAX_OUTPUT_READ_BYTES` | `rust/crates/machines/src/lib.rs:49` | 2 | Keep batching/window; verify continuation never refuses total work. |
@@ -1175,7 +1175,7 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
-| `MAX_DEADLINE` | `rust/crates/objects/src/grpc.rs:25` | 4: physical wire representation | Keep the largest representable grpc-timeout (99,999,999 hours, over11,000 years), validating explicit caller transfer policy before tonic encodes it. This never supplies a default deadline. |
+| `MAX_DEADLINE` | `rust/crates/objects/src/operation.rs:10` (formerly `grpc.rs:25`) | 4: physical wire representation | Keep the largest representable grpc-timeout (99,999,999 hours, over11,000 years), validating explicit caller transfer policy before tonic encodes it. This never supplies a default deadline. |
 | Objects HTTP/gRPC default30s and int32 deadline refusal | `typescript/packages/objects/src/{v1-http,v1-grpc}.ts` | 1 -> optional caller policy | Delete default deadline and int32 refusal. Reuse shared monotonic deadline owner, chunking host timer waits; positive safe-integer caller policies remain. Canonical blob routes and verification are preserved. |
 
 | Constant or policy | File:line | Category | Action |
@@ -2040,3 +2040,5 @@ A fresh current-source search found these defaults in native projections after o
 ## Linux demand-watch event consumers
 
 The existing observed-directory and absent-parent controls now await the retained NativeWatch event, with a single original5s failure guard. The unobserved-subtree negative waits for the original native producer fence before its exact empty assertion. No producer implementation or new observer is added. Quiet-event, lost-wake, cancellation and terminal controls remain in the original native-watch suite. Source formatting and whitespace checks pass; changed-source compilation/runtime remain pending. No measured latency or idle-probe claim is inferred from removing the loops.
+
+A current-path `const MAX_*` inventory across Rust crates, TypeScript packages, Arena and scripts found two definitions whose recorded locations moved during owner composition: Machines native message framing and Objects original-operation deadline projection. Their rows now name the actual files. The former remains an OPEN logical-total transport repair; the latter remains the physical gRPC timeout representation and never supplies a default. This is classification evidence, not completed streaming or runtime qualification.
