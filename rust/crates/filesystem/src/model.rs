@@ -99,14 +99,16 @@ pub enum UnicodePolicy {
     RequireNfc,
 }
 
-/// Hard limits enforced before allocation, traversal, or mutation.
+/// Chunk sizes and protective bounds for filesystem work.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeLimits {
     /// Maximum canonical bytes in one immutable object.
     pub maximum_object_bytes: u64,
-    /// Maximum mutations admitted in one atomic batch.
+    /// Mutations processed per chunk of a logical atomic transaction.
+    /// Larger transactions continue on the same private candidate before publication.
     pub maximum_mutations_per_batch: u32,
-    /// Maximum exact paths admitted in one shared lookup/stat batch.
+    /// Exact paths processed per shared lookup/stat chunk.
+    /// Larger requests continue through subsequent chunks.
     pub maximum_paths_per_batch: u32,
     /// Maximum directory entries returned in one page.
     pub maximum_directory_page_entries: u32,
@@ -145,7 +147,7 @@ pub struct VolumeConfig {
     pub hard_links: bool,
     /// Whether holes and allocated-zero extents remain distinct.
     pub sparse_files: bool,
-    /// Mandatory resource and work bounds.
+    /// Chunk sizes and protective bounds.
     pub limits: VolumeLimits,
 }
 
