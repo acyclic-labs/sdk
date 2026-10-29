@@ -100,7 +100,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     assert_eq!(entry.inbox, inbox);
     assert!(matches!(entry.input, TurnInput::Message { .. }));
-    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(provider.request_count(), 1);
     // A client reads the settled output from the root's private volume.
     let output = harness
         .client_reader()?
@@ -410,13 +410,17 @@ async fn counting_server() -> Result<CountingServer> {
             let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let mut request = [0; 8192];
             let mut used = 0;
-            while !request[..used]
-                .windows(4)
-                .any(|window| window == b"\r\n\r\n")
-            {
+            loop {
+                let start = used.saturating_sub(3);
                 match stream.read(&mut request[used..]).await {
                     Ok(0) | Err(_) => return,
                     Ok(read) => used += read,
+                }
+                if request[start..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
                 }
             }
             let body = format!("HOOK-HTTP-{ordinal}");
