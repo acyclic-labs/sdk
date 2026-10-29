@@ -69,7 +69,10 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(5), future)
                 .await
                 .map_err(|_| {
-                    io::Error::new(io::ErrorKind::TimedOut, "protocol exchange did not complete")
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "protocol exchange did not complete",
+                    )
                 })?
         })
     }
@@ -95,11 +98,14 @@ mod tests {
                 std::future::poll_fn(|cx| {
                     assert!(read.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
-                }).await;
+                })
+                .await;
             }
             // The same worker needed for the next request must remain runnable
             // while the real child waits for it with its output pipe open.
-            tokio::task::spawn_blocking(|| ()).await.map_err(io::Error::other)?;
+            tokio::task::spawn_blocking(|| ())
+                .await
+                .map_err(io::Error::other)?;
             input.write_all(b"request\n").await?;
             input.flush().await?;
             line.clear();
@@ -137,9 +143,8 @@ mod tests {
                 "$event = [Threading.EventWaitHandle]::OpenExisting('{name}'); [Console]::Out.WriteLine('ready'); $null = $event.WaitOne(); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line.Length); [Console]::Out.WriteLine([Console]::ReadLine())"
             )]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
             let mut tree = super::super::ProcessTree::spawn(&mut command)?;
-            let mut input = ProcessPipeWriter::from_stdin(
-                tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?,
-            )?;
+            let mut input =
+                ProcessPipeWriter::from_stdin(tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?)?;
             let mut output = BufReader::new(ProcessPipeReader::from_stdout(
                 tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?,
             )?);
@@ -169,7 +174,8 @@ mod tests {
                 std::future::poll_fn(|cx| {
                     assert!(next.as_mut().poll(cx).is_pending());
                     Poll::Ready(())
-                }).await;
+                })
+                .await;
             }
             // The original child is the sole drain producer, released by this
             // event; abandoning the second write must not submit its bytes.
@@ -238,8 +244,7 @@ impl AsyncWrite for ProcessPipeWriter {
         let this = self.get_mut();
         ready!(this.poll_completion(cx))?;
         let pipe = this.pipe.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
-        let (written, recorded) =
-            platform::write_pipe(pipe, &mut this.writer, bytes, None, None)?;
+        let (written, recorded) = platform::write_pipe(pipe, &mut this.writer, bytes, None, None)?;
         recorded?;
         // The completion service owns this exact prefix once submitted. Report
         // acceptance now so cancelling a write cannot attribute its eventual

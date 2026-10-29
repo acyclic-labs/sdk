@@ -96,14 +96,15 @@ impl Conversation {
     ///
     /// # Errors
     /// The session failure, source refusal or invalid continuation.
-    pub async fn diff(
-        &self,
-        page: AgentPageRequest,
-    ) -> Result<Vec<crate::context::DiffFilePage>> {
-        match self.connection.execute(&AgentCommand::Diff {
-            agent: self.connection.root().clone(),
-            page,
-        }).await? {
+    pub async fn diff(&self, page: AgentPageRequest) -> Result<Vec<crate::context::DiffFilePage>> {
+        match self
+            .connection
+            .execute(&AgentCommand::Diff {
+                agent: self.connection.root().clone(),
+                page,
+            })
+            .await?
+        {
             AgentReply::Diff { items } => Ok(items),
             _ => Err(unexpected()),
         }

@@ -377,11 +377,13 @@ where
             capture_operation(operation, phase)
         };
         // Even an empty initial checkout needs an immutable baseline receipt.
-        let settlement = settlement.or_else(|| first_baseline.then(|| {
-            acyclic_fs::Digest::from_bytes(
-                *blake3::hash(b"acyclic.local.checkout-baseline/v1\0").as_bytes(),
-            )
-        }));
+        let settlement = settlement.or_else(|| {
+            first_baseline.then(|| {
+                acyclic_fs::Digest::from_bytes(
+                    *blake3::hash(b"acyclic.local.checkout-baseline/v1\0").as_bytes(),
+                )
+            })
+        });
         let committed = checkout
             .commit(
                 operation,
@@ -424,7 +426,9 @@ pub(super) fn needs_baseline(slot: &Option<Cursor>, physical: &LocalWorkspace) -
 }
 
 /// The first source import, retained in the workspace's existing operation index.
-pub(in crate::local) fn baseline_operation(workspace: acyclic_fs::WorkspaceId) -> acyclic_fs::OperationId {
+pub(in crate::local) fn baseline_operation(
+    workspace: acyclic_fs::WorkspaceId,
+) -> acyclic_fs::OperationId {
     let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-baseline/v1");
     hash.update(&workspace.into_bytes());
     let mut bytes = [0; 16];

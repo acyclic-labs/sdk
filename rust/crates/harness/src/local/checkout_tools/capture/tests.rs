@@ -516,17 +516,31 @@ async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<
     run(&tools, &mut slot).await?;
     let workspace = tools.workspace.view().workspace();
     let cancellation = CancellationToken::new();
-    let key = acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes());
-    let baseline = workspace.operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
-        .await.map_err(storage)?.value.expect("empty baseline receipt");
+    let key =
+        acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes());
+    let baseline = workspace
+        .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .expect("empty baseline receipt");
     std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
     run(&tools, &mut slot).await?;
     slot = None;
     run(&tools, &mut slot).await?;
-    let recovered = workspace.operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
-        .await.map_err(storage)?.value.expect("original empty baseline");
+    let recovered = workspace
+        .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .expect("original empty baseline");
     assert_eq!(recovered.id(), baseline.id());
-    assert!(recovered.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+    assert!(
+        recovered
+            .read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .is_err()
+    );
     assert_eq!(contents(&tools).await?, b"after");
     drop(slot);
     drop(tools);

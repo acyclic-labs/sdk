@@ -418,7 +418,8 @@ fn validate_diff_page(
     if encoded_bytes > page.bytes() as usize {
         return Err(CommandError::Capacity);
     }
-    let requested: Option<DiffCursor> = page.cursor()
+    let requested: Option<DiffCursor> = page
+        .cursor()
         .map(serde_json::from_str)
         .transpose()
         .map_err(|_| CommandError::Invalid)?;
@@ -433,14 +434,18 @@ fn validate_diff_page(
     for (index, fragment) in fragments.iter().enumerate() {
         acyclic_harness_core::conversation::validate_content_path(&fragment.path, &mut None)
             .map_err(|_| CommandError::Invalid)?;
-        rows = rows.checked_add(usize::from(!fragment.continued))
+        rows = rows
+            .checked_add(usize::from(!fragment.continued))
             .and_then(|rows| rows.checked_add(fragment.patch.split_inclusive('\n').count()))
             .ok_or(CommandError::Capacity)?;
         if rows > page.items() as usize || (fragment.continued && fragment.patch.is_empty()) {
             return Err(CommandError::Capacity);
         }
         if (fragment.binary || fragment.omitted_bytes.is_some())
-            && (!fragment.patch.is_empty() || fragment.continued || fragment.added != 0 || fragment.removed != 0)
+            && (!fragment.patch.is_empty()
+                || fragment.continued
+                || fragment.added != 0
+                || fragment.removed != 0)
         {
             return Err(CommandError::Invalid);
         }
@@ -448,14 +453,18 @@ fn validate_diff_page(
             previous.publication != fragment.publication
                 || previous.path != fragment.path
                 || previous.offset.is_some() != fragment.continued
-        }) || (previous.is_none() && fragment.continued) {
+        }) || (previous.is_none() && fragment.continued)
+        {
             return Err(CommandError::Invalid);
         }
         if let Some(next) = &fragment.next {
             acyclic_harness_core::conversation::validate_content_path(&next.path, &mut None)
                 .map_err(|_| CommandError::Invalid)?;
-            let consumed = previous.and_then(|cursor| cursor.offset).unwrap_or(0)
-                .checked_add(fragment.patch.len()).ok_or(CommandError::Invalid)?;
+            let consumed = previous
+                .and_then(|cursor| cursor.offset)
+                .unwrap_or(0)
+                .checked_add(fragment.patch.len())
+                .ok_or(CommandError::Invalid)?;
             if next.publication != fragment.publication
                 || if next.path == fragment.path {
                     next.offset != Some(consumed)
@@ -631,29 +640,53 @@ mod tests {
     }
 
     #[test]
-    fn diff_pages_preserve_projection_progress_and_visible_credit() -> Result<(), Box<dyn std::error::Error>> {
+    fn diff_pages_preserve_projection_progress_and_visible_credit()
+    -> Result<(), Box<dyn std::error::Error>> {
         use acyclic_harness_core::context::DiffKind;
-        let agent = AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
-        let cursor = DiffCursor { publication: [7; 32], path: "a.txt".into(), offset: Some(0) };
+        let agent =
+            AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
+        let cursor = DiffCursor {
+            publication: [7; 32],
+            path: "a.txt".into(),
+            offset: Some(0),
+        };
         let command = AgentCommand::Diff {
             agent: agent.clone(),
             page: AgentPageRequest::new(3, 4096, None)?,
         };
         let items = vec![
             DiffFilePage {
-                publication: [7; 32], path: "a.txt".into(), kind: DiffKind::Added,
-                added: 1, removed: 0, binary: false, omitted_bytes: None,
-                continued: false, patch: String::new(), next: Some(cursor.clone()),
+                publication: [7; 32],
+                path: "a.txt".into(),
+                kind: DiffKind::Added,
+                added: 1,
+                removed: 0,
+                binary: false,
+                omitted_bytes: None,
+                continued: false,
+                patch: String::new(),
+                next: Some(cursor.clone()),
             },
             DiffFilePage {
-                publication: [7; 32], path: "a.txt".into(), kind: DiffKind::Added,
-                added: 1, removed: 0, binary: false, omitted_bytes: None,
-                continued: true, patch: "+new\n".into(), next: None,
+                publication: [7; 32],
+                path: "a.txt".into(),
+                kind: DiffKind::Added,
+                added: 1,
+                removed: 0,
+                binary: false,
+                omitted_bytes: None,
+                continued: true,
+                patch: "+new\n".into(),
+                next: None,
             },
         ];
-        let reply = Ok(AgentReply::Diff { items: items.clone() });
+        let reply = Ok(AgentReply::Diff {
+            items: items.clone(),
+        });
         let bytes = encode_agent_reply(&reply, &command)?;
-        assert!(matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Diff { items }) if items.len() == 2));
+        assert!(
+            matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Diff { items }) if items.len() == 2)
+        );
         // Every malformed value goes through the actual wire envelope parser.
         for mutation in 0..7 {
             let mut malformed = items.clone();
@@ -667,20 +700,39 @@ mod tests {
                 _ => malformed[1].path = "../outside.txt".into(),
             }
             let bytes = Envelope {
-                value: Some(envelope::Value::Reply(serde_json::to_vec(&AgentReply::Diff { items: malformed })?)),
+                value: Some(envelope::Value::Reply(serde_json::to_vec(
+                    &AgentReply::Diff { items: malformed },
+                )?)),
                 reason: None,
-            }.encode_to_vec();
-            assert!(decode_agent_reply(&bytes, &command).is_err(), "accepted malformed diff {mutation}");
+            }
+            .encode_to_vec();
+            assert!(
+                decode_agent_reply(&bytes, &command).is_err(),
+                "accepted malformed diff {mutation}"
+            );
         }
         let limited = AgentCommand::Diff {
-            agent: agent.clone(), page: AgentPageRequest::new(1, 4096, None)?,
+            agent: agent.clone(),
+            page: AgentPageRequest::new(1, 4096, None)?,
         };
-        assert!(matches!(decode_agent_reply(&bytes, &limited), Err(CommandError::Capacity)));
+        assert!(matches!(
+            decode_agent_reply(&bytes, &limited),
+            Err(CommandError::Capacity)
+        ));
         let continued = AgentCommand::Diff {
-            agent, page: AgentPageRequest::new(1, 4096, Some(serde_json::to_string(&cursor)?))?,
+            agent,
+            page: AgentPageRequest::new(1, 4096, Some(serde_json::to_string(&cursor)?))?,
         };
-        let bytes = encode_agent_reply(&Ok(AgentReply::Diff { items: vec![items[1].clone()] }), &continued)?;
-        assert!(matches!(decode_agent_reply(&bytes, &continued)?, Ok(AgentReply::Diff { .. })));
+        let bytes = encode_agent_reply(
+            &Ok(AgentReply::Diff {
+                items: vec![items[1].clone()],
+            }),
+            &continued,
+        )?;
+        assert!(matches!(
+            decode_agent_reply(&bytes, &continued)?,
+            Ok(AgentReply::Diff { .. })
+        ));
         assert!(encode_agent_reply(&Ok(AgentReply::Diff { items: vec![] }), &continued).is_err());
         Ok(())
     }

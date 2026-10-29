@@ -25,6 +25,7 @@ use futures::{StreamExt as _, stream::LocalBoxStream};
 use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
+mod diff;
 
 /// Settled turns shown when a conversation reopens.
 const HISTORY: u64 = 64;
@@ -455,6 +456,10 @@ pub async fn run(
     let mut input = PromptInput::default();
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
+    let mut diff_open = false;
+    let mut diff_panel: Option<diff::DiffPanel> = None;
+    let mut diff_query = None;
+    let mut diff_credit = 0;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
     input
@@ -473,12 +478,15 @@ pub async fn run(
         if std::mem::take(&mut view.ring) {
             terminal.bell();
         }
-        let approval_rows =
-            if overlay.is_none() && view.prompt.is_none() && view.approval().is_some() {
-                view.approval_rows()
-            } else {
-                Vec::new()
-            };
+        let approval_rows = if overlay.is_none()
+            && !diff_open
+            && view.prompt.is_none()
+            && view.approval().is_some()
+        {
+            view.approval_rows()
+        } else {
+            Vec::new()
+        };
         let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         let (areas, page) = {
             let status = Line::raw(view.status());
@@ -487,11 +495,22 @@ pub async fn run(
                 transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
-                overlay: overlay
-                    .as_ref()
-                    .map_or(&approval_rows[..], |(_, lines)| &lines[..]),
+                overlay: overlay.as_ref().map_or_else(
+                    || {
+                        diff_panel
+                            .as_ref()
+                            .map_or(&approval_rows[..], |panel| &panel.lines[..])
+                    },
+                    |(_, lines)| &lines[..],
+                ),
                 overlay_title: overlay.as_ref().map_or(
-                    if approval_rows.is_empty() {
+                    if diff_open {
+                        if diff_query.is_some() {
+                            "Diff · loading"
+                        } else {
+                            "Diff"
+                        }
+                    } else if approval_rows.is_empty() {
                         ""
                     } else {
                         "Approval"
@@ -503,7 +522,7 @@ pub async fn run(
             };
             let area = Rect::from((Position::ORIGIN, size));
             let tail = screen.tail_scroll(area, &input);
-            let scroll = if overlay.is_some() {
+            let scroll = if overlay.is_some() || diff_open {
                 overlay_top = overlay_top.min(tail);
                 overlay_top
             } else {
@@ -515,9 +534,36 @@ pub async fn run(
             })?;
             (areas, usize::from(areas.transcript.height).max(1))
         };
+        // Page sizes describe visible output, never the repository population.
+        // One row is reserved for the continuation hint.
+        let credit = u32::try_from(page.saturating_sub(1).clamp(1, 128))?;
+        if diff_open && diff_credit != credit {
+            diff_credit = credit;
+            diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
+        }
         tokio::select! {
+            result = async {
+                match diff_query.as_mut() {
+                    Some(query) => query.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                diff_query = None;
+                match result {
+                    Ok(panel) => {
+                        diff_panel = Some(panel);
+                        overlay_top = 0;
+                    }
+                    Err(error) => {
+                        diff_open = false;
+                        diff_panel = None;
+                        view.notice = Some(error.to_string());
+                    }
+                }
+            }
             event = events.next() => {
                 let event = event?;
+                let settled = matches!(&event, Event::Turn(_));
                 if matches!(event, Event::Output) {
                     events.absorb().await?;
                 }
@@ -526,6 +572,9 @@ pub async fn run(
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
+                if diff_open && settled {
+                    diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
+                }
                 // A settled turn clears the output and the streamed answer.
                 if view.reply != events.reply() {
                     view.reply.clear();
@@ -586,7 +635,18 @@ pub async fn run(
                                         return Ok(view.outcome.code());
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
+                                        diff_open = false;
+                                        diff_panel = None;
+                                        diff_query = None;
                                         overlay = Some(("Help", View::help(&catalog, &input)));
+                                        overlay_top = 0;
+                                        continue;
+                                    }
+                                    Ok(Some(CommandResolution::Select { query: CommandQuery::Diff })) => {
+                                        overlay = None;
+                                        diff_open = true;
+                                        diff_credit = credit;
+                                        diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
                                         overlay_top = 0;
                                         continue;
                                     }
@@ -643,6 +703,11 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if overlay.is_some() => {
                                 overlay = None;
                             }
+                            InputEffect::Host(Action::Escape) if diff_open => {
+                                diff_open = false;
+                                diff_panel = None;
+                                diff_query = None;
+                            }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
                             }
@@ -654,6 +719,19 @@ pub async fn run(
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
+                            InputEffect::Scroll(rows) if diff_open && diff_query.is_none() => {
+                                let cursor = if rows < 0 {
+                                    diff_panel.as_ref().and_then(|panel| panel.next.clone())
+                                } else {
+                                    None
+                                };
+                                if cursor.is_some()
+                                    || rows > 0 && diff_panel.as_ref().is_some_and(|panel| panel.continued)
+                                {
+                                    diff_query = Some(diff::query(Arc::clone(&conversation), credit, cursor));
+                                }
+                            }
+                            InputEffect::Scroll(_) if diff_open => {}
                             InputEffect::Scroll(rows) if overlay.is_some() => {
                                 overlay_top = overlay_top.saturating_add_signed(-rows);
                             }

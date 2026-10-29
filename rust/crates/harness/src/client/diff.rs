@@ -12,8 +12,8 @@ mod compute;
 mod file;
 mod page;
 pub use file::{DiffHunk, DiffKind, FileDiff};
-pub use page::{DiffCursor, DiffFilePage};
 use file::{PatchText, render_bound};
+pub use page::{DiffCursor, DiffFilePage};
 
 /// Caller-owned bounds for query transfer and retained rendering data.
 #[derive(Clone, Copy, Debug)]
