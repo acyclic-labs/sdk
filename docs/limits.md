@@ -1859,3 +1859,10 @@ Sealed filesystem references retain their complete locator, lineage and root ide
 The first compile after adopting the published sealed-reference and shared-endpoint source stopped with eight filesystem errors: obsolete fixed33-byte memory-index keys and their corruption fixture, one removed volume-event constant in a retention fixture, one unpropagated funded-map lookup, and one duplicate cancellation accessor. These projections now use complete padded ObjectId identity, the original authority read allowance, actual payload length and the shared accounting accessor. No finite allowance is widened. Qualification remains pending.
 
 The explicit finite-policy control used Error::source traversal to search for WorkError, which skips thiserror transparent variants. It now uses the existing production WorkspaceError normalization and still requires the exact typed BudgetExceeded refusal, zero completed writes, no pending mutation and the original16384-byte read budget. No product refusal or work assertion is removed; runtime confirmation remains pending.
+
+
+## Compile338 and Stream acceptance-clock composition
+
+Compile338 progressed past all eight earlier errors and stopped at three retired total-cap fields in the newly published sealed-transfer integration fixture. The fixture now supplies only canonical decoder and filesystem capability requirements; its exact sealed CAS transfer, cold reopening and original-work controls are retained. No runtime phase ran.
+
+The milestone is rebased onto the actual published Stream acceptance-clock change. Postgres retains the single Replicated/PgJournal owner and database acceptance stamp, with fixed digest namespace keys and exact original-name collision checks. Local publication retains its original fenced write cut and physical-completion accounting; retired lifetime journal admission is not restored. Post-composition qualification remains pending.
