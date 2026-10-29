@@ -160,7 +160,7 @@ mod tests {
         };
         let mut recovered = decode(&encode(Some(&state), None)?, None)?.expect("model cell");
         let limits = Limits {
-            file_bytes: 4,
+            file_bytes: Some(4),
             ..Limits::default()
         };
         let event = ModelEvent::Content { delta: "ab".into() };
