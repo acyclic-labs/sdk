@@ -353,7 +353,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 crate::executor::preparation_format(format_args!("/{}", recorded.0.0.path()), work)
             })?;
             let _path_hold = io.guard_owned(path.capacity() as u64)?;
-            super::authentication::authenticate(original, &recorded.0.0, &path, io).await?;
+            super::authentication::authenticate(original, &recorded.0.0, &path, io, None).await?;
             None
         };
         bounded_io::retain(original, Some(io)).await?;

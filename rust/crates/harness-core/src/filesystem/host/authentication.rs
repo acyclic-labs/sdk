@@ -1,13 +1,36 @@
 //! Authenticate retained file descriptors with bounded streaming reads.
-//! Metadata recovery and ordinary ranges share the same immutable-file verifier.
+//! Metadata recovery, publication and ordinary ranges share one verifier.
 use super::*;
 use sha2::{Digest as _, Sha256};
+
+pub(in crate::filesystem) fn authenticate_input<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    selected: &'a acyclic_fs::Generation<A, O>,
+    reference: &'a FileRef,
+    bytes: &'a [u8],
+    io: Option<&'a PreparationIo>,
+) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+    crate::conversation::BoundedContentFuture::new(io, || async move {
+        let owned;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &owned
+        };
+        let path = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+        })?;
+        let _path_hold = io.guard_owned(path.capacity() as u64)?;
+        authenticate(selected, reference, &path, io, Some(bytes)).await
+    })
+}
 
 pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     selected: &acyclic_fs::Generation<A, O>,
     reference: &FileRef,
     path: &str,
     io: &PreparationIo,
+    mut expected: Option<&[u8]>,
 ) -> Result<()> {
     let stat = io.sdk(selected.stat(path, io, io.cancellation()).await)?;
     let length = reference.descriptor().byte_length();
@@ -49,11 +72,33 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             ..Default::default()
         })?;
         digest.update(chunk.bytes.as_ref());
+        if let Some(remaining) = &mut expected {
+            let (prefix, suffix) =
+                remaining
+                    .split_at_checked(chunk.bytes.len())
+                    .ok_or_else(|| {
+                        stock_boundary(
+                            Some(io),
+                            crate::wire::ErrorCode::Conflict,
+                            "file content differs from the requested bytes",
+                        )
+                    })?;
+            if prefix != chunk.bytes.as_ref() {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Conflict,
+                    "file content differs from the requested bytes",
+                ));
+            }
+            *remaining = suffix;
+        }
         offset += chunk.bytes.len() as u64;
         drop(chunk);
         drop(hold);
     }
-    if digest.finalize().as_slice() != reference.descriptor().sha256() {
+    if digest.finalize().as_slice() != reference.descriptor().sha256()
+        || expected.is_some_and(|remaining| !remaining.is_empty())
+    {
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,

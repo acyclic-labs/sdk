@@ -300,7 +300,8 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn upload_receipt_recovery_uses_bounded_live_memory() -> Result<()> {
-    let (host, file) = published(&vec![b'x'; 4 * 1024 * 1024 + 17]).await?;
+    let body = vec![b'x'; 4 * 1024 * 1024 + 17];
+    let (host, file) = published(&body).await?;
     let write = grant(file.volume(), VolumeOperation::Write)?;
     let stop = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -317,6 +318,39 @@ async fn upload_receipt_recovery_uses_bounded_live_memory() -> Result<()> {
         ceiling: None,
         io: Some(&io),
     };
+    assert_eq!(
+        host.put_content(
+            file.volume(),
+            &write,
+            file.path(),
+            &body,
+            "text/plain",
+            file.display_name(),
+            u64::MAX,
+            &key,
+            None,
+            access,
+        )
+        .await?,
+        file
+    );
+    let mut changed = body.clone();
+    *changed.last_mut().unwrap() = b'y';
+    let conflict = host
+        .put_content(
+            file.volume(),
+            &write,
+            file.path(),
+            &changed,
+            "text/plain",
+            file.display_name(),
+            u64::MAX,
+            &key,
+            None,
+            access,
+        )
+        .await;
+    assert!(matches!(conflict, Err(error) if error.code() == crate::wire::ErrorCode::Conflict));
     assert_eq!(
         host.content_for_operation(file.volume(), &write, &key, file.path(), u64::MAX, access)
             .await?,
