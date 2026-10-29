@@ -3,29 +3,53 @@
 use super::*;
 use sha2::{Digest as _, Sha256};
 
-pub(in crate::filesystem) fn authenticate_input<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    selected: &'a acyclic_fs::Generation<A, O>,
-    reference: &'a FileRef,
-    bytes: &'a [u8],
-    io: Option<&'a PreparationIo>,
-) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-    crate::conversation::BoundedContentFuture::new(io, || async move {
-        let owned;
-        let io = if let Some(io) = io {
-            io
-        } else {
-            owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-            &owned
-        };
-        let path = crate::executor::with_history_io(Some(io), |work| {
-            crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
-        })?;
-        let _path_hold = io.guard_owned(path.capacity() as u64)?;
-        authenticate(selected, reference, &path, io, Some(bytes)).await
-    })
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    pub(in crate::filesystem) fn authenticate_retained_file<'a>(
+        &'a self,
+        selected: &'a acyclic_fs::Generation<A, O>,
+        reference: &'a FileRef,
+        expected: Option<&'a [u8]>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            pinned_read_tests::retained::sample_items(false, io);
+            // Preserve the existing real-reopen negative at the verification
+            // boundary; it changes generation selection, never authentication.
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let reopened = if pinned_read_tests::retained::reopen() {
+                let workspace =
+                    bounded_io::content_workspace(&self.provider, reference.volume(), io)?;
+                let opened = self.open(&workspace, io).await?;
+                let generation = self.file_generation(reference, io)?;
+                Some(self.generation(&opened, &generation, io).await?)
+            } else {
+                None
+            };
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            let selected = reopened.as_ref().unwrap_or(selected);
+            {
+                let owned;
+                let io = if let Some(io) = io {
+                    io
+                } else {
+                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                    &owned
+                };
+                let path = crate::executor::with_history_io(Some(io), |work| {
+                    crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
+                })?;
+                let _path_hold = io.guard_owned(path.capacity() as u64)?;
+                authenticate(selected, reference, &path, io, expected).await?;
+            }
+            #[cfg(all(test, not(target_arch = "wasm32")))]
+            pinned_read_tests::retained::sample_items(true, io);
+            Ok(())
+        })
+    }
 }
 
-pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     selected: &acyclic_fs::Generation<A, O>,
     reference: &FileRef,
     path: &str,

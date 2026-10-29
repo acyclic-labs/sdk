@@ -338,7 +338,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })
                 }?;
-                host::authentication::authenticate_input(&prior, &reference, bytes, io)?.await?;
+                self.authenticate_retained_file(&prior, &reference, Some(bytes), io)?
+                    .await?;
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
@@ -427,7 +428,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            host::authentication::authenticate_input(&generation, &reference, bytes, io)?.await?;
+            self.authenticate_retained_file(&generation, &reference, Some(bytes), io)?
+                .await?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
             self.seal_publication(reference, io)

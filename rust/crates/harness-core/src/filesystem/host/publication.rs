@@ -349,11 +349,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "content provider or size limit mismatch",
                 ));
             }
-            let path = crate::executor::with_history_io(Some(io), |work| {
-                crate::executor::preparation_format(format_args!("/{}", recorded.0.0.path()), work)
-            })?;
-            let _path_hold = io.guard_owned(path.capacity() as u64)?;
-            super::authentication::authenticate(original, &recorded.0.0, &path, io, None).await?;
+            self.authenticate_retained_file(original, &recorded.0.0, None, Some(io))?
+                .await?;
             None
         };
         bounded_io::retain(original, Some(io)).await?;
