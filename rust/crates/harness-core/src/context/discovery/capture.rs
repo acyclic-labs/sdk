@@ -77,7 +77,7 @@ impl DiscoveredContext {
             ));
         }
         let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
+            crate::executor::json::json_byte_length(&self.skills, Some(limits.render_bytes), work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
