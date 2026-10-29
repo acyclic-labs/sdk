@@ -80,11 +80,12 @@ impl WasmMachinesWorkspace {
             )))?;
         let volume = VolumeRef::try_from(volume).map_err(super::js_error)?;
         let open = field::<js_sys::Function>(&source, "open")?;
-        let budget = field::<js_sys::Function>(&source, "budget")?;
         let authority = owner.issuer.clone();
-        let context = owner.context.clone();
+        let context = authority.operation_context().ok_or_else(|| super::js_error(crate::Error::Unauthorized(
+            "Machines workspace requires an original operation context; recovery: retain platform admission".into(),
+        )))?.clone();
         let endpoint = grpc::javascript::Endpoint::new(open, move |timeout, expiry| {
-            deadline::open(&source, &budget, &authority, &context, timeout, expiry)
+            deadline::open(&authority, &context, timeout, expiry)
         });
         let provider: Arc<dyn MachinesProvider> = Arc::new(grpc::Provider::over(endpoint));
         let workspace = MachinesHost::new(provider, provider_ref)
@@ -98,26 +99,17 @@ impl WasmMachinesWorkspace {
 
 #[cfg(target_arch = "wasm32")]
 mod deadline {
-    use acyclic_auth::operation::{Context, Stopped};
+    use acyclic_auth::operation::{BudgetError, Context};
     use acyclic_machines::{ProviderError, grpc::transport::Deadline};
     use acyclic_stream::ProviderTask;
-    use js_sys::{Function, Promise};
     use std::{future::Future, time::Duration};
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
 
     pub(super) struct Budget {
-        original: Context,
-        narrowed: Context,
+        context: Context,
         authority: crate::core::RuntimeAuthority,
-        observation: JsValue,
-        remaining: Function,
-        _registration: crate::wasm::cancel::Cancel,
     }
 
     pub(super) fn open(
-        source: &JsValue,
-        budget: &Function,
         authority: &crate::core::RuntimeAuthority,
         original: &Context,
         timeout: Option<Duration>,
@@ -126,49 +118,15 @@ mod deadline {
         authority
             .verifier(&mut None)
             .map_err(|_| ProviderError::Cancelled)?;
-        let registration =
-            crate::wasm::cancel::Cancel::new().map_err(|_| ProviderError::Unavailable)?;
-        let timeout = timeout
-            .map(|value| u64::try_from(value.as_millis()))
-            .transpose()
-            .map_err(|_| ProviderError::Invalid("command timeout is not representable".into()))?;
-        let timeout = timeout.map_or(JsValue::UNDEFINED, |value| {
-            js_sys::BigInt::from(value).into()
-        });
-        let expiry = expiry.map_or(JsValue::UNDEFINED, |value| {
-            js_sys::BigInt::from(value).into()
-        });
-        let observation = budget
-            .call3(source, &timeout, &expiry, &registration.signal)
-            .map_err(|_| ProviderError::Cancelled)?;
-        let field = |name: &str| {
-            js_sys::Reflect::get(&observation, &JsValue::from_str(name))
-                .map_err(|_| ProviderError::Unavailable)
-        };
-        let remaining = field("remainingMilliseconds")?
-            .dyn_into::<Function>()
-            .map_err(|_| ProviderError::Unavailable)?;
-        let stopped = field("stopped")?
-            .dyn_into::<Promise>()
-            .map_err(|_| ProviderError::Unavailable)?;
-        let narrowed = Context::from_stopped(original.deadline_unix_millis(), async move {
-            match JsFuture::from(stopped)
-                .await
-                .ok()
-                .and_then(|value| value.as_string())
-                .as_deref()
-            {
-                Some("deadline") => Stopped::Deadline,
-                _ => Stopped::Cancelled,
-            }
-        });
+        let context = original.narrow(timeout, expiry).map_err(|error| match error {
+            BudgetError::ClockUnavailable => ProviderError::Unsupported(
+                "original operation clock unavailable; recovery: retain the admitted platform clock".into(),
+            ),
+            BudgetError::Stopped(_) => ProviderError::Cancelled,
+        })?;
         let budget = Budget {
-            original: original.clone(),
-            narrowed,
+            context,
             authority: authority.clone(),
-            observation,
-            remaining,
-            _registration: registration,
         };
         if budget.remaining().is_zero() || !budget.current() {
             return Err(ProviderError::Cancelled);
@@ -178,19 +136,13 @@ mod deadline {
 
     impl Budget {
         fn current(&self) -> bool {
-            self.original.check().is_ok()
-                && self.narrowed.check().is_ok()
-                && self.authority.verifier(&mut None).is_ok()
+            self.context.check().is_ok() && self.authority.verifier(&mut None).is_ok()
         }
     }
 
     impl Deadline for Budget {
         fn remaining(&self) -> Duration {
-            self.remaining
-                .call0(&self.observation)
-                .ok()
-                .and_then(|value| crate::wasm::from_js::<u64>(value).ok())
-                .map_or(Duration::ZERO, Duration::from_millis)
+            self.context.remaining().unwrap_or(Duration::ZERO)
         }
 
         async fn run<F>(&self, future: F) -> Option<F::Output>
@@ -201,12 +153,7 @@ mod deadline {
             if self.remaining().is_zero() || !self.current() {
                 return None;
             }
-            let result = self
-                .original
-                .run(self.narrowed.run(future))
-                .await
-                .ok()?
-                .ok()?;
+            let result = self.context.run(future).await.ok()?;
             (!self.remaining().is_zero() && self.current()).then_some(result)
         }
     }
@@ -226,19 +173,5 @@ export interface WasmMachinesWorkspaceSource {
     /** createMachinesRpcTransport(originalAuthenticatedConnectTransport).
      * Provider credentials remain behind this protected transport. */
     readonly open: ReturnType<typeof import("@acyclic-labs/machines/transport").createMachinesRpcTransport>;
-    /** Register ONCE on the ORIGINAL platform clock before credentials/dispatch:
-     * min(original caller deadline, command start + timeout, authenticated expiry).
-     * Absence never installs a fallback timeout. No guest timer, new invocation,
-     * renewed budget or uncertain replay is permitted. Abort releases only this
-     * registration; it does not claim remote physical cancellation. */
-    budget(timeoutMilliseconds: bigint | undefined, expiryUnixMilliseconds: bigint | undefined,
-        signal: AbortSignal): {
-        /** Synchronous original-clock observation; zero on stop/producer loss.
-         * Throwing or invalid output is closed, including in a completing poll. */
-        remainingMilliseconds(): bigint;
-        /** Original earlier-deadline/caller-stop event. Producer loss must
-         * settle or reject this promise, waking every pending observer. */
-        readonly stopped: Promise<"deadline" | "cancelled">;
-    };
 }
 "#;
