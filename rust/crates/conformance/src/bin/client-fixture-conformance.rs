@@ -16,12 +16,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let credential = hex::decode(credential)?;
     let provider = match std::env::var("ACYCLIC_CONFORMANCE_CA") {
         Ok(path) => {
-            Client::connect_eager_with_ca_certificate(
-                &endpoint,
-                &token,
-                std::fs::read(&path)?,
-            )
-            .await?
+            Client::connect_eager_with_ca_certificate(&endpoint, &token, std::fs::read(&path)?)
+                .await?
         }
         Err(std::env::VarError::NotPresent) => Client::connect_eager(&endpoint, &token).await?,
         Err(error) => return Err(error.into()),
