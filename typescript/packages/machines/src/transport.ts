@@ -8,7 +8,7 @@ export { createMachinesRpcTransport } from "./rpc-transport.js";
 export const MAX_OUTPUT_READ_BYTES = 65_536;
 const MAX_OFFSET = (1n << 64n) - 1n;
 
-export type MachinesExecRequest = Omit<MessageInitShape<typeof wire.ExecStartSchema>, "timeoutMs"> & {
+export type MachinesExecRequest = Omit<MessageInitShape<typeof wire.ExecStartSchema>, "timeoutMs" | "$typeName"> & {
   readonly timeoutMs?: number;
   readonly argv: readonly string[];
   readonly stdin?: Uint8Array;

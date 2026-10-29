@@ -33,7 +33,7 @@ export function createMachinesGrpcTransport(options: MachinesGrpcOptions) {
   const transport = createGrpcTransport({
     sessionManager: session, baseUrl: endpoint.href,
     acceptCompression: [], interceptors: [authenticate],
-    readMaxBytes: maximum, writeMaxBytes: maximum,
+    ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }),
   });
   return { transport, close: () => session.abort() };
 }
