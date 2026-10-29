@@ -172,6 +172,25 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
         ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
     let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
     let sandbox = SandboxRef::new(provider_ref, vec![1; 16], None)?;
+    let admitted = MachineObservation {
+        id: host.machine_id(&sandbox)?,
+        state: acyclic_machines::MachineState::Running,
+        contract: acyclic_machines::MachineContract {
+            image: Image::custom([1; 32]).map_err(Error::Machines)?,
+            selected_volume_ref: Some((&volume).into()),
+            capabilities: Default::default(),
+            compatibility: acyclic_machines::CompatibilityPolicy::BestEffort,
+            compatibility_revision: [1; 32],
+            suspension: acyclic_machines::SuspensionPolicy::Manual,
+            expiration: acyclic_machines::ExpirationPolicy::Never,
+            network_policy_digest: [2; 32],
+            budgets: Default::default(),
+        },
+        endpoints: Vec::new(),
+        last_checkpoint: None,
+        created_at_unix_ms: 1,
+        changed_at_unix_ms: 1,
+    };
     let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let write = volume.capability(VolumeOperation::Write, &mut None)?;
     let shell = crate::contract::capability::tool_call("shell");
@@ -187,6 +206,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
             MachinesWorkspace::new(
                 host.clone(),
                 sandbox.clone(),
+                admitted.clone(),
                 &volume,
                 scope,
                 issuer.verifier(&mut None)?
@@ -199,6 +219,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
     let workspace = MachinesWorkspace::new(
         host,
         sandbox,
+        admitted,
         &volume,
         scope.clone(),
         issuer.verifier(&mut None)?,

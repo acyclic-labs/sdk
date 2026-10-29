@@ -28,6 +28,13 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         &mut None,
     )?;
     let machine = MachineId::new();
+    let other_volume = VolumeRef::new(
+        volume.provider().clone(),
+        "other-project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("other-project".into()),
+        &mut None,
+    )?;
     let observation = MachineObservation {
         id: machine,
         state: MachineState::Running,
@@ -48,7 +55,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         changed_at_unix_ms: 1,
     };
     let provider = acyclic_machines::local::provider(
-        observation,
+        observation.clone(),
         acyclic_machines::local::LocalOptions {
             cwd: std::env::current_dir()
                 .map_err(|_| Error::Storage("local shell test has no current directory".into()))?,
@@ -73,11 +80,34 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
     let grants = acyclic_harness_core::Capabilities::new([
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.capability(VolumeOperation::Write, &mut None)?,
+        other_volume.capability(VolumeOperation::Read, &mut None)?,
+        other_volume.capability(VolumeOperation::Write, &mut None)?,
         shell_grant,
     ]);
     let scope = issuer.bootstrap_scope("local-machine", &grants, None, &mut None)?;
+    // Both volumes are authorized; only the original physical selection binds.
+    assert!(matches!(
+        host.workspace(
+            observation.clone(),
+            &other_volume,
+            scope.clone(),
+            issuer.verifier(&mut None)?
+        ),
+        Err(Error::Unauthorized(_))
+    ));
+    let mut absent = observation.clone();
+    absent.contract.selected_volume_ref = None;
+    assert!(matches!(
+        host.workspace(absent, &volume, scope.clone(), issuer.verifier(&mut None)?),
+        Err(Error::Unauthorized(_))
+    ));
     let workspace = host
-        .workspace(machine, &volume, scope.clone(), issuer.verifier(&mut None)?)?
+        .workspace(
+            observation,
+            &volume,
+            scope.clone(),
+            issuer.verifier(&mut None)?,
+        )?
         .with_shell(
             if cfg!(windows) {
                 "powershell.exe"

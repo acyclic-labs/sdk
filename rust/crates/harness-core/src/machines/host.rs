@@ -12,13 +12,17 @@ impl MachinesHost {
     /// The Machine and volume are the platform's original admitted selection.
     pub fn workspace(
         &self,
-        machine: MachineId,
+        admitted: MachineObservation,
         volume: &crate::conversation::VolumeRef,
         signed: crate::core::Scope,
         verifier: crate::core::AuthorityVerifier,
     ) -> Result<super::MachinesWorkspace> {
-        let sandbox = SandboxRef::new(self.provider_ref.clone(), machine.as_bytes().into(), None)?;
-        super::MachinesWorkspace::new(self.clone(), sandbox, volume, signed, verifier)
+        let sandbox = SandboxRef::new(
+            self.provider_ref.clone(),
+            admitted.id.as_bytes().into(),
+            None,
+        )?;
+        super::MachinesWorkspace::new(self.clone(), sandbox, admitted, volume, signed, verifier)
     }
 
     /// Binds one explicit provider implementation and immutable provider identity.

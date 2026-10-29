@@ -15,6 +15,7 @@ use acyclic_stream::BoxProviderFuture;
 pub struct MachinesWorkspace {
     host: MachinesHost,
     sandbox: SandboxRef,
+    volume: VolumeRef,
     signed: Scope,
     verifier: AuthorityVerifier,
     read: String,
@@ -29,11 +30,20 @@ impl MachinesWorkspace {
     pub fn new(
         host: MachinesHost,
         sandbox: SandboxRef,
+        admitted: MachineObservation,
         volume: &VolumeRef,
         signed: Scope,
         verifier: AuthorityVerifier,
     ) -> Result<Self> {
-        host.machine_id(&sandbox)?;
+        if host.machine_id(&sandbox)? != admitted.id
+            || admitted.contract.selected_volume_ref.as_ref() != Some(&volume.into())
+            || !matches!(
+                admitted.state,
+                acyclic_machines::MachineState::Running | acyclic_machines::MachineState::Suspended
+            )
+        {
+            return Err(Error::Unauthorized("workspace differs from its admitted Machine and selected volume; recovery: retain the original Create/Attach or native enrollment observation".into()));
+        }
         verifier.verify(&signed, &mut None)?;
         let read = volume.capability(VolumeOperation::Read, &mut None)?;
         let write = volume.capability(VolumeOperation::Write, &mut None)?;
@@ -48,6 +58,7 @@ impl MachinesWorkspace {
         Ok(Self {
             host,
             sandbox,
+            volume: volume.clone(),
             signed,
             verifier,
             read,
@@ -55,6 +66,11 @@ impl MachinesWorkspace {
             executable: "bash".into(),
             shell: &acyclic_host_platform::shell::BASH,
         })
+    }
+
+    /// The exact source-admitted selection retained by this workspace binding.
+    pub fn selected_volume(&self) -> &VolumeRef {
+        &self.volume
     }
 
     /// Selects the actual Machine's shell from its trusted hosting preset.

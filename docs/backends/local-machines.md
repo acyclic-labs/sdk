@@ -5,10 +5,10 @@ source-admitted host workspace and its exact Machine incarnation:
 
 ```rust,ignore
 let provider = acyclic_machines::local::provider(
-    observation, native_options, streams, journal_path,
+    observation.clone(), native_options, streams, journal_path,
 ).await?; // Arc<dyn MachinesProvider>
 let host = MachinesHost::new(provider, provider_ref)?;
-let tools = host.workspace(machine, &selected_volume, original_scope, verifier)?
+let tools = host.workspace(observation, &selected_volume, original_scope, verifier)?
     .with_shell(resolved_shell, &acyclic_host_platform::shell::PLATFORM)?;
 // The server and local application both install these same workspace tools.
 bindings.workspace_tools = Some(Arc::new(tools));
@@ -17,6 +17,8 @@ bindings.workspace_tools = Some(Arc::new(tools));
 `native_options` is `local::LocalOptions { cwd, environment,
 inherit_environment, process_custody }`, from the existing host admission.
 The observation's selected volume is that same canonical `VolumeRef`.
+The workspace consumes that original observation, checks its exact Machine and
+selected volume once, and retains the selection. No inspection RPC is added.
 The factory supplies no filesystem authority, root issuer or second executor.
 File tools retain the task's existing authenticated content bindings.
 Hosted Linux uses the same `MachinesWorkspace` with its default bash selection.
