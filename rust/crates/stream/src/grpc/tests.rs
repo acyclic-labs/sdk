@@ -1,5 +1,5 @@
 use super::*;
-use crate::{MemoryStream, OwnedBytes};
+use crate::{MemoryStream, OwnedBytes, wire_codec};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
@@ -150,6 +150,52 @@ async fn grpc_heads_refuse_an_oversized_view_without_poisoning_the_session() -> 
         .heads(request.clone())
         .await?
         .validate_for(&request)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn grpc_minimum_cut_refuses_both_incarnations_without_losing_connection_progress()
+-> TestResult {
+    let provider = MemoryStream::default();
+    let path = StreamPath::new("minimum-incarnation")?;
+    provider
+        .append(AppendRequest {
+            path: path.clone(),
+            records: vec![OwnedBytes::from_static(b"original").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let current = provider.wait_applied(&Default::default()).await?;
+    let foreign = crate::Revision {
+        incarnation: current.incarnation ^ 1,
+        ..current.clone()
+    };
+    let mut transport =
+        wire::stream_service_client::StreamServiceClient::new(client(provider)?.channel);
+    let tail = |revisions: &[crate::Revision]| wire::TailRequest {
+        path: path.to_string(),
+        at_least: revisions.iter().map(wire_codec::revision_to_wire).collect(),
+        ..Default::default()
+    };
+    for revisions in [
+        [foreign.clone(), current.clone()],
+        [current.clone(), foreign],
+    ] {
+        let error = transport.tail(tail(&revisions)).await.unwrap_err();
+        assert_eq!(error.code(), Code::FailedPrecondition);
+        assert_eq!(error.message(), "revision_foreign");
+    }
+    let earlier = crate::Revision {
+        index: 0,
+        ..current.clone()
+    };
+    let response = transport
+        .tail(tail(&[current.clone(), earlier]))
+        .await?
+        .into_inner();
+    assert_eq!(response.tail, 1);
+    assert_eq!(wire_codec::issued_from_wire(response.applied)?, current);
     Ok(())
 }
 

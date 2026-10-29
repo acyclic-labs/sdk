@@ -36,14 +36,14 @@ pub fn cut_to_wire(value: &RevisionCut) -> Vec<wire::Revision> {
     value.iter().map(revision_to_wire).collect()
 }
 
-/// Decodes a minimum cut, keeping one participant per scope.
+/// Decodes a minimum cut, refusing incompatible incarnations of one scope.
 pub fn cut_from_wire(value: Vec<wire::Revision>) -> Result<RevisionCut, StreamError> {
-    Ok(RevisionCut::new(
+    RevisionCut::new(
         value
             .into_iter()
             .map(revision_from_wire)
             .collect::<Result<Vec<_>, _>>()?,
-    ))
+    )
 }
 
 /// Serves one wire tail: waits for its minimum cut first, so the returned
