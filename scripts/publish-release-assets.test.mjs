@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { admitAsset, admitRelease, publish } from './publish-release-assets.mjs';
+import { admitAsset, admitRelease, assets, publish } from './publish-release-assets.mjs';
 import { commandOutput } from './process-capture.mjs';
 
 test('retries accept only the original source and version', () => {
@@ -76,7 +76,7 @@ test('an interrupted publication resumes its exact remaining assets', async () =
       }
       if (args[1] === 'upload') {
         const file = args[3], name = path.basename(file);
-        if (name === 'b.tgz' && !interrupted) { interrupted = true; throw new Error('simulated interruption'); }
+        if (uploaded.length === 1 && !interrupted) { interrupted = true; throw new Error('simulated interruption'); }
         uploaded.push(name);
         release.assets.push({ name, digest: 'sha256:' + createHash('sha256').update(fs.readFileSync(file)).digest('hex') });
       } else if (args[1] === 'edit') release.draft = false;
@@ -86,11 +86,11 @@ test('an interrupted publication resumes its exact remaining assets', async () =
     await assert.rejects(publish({ env, directory, gh }), /simulated interruption/);
     assert.equal(release.draft, true);
     await publish({ env, directory, gh });
-    assert.deepEqual(uploaded, ['a.tgz', 'b.tgz']);
+    assert.deepEqual([...uploaded].sort(), ['a.tgz', 'b.tgz']);
     assert.equal(release.draft, false);
     fs.writeFileSync(path.join(directory, 'a.tgz'), 'conflicting a');
     await assert.rejects(publish({ env, directory, gh }), /different contents/);
-    assert.deepEqual(uploaded, ['a.tgz', 'b.tgz']);
+    assert.deepEqual([...uploaded].sort(), ['a.tgz', 'b.tgz']);
   } finally {
     const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
     assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
@@ -158,4 +158,106 @@ test('nested real Git tags resolve completely before release mutation', async t 
       assert.equal(mutations, 0);
     }
   }
+});
+
+
+test('asset traversal yields before scanning the tree and retires directories on interruption', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-release-walk-'));
+  t.after(() => {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+    fs.rmSync(directory, { recursive: true });
+  });
+  const expected = [];
+  for (let branch = 0; branch < 17; branch++) {
+    const child = path.join(directory, `branch-${branch}`);
+    fs.mkdirSync(child);
+    for (let index = 0; index < 33; index++) {
+      const file = path.join(child, `asset-${branch}-${index}.tgz`);
+      fs.writeFileSync(file, `${branch}:${index}`);
+      expected.push(file);
+    }
+  }
+  let deep = directory;
+  for (let depth = 0; depth < 129; depth++) {
+    deep = path.join(deep, 'd');
+    fs.mkdirSync(deep);
+  }
+  const leaf = path.join(deep, 'deep.tgz');
+  fs.writeFileSync(leaf, 'deep asset');
+  expected.push(leaf);
+  const opendir = fs.promises.opendir;
+  const readdir = fs.readdirSync;
+  let opened = 0, closed = 0, entries = 0, failOpen = false;
+  t.mock.method(fs, 'readdirSync', (...args) => {
+    const found = readdir(...args);
+    entries += found.length;
+    return found;
+  });
+  t.mock.method(fs.promises, 'opendir', async (...args) => {
+    if (failOpen && opened === 1) throw new Error('injected directory failure');
+    const dir = await opendir(...args);
+    opened++;
+    const read = dir.read.bind(dir), close = dir.close.bind(dir);
+    dir.read = async () => {
+      const entry = await read();
+      if (entry) entries++;
+      return entry;
+    };
+    dir.close = async () => { await close(); closed++; };
+    return dir;
+  });
+  const iterator = assets(directory);
+  const first = await iterator.next();
+  assert.equal(first.done, false);
+  assert.ok(expected.includes(first.value));
+  assert.ok(entries < expected.length, 'first yield scanned the complete asset tree');
+  await iterator.return();
+  assert.equal(closed, opened, 'early retirement retained a directory');
+  const complete = [];
+  for await (const file of assets(directory)) complete.push(file);
+  assert.deepEqual(complete.sort(), expected.sort());
+  assert.equal(closed, opened, 'complete traversal retained a directory');
+  opened = 0;
+  closed = 0;
+  failOpen = true;
+  await assert.rejects(async () => {
+    for await (const file of assets(directory)) void file;
+  }, /injected directory failure/);
+  assert.equal(closed, opened, 'failed traversal retained an ancestor directory');
+});
+
+
+test('empty or duplicate asset selections never publish a release', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-release-selection-'));
+  t.after(() => {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+    fs.rmSync(directory, { recursive: true });
+  });
+  const env = { SOURCE_SHA: 'a'.repeat(40), VERSION: '1.2.3', GITHUB_REPOSITORY: 'owner/sdk' };
+  let uploads = 0, publications = 0;
+  const gh = (...args) => {
+    if (args[0] === 'api' && args[1].includes('/git/ref/')) {
+      return JSON.stringify({ object: { type: 'commit', sha: env.SOURCE_SHA } });
+    }
+    if (args[0] === 'api') {
+      return JSON.stringify({ tag_name: 'acyclic-v1.2.3', target_commitish: env.SOURCE_SHA, assets: [] });
+    }
+    if (args[1] === 'upload') uploads++;
+    else if (args[1] === 'edit') publications++;
+    else throw new Error('unexpected publication operation');
+    return '';
+  };
+  await assert.rejects(publish({ env, directory, gh }), /directory is empty/);
+  assert.equal(uploads, 0);
+  assert.equal(publications, 0);
+  for (const name of ['a', 'b']) {
+    const child = path.join(directory, name);
+    fs.mkdirSync(child);
+    fs.writeFileSync(path.join(child, 'duplicate.tgz'), name);
+  }
+  await assert.rejects(publish({ env, directory, gh }), /Duplicate release asset name/);
+  assert.equal(uploads, 1);
+  assert.equal(publications, 0);
 });
