@@ -16,6 +16,7 @@ mod checked;
 mod checked_recovery;
 mod connections;
 mod context;
+mod credential_progress;
 mod credentials;
 mod data;
 mod isolation;

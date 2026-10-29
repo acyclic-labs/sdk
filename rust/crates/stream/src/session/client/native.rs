@@ -152,30 +152,27 @@ impl transport::Transport for Grpc {
             let mut service = wire::stream_session_service_client::StreamSessionServiceClient::new(
                 acyclic_auth::channel::guard(self.channel.clone()),
             );
-            let response = transport::credential_event(
-                &mut changed,
-                input_result(service.session(request), &mut failure),
-            )
+            let response = transport::credential_event(&mut changed, async {
+                match input_result(service.session(request), &mut failure).await? {
+                    Ok(response) => Ok(response.into_inner()),
+                    Err(error) => Err(session_error(error, lease.as_ref()).await),
+                }
+            })
             .await??;
-            let response = match response {
-                Ok(response) => response.into_inner(),
-                Err(error) => return Err(session_error(error, lease.as_ref()).await),
-            };
             Ok(Box::pin(futures::stream::try_unfold(
                 (response, lease, failure, changed),
                 |(mut response, lease, mut failure, mut changed)| async move {
-                    let value = match transport::credential_event(
-                        &mut changed,
-                        input_result(response.message(), &mut failure),
-                    )
-                    .await??
-                    {
-                        Ok(value) => value,
-                        Err(error) => return Err(session_error(error, lease.as_ref()).await),
-                    };
-                    if let Some(lease) = &lease {
-                        lease.check().await.map_err(|_| StreamError::AccessDenied)?;
-                    }
+                    let value = transport::credential_event(&mut changed, async {
+                        let value = match input_result(response.message(), &mut failure).await? {
+                            Ok(value) => value,
+                            Err(error) => return Err(session_error(error, lease.as_ref()).await),
+                        };
+                        if let Some(lease) = &lease {
+                            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+                        }
+                        Ok(value)
+                    })
+                    .await??;
                     Ok(value.map(|value| (value, (response, lease, failure, changed))))
                 },
             )) as Response)

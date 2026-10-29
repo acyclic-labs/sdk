@@ -302,6 +302,16 @@ transport data. It ends the operation and drops its registration/transport;
 there is no monitor task, extra timer or event history. The unchanged loopback
 control first proves an idle read remains pending, then publishes invalidation
 and observes an immediate typed refusal without sending or receiving a frame.
+The same event selection surrounds the complete read, including awaited owner
+admission and remote rejection in gRPC headers or trailers. Browser dispatch,
+open admission and inbound admission retain that event too. A deferred-owner
+loopback control holds each native boundary pending: invalidation must return
+AccessDenied immediately and drop the pending owner interest, owner-producer
+loss must return AccessDenied, and releasing the unchanged owner must preserve
+the real response or rejection. Moving the event selection back to receipt alone
+fails the invalidation control. This only extends the existing selection's
+lifetime: zero additional tasks, timers, registrations, allocations, copies,
+syscalls, barriers or remote requests, with fixed work per delivered frame.
 
 Revocation authentication retains its canonical transcript for frontier hashing
 after validation. It does not clone or encode the publication again. Existing

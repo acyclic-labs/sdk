@@ -78,16 +78,19 @@ impl Transport for Endpoint {
                 .watch()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
-            let credential = crate::session::transport::credential_event(
-                &mut changed,
-                self.credential.resolve(),
-            )
-            .await?
-            .map_err(|_| StreamError::AccessDenied)?;
-            credential
-                .check()
-                .await
-                .map_err(|_| StreamError::AccessDenied)?;
+            let credential = crate::session::transport::credential_event(&mut changed, async {
+                let credential = self
+                    .credential
+                    .resolve()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
+                credential
+                    .check()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
+                Ok(credential)
+            })
+            .await??;
             let token =
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.as_str());
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
@@ -167,14 +170,15 @@ impl Transport for Endpoint {
                 _error: error,
                 _close: close,
             };
-            crate::session::transport::credential_event(&mut changed, opened)
-                .await?
-                .map_err(|_| StreamError::Unavailable)??;
-            guard
-                .credential
-                .check()
-                .await
-                .map_err(|_| StreamError::AccessDenied)?;
+            crate::session::transport::credential_event(&mut changed, async {
+                opened.await.map_err(|_| StreamError::Unavailable)??;
+                guard
+                    .credential
+                    .check()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)
+            })
+            .await??;
             let response = futures::stream::try_unfold(
                 (guard, receiver, source, incoming, changed),
                 |(guard, mut receiver, mut source, incoming, mut changed)| async move {
@@ -183,17 +187,18 @@ impl Transport for Endpoint {
                             crate::session::transport::credential_event(&mut changed, async {
                                 let received = receiver.recv();
                                 futures::pin_mut!(received);
-                                match select(received, source.next()).await {
+                                let event = match select(received, source.next()).await {
                                     Either::Left((frame, _)) => Either::Left(frame),
                                     Either::Right((frame, _)) => Either::Right(frame),
-                                }
+                                };
+                                guard
+                                    .credential
+                                    .check()
+                                    .await
+                                    .map_err(|_| StreamError::AccessDenied)?;
+                                Ok(event)
                             })
-                            .await?;
-                        guard
-                            .credential
-                            .check()
-                            .await
-                            .map_err(|_| StreamError::AccessDenied)?;
+                            .await??;
                         match event {
                             Either::Left(Some(frame)) => {
                                 // Admission occurs at consumption, before copying
