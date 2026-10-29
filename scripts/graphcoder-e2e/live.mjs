@@ -63,7 +63,7 @@ async function runCase(binary, login, root, name) {
     const args = ["--workspace", workspace, "--settings-root", settings, "--catalog", catalog,
       "--model", "openai/gpt-6.1-sol", "--operation", operation,
       ...(format === "text" ? ["-p", prompt] : ["--input-format", "jsonl"])];
-    const result = await processes.run(binary, args, { cwd: workspace, env },
+    const result = await processes.run(binary, args, { cwd: workspace, env, scopeReportSignal: "SIGTERM" },
       format === "text" ? "" : JSON.stringify({ prompt, id: "live" }) + "\n");
     captures.push({ argv: args, ...result });
     return answer(result, format);

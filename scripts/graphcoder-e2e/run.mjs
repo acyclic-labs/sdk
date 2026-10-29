@@ -125,7 +125,7 @@ async function execute(test, gitOrigin) {
       }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
-      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env });
+      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env, scopeReportSignal: "SIGTERM" });
       if (input.kill_on) {
         await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
@@ -205,7 +205,7 @@ const execution = await withOwnedCase({ processes, run: async () => {
 // append can expose an incomplete JSONL line to the assertion phase.
 const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
 results = await Promise.all(results.map(result => verify(result, allRecords)));
-results = results.map(result => ({ ...result, evidence: { ...evidence.get(result.case),
+results = results.map(result => ({ ...result, ...(execution.expired ? { timeout: true } : {}), evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));
 const seconds = (performance.now() - started) / 1000;
 const report = { platform: process.platform, seconds, limit_seconds: 10, expired: execution.expired, results, output, roots,

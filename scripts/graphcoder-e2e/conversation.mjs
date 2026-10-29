@@ -5,7 +5,7 @@ import { Events } from "./process.mjs";
 // when a turn settles; child reports become a later parent turn, not a wait tool.
 export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}) {
   const active = processes.start(binary, [...fixture.args, "--operation", input.operation,
-    "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env });
+    "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReportSignal: "SIGTERM" });
   const replies = new Events(active.child.stdout, active.closed);
   const ended = active.closed.then(result => {
     throw new Error(`conversation exited before its next turn: ${JSON.stringify(result)}`);
