@@ -7,7 +7,7 @@ impl Client {
     #[must_use]
     pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Self {
         let mut client = self.clone();
-        client.revisions = self.revisions.scoped(scope);
+        client.revisions = crate::RevisionTracker::scoped(&self.revisions, scope);
         client
     }
 
