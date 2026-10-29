@@ -102,7 +102,7 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
         .map_err(storage)?
         .value;
     let settled = capture.is_some_and(|capture| {
-        hex::encode(capture.id().digest().into_bytes()) == replayed.version()
+        hex::encode(capture.id().to_bytes()) == replayed.version()
     });
     let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
@@ -139,14 +139,13 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
         .view()
         .workspace()
         .clone();
-    let digest: [u8; 32] = hex::decode(file.version())
-        .map_err(storage)?
-        .try_into()
-        .map_err(|_| Error::Invalid("file version is not a generation".into()))?;
+    let encoded = hex::decode(file.version()).map_err(storage)?;
+    let generation = acyclic_fs::GenerationId::from_bytes(&encoded)
+        .ok_or_else(|| Error::Invalid("file version is not a canonical generation".into()))?;
     let stop = acyclic_fs::CancellationToken::new();
     let parents = workspace
         .generation(
-            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(digest)),
+            generation,
             acyclic_fs::WorkBudget::UNBOUNDED,
             &stop,
         )
@@ -163,7 +162,7 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
     FileRef::new(
         file.volume().clone(),
         file.path().to_owned(),
-        hex::encode(staged.digest().into_bytes()),
+        hex::encode(staged.to_bytes()),
         file.descriptor().clone(),
         file.display_name().to_owned(),
         &mut None,
@@ -305,7 +304,7 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         .ok_or_else(|| Error::Invalid("another write took the interrupted capture".into()))?;
     assert_eq!(
         recovered.version(),
-        hex::encode(capture.id().digest().into_bytes())
+        hex::encode(capture.id().to_bytes())
     );
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
@@ -572,7 +571,7 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
         .map_err(storage)?
         .value;
     let settled = capture.is_some_and(|capture| {
-        hex::encode(capture.id().digest().into_bytes()) == finished.version()
+        hex::encode(capture.id().to_bytes()) == finished.version()
     });
     let edited = match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
