@@ -132,7 +132,7 @@ pub async fn retain_published_generation<A: AsyncAuthorityStore, O: AsyncObjectS
         .retain_if_unpublished(
             format!(
                 "harness-generation-{}",
-                hex::encode(generation.id().digest().into_bytes())
+                hex::encode(generation.id().to_bytes().as_slice())
             ),
             acyclic_fs::WorkBudget::UNBOUNDED,
             &acyclic_fs::CancellationToken::new(),

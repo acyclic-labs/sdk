@@ -33,7 +33,9 @@ pub(crate) use quota::{DecodeReservation, retain_decoded};
 pub use records::PreparationRecord;
 pub use records::UploadRecord;
 use records::decode_allowance_error;
-pub(in crate::filesystem) use sdk::{content_workspace, generation_ref, operation_key, retain};
+pub(in crate::filesystem) use sdk::{
+    content_workspace, generation_ref, generation_version, operation_key, retain,
+};
 use standalone_custody::{StandaloneCustody, StandaloneLedger};
 
 /// Retained storage transferred from the original preparation ledger.

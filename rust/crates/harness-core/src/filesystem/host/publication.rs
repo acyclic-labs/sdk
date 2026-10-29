@@ -322,7 +322,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         request: &PublicationLookup<'_>,
         io: &'a PreparationIo,
     ) -> Result<(FileRef, Option<acyclic_stream::OwnedBytes>)> {
-        let version = bounded_io::hex_key(&original.id().digest().into_bytes(), Some(io))?;
+        let version = bounded_io::hex_key(&original.id().to_bytes(), Some(io))?;
         let version_hold = io.guard_owned(version.capacity() as u64)?;
         recorded
             .0

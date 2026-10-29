@@ -34,7 +34,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     let observed = host.resolve(&reference, None).await?;
     assert_eq!(
         observed.generation.as_resource().key(),
-        expected.id().digest().into_bytes()
+        expected.id().to_bytes().as_slice()
     );
 
     let foreign = workspace_ref(
@@ -78,9 +78,96 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     Ok(())
 }
 
+// The stored body shares its original proof and custody. Opening checks every
+// association field so dropping any part of the reference cannot read the body.
+struct AssociatedObjects(bool);
+
+impl AssociatedObjects {
+    fn root(
+        kind: acyclic_fs::ObjectKind,
+        bytes: &[u8],
+    ) -> std::result::Result<acyclic_fs::FileId, acyclic_fs::ObjectStoreError> {
+        if kind != acyclic_fs::ObjectKind::GenerationRoot {
+            return Ok(acyclic_fs::FileId::from_bytes([17; 16]));
+        }
+        acyclic_fs::kernel::decode_generation_root(
+            bytes,
+            acyclic_fs::kernel::DecodeLimits::default(),
+            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+        )
+        .map(|root| root.root_file_id)
+        .map_err(|_| acyclic_fs::ObjectStoreError::Corrupt)
+    }
+}
+
+impl acyclic_fs::ObjectSealer for AssociatedObjects {
+    fn prepare(
+        &self,
+        object: acyclic_fs::HashedObject,
+        _: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> std::result::Result<acyclic_fs::HashedObject, acyclic_fs::ObjectStoreError> {
+        if !self.0 {
+            return Ok(object);
+        }
+        let root = Self::root(object.object_id().kind, object.bytes())?;
+        let (_, body) = object.clone().into_sealed();
+        Ok(object.seal(body, root, GenerationId::new(Digest::from_bytes([18; 32]))))
+    }
+
+    fn stored_limit(
+        &self,
+        id: acyclic_fs::ObjectId,
+        maximum: u64,
+    ) -> std::result::Result<u64, acyclic_fs::ObjectStoreError> {
+        if match (self.0, id.storage) {
+            (false, None) => false,
+            (true, Some(storage)) => {
+                storage.locator != id.digest
+                    || storage.origin_generation != Digest::from_bytes([18; 32])
+            }
+            _ => true,
+        } {
+            return Err(acyclic_fs::ObjectStoreError::Corrupt);
+        }
+        Ok(maximum)
+    }
+
+    fn open(
+        &self,
+        id: acyclic_fs::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        _: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> std::result::Result<acyclic_stream::OwnedBytes, acyclic_fs::ObjectStoreError> {
+        self.stored_limit(id, bytes.len() as u64)?;
+        if id.storage.is_some_and(|storage| {
+            !Self::root(id.kind, &bytes).is_ok_and(|root| root == storage.root_file_id)
+        }) {
+            return Err(acyclic_fs::ObjectStoreError::Corrupt);
+        }
+        Ok(bytes)
+    }
+}
+
 #[tokio::test]
 async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
-    let filesystem = Fs::memory();
+    for sealed in [false, true] {
+        let filesystem = Fs::new(
+            acyclic_fs::distributed::StreamAuthorityStore::new(Arc::new(
+                acyclic_stream::MemoryStream::default(),
+            )),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
+                .with_sealer(AssociatedObjects(sealed)),
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        check_staged_content(filesystem, sealed).await?;
+    }
+    Ok(())
+}
+
+async fn check_staged_content<O: AsyncObjectStore + 'static>(
+    filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+    sealed: bool,
+) -> Result<()> {
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
@@ -197,6 +284,65 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         );
     }
     assert_ne!(first.version(), second.version());
+    let generation = host.file_generation(&first, None)?;
+    let decoded = GenerationId::from_bytes(generation.as_resource().key())
+        .expect("published canonical generation");
+    assert_eq!(decoded.object_id().storage.is_some(), sealed);
+    assert_eq!(hex::encode(decoded.to_bytes().as_slice()), first.version());
+    for invalid in [
+        decoded.digest().into_bytes().to_vec(),
+        decoded.to_bytes()[..decoded.to_bytes().len() - 1].to_vec(),
+        acyclic_fs::ObjectId {
+            kind: acyclic_fs::ObjectKind::BlobChunk,
+            ..decoded.object_id()
+        }
+        .to_bytes()
+        .to_vec(),
+    ] {
+        let mut substituted = first.copy(&mut None)?;
+        substituted.pin_version(hex::encode(invalid), &mut None)?;
+        assert_eq!(
+            host.file_generation(&substituted, None).unwrap_err().code(),
+            crate::wire::ErrorCode::Invalid
+        );
+    }
+    let root = std::env::temp_dir().join("generation-view");
+    let snapshot = acyclic_fs::LazySnapshotRef::new(
+        acyclic_fs::WorkspaceId::from_bytes([19; 16]),
+        decoded,
+        acyclic_fs::demand::SourceReference {
+            identity: [20; 16],
+            epoch: 0,
+        },
+        acyclic_fs::LazyOverlayId::from_bytes([21; 32]),
+        serde_json::from_value(serde_json::to_value([22_u8; 32]).unwrap()).unwrap(),
+    );
+    let mut manifest = NativeViewManifest {
+        options: NativeViewOptions {
+            root: root.clone(),
+            maximum_volumes: 1,
+            work_per_volume: acyclic_fs::performance::work_budget(1, 1024),
+        },
+        volumes: vec![NativeVolumeMapping {
+            volume: volume.copy(&mut None)?,
+            generation,
+            namespace: NativeVolumeNamespace::LazyMount { snapshot },
+            path: root.join("selected"),
+            writable: false,
+            authority_revision: [23; 32],
+        }],
+    };
+    manifest.validate(None)?;
+    let NativeVolumeNamespace::LazyMount { snapshot } = &mut manifest.volumes[0].namespace else {
+        unreachable!();
+    };
+    snapshot.authored_generation = GenerationId::new(decoded.digest());
+    if sealed {
+        assert_eq!(
+            manifest.validate(None).unwrap_err().code(),
+            crate::wire::ErrorCode::Invalid
+        );
+    }
     assert_eq!(
         host.read_content(&first, &read, 16, None).await?,
         acyclic_stream::OwnedBytes::from_static(b"one")

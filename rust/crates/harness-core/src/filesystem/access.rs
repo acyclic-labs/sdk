@@ -180,15 +180,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace_hold = io.guard_owned(workspace_ref.logical_owned_bytes()?)?;
         let workspace_ref = (workspace_ref, workspace_hold);
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
-        let mut generation = [0; 32];
-        io.charge(WorkCounters {
-            source_bytes_read: reference.version().len() as u64,
-            items_examined: reference.version().len() as u64,
-            ..Default::default()
-        })?;
-        hex::decode_to_slice(reference.version(), &mut generation)
-            .map_err(|_| io.invalid("file version is not a Filesystem generation"))?;
-        let generation = GenerationId::new(Digest::from_bytes(generation));
+        let generation = bounded_io::generation_version(reference.version(), Some(io))?;
         let selected = self.select_generation(&workspace, generation, io).await?;
         let compiled = crate::filesystem::access::access_view(
             &workspace,
