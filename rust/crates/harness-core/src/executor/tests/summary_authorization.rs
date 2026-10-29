@@ -220,10 +220,18 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         exact(observed),
         "unexpected exact-summary projection permissions: {observed:?}"
     );
-    // Deliberately broken grant: the same detector must reject a root-directory
-    // grant, which admits unrelated private journal contents.
-    let broad = RuntimeScope::new(
+    // Directory grants exclude internal journal files, even at the root.
+    let directory = RuntimeScope::new(
         Capabilities::new([file.volume().directory_read_capability("", &mut None)?]),
+        Limits::default(),
+    )?;
+    assert!(exact(observe(&directory)?));
+    // Deliberately broken grant: whole-volume authority admits unrelated
+    // private journal contents, which the same exact-summary detector rejects.
+    let broad = RuntimeScope::new(
+        Capabilities::new([file
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Read, &mut None)?]),
         Limits::default(),
     )?;
     assert!(

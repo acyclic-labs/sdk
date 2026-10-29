@@ -28,6 +28,7 @@ impl StockExecution<'_> {
                 canonical: None,
                 checkpoint: None,
                 working,
+                accounting: None,
             },
             prepared,
         ))
@@ -65,26 +66,10 @@ impl StockExecution<'_> {
             &projection_key,
             &projection,
             &prepared,
+            accounting.as_ref(),
             self.io,
         )
         .await?;
-        let accounting_ref = if let Some(accounting) = &accounting {
-            let accounting_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
-            })?;
-            Some(
-                stage_json(
-                    journal,
-                    input.operation_id,
-                    &accounting_key,
-                    accounting,
-                    self.io,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
@@ -96,7 +81,6 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    accounting: accounting_ref,
                 },
                 self.io,
             )?
@@ -122,8 +106,7 @@ impl StockExecution<'_> {
             ExecutionEvent::ContextPrepared {
                 step: recorded,
                 projection,
-                accounting,
-            } if *recorded == step => Some((projection, accounting.as_ref())),
+            } if *recorded == step => Some(projection),
             _ => None,
         });
         let first = retained.next();
@@ -142,16 +125,11 @@ impl StockExecution<'_> {
                 self.capture_response(journal, input, step, prior_messages, tail)
                     .await?
             }
-            Some((reference, accounting)) => {
-                let (projection, prepared) =
+            Some(reference) => {
+                let (mut projection, prepared) =
                     self.load_response_projection(journal, reference).await?;
                 self.validate_response_request(&prepared)?;
-                let accounting = match accounting {
-                    Some(reference) => Some(retain_preparation(
-                        load_json::<ContextAccounting>(journal, reference, self.io).await?,
-                    )?),
-                    None => None,
-                };
+                let accounting = projection.accounting.take();
                 (projection, accounting, prepared)
             }
         };
@@ -193,8 +171,7 @@ impl StockExecution<'_> {
                 step: recorded,
                 projection,
                 compaction,
-                accounting,
-            } if *recorded == step => Some((projection, compaction, accounting)),
+            } if *recorded == step => Some((projection, compaction)),
             _ => None,
         });
         let first = compacted.next();
@@ -205,7 +182,7 @@ impl StockExecution<'_> {
                 "response context was compacted more than once",
             ));
         }
-        if let Some((retained, proof, final_accounting)) = first {
+        if let Some((retained, proof)) = first {
             let (mut retained, request) = self.load_response_projection(journal, retained).await?;
             self.validate_response_request(&request)?;
             retained.context.messages =
@@ -213,9 +190,13 @@ impl StockExecution<'_> {
             let proof = retain_preparation(
                 load_json::<crate::context::CompactionReference>(journal, proof, self.io).await?,
             )?;
-            let final_accounting = retain_preparation(
-                load_json::<ContextAccounting>(journal, final_accounting, self.io).await?,
-            )?;
+            let final_accounting = retained.accounting.take().ok_or_else(|| {
+                stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Storage,
+                    "compacted context has no request accounting",
+                )
+            })?;
             crate::context::validate_projected_context(
                 &retained.context,
                 self.stock.limits,

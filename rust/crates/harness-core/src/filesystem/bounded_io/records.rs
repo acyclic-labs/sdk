@@ -78,6 +78,9 @@ impl PreparationRecord for crate::executor::ResponseProjection {
             self.working
                 .as_ref()
                 .map_or(Ok(0), FileRef::logical_owned_bytes)?,
+            self.accounting.as_ref().map_or(Ok(0), |accounting| {
+                crate::core::owned_buffer::<u32>(accounting.count.message_tokens.capacity())
+            })?,
         ])
         .map(Some)
     }

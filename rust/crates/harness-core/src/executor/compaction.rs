@@ -93,6 +93,7 @@ impl StockExecution<'_> {
             canonical: None,
             checkpoint: None,
             working,
+            accounting: None,
         };
         self.finish_compaction(
             journal,
@@ -225,20 +226,7 @@ impl StockExecution<'_> {
             &projection_key,
             compacted,
             request,
-            self.io,
-        )
-        .await?;
-        let accounting_key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(
-                format_args!("context:{step}:compacted-accounting"),
-                work,
-            )
-        })?;
-        let accounting = stage_json(
-            journal,
-            input.operation_id,
-            &accounting_key,
-            accounting,
+            Some(accounting),
             self.io,
         )
         .await?;
@@ -254,7 +242,6 @@ impl StockExecution<'_> {
                     step,
                     projection,
                     compaction,
-                    accounting,
                 },
                 self.io,
             )?

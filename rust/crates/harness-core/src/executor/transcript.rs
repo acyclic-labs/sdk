@@ -135,6 +135,7 @@ struct ProjectionView<'a> {
     checkpoint: &'a Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     working: &'a Option<FileRef>,
+    accounting: Option<&'a ContextAccounting>,
 }
 
 #[derive(Serialize)]
@@ -603,10 +604,11 @@ pub(super) async fn stage_projection(
     key: &str,
     projection: &ResponseProjection,
     prepared: &crate::model::PreparedModelRequest,
+    accounting: Option<&ContextAccounting>,
     io: Option<&PreparationIo>,
 ) -> Result<FileRef> {
-    // This is the sole persisted projection schema, including main's inline
-    // context. Validate the combined value before either its event or request
+    // This is the sole persisted projection schema, including inline context
+    // and request-bound accounting. Validate it before either its event or request
     // can be published; per-message admission is insufficient.
     let messages = &prepared.request().messages;
     crate::context::validate_projected_messages(
@@ -628,6 +630,7 @@ pub(super) async fn stage_projection(
             canonical: &projection.canonical,
             checkpoint: &projection.checkpoint,
             working: &projection.working,
+            accounting,
         },
         io,
     )

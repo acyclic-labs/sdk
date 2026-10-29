@@ -254,17 +254,14 @@ where
         let result = async {
             let io = check_io;
             let refs = match event {
-                ExecutionEvent::ContextPrepared {
-                    projection,
-                    accounting,
-                    ..
-                } => [Some(projection), accounting.as_ref(), None],
+                ExecutionEvent::ContextPrepared { projection, .. } => {
+                    [Some(projection), None, None]
+                }
                 ExecutionEvent::ContextCompacted {
                     projection,
                     compaction,
-                    accounting,
                     ..
-                } => [Some(projection), Some(compaction), Some(accounting)],
+                } => [Some(projection), Some(compaction), None],
                 ExecutionEvent::ModelStarted { request, .. } => [Some(request), None, None],
                 ExecutionEvent::Model { event, .. } => [Some(event), None, None],
                 ExecutionEvent::ToolStarted { invocation, .. } => [Some(invocation), None, None],

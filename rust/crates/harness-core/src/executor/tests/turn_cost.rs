@@ -224,13 +224,11 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
         ContextPrepared {
             step: 1,
             projection: file.clone(),
-            accounting: Some(file.clone()),
         },
         ContextCompacted {
             step: 1,
             projection: file.clone(),
             compaction: file.clone(),
-            accounting: file.clone(),
         },
         ModelStarted {
             step: 1,

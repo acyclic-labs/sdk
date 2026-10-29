@@ -33,11 +33,12 @@ mod registry;
 pub(crate) use authority::VerifiedScope;
 #[cfg(feature = "filesystem")]
 pub(crate) use authority::until_turn_stopped;
-pub(crate) use copying::{
-    copy, copy_boxed, copy_boxed_text, copy_provider, copy_text, copy_vector, reserve_copy_vector,
-};
 #[cfg(feature = "filesystem")]
-pub(crate) use copying::{copy_copy_vector, copy_resource};
+pub(crate) use copying::copy_resource;
+pub(crate) use copying::{
+    copy, copy_boxed, copy_boxed_text, copy_copy_vector, copy_provider, copy_text, copy_vector,
+    reserve_copy_vector,
+};
 pub(crate) use ownership::inspect_metadata;
 pub(crate) use ownership::{OwnedBytes, owned_buffer, owned_sum};
 

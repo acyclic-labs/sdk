@@ -152,6 +152,10 @@ fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
             .filter(|(op, _)| *op == "prepare request")
             .count()
     };
+    let publications = new_trace
+        .iter()
+        .filter(|(op, _)| *op == "journal stage")
+        .count();
     prop_assert!(
         old.0 == new.0
             && old.1 == new.1
@@ -159,7 +163,8 @@ fn check(text: &[String; 3], invalid: bool, restore: bool) -> TestCaseResult {
             && old.3 == new.3
             && semantic(&old_trace) == semantic(&new_trace)
             && preparations(&old_trace) == if invalid { 0 } else { 4 }
-            && preparations(&new_trace) == if invalid { 0 } else { 1 },
+            && preparations(&new_trace) == if invalid { 0 } else { 1 }
+            && publications == if invalid { 0 } else { 1 },
         "independent preparation differs or repeats removed work: old={old:?}, new={new:?}, old_trace={old_trace:?}, new_trace={new_trace:?}"
     );
     Ok(())
@@ -211,10 +216,10 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
-    // Exact snapshot of capture using the stable inline projection. Request
-    // headers and segments are staged only when dispatch is claimed.
-    // The response context helper drops its copied ContextInput before
-    // accounting/staging: one allocation and eight peak bytes in this fixture.
+    // Exact snapshot of capture with accounting in the same projection.
+    // Request headers and segments are staged only when dispatch is claimed.
+    // One larger encoded projection replaces the separate accounting file;
+    // retain both the smaller allocation count and its larger physical peak.
     // This is not a growing allowance; restoring extra preparation must still fail.
     // The table is feature-independent: the boxed source projection, whose
     // size follows cfg-gated filesystem state, is added from its type.
