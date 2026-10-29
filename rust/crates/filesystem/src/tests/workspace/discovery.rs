@@ -108,6 +108,7 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
     let id = unbounded!(generation, stat("/a"))?.file_id;
     let complete = generation.paths_for_file_ids([id], 16).await?;
     assert_eq!(complete[&id], vec!["/a", "/b"]);
+    assert_eq!(generation.paths_for_file_ids([id], None).await?, complete);
     let bounded = generation.paths_for_file_ids([id], 1).await?;
     assert_eq!(bounded[&id].len(), 1);
     Ok(())

@@ -54,17 +54,23 @@ fn digest(
 
 /// Protect and frame a payload. The admitted producer copies these three parts
 /// once into its original owned allocation; no intermediate managed copy exists.
+/// `None` leaves size to the original caller's admission and the platform ABI.
 pub fn encode_with<T, E: From<io::Error>>(
     plain: &[u8],
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     meter: Option<&Arc<dyn crate::NativeReadMeter>>,
     copy: impl FnOnce([&[u8]; 3]) -> Result<T, E>,
 ) -> Result<T, E> {
     protection::protect_with_copy(
         plain,
         maximum
-            .checked_sub(40)
-            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?,
+            .into()
+            .map(|maximum| {
+                maximum
+                    .checked_sub(40)
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+            })
+            .transpose()?,
         |protected| {
             let digest = digest(protected, meter)?;
             copy([MAGIC, digest.as_bytes(), protected])
@@ -74,13 +80,15 @@ pub fn encode_with<T, E: From<io::Error>>(
 
 /// Verify the complete retained envelope before decrypting or allocating the
 /// caller's plaintext. A fresh digest does not bypass payload schema validation.
+/// A selected finite maximum still applies before protection and caller copying.
 pub fn decode_with<T, E: From<io::Error>>(
     record: &[u8],
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     meter: Option<&Arc<dyn crate::NativeReadMeter>>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
-    if record.len() as u64 > maximum {
+    let maximum = maximum.into();
+    if maximum.is_some_and(|maximum| record.len() as u64 > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     let (magic, rest) = record

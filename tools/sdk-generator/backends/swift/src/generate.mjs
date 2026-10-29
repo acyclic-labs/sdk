@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -10,8 +10,8 @@ const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolc
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
 
 // The command and toolchain injection are for offline staging controls. The CLI
-// always uses spawnSync and the checked-in Swift plugin build pins.
-export function generate(args, { command = spawnSync, toolchain = pinned } = {}) {
+// always uses captureCommand and the checked-in Swift plugin build pins.
+export function generate(args, { command = captureCommand, toolchain = pinned } = {}) {
   const source = realpathSync(args["source-root"]);
   const authority = realpathSync(args.authority);
   const protoc = realpathSync(args.protoc);
@@ -37,7 +37,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   for (const [name, digest] of Object.entries(runtimePin.files)) readInput(swiftHome, name, digest);
   const compilerHash = sha256(readFileSync(protoc));
   if (compilerHash !== toolchain.protoc?.[host]?.sha256) throw new Error("compiler executable differs from admitted host pin");
-  const options = { encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024,
+  const options = { encoding: "utf8", timeout: 180_000,
     env: Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       !/^(?:LD_|DYLD_|SWIFT_|SDKROOT$|TOOLCHAINS$|DEVELOPER_DIR$)/.test(key))) };
   options.env.LD_LIBRARY_PATH = join(swiftHome, "usr/lib/swift/linux");

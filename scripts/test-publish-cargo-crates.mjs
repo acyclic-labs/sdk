@@ -6,7 +6,33 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { publicationDependencyErrors, registryArchiveMatches } from "./publish-cargo-crates.mjs";
+import { publicationDependencyErrors, registryArchiveMatches, reconcileRegistry } from "./publish-cargo-crates.mjs";
+import { registryFixture } from "./fixtures/registry.mjs";
+
+test("Cargo visibility reconciles one actual response and preserves digest and yank refusals", async t => {
+  const registry = await registryFixture(t);
+  const source = "a".repeat(40);
+  const lookup = async () => {
+    const response = await fetch(registry.url);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const inspect = () => reconcileRegistry("example", "0.1.0", "exact", source, {}, lookup);
+  await registry.set(null);
+  assert.equal((await inspect()).state, "Pending");
+  assert.equal(await registry.requests(), 1);
+  await registry.set({ checksum: "wrong", yanked: false });
+  await assert.rejects(inspect(), /exists with different bytes/);
+  assert.equal(await registry.requests(), 1);
+  await registry.set({ checksum: "exact", yanked: true });
+  await assert.rejects(inspect(), /is yanked/);
+  assert.equal(await registry.requests(), 1);
+  await registry.set({ checksum: "exact", yanked: false });
+  const complete = await inspect();
+  assert.equal(complete.state, "Complete");
+  assert.equal(complete.sourceSha, source);
+  assert.equal(await registry.requests(), 1);
+});
 
 test("pinned Cargo archives require identical inputs and an ancestor source", async t => {
   const repository = mkdtempSync(join(tmpdir(), "acyclic-cargo-equivalence-"));

@@ -1,4 +1,4 @@
-use super::{MAXIMUM_RESPONSE_BYTES, transport_error};
+use super::transport_error;
 use crate::{NativeCustody, NativeWork, Result};
 use http_body_util::{BodyExt as _, Full};
 use hyper_util::rt::TokioIo;
@@ -120,18 +120,7 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
                 "search HTTP request rejected",
             ));
         }
-        if response
-            .headers()
-            .get(http::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .is_some_and(|length| length > MAXIMUM_RESPONSE_BYTES as u64)
-        {
-            return Err(super::super::rejection(
-                work,
-                "search response exceeds byte limit",
-            ));
-        }
+
         let mut body = response.into_body();
         let mut held = crate::tool::edit::allocation(work, std::mem::size_of::<Vec<u8>>())?;
         let mut bytes = Vec::new();
@@ -142,13 +131,10 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             };
             // Every byte in this complete frame was already admitted and
             // recorded at the socket, including headers and TLS records.
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::super::rejection(
-                    work,
-                    "search response exceeds byte limit",
-                ));
-            }
-            let length = bytes.len() + chunk.len();
+            let length = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(|| crate::error(work, "HTTP response size overflow"))?;
             crate::tool::edit::reserve_vec(&mut held, &mut bytes, length)?;
             crate::tool::edit::charge(&held, chunk.len() as u64, 1)?;
             bytes.extend_from_slice(&chunk);

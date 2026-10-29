@@ -11,7 +11,7 @@ use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
 use std::{
     collections::HashMap,
     io,
-    sync::{Arc, Mutex, Weak, mpsc},
+    sync::{Arc, Mutex, mpsc},
     task::{Wake, Waker},
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE};
@@ -157,7 +157,6 @@ struct DriverState {
     ready: mpsc::Receiver<u64>,
     pending: HashMap<u64, Pending>,
     batches: HashMap<u64, Batch>,
-    attached_original: HashMap<usize, Weak<NativeFilePayload>>,
     next_id: u64,
 }
 impl DriverState {
@@ -170,7 +169,6 @@ impl DriverState {
             ready,
             pending: HashMap::new(),
             batches: HashMap::new(),
-            attached_original: HashMap::new(),
             next_id: 1,
         }
     }
@@ -227,26 +225,20 @@ impl DriverState {
             self.proactor.attach(reopened.as_raw_handle().cast())?;
             return Ok(DriverFile::Reopened(SharedFd::new(OwnedFd::from(reopened))));
         }
-        let identity = Arc::as_ptr(file) as usize;
-        match self
-            .attached_original
-            .get(&identity)
-            .and_then(Weak::upgrade)
+        // Only this process's sole IOCP driver observes or sets the marker.
+        // Atomic storage makes the shared payload Sync; no cross-thread state
+        // is published by this bit, so relaxed ordering is sufficient.
+        if !file
+            .completion_attached
+            .load(std::sync::atomic::Ordering::Relaxed)
         {
-            Some(attached) if Arc::ptr_eq(&attached, file) => {}
-            Some(_) => std::process::abort(),
-            None => {
-                // The unsafe constructor guarantees a sole, unattached overlapped handle.
-                self.proactor
-                    .attach(file.as_raw_handle().cast())
-                    .unwrap_or_else(|_| std::process::abort());
-                self.attached_original
-                    .insert(identity, Arc::downgrade(file));
-                if self.attached_original.len() >= 4096 {
-                    self.attached_original
-                        .retain(|_, weak| weak.strong_count() > 0);
-                }
-            }
+            // The unsafe constructor transfers a sole, unattached overlapped
+            // handle. The payload and every pending operation share this marker.
+            self.proactor
+                .attach(file.as_raw_handle().cast())
+                .unwrap_or_else(|_| std::process::abort());
+            file.completion_attached
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(DriverFile::Original(Arc::clone(file)))
     }
