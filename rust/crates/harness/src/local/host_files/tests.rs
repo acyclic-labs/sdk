@@ -8,7 +8,7 @@ async fn projection_event(
 ) -> Result<()> {
     let failed = |cause| {
         Error::Storage(format!(
-            "step=observe workspace conformance: {cause}; recovery=cargo test -p acyclic-harness --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state"
+            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
         ))
     };
     tokio::select! {
