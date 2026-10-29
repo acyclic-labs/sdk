@@ -367,6 +367,9 @@ export SDK_TEMP_DIR="$fixture" CARGO_BUILD_JOBS=12
 target_dir="$fixture/target"
 installed_graphcoder() { :; }
 pinned_pi() { :; }
+native_host_contracts() {
+  [[ -f "$fixture/napi.done" && -f "$fixture/x86_64.done" ]]
+}
 native_binding() {
   [[ "$CARGO_BUILD_JOBS" == 2 ]]
   IFS= read -r event <&3
