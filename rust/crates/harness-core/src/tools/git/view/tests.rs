@@ -108,6 +108,31 @@ async fn saved_command_replay_authenticates_its_original_repository_sources() ->
     .command
     .ok_or("no replay result")?;
     assert_eq!(replay, first);
+    let mut invalid = GitCompatStore::load(&store, main.id())
+        .await?
+        .ok_or("missing repository")?;
+    let branch = invalid.current_branch.clone();
+    let expected = invalid.revision;
+    invalid.current_branch = "missing-branch".into();
+    invalid.revision += 1;
+    assert!(GitCompatStore::compare_and_swap(&store, main.id(), expected, invalid).await?);
+    let corrupt_replay = execute_request(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["apply", "missing.patch"],
+        Some(request.clone()),
+    )
+    .await;
+    assert!(matches!(corrupt_replay, Err(Error::Storage(_))));
+    let mut restored = GitCompatStore::load(&store, main.id())
+        .await?
+        .ok_or("missing repository")?;
+    let expected = restored.revision;
+    restored.current_branch = branch;
+    restored.revision += 1;
+    assert!(GitCompatStore::compare_and_swap(&store, main.id(), expected, restored).await?);
     let foreign = filesystem
         .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
             "foreign-replay-source",

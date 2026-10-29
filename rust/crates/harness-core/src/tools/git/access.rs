@@ -19,12 +19,10 @@ where
         &self,
         operation: acyclic_fs::OperationId,
     ) -> crate::Result<Option<GitCommandOutput>> {
-        let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository)
+        let state = GitCompatRepository::new(self.repository, self.store.clone())
+            .load()
             .await
-            .map_err(S::error)?
-        else {
-            return Ok(None);
-        };
+            .map_err(super::errors::compat_error::<S>)?;
         if state.request(operation).is_none() {
             return Ok(None);
         }
@@ -104,13 +102,11 @@ where
     }
 
     pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
-        if let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository_id)
+        let state = GitCompatRepository::new(self.repository_id, self.store.clone())
+            .load()
             .await
-            .map_err(S::error)?
-        {
-            self.repository_access().authorize(&state).await?;
-        }
-        Ok(())
+            .map_err(super::errors::compat_error::<S>)?;
+        self.repository_access().authorize(&state).await
     }
 }
 
