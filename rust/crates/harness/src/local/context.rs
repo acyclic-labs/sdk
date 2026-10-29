@@ -315,7 +315,7 @@ impl LocalHarness {
         let (manifest, _) = publisher
             .observe_staged_once(
                 operation,
-                crate::conversation::MAX_EXACT_JS_INTEGER,
+                None,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
