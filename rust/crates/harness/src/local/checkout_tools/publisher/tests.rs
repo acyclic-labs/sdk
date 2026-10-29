@@ -134,7 +134,7 @@ async fn open_fixture(
         )
         .await?,
     );
-    let publisher = CheckoutPublisher::new(tools, files.clone(), &project, &verifier, 65536);
+    let publisher = CheckoutPublisher::new(tools, files.clone(), &project, &verifier, Some(65536));
     Ok((
         Fixture {
             _runtime: issuer,
