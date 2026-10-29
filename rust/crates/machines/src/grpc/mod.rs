@@ -3,11 +3,11 @@ pub use acyclic_auth::credential::CredentialProvider;
 use tonic::{Request, Status};
 use transport::{Deadline as _, Endpoint as RpcEndpoint, Messages as _, RpcClient as _};
 
-/// Typed public RPC transport and platform ownership contracts.
-pub mod transport;
 /// Thread-affine binding to an embedding platform's authenticated Connect transport.
 #[cfg(all(target_arch = "wasm32", feature = "javascript"))]
 pub mod javascript;
+/// Typed public RPC transport and platform ownership contracts.
+pub mod transport;
 
 /// One Machines client core over an authenticated platform endpoint.
 #[derive(Clone)]
