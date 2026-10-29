@@ -42,7 +42,11 @@ impl ModelRequest {
                 .saturating_add(self.model.revision.len() as u64),
         )?;
         self.model.validate()?;
-        if self.messages.is_empty() || self.messages.len() > limits.context_messages {
+        if self.messages.is_empty()
+            || limits
+                .context_messages
+                .is_some_and(|maximum| self.messages.len() > maximum.get())
+        {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
         if self.max_output_tokens == Some(0) {

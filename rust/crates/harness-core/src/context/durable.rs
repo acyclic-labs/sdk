@@ -113,7 +113,7 @@ impl DurableContextProvider {
                 revision,
                 key,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )?;
         let mut identity = [0; 16];

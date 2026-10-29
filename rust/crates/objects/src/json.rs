@@ -12,19 +12,19 @@ fn pool() -> Result<&'static DescriptorPool, Error> {
     .map_err(|error| *error)
 }
 /// Encodes generated binary wire bytes through the canonical descriptor JSON mapping.
-pub fn encode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {
-    if bytes.len() > maximum {
+pub fn encode_binary(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<Vec<u8>, Error> {
+    if maximum.is_some_and(|maximum| bytes.len() > maximum) {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
     let message = decode_input(name, bytes)?;
     serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 /// Decodes bounded descriptor JSON to generated binary wire bytes.
-pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {
+pub fn decode_binary(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<Vec<u8>, Error> {
     Ok(decode_json(name, bytes, maximum)?.encode_to_vec())
 }
-fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessage, Error> {
-    if bytes.len() > maximum {
+fn decode_json(name: &str, bytes: &[u8], maximum: Option<usize>) -> Result<DynamicMessage, Error> {
+    if maximum.is_some_and(|maximum| bytes.len() > maximum) {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
     let descriptor = pool()?
@@ -49,9 +49,14 @@ fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
     DynamicMessage::decode(descriptor, bytes)
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
 }
-/// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
-pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {
-    decode_json(name, bytes, maximum)?
+/// Decodes one JSON message under an optional byte policy.
+/// Unknown fields, trailing JSON, and invalid wire values fail.
+pub fn decode<T: Message + Default>(
+    name: &str,
+    bytes: &[u8],
+    maximum: impl Into<Option<usize>>,
+) -> Result<T, Error> {
+    decode_json(name, bytes, maximum.into())?
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }

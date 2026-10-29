@@ -620,8 +620,8 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
         memory: MemoryLimits {
-            commits: 1,
-            idempotency_results: 1,
+            commits: Some(1),
+            idempotency_results: Some(1),
             ..MemoryLimits::default()
         },
         ..LocalStreamLimits::default()

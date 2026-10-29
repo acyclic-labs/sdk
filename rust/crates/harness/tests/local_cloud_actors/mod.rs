@@ -185,9 +185,9 @@ fn create() -> wire::DeploymentRequest {
         code_sha256: digest(CODE),
 
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1000,
-            memory_bytes: 1 << 20,
-            checkpoint_bytes: 1 << 16,
+            handler_timeout_millis: Some(1000),
+            memory_bytes: Some(1 << 20),
+            checkpoint_bytes: Some(1 << 16),
         }),
         idempotency_key: "e2e-create".into(),
         ..Default::default()

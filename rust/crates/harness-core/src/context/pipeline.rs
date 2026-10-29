@@ -362,7 +362,10 @@ impl ContextPipeline {
     ) -> Result<Context> {
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
         self.validate(io)?;
-        if self.0.len() > limits.context_messages {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| self.0.len() > maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,

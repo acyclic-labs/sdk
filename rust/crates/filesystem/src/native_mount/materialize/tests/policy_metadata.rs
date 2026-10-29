@@ -26,7 +26,6 @@ fn materialize_policy(bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
             let name = crate::kernel::AttributeName::new(
                 crate::kernel::AttributeClass::PosixXattr,
                 b"user.retained".to_vec(),
-                255,
             )?;
             checkout
                 .change_named_attribute(

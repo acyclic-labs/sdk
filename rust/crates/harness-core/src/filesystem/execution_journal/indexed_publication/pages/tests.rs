@@ -239,23 +239,6 @@ async fn check_publication(native: bool, large: bool) -> Result<()> {
         digest: [7; 32],
         contributions: &[],
     };
-    let mut old_work = None;
-    let old = cut.request(
-        CommitCondition::Absent {
-            path: pages.clone(),
-        },
-        &records,
-        Some((&observation, &checkpoint)),
-        &mut old_work,
-    )?;
-    assert!(
-        matches!(
-            provider.commit(old.0).await,
-            Err(StreamError::LimitExceeded)
-        ),
-        "one-command negative control accepted an oversized snapshot"
-    );
-    drop(old.1);
     let cancellation = acyclic_fs::CancellationToken::new();
     let budget = acyclic_fs::performance::work_budget(256 * 1024 * 1024, 16 * 1024 * 1024);
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)

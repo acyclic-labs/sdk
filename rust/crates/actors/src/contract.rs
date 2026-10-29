@@ -2,15 +2,8 @@
 use crate::wire;
 use std::collections::HashSet;
 
-/// Maximum subscriptions on one Actor contract.
-pub const MAX_SUBSCRIPTIONS: usize = 64;
-/// Maximum named bindings on one Actor contract.
-pub const MAX_BINDINGS: usize = 64;
-/// Maximum selected credential-store references per deployment.
-pub const MAX_SECRETS: usize = 64;
-
-fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
+pub(crate) fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty()
 }
 
 fn valid_actor_scope(account: &[u8], namespace: Option<&str>, id: &str) -> bool {
@@ -30,9 +23,6 @@ pub enum ContractError {
     /// A required field is absent or malformed.
     #[error("required field is absent or malformed")]
     InvalidArgument,
-    /// A collection exceeds its contract bound.
-    #[error("Actors v1 collection limit exceeded")]
-    LimitExceeded,
     /// A subscription or binding name occurs more than once.
     #[error("duplicate subscription or binding name")]
     DuplicateName,
@@ -43,7 +33,6 @@ impl ContractError {
     pub const fn code_name(self) -> &'static str {
         match self {
             Self::InvalidArgument => "invalid_argument",
-            Self::LimitExceeded => "limit_exceeded",
             Self::DuplicateName => "duplicate_name",
         }
     }
@@ -84,11 +73,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
-            (Some(limits), None) => {
-                limits.handler_timeout_millis > 0
-                    && limits.memory_bytes > 0
-                    && limits.checkpoint_bytes > 0
-            }
+            (Some(limits), None) => domain::ActorLimits::try_from(limits.clone()).is_ok(),
             (None, Some(limits)) => {
                 limits.cpu_millis > 0
                     && limits.memory_bytes > 0
@@ -100,9 +85,6 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         }
     {
         return Err(ContractError::InvalidArgument);
-    }
-    if request.subscriptions.len() > MAX_SUBSCRIPTIONS || request.bindings.len() > MAX_BINDINGS {
-        return Err(ContractError::LimitExceeded);
     }
     let mut names = HashSet::new();
     let mut anchors = 0;
@@ -143,16 +125,12 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
+        || !request
+            .limits
+            .as_ref()
+            .is_some_and(|limits| domain::ActorLimits::try_from(limits.clone()).is_ok())
     {
         return Err(ContractError::InvalidArgument);
-    }
-    if request.bindings.len() > MAX_BINDINGS {
-        return Err(ContractError::LimitExceeded);
     }
     let mut names = HashSet::new();
     for item in &request.bindings {
@@ -189,9 +167,6 @@ fn validate_secret_selections(
     secrets: &[wire::SecretSelection],
     bindings: &[wire::Binding],
 ) -> Result<(), ContractError> {
-    if secrets.len() > MAX_SECRETS {
-        return Err(ContractError::LimitExceeded);
-    }
     let mut names: HashSet<&str> = bindings.iter().map(|b| b.name.as_str()).collect();
     for secret in secrets {
         domain::SecretSelection::try_from(secret.clone())

@@ -98,7 +98,7 @@ where
         crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 &self.volume,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
                 work,
             )
         })
@@ -186,7 +186,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                super::MAXIMUM_PAYLOAD_BYTES,
                 work,
             )
         })?;

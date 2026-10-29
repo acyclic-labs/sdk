@@ -34,10 +34,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         Ok(body)
     }
     fn limit(&self, length: u64) -> Result<(), crate::FsError> {
-        if length > self.maximum_object_bytes {
+        if let Some(maximum) = self.maximum_object_bytes
+            && length > maximum
+        {
             return Err(ObjectStoreError::TooLarge {
                 observed: length,
-                maximum: self.maximum_object_bytes,
+                maximum,
             }
             .into());
         }

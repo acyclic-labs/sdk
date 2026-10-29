@@ -179,8 +179,8 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             )),
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(1_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),

@@ -1,8 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readBoundedGzip, sha256, tarEntries } from "../../../../../scripts/archive-utils.mjs";
+import { readArchivePayload, sha256 } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, readGenerationReceipt, qualificationOutput, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -30,15 +30,14 @@ export function validatePayload(entries, receipt, platform = process.platform) {
     || receipt.outputs.some(name => !names.has(name))) throw new Error("archive inventory differs from generation receipt");
 }
 
-export function verifyArchive(path, expected, receipt) {
-  const archive = readBoundedGzip(path, 64 * 1024 * 1024, 256 * 1024 * 1024);
-  if (sha256(archive.compressed) !== expected) throw new Error("package archive digest mismatch");
-  const entries = tarEntries(archive.expanded);
+export async function verifyArchive(path, expected, receipt) {
+  const { payload } = await readArchivePayload(path, { canonical, expected, declared: receipt.output_sha256 });
+  const entries = [...payload].map(([path, body]) => ({ path, body, type: "0" }));
   validatePayload(entries, receipt);
   return entries;
 }
 
-export function qualify(args, command = spawnSync) {
+export async function qualify(args, command = captureCommand) {
   const archive = realpathSync(args.package);
   const authority = realpathSync(args.authority);
   const receiptPath = realpathSync(args.receipt);
@@ -46,10 +45,10 @@ export function qualify(args, command = spawnSync) {
   const work = qualificationOutput(args.output, [archive, authority, receiptPath, dirname(directory), go]);
   const { receiptBytes, receipt, approved } = readGenerationReceipt(receiptPath, authority, "go", targets);
   const { bytes: manifestBytes, manifest, inputs, descriptors } = approved;
-  const entries = verifyArchive(archive, args.sha256, receipt);
+  const entries = await verifyArchive(archive, args.sha256, receipt);
   const env = { ...process.env, GOMAXPROCS: "1", GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off",
     GOWORK: "off", GOENV: "off", GOFLAGS: "" };
-  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
+  const execute = arguments_ => command(go, arguments_, { env, encoding: "utf8", timeout: 180_000 });
   const version = execute(["version"]);
   if (version.error || version.status !== 0 || version.stdout.trim().split(/\s+/)[2] !== receipt.go_version) {
     throw new Error("Go toolchain differs from generation receipt");

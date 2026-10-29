@@ -18,14 +18,12 @@ mod native;
 ))]
 pub(crate) use native::response_bytes;
 
-pub(crate) const MAXIMUM_URL_BYTES: usize = 16_384;
-
 /// One absolute HTTP(S) URL. User information and fragments are not accepted.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct FetchRequest {
-    /// Absolute source URL, at most 16,384 UTF-8 bytes, without user information.
-    #[schemars(length(min = 1, max = 16384))]
+    /// Absolute source URL, without user information.
+    #[schemars(length(min = 1))]
     pub url: String,
 }
 
@@ -56,7 +54,6 @@ impl FetchRequest {
 
 pub(crate) fn validate_url_text(url: &str, work: crate::NativeWork<'_>) -> Result<()> {
     if url.is_empty()
-        || url.len() > MAXIMUM_URL_BYTES
         || url.chars().any(|c| c.is_whitespace() || c.is_control())
         || url.contains(['#', '\\'])
     {
@@ -85,13 +82,13 @@ pub(crate) fn validate_url_text(url: &str, work: crate::NativeWork<'_>) -> Resul
 pub struct FetchResponse {
     /// Original requested URL, preserved verbatim for source attribution.
     pub source_url: String,
-    /// Final absolute source URL after bounded, validated redirects.
+    /// Final absolute source URL after validated redirects.
     pub final_url: String,
     /// Successful HTTP status returned by the final source.
     pub status: u16,
     /// Final source's Content-Type header, when present.
     pub content_type: Option<String>,
-    /// Exact UTF-8 response body, bounded to one MiB by the HTTP adapter.
+    /// Exact UTF-8 response body.
     pub content: String,
 }
 

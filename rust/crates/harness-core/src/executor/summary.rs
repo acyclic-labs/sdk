@@ -22,7 +22,7 @@ impl StockExecution<'_> {
                     .map(|writer| (context, writer)),
             })
             .transpose()?;
-        if parent.is_some_and(|parent| step >= parent.max_steps) {
+        if parent.is_some_and(|parent| parent.max_steps.is_some_and(|maximum| step >= maximum)) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,
@@ -63,7 +63,7 @@ impl StockExecution<'_> {
             operation_id,
             input: instruction,
             selected_context: None,
-            max_steps: parent.map_or(1, |parent| parent.max_steps),
+            max_steps: parent.map_or(Some(1), |parent| parent.max_steps),
         };
         self.validate_summary_capacity(&executor, journal, &input, step)
             .await?;
