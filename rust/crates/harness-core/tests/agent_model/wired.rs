@@ -76,9 +76,12 @@ fn executors_with_scope(
     )?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
-    preset.max_steps = Some(usize::try_from(LIMITS.max_steps)?);
+    preset.max_steps = LIMITS
+        .max_steps
+        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+        .transpose()?;
     let base = acyclic_harness_core::conversation::Limits {
-        model_steps: 1,
+        model_steps: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
     let bindings = acyclic_harness_core::runtime::Bindings {

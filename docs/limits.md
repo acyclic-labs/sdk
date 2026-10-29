@@ -1866,3 +1866,12 @@ The explicit finite-policy control used Error::source traversal to search for Wo
 Compile338 progressed past all eight earlier errors and stopped at three retired total-cap fields in the newly published sealed-transfer integration fixture. The fixture now supplies only canonical decoder and filesystem capability requirements; its exact sealed CAS transfer, cold reopening and original-work controls are retained. No runtime phase ran.
 
 The milestone is rebased onto the actual published Stream acceptance-clock change. Postgres retains the single Replicated/PgJournal owner and database acceptance stamp, with fixed digest namespace keys and exact original-name collision checks. Local publication retains its original fenced write cut and physical-completion accounting; retired lifetime journal admission is not restored. Post-composition qualification remains pending.
+
+
+## Compile339: optional model control and manifest discovery
+
+Native and Windows all-target checks stop at the same four wired agent-model fixture type errors. The fixture now projects optional TurnLimits steps into optional nonzero Preset steps, rejects an explicit zero and keeps the distinct finite base/execution limits plus matching/mismatched scope controls. No model or user-selected finite capacity changes. Complete filesystem runtime was not reached.
+
+Machines WASM generation stopped before compiling because package discovery assumed every workspace directory had a manifest. Shared discovery now follows actual manifests; generated residue does not become a package. Explicitly selected/referenced missing packages and malformed manifests still refuse. A real filesystem dependency closure exercises all three cases, alongside the existing graph generators. No retired package or alternate producer is restored. Current-source qualification remains pending.
+
+The release traversal review's P2 remains a follow-up: incremental DFS retains a directory handle per depth and can exhaust actual descriptor capacity. Complete arbitrary-depth traversal with bounded handles remains open; the earlier first-yield/control measurements do not establish that guarantee.

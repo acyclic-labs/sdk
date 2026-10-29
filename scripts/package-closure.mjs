@@ -6,9 +6,17 @@ export function packageClosure(root, selected) {
   const packages = new Set();
   const visited = new Set();
   const names = new Map(readdirSync(join(root, "typescript/packages"), { withFileTypes: true })
-    .filter(entry => entry.isDirectory()).map(entry => {
-      const manifest = JSON.parse(readFileSync(join(root, "typescript/packages", entry.name, "package.json"), "utf8"));
-      return [manifest.name, entry.name];
+    .filter(entry => entry.isDirectory()).flatMap(entry => {
+      let manifest;
+      try {
+        manifest = JSON.parse(readFileSync(join(root, "typescript/packages", entry.name, "package.json"), "utf8"));
+      } catch (error) {
+        // Build output may outlive its package. Discovery follows manifests;
+        // selecting or referencing that missing package still fails in visit.
+        if (error.code === "ENOENT") return [];
+        throw error;
+      }
+      return [[manifest.name, entry.name]];
     }));
   function visit(name) {
     if (visited.has(name)) return;
