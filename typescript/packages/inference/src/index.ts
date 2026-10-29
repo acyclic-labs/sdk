@@ -397,32 +397,39 @@ export class HttpInferenceTransport implements InferenceTransport {
     let completed = false;
     try {
       check();
-      let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
+      let lineBuffer = new Uint8Array(0);
       let lineLength = 0;
       for (;;) {
         const item = await reader.read();
         check();
         if (item.done) break;
-        for (const byte of item.value) {
-          if (byte === 0x0a) {
-            const rawLine = decodeLine(lineBuffer.subarray(0, lineLength));
-            lineLength = 0;
-            const line = rawLine.trim();
-            if (line.length > 0) {
-              yield fromJson(route.method.output, JSON.parse(line));
-              check();
-            }
-            continue;
-          }
-          if (lineLength >= this.maximumMessageBytes) {
+        for (let start = 0; start < item.value.length;) {
+          const newline = item.value.indexOf(0x0a, start);
+          const end = newline < 0 ? item.value.length : newline;
+          const length = end - start;
+          if (length > this.maximumMessageBytes - lineLength) {
             throw new InferenceTransportError(response.status, "run event exceeds configured bound");
           }
-          if (lineLength === lineBuffer.length) {
-            const next = new Uint8Array(Math.min(this.maximumMessageBytes, lineBuffer.length * 2));
-            next.set(lineBuffer);
-            lineBuffer = next;
+          let frame = item.value.subarray(start, end);
+          if (lineLength > 0 || newline < 0) {
+            const needed = lineLength + length;
+            if (needed > lineBuffer.length) {
+              const next = new Uint8Array(Math.min(this.maximumMessageBytes, Math.max(1024, needed, lineBuffer.length * 2)));
+              next.set(lineBuffer.subarray(0, lineLength));
+              lineBuffer = next;
+            }
+            lineBuffer.set(frame, lineLength);
+            lineLength = needed;
+            frame = lineBuffer.subarray(0, lineLength);
           }
-          lineBuffer[lineLength++] = byte;
+          if (newline < 0) break;
+          lineLength = 0;
+          const line = decodeLine(frame).trim();
+          if (line.length > 0) {
+            yield fromJson(route.method.output, JSON.parse(line));
+            check();
+          }
+          start = newline + 1;
         }
       }
       const final = decodeLine(lineBuffer.subarray(0, lineLength)).trim();
