@@ -143,7 +143,7 @@ impl Collection {
                 let (read, retained) = crate::kernel::read_object_with_accounting(
                     objects,
                     *object,
-                    accounting.remaining()?.object_bytes_read,
+                    u64::MAX,
                     accounting,
                     cancellation,
                 )
