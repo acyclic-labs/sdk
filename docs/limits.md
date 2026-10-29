@@ -1218,3 +1218,8 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | `GOAL_REASON_BYTES`128 / `GOAL_METADATA_HEADROOM` | `rust/crates/harness-core/src/goal.rs:8,10,174,239` (removed) | 1 deleted | Delete the reason-byte and hypothetical rewrite-headroom policies and their cap-only assertions. Status encoding preserves complete Unicode/control/noncharacter reasons with exact YAML escapes; a read performs no throwaway reason encoding, and a rewrite sizes then writes one output buffer. Explicit selected file policies check actual input/output size. Existing private-root/descriptor integrity, conditioned goal publication and finite allowance controls remain; the ordinary writer test exercises exact-size success plus real oversize refusal. Existing property and fuzz checks retain complete round trips with actual encoded-byte policies, including long reasons. Compilation pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| `CALLBACK_TIMEOUT`30s | `rust/crates/filesystem/src/native_mount/adapter/mod.rs:40`; `adapter/runtime.rs:251,264`; `adapter/locks.rs:15` | 1 deleted | Delete the automatic timeout and elapsed-to-Stale projection from ordinary/native callback and binding-lease waits. The same shared parked waker/Condvar and funded view-gate cancellation registrations wait for actual completion/cancellation. Original NativeAllocation admission before future construction, retained waker custody, cancellation and authority-expiry/return-fence controls remain. No new optional policy or wait mechanism. Compilation pending. |
