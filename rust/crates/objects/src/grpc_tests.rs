@@ -20,6 +20,7 @@ struct Replica {
 impl Replica {
     async fn new() -> Result<Arc<Self>, Error> {
         let primary = MemoryObjects::memory();
+        primary.flush(None).await?;
         let authority = primary.revisions().await?.expect("memory issues revisions");
         let applied = AppliedRevisions::new(
             authority.scope().clone(),

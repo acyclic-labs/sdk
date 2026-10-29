@@ -20,3 +20,9 @@ One engine (`Store<M: Medium>`) serves memory, local-directory (`local`) and
 S3-compatible (`s3`) media; `grpc` and `http` provide remote clients and the
 gRPC server. Every provider passes `conformance::verify`, including the
 cross-account probes. Persisted formats are v1.
+
+Reads do not claim a writer revision run. A fresh `Account` over an applied
+read-only medium returns the selected bytes without a local revision token;
+it retains any causal minimum it cannot prove. `revisions()` reports only an
+already established writer authority. A mutation or explicit `flush` opens
+that authority; an embedding server retains its own applied-cut admission.
