@@ -78,7 +78,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 .heads(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            Ok(wire_codec::heads_to_wire(view))
+            wire_codec::heads_to_wire(view).map_err(|error| error_status(&error))
         })
         .await
     }

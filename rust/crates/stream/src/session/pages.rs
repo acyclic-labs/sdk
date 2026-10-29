@@ -121,7 +121,9 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
                     )?,
                 );
             }
-            Ok(Bytes::from(wire_codec::heads_to_wire(view).encode_to_vec()))
+            Ok(Bytes::from(
+                wire_codec::heads_to_wire(view)?.encode_to_vec(),
+            ))
         }),
     )
 }

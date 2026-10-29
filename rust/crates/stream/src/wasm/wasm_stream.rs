@@ -219,7 +219,9 @@ impl WasmStream {
                 let request = wire_codec::heads_from_wire(decode::<wire::HeadsRequest>(input)?)
                     .map_err(js_error)?;
                 let view = self.provider.heads(request).await.map_err(js_error)?;
-                wire_codec::heads_to_wire(view).encode_to_vec()
+                wire_codec::heads_to_wire(view)
+                    .map_err(js_error)?
+                    .encode_to_vec()
             }
             "head" => {
                 let request = decode::<wire::HeadRequest>(input)?;

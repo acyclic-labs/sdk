@@ -43,7 +43,8 @@ pub(super) async fn heads(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&wire_codec::heads_to_wire(view), "heads")
+    let view = wire_codec::heads_to_wire(view).map_err(|error| stream_error(&error))?;
+    encode(&view, "heads")
 }
 
 pub(super) async fn head(

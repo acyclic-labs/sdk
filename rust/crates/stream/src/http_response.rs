@@ -24,7 +24,7 @@ pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
                 wire::HeadsResponse::decode(input).map_err(|_| "invalid_response")?,
             )
             .map_err(|_| "invalid_response")?;
-            let view = crate::wire_codec::heads_to_wire(view);
+            let view = crate::wire_codec::heads_to_wire(view).map_err(|_| "limit_exceeded")?;
             let heads: Vec<_> = view
                 .heads
                 .into_iter()
