@@ -279,6 +279,20 @@ impl WatchState {
     fn delivery(self: &Arc<Self>) -> WatchDelivery {
         WatchDelivery(Arc::clone(self))
     }
+
+    fn ready(&self, queued: &AtomicUsize) -> Result<bool, NativeWatchError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if state.closed {
+            return Err(NativeWatchError::SourceUnavailable);
+        }
+        let ready = state.invalidation.is_some() || queued.load(Ordering::Acquire) != 0;
+        #[cfg(any(target_os = "linux", windows))]
+        let ready = ready || state.pending_rename.is_some();
+        Ok(state.rescan.is_none() && ready)
+    }
 }
 
 /// Declared before producer locks, so publication wakes observers only after
@@ -3675,37 +3689,31 @@ impl NativeWatch {
         let original = original.clone();
         async move {
             original.admit(WorkCounters::UNCHARGED)?;
+            if shared.ready(&queued)? {
+                return Ok(());
+            }
             let tokens = original.with_original_leaf(|work| work.cancellation_tokens());
             let first = tokens[0]
                 .prepare_cancelled_with_native_work(&original)
                 .map_err(crate::cancellation::CancellationWaitError::into_native)?;
-            let second = tokens[1]
-                .prepare_cancelled_with_native_work(&original)
+            let second = (!tokens[1].same_state(&tokens[0]))
+                .then(|| tokens[1].prepare_cancelled_with_native_work(&original))
+                .transpose()
                 .map_err(crate::cancellation::CancellationWaitError::into_native)?;
             let mut first = std::pin::pin!(first);
-            let mut second = std::pin::pin!(second);
+            let mut second = std::pin::pin!(async move {
+                match second {
+                    Some(second) => second.await,
+                    None => std::future::pending::<()>().await,
+                }
+            });
             loop {
                 let changed = shared.changed.notified();
                 let mut changed = std::pin::pin!(changed);
                 changed.as_mut().enable();
                 original.admit(WorkCounters::UNCHARGED)?;
-                {
-                    let state = shared
-                        .state
-                        .lock()
-                        .map_err(|_| NativeWatchError::StatePoisoned)?;
-                    if state.closed {
-                        return Err(NativeWatchError::SourceUnavailable);
-                    }
-                    let mut ready =
-                        state.invalidation.is_some() || queued.load(Ordering::Acquire) != 0;
-                    #[cfg(any(target_os = "linux", windows))]
-                    {
-                        ready |= state.pending_rename.is_some();
-                    }
-                    if state.rescan.is_none() && ready {
-                        return Ok(());
-                    }
+                if shared.ready(&queued)? {
+                    return Ok(());
                 }
                 tokio::select! {
                     () = changed.as_mut() => {},
