@@ -38,6 +38,7 @@ test("selected report acknowledgement distinguishes live, empty, refusal and pro
       const result = await running.closed;
       assert.equal(result.termination.report_requested, true);
       assert.equal(result.termination.report_outcome, expected);
+      assert.equal(result.termination.report_acknowledged, ["report", "empty", "unsupported"].includes(expected));
       assert.equal(result.termination.missing_wait_report, !["report", "empty"].includes(expected));
       if (expected === "report") assert.equal(result.termination.stuck_on[0].primitive, "channel-close");
       else assert.deepEqual(result.termination.stuck_on, []);
@@ -59,6 +60,7 @@ test("rejected control delivery remains a sink failure and still retires the sam
       await scope.close();
       const result = await running.closed;
       assert.equal(result.termination.report_outcome, "write-failed");
+      assert.equal(result.termination.report_acknowledged, false);
       assert.equal(result.termination.missing_wait_report, true);
       assert.equal(scope.children.size, 0);
     } finally { await scope.close(); }
@@ -81,6 +83,7 @@ test("selected owner exit cannot discard its already written acknowledgement", {
     const result = await running.closed;
     assert.equal(result.code, 0);
     assert.equal(result.termination.report_outcome, "empty");
+    assert.equal(result.termination.report_acknowledged, true);
     assert.equal(result.termination.missing_wait_report, false);
     await scope.close();
     assert.equal(scope.children.size, 0);
@@ -103,7 +106,9 @@ test("a dropped report request cannot acknowledge and concurrent close joins the
     assert.equal(requests, 1, "only the admitted request can be sent");
     assert.equal(result.termination.report_outcome, "unacknowledged");
     assert.equal(result.termination.report_cause, "original-drain-deadline");
+    assert.equal(result.termination.report_acknowledged, false);
     assert.deepEqual(transitions.map(transition => transition.outcome), ["requested", "unacknowledged"]);
+    assert.ok(transitions.every(transition => transition.acknowledged === false));
     for (const transition of transitions) {
       assert.equal(transition.request_id, result.termination.request_id);
       assert.equal(transition.generation, result.termination.generation);
@@ -126,6 +131,7 @@ test("a report transition observer failure is returned only after physical retir
     assert.equal(physicallyClosed, true);
     assert.equal(scope.children.size, 0);
     assert.deepEqual(transitions.map(transition => transition.outcome), ["requested", "report"]);
+    assert.deepEqual(transitions.map(transition => transition.acknowledged), [false, true]);
     assert.equal(result.termination.report_outcome, "report");
   } finally { await scope.close().catch(() => {}); }
 });

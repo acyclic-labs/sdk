@@ -72,11 +72,11 @@ export class ProcessReport {
       this.#finish("write-failed", "foreign-or-invalid-acknowledgement");
       return;
     }
-    this.#finish(message.outcome, undefined, message.waits);
+    this.#finish(message.outcome, undefined, message.waits, true);
   }
-  #finish(outcome, cause, waits = []) {
+  #finish(outcome, cause, waits = [], acknowledged = false) {
     if (this.#terminal) return;
-    this.#terminal = { outcome, cause, waits };
+    this.#terminal = { outcome, cause, waits, acknowledged };
     this.#resolve();
   }
   request(deadline) {
@@ -102,6 +102,7 @@ export class ProcessReport {
       generation: this.generation,
       report_outcome: terminal.outcome,
       report_cause: terminal.cause,
+      report_acknowledged: terminal.acknowledged === true,
       stuck_on: terminal.waits,
       missing_wait_report: terminal.outcome !== "report" && terminal.outcome !== "empty",
     };
