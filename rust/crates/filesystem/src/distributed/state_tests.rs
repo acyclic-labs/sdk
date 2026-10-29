@@ -208,6 +208,87 @@ async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> Tes
 }
 
 #[tokio::test]
+async fn portable_root_rejects_foreign_lineage_before_publication() -> TestResult {
+    use acyclic_stream::testing::Counted;
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let path = StreamPath::new("state/sealed-root")?;
+    let observed = store.observe_record(path.clone(), &mut work).await?;
+    let root_id = crate::FileId::from_bytes([7; 16]);
+    let root = PortableRoot {
+        root_file_id: root_id,
+        file_table: ObjectId {
+            kind: crate::ObjectKind::FileTablePage,
+            digest: Digest::from_bytes([8; 32]),
+            storage: Some(crate::ObjectStorage {
+                locator: Digest::from_bytes([9; 32]),
+                root_file_id: root_id,
+                origin_generation: Digest::from_bytes([10; 32]),
+            }),
+        },
+    };
+    let mut publication = commit(b"sealed-root")?;
+    let original = publication.request().clone();
+    let calls = provider.requests();
+    let spent = work.spent();
+    for invalid in [
+        PortableRoot {
+            root_file_id: crate::FileId::from_bytes([11; 16]),
+            ..root
+        },
+        PortableRoot {
+            file_table: ObjectId {
+                kind: crate::ObjectKind::Blob,
+                ..root.file_table
+            },
+            ..root
+        },
+    ] {
+        assert!(matches!(
+            store.contribute_record(
+                &mut publication,
+                &observed.observation,
+                &StateRecord::Volume {
+                    root: invalid,
+                    companion: OwnedBytes::from_static(b"context"),
+                },
+                crate::PublicationHold::none(),
+                &mut work,
+            ),
+            Err(AuthorityStoreError::RejectedStatic(_))
+        ));
+        assert_eq!(publication.request(), &original);
+        assert_eq!(work.spent(), spent);
+        assert_eq!(provider.requests().since(calls).control(), 0);
+        assert_eq!(provider.requests().since(calls).data(), 0);
+    }
+    let value = StateRecord::Volume {
+        root,
+        companion: OwnedBytes::from_static(b"context"),
+    };
+    store.contribute_record(
+        &mut publication,
+        &observed.observation,
+        &value,
+        crate::PublicationHold::none(),
+        &mut work,
+    )?;
+    store.seal_observed(&mut publication, &[], None, &mut work)?;
+    let receipt = match store.submit(publication, &mut work).await? {
+        FilesystemCommitOutcome::Committed(receipt) => receipt,
+        _ => return Err("sealed root publication did not commit".into()),
+    };
+    let receipt =
+        RecordReceipt::from_receipt(&receipt, &path, 0).ok_or("missing sealed receipt")?;
+    let read = store.read_receipt(&receipt, &mut work).await?;
+    let record = read.record.ok_or("missing sealed root")?;
+    assert_eq!(StateRecord::decode(record.value)?.state, value);
+    Ok(())
+}
+
+#[tokio::test]
 async fn stale_root_or_authorization_publishes_no_other_root() -> TestResult {
     for stale_policy in [false, true] {
         let provider = Arc::new(MemoryStream::default());

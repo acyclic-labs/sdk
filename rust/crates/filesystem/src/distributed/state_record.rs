@@ -27,6 +27,16 @@ pub struct PortableRoot {
     pub file_table: ObjectId,
 }
 
+impl PortableRoot {
+    fn is_valid(self) -> bool {
+        self.file_table.kind == ObjectKind::FileTablePage
+            && self
+                .file_table
+                .storage
+                .is_none_or(|storage| storage.root_file_id == self.root_file_id)
+    }
+}
+
 impl From<&crate::kernel::GenerationRoot> for PortableRoot {
     fn from(root: &crate::kernel::GenerationRoot) -> Self {
         Self {
@@ -76,9 +86,9 @@ impl StateRecord {
     ) -> Result<(u8, Option<PortableRoot>, &[u8]), crate::AuthorityStoreError> {
         match self {
             Self::Volume { root, companion } => {
-                if root.file_table.kind != ObjectKind::FileTablePage {
+                if !root.is_valid() {
                     return Err(crate::AuthorityStoreError::RejectedStatic(
-                        "volume root requires a file table",
+                        "volume root requires a file table in its root lineage",
                     ));
                 }
                 Ok((0, Some(*root), companion))
@@ -147,18 +157,15 @@ impl StateRecord {
             let end = reference + length;
             let file_table = ObjectId::try_from(bytes.get(reference..end).ok_or_else(corrupt)?)
                 .map_err(|_| corrupt())?;
-            if file_table.kind != ObjectKind::FileTablePage
-                || file_table
-                    .storage
-                    .is_some_and(|storage| storage.root_file_id != root_file_id)
-            {
+            let root = PortableRoot {
+                root_file_id,
+                file_table,
+            };
+            if !root.is_valid() {
                 return Err(corrupt());
             }
             Self::Volume {
-                root: PortableRoot {
-                    root_file_id,
-                    file_table,
-                },
+                root,
                 companion: bytes.slice(end..),
             }
         } else {
