@@ -120,12 +120,13 @@ macro_rules! delegate {
             {
                 self.0.follow(request).await
             }
-            async fn append(&self, mut request: AppendRequest)
-                -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
-            {
+            fn write(&self, mut request: acyclic_stream::WriteRequest)
+                -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>> {
                 // Deliberately replace the production fire's stable retry key.
-                request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
-                self.0.append(request).await
+                if let acyclic_stream::WriteRequest::Append(request) = &mut request {
+                    request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+                }
+                self.0.write(request)
             }
         }
     };
@@ -134,9 +135,7 @@ macro_rules! delegate {
 delegate! {
     heads(request: acyclic_stream::HeadsRequest) -> acyclic_stream::Heads;
     inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
-    fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
-    commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
     read_commit(id: acyclic_stream::CommitId) -> acyclic_stream::CommittedEnvelope;
 }
 

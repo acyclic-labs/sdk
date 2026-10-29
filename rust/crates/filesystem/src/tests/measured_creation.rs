@@ -1,4 +1,5 @@
 //! Public named-creation work bounds and failure receipts.
+use acyclic_stream::StreamProviderExt as _;
 #[macro_use]
 #[path = "../../tests/support/unbounded.rs"]
 mod unbounded;
@@ -318,18 +319,46 @@ mod source_bound_lost_ack {
             self.inner.heads(request).await
         }
 
-        async fn append(
+        fn write(
             &self,
-            request: AppendRequest,
-        ) -> Result<acyclic_stream::AppendOutcome, StreamError> {
-            self.inner.append(request).await
-        }
-
-        async fn fork(
-            &self,
-            request: acyclic_stream::ForkRequest,
-        ) -> Result<acyclic_stream::ForkReceipt, StreamError> {
-            self.inner.fork(request).await
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::AppendOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move { self.inner.append(request).await }.await;
+                    result.map(acyclic_stream::WriteOutcome::Append)
+                }),
+                acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::ForkReceipt,
+                        acyclic_stream::StreamError,
+                    > = async move { self.inner.fork(request).await }.await;
+                    result.map(acyclic_stream::WriteOutcome::Fork)
+                }),
+                acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::CommitOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move {
+                        let result = self.inner.commit(request).await?;
+                        if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
+                            self.committed.fetch_add(1, Ordering::SeqCst);
+                            if self.armed.swap(false, Ordering::SeqCst) {
+                                return Err(StreamError::Unavailable);
+                            }
+                        }
+                        Ok(result)
+                    }
+                    .await;
+                    result.map(acyclic_stream::WriteOutcome::Commit)
+                }),
+            }
         }
 
         async fn read(
@@ -344,20 +373,6 @@ mod source_bound_lost_ack {
             request: acyclic_stream::FollowRequest,
         ) -> Result<acyclic_stream::FollowStream, StreamError> {
             self.inner.follow(request).await
-        }
-
-        async fn commit(
-            &self,
-            request: CommitRequest,
-        ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-            let result = self.inner.commit(request).await?;
-            if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
-                self.committed.fetch_add(1, Ordering::SeqCst);
-                if self.armed.swap(false, Ordering::SeqCst) {
-                    return Err(StreamError::Unavailable);
-                }
-            }
-            Ok(result)
         }
 
         async fn read_commit(

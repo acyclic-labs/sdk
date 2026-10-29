@@ -50,12 +50,16 @@ impl StreamProvider for Provider {
         }
         Ok(view)
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.memory.append(request).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.memory.write(request)
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.memory.fork(request).await
-    }
+
     async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str() == "browser/overlap" && request.from > 0 {
             request.from -= 1;
@@ -67,9 +71,6 @@ impl StreamProvider for Provider {
         self.memory.follow(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.memory.commit(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }

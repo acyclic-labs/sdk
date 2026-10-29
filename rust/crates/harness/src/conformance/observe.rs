@@ -151,18 +151,54 @@ impl StreamProvider for Observed {
             });
         self.io(self.inner.heads(request)).await
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.appends
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(request.clone());
-        self.requests.record(RequestClass::Data);
-        self.io(self.inner.append(request)).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.appends
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(request.clone());
+                    self.requests.record(RequestClass::Data);
+                    self.io(self.inner.append(request)).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.requests.record(RequestClass::Data);
+                    self.io(self.inner.fork(request)).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.requests.record(RequestClass::Data);
+                    self.io(self.commit_inner(request)).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+        }
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.requests.record(RequestClass::Data);
-        self.io(self.inner.fork(request)).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
@@ -177,10 +213,7 @@ impl StreamProvider for Observed {
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.follow(request)).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.requests.record(RequestClass::Data);
-        self.io(self.commit_inner(request)).await
-    }
+
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);

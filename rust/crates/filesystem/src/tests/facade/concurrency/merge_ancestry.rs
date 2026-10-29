@@ -1,6 +1,7 @@
 //! Explicit merge ancestry survives the shared tree-composition path.
 use super::*;
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 use futures::TryStreamExt;
 
 #[tokio::test]

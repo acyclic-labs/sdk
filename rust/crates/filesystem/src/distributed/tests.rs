@@ -813,18 +813,43 @@ impl StreamProvider for ReleaseSpy {
         }
         Ok(records)
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.interleave().await?;
-        let result = self.inner.commit(request).await?;
-        self.finish_commit(result).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.interleave().await?;
+                    let result = self.inner.commit(request).await?;
+                    self.finish_commit(result).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { self.inner.append(request).await }.await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move { self.inner.fork(request).await }.await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+        }
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
-    }
     async fn follow(
         &self,
         request: acyclic_stream::FollowRequest,

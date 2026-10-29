@@ -170,18 +170,29 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     ) -> Result<acyclic_stream::Heads, StreamError> {
         self.inner.heads(request).await
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.target(|| acyclic_stream::request::append_digest(&request))
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        Box::pin(async move {
+            self.target(|| match &request {
+                acyclic_stream::WriteRequest::Append(request) => {
+                    acyclic_stream::request::append_digest(request)
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    acyclic_stream::request::fork_digest(request)
+                }
+                acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+            })
             .await?
-            .append(request)
+            .write(request)
             .await
+        })
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.target(|| acyclic_stream::request::fork_digest(&request))
-            .await?
-            .fork(request)
-            .await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
@@ -191,12 +202,7 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     ) -> Result<FollowStream, StreamError> {
         self.inner.follow(request).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.target(|| commit_digest(&request))
-            .await?
-            .commit(request)
-            .await
-    }
+
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(commit_id).await
     }
@@ -384,18 +390,41 @@ mod tests {
         ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
             self.inner.heads(request).await
         }
-        async fn append(
+        fn write(
             &self,
-            request: super::AppendRequest,
-        ) -> Result<super::AppendOutcome, super::StreamError> {
-            Err(self.write(acyclic_stream::request::append_digest(&request)?))
-        }
-        async fn fork(
-            &self,
-            request: super::ForkRequest,
-        ) -> Result<super::ForkReceipt, super::StreamError> {
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::AppendOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move {
+                        Err(self.write(acyclic_stream::request::append_digest(&request)?))
+                    }
+                    .await;
+                    result.map(acyclic_stream::WriteOutcome::Append)
+                }),
+                acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                    let result: std::result::Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> = async move {
             Err(self.write(acyclic_stream::request::fork_digest(&request)?))
+
+                    }.await;
+                    result.map(acyclic_stream::WriteOutcome::Fork)
+                }),
+                acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::CommitOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move { Err(self.write(super::commit_digest(&request)?)) }.await;
+                    result.map(acyclic_stream::WriteOutcome::Commit)
+                }),
+            }
         }
+
         async fn read(
             &self,
             request: super::ReadRequest,
@@ -408,12 +437,7 @@ mod tests {
         ) -> Result<acyclic_stream::FollowStream, super::StreamError> {
             self.inner.follow(request).await
         }
-        async fn commit(
-            &self,
-            request: super::CommitRequest,
-        ) -> Result<super::CommitOutcome, super::StreamError> {
-            Err(self.write(super::commit_digest(&request)?))
-        }
+
         async fn read_commit(
             &self,
             id: super::CommitId,

@@ -201,6 +201,7 @@ pub mod revision;
 pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};
 
 include!("lib/domain.rs");
+include!("lib/write.rs");
 include!("lib/head.rs");
 include!("lib/receipt.rs");
 

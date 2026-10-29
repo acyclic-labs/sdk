@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 use futures::TryStreamExt;
 
 #[cfg(not(target_arch = "wasm32"))]

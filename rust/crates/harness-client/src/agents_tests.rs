@@ -1,5 +1,6 @@
 use super::*;
 use crate::{AgentId, Phase};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendRecord, AppendRequest, BoxProviderFuture, MemoryStream, StreamError, StreamProvider,
     runtime::PlatformExecutor,
@@ -13,7 +14,7 @@ impl transport::Transport for Endpoint {
     fn session(
         &self,
         source: transport::Requests,
-    ) -> BoxProviderFuture<'_, Result<transport::Responses, StreamError>> {
+    ) -> BoxProviderFuture<'_, std::result::Result<transport::Responses, StreamError>> {
         Box::pin(async move {
             session::serve(
                 self.0.clone(),

@@ -1,6 +1,7 @@
 //! Lazy summary entries and incremental immutable-page publication.
 use super::*;
 use acyclic_stream::OwnedBytes;
+use acyclic_stream::StreamProviderExt as _;
 use persistent_index::{NodeRef, Reader, Writer};
 use summary_map::{SummaryKey, SummaryMap};
 

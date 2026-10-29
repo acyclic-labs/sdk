@@ -1,5 +1,6 @@
 //! Large summary cells span authenticated pages without changing record limits.
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use read::ReadNode;
 
 const LINK_BYTES: usize = 41;

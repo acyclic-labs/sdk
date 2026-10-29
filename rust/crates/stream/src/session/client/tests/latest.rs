@@ -80,19 +80,18 @@ impl StreamProvider for Arc<Counted> {
         self.memory.heads(request).await
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.memory.append(request).await
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        self.memory.write(request)
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.memory.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.memory.read(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.memory.commit(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }

@@ -13,6 +13,7 @@ use acyclic_fs::{
     LivePublicationObservation, OperationId, OperationReceipt, PublicationPermit, WorkBudget,
     WorkCounters,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{OwnedBytes, StreamProvider};
 use futures::TryStreamExt;
 use std::collections::BTreeSet;

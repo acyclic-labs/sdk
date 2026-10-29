@@ -1,3 +1,4 @@
+use acyclic_stream::StreamProviderExt as _;
 // Included in attestation::tests: use the same probe as the native vectors.
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]

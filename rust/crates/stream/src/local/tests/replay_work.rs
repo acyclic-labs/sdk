@@ -23,10 +23,10 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
         .await
         .unwrap();
     let request = request(bytes);
-    let first = commit(&stream, request.clone(), None).await.unwrap();
+    let first = stream.commit(request.clone()).await.unwrap();
     let before = stream.inner.required().unwrap();
     for _ in 0..count {
-        assert_eq!(commit(&stream, request.clone(), None).await.unwrap(), first);
+        assert_eq!(stream.commit(request.clone()).await.unwrap(), first);
     }
     if !ELIDE {
         let command = Command::Commit(request.clone());

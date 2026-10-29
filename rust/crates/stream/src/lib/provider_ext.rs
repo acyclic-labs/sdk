@@ -2,6 +2,22 @@
 ///
 /// These methods introduce no provider dispatch or independent observation.
 pub trait StreamProviderExt: StreamProvider {
+    /// Canonical append publication, preserving its genuine retry family.
+    fn append(
+        &self,
+        request: AppendRequest,
+    ) -> impl std::future::Future<Output = Result<AppendOutcome, StreamError>> + ProviderTask;
+    /// Canonical fork publication, preserving its genuine retry family.
+    fn fork(
+        &self,
+        request: ForkRequest,
+    ) -> impl std::future::Future<Output = Result<ForkReceipt, StreamError>> + ProviderTask;
+    /// Canonical commit publication, preserving its genuine retry family.
+    fn commit(
+        &self,
+        request: CommitRequest,
+    ) -> impl std::future::Future<Output = Result<CommitOutcome, StreamError>> + ProviderTask;
+
     /// Observes one named head at a coherent authority snapshot.
     fn head(
         &self,
@@ -42,6 +58,40 @@ pub trait StreamProviderExt: StreamProvider {
 }
 
 impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
+    fn append(
+        &self,
+        request: AppendRequest,
+    ) -> impl std::future::Future<Output = Result<AppendOutcome, StreamError>> + ProviderTask {
+        async move {
+            match self.write(WriteRequest::Append(request)).await? {
+                WriteOutcome::Append(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
+            }
+        }
+    }
+    fn fork(
+        &self,
+        request: ForkRequest,
+    ) -> impl std::future::Future<Output = Result<ForkReceipt, StreamError>> + ProviderTask {
+        async move {
+            match self.write(WriteRequest::Fork(request)).await? {
+                WriteOutcome::Fork(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
+            }
+        }
+    }
+    fn commit(
+        &self,
+        request: CommitRequest,
+    ) -> impl std::future::Future<Output = Result<CommitOutcome, StreamError>> + ProviderTask {
+        async move {
+            match self.write(WriteRequest::Commit(request)).await? {
+                WriteOutcome::Commit(outcome) => Ok(outcome),
+                _ => Err(StreamError::InvalidResponse),
+            }
+        }
+    }
+
     fn durable_receipt(
         &self,
         path: StreamPath,

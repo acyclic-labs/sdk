@@ -3,6 +3,7 @@
     dead_code,
     reason = "shared fault fixtures expose controls used by different test modules"
 )]
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
 mod hints;
@@ -118,37 +119,73 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         }
         Ok(view)
     }
-    async fn append(
+    fn write(
         &self,
-        request: acyclic_stream::AppendRequest,
-    ) -> std::result::Result<AppendOutcome, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary append on native-only fixture"
-        );
-        let fault = self.before_append(&request)?;
-        let mut outcome = self.inner.append(request).await?;
-        self.after_append(&mut outcome, fault)?;
-        Ok(outcome)
-    }
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary fork on native-only fixture"
-        );
-        self.io
-            .other_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
-            self.observation_writes
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    assert!(
+                        !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                        "ordinary append on native-only fixture"
+                    );
+                    let fault = self.before_append(&request)?;
+                    let mut outcome = self.inner.append(request).await?;
+                    self.after_append(&mut outcome, fault)?;
+                    Ok(outcome)
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    assert!(
+                        !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                        "ordinary fork on native-only fixture"
+                    );
+                    self.io
+                        .other_calls
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                        self.observation_writes
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        return Err(StreamError::Unavailable);
+                    }
+                    self.inner.fork(request).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    assert!(
+                        !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                        "ordinary commit on native-only fixture"
+                    );
+                    let (fault, aggregate_fault) = self.before_commit(&request).await?;
+                    let mut outcome = self.inner.commit(request).await?;
+                    self.after_commit(&mut outcome, fault, aggregate_fault)?;
+                    Ok(outcome)
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
         }
-        self.inner.fork(request).await
     }
+
     async fn read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -281,19 +318,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         );
         self.inner.follow(request).await
     }
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary commit on native-only fixture"
-        );
-        let (fault, aggregate_fault) = self.before_commit(&request).await?;
-        let mut outcome = self.inner.commit(request).await?;
-        self.after_commit(&mut outcome, fault, aggregate_fault)?;
-        Ok(outcome)
-    }
+
     async fn read_commit(
         &self,
         id: acyclic_stream::CommitId,

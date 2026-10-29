@@ -96,49 +96,89 @@ impl StreamProvider for Client {
         self.session()?.heads(request, 0).await
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let body = wire::AppendRequest {
-            path: request.path.to_string(),
-            records: request
-                .records
-                .into_iter()
-                .map(crate::wire_codec::append_record_wire)
-                .collect(),
-            if_tail: request.if_tail,
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.append(request).await })
-            })
-            .await?;
-        let outcome = decode_response(response, append_outcome_from_wire)?;
-        if let AppendOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(async move {
+                let result: std::result::Result<crate::AppendOutcome, crate::StreamError> =
+                    async move {
+                        let body = wire::AppendRequest {
+                            path: request.path.to_string(),
+                            records: request
+                                .records
+                                .into_iter()
+                                .map(crate::wire_codec::append_record_wire)
+                                .collect(),
+                            if_tail: request.if_tail,
+                            idempotency_key: Bytes::copy_from_slice(
+                                request.idempotency_key.as_bytes(),
+                            ),
+                        };
+                        let response = self
+                            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                                Box::pin(async move { service.append(request).await })
+                            })
+                            .await?;
+                        let outcome = decode_response(response, append_outcome_from_wire)?;
+                        if let AppendOutcome::Committed(receipt) = &outcome {
+                            self.revisions.observe(&receipt.revision);
+                        }
+                        Ok(outcome)
+                    }
+                    .await;
+                result.map(crate::WriteOutcome::Append)
+            }),
+            crate::WriteRequest::Fork(request) => Box::pin(async move {
+                let result: std::result::Result<crate::ForkReceipt, crate::StreamError> =
+                    async move {
+                        let body = wire::ForkRequest {
+                            exclude: request
+                                .exclude
+                                .into_iter()
+                                .map(|path| path.to_string())
+                                .collect(),
+                            source: request.source.to_string(),
+                            destination: request.destination.to_string(),
+                            at_tail: request.at_tail,
+                            idempotency_key: Bytes::copy_from_slice(
+                                request.idempotency_key.as_bytes(),
+                            ),
+                        };
+                        let response = self
+                            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                                Box::pin(async move { service.fork(request).await })
+                            })
+                            .await?;
+                        let receipt =
+                            decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
+                        self.revisions.observe(&receipt.revision);
+                        Ok(receipt)
+                    }
+                    .await;
+                result.map(crate::WriteOutcome::Fork)
+            }),
+            crate::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<crate::CommitOutcome, crate::StreamError> =
+                    async move {
+                        let body = commit_to_wire(&request);
+                        let response = self
+                            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                                Box::pin(async move { service.commit(request).await })
+                            })
+                            .await?;
+                        let outcome = decode_response(response, commit_outcome_from_wire)?;
+                        if let CommitOutcome::Committed(receipt) = &outcome {
+                            self.revisions.observe(&receipt.revision);
+                        }
+                        Ok(outcome)
+                    }
+                    .await;
+                result.map(crate::WriteOutcome::Commit)
+            }),
         }
-        Ok(outcome)
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let body = wire::ForkRequest {
-            exclude: request
-                .exclude
-                .into_iter()
-                .map(|path| path.to_string())
-                .collect(),
-            source: request.source.to_string(),
-            destination: request.destination.to_string(),
-            at_tail: request.at_tail,
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.fork(request).await })
-            })
-            .await?;
-        let receipt = decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
-        self.revisions.observe(&receipt.revision);
-        Ok(receipt)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -156,20 +196,6 @@ impl StreamProvider for Client {
         self.session()?
             .follow_with_ack(request, self.acknowledge_deliveries)
             .await
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let body = commit_to_wire(&request);
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.commit(request).await })
-            })
-            .await?;
-        let outcome = decode_response(response, commit_outcome_from_wire)?;
-        if let CommitOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
-        }
-        Ok(outcome)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {

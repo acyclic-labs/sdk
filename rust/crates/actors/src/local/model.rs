@@ -9,9 +9,9 @@
 //! The split publication shape (state, then effects) is the negative control.
 use super::*;
 use crate::guest::CodecIdentity;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
+    CommitId, CommittedEnvelope, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -49,17 +49,23 @@ macro_rules! delegate {
             async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
                 self.inner.follow(request).await
             }
-            async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-                let call = self.calls.fetch_add(1, Ordering::SeqCst);
-                match self.plan.get(call).cloned().unwrap_or(Fault::None) {
-                    Fault::None => self.inner.commit(request).await,
-                    Fault::Drop => Err(StreamError::Unavailable),
-                    Fault::Refuse(error) => Err(error),
-                    Fault::LoseAck => {
-                        self.inner.commit(request).await?;
-                        Err(StreamError::Unavailable)
+            fn write(&self, request: acyclic_stream::WriteRequest)
+                -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<acyclic_stream::WriteOutcome, StreamError>> {
+                let acyclic_stream::WriteRequest::Commit(request) = request else {
+                    return self.inner.write(request);
+                };
+                Box::pin(async move {
+                    let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                    match self.plan.get(call).cloned().unwrap_or(Fault::None) {
+                        Fault::None => self.inner.write(acyclic_stream::WriteRequest::Commit(request)).await,
+                        Fault::Drop => Err(StreamError::Unavailable),
+                        Fault::Refuse(error) => Err(error),
+                        Fault::LoseAck => {
+                            self.inner.write(acyclic_stream::WriteRequest::Commit(request)).await?;
+                            Err(StreamError::Unavailable)
+                        }
                     }
-                }
+                })
             }
         }
     };
@@ -68,8 +74,6 @@ macro_rules! delegate {
 delegate! {
     heads(request: acyclic_stream::HeadsRequest) -> acyclic_stream::Heads;
     inspect_idempotency(key: IdempotencyKey) -> Option<IdempotencyObservation>;
-    append(request: AppendRequest) -> AppendOutcome;
-    fork(request: ForkRequest) -> ForkReceipt;
     read(request: ReadRequest) -> RecordStream;
     read_commit(id: CommitId) -> CommittedEnvelope;
 }

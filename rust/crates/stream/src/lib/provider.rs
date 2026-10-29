@@ -71,10 +71,12 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
-    /// Atomic append or tail conflict.
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
-    /// Atomic immutable-prefix fork.
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
+    /// Publishes one genuine request family without translating its retry identity.
+    /// Dispatch chooses the concrete future before its sole heap allocation.
+    fn write(
+        &self,
+        request: WriteRequest,
+    ) -> BoxProviderFuture<'_, std::result::Result<WriteOutcome, StreamError>>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
     /// Opening a missing path returns NotFound; a start beyond that snapshot's
     /// tail returns OutOfRange. Neither refusal is deferred to the first item.
@@ -84,8 +86,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// passes an earlier matching record; record-only follows retain indexed wakes.
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError>;
 
-    /// Executes one all-or-nothing optimistic commit.
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
     /// Canonical inspection funded by the original native work owner.

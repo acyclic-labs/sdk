@@ -235,15 +235,31 @@ impl StreamProvider for MemoryStream {
             }))
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.append_inner(request).await.map(|(value, _)| value)
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(async move {
+                self.append_inner(request)
+                    .await
+                    .map(|(outcome, _)| crate::WriteOutcome::Append(outcome))
+            }),
+            crate::WriteRequest::Fork(request) => Box::pin(async move {
+                let mut state = self.state.write().await;
+                self.plan_fork_locked(&mut state, &request)?
+                    .install(self, &mut state)
+                    .map(crate::WriteOutcome::Fork)
+            }),
+            crate::WriteRequest::Commit(request) => Box::pin(async move {
+                self.commit_inner(request, None)
+                    .await
+                    .map(|(outcome, _)| crate::WriteOutcome::Commit(outcome))
+            }),
+        }
     }
 
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let mut state = self.state.write().await;
-        self.plan_fork_locked(&mut state, &request)?
-            .install(self, &mut state)
-    }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
         if let Some(key) = &request.key {
@@ -326,12 +342,6 @@ impl StreamProvider for MemoryStream {
             self.follow_from(path, from, preceding, when_absent, filter)
                 .await
         }
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, None)
-            .await
-            .map(|(value, _)| value)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {

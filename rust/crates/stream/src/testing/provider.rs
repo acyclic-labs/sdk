@@ -47,13 +47,13 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().heads(request).await
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
         self.record(RequestClass::Data);
-        self.inner().append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().fork(request).await
+        self.inner().write(request)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -64,10 +64,7 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().follow(request).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().commit(request).await
-    }
+
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.record(RequestClass::Data);
         self.inner().read_commit(commit_id).await

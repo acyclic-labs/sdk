@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 use futures::TryStreamExt;
 use std::future::Future;
 

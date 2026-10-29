@@ -3,6 +3,7 @@
 //! original committed cursor, including records passed while finding a control.
 use super::*;
 use crate::guest::CancellationToken;
+use acyclic_stream::StreamProviderExt as _;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) async fn interrupt_follows(

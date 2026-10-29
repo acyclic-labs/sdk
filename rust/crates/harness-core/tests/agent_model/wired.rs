@@ -18,6 +18,7 @@ use acyclic_harness_core::{
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
@@ -704,12 +705,38 @@ impl StreamProvider for Refusing {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         self.refuse()
     }
-    async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
-        self.refuse()
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { self.refuse() }.await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move { self.refuse() }.await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+            acyclic_stream::WriteRequest::Commit(_) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { self.refuse() }.await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+        }
     }
-    async fn fork(&self, _: ForkRequest) -> std::result::Result<ForkReceipt, StreamError> {
-        self.refuse()
-    }
+
     async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
         self.refuse()
     }
@@ -719,9 +746,7 @@ impl StreamProvider for Refusing {
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.refuse()
     }
-    async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
-        self.refuse()
-    }
+
     async fn read_commit(
         &self,
         _: CommitId,

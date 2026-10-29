@@ -99,14 +99,51 @@ mod probe {
             self.read_request();
             self.inner.heads(request).await
         }
-        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-            self.append_request();
-            self.inner.append(request).await
+        fn write(
+            &self,
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::AppendOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move {
+                        self.append_request();
+                        self.inner.append(request).await
+                    }
+                    .await;
+                    result.map(acyclic_stream::WriteOutcome::Append)
+                }),
+                acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::ForkReceipt,
+                        acyclic_stream::StreamError,
+                    > = async move {
+                        self.append_request();
+                        self.inner.fork(request).await
+                    }
+                    .await;
+                    result.map(acyclic_stream::WriteOutcome::Fork)
+                }),
+                acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                    let result: std::result::Result<
+                        acyclic_stream::CommitOutcome,
+                        acyclic_stream::StreamError,
+                    > = async move {
+                        self.append_request();
+                        self.await_commit_gate().await;
+                        self.inner.commit(request).await
+                    }
+                    .await;
+                    result.map(acyclic_stream::WriteOutcome::Commit)
+                }),
+            }
         }
-        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-            self.append_request();
-            self.inner.fork(request).await
-        }
+
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             self.read_request();
             self.inner.read(request).await
@@ -118,11 +155,7 @@ mod probe {
             self.read_request();
             self.inner.follow(request).await
         }
-        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-            self.append_request();
-            self.await_commit_gate().await;
-            self.inner.commit(request).await
-        }
+
         async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
             self.read_request();
             self.inner.read_commit(id).await

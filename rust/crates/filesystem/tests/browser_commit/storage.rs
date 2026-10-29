@@ -10,6 +10,7 @@ use acyclic_fs::{
     AuthorityStoreError, ObjectId, ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use acyclic_stream::OwnedBytes;
+use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
 use indexed_db_futures::transaction::TransactionMode;
 use js_sys::Uint8Array;

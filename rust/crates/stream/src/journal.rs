@@ -4,19 +4,8 @@
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
+pub(crate) use crate::{WriteOutcome as Outcome, WriteRequest as Command};
 use prost::Message;
-#[derive(Clone)]
-pub(crate) enum Command {
-    Append(AppendRequest),
-    Fork(ForkRequest),
-    Commit(CommitRequest),
-}
-
-pub(crate) enum Outcome {
-    Append(crate::AppendOutcome),
-    Fork(crate::ForkReceipt),
-    Commit(crate::CommitOutcome),
-}
 
 pub(crate) struct CanonicalCommand {
     pub(crate) command: Command,

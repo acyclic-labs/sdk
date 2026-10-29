@@ -222,3 +222,13 @@ zero durability barriers; explicit receipts and session barriers own that cost.
 The cancellation control holds the real device flush while ordinary and native
 queries observe the accepted record, then checks that its receipt remains
 pending until the device completes.
+
+`StreamProvider::write` is the single publication entry for `WriteRequest` and
+`WriteOutcome`. Append, Fork and Commit remain distinct canonical families;
+their digests, atomic current-tail selection and retained replay are preserved.
+The corresponding `StreamProviderExt` methods validate the returned family.
+Transparent adapters forward the same future directly: their former one future
+allocation per publication becomes zero. Concrete producers select the request
+family before boxing, so dispatch adds no allocation or physical storage work.
+Journal-backed providers return the shared core outcome without unwrapping and
+re-wrapping each family. These are source counts, not performance measurements.

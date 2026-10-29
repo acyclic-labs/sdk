@@ -232,25 +232,20 @@ impl StreamProvider for JournalStream {
         .await
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        match self.execute(Command::Append(request), None).await? {
-            Outcome::Append(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        Box::pin(async move {
+            let deadline = match &request {
+                crate::WriteRequest::Commit(request) => request.deadline_unix_millis,
+                _ => None,
+            };
+            self.execute(request, deadline).await
+        })
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        match self.execute(Command::Fork(request), None).await? {
-            Outcome::Fork(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let deadline = request.deadline_unix_millis;
-        match self.execute(Command::Commit(request), deadline).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;

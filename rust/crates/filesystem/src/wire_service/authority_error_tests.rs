@@ -60,8 +60,14 @@ impl StreamProvider for FaultStream {
         self.inner.read(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.inner.commit(request).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.inner.write(request)
     }
 
     async fn inspect_idempotency(
@@ -69,14 +75,6 @@ impl StreamProvider for FaultStream {
         key: acyclic_stream::IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
-    }
-
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
     }
 
     async fn follow(

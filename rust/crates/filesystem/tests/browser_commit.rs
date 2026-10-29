@@ -2,6 +2,7 @@
 #![cfg(target_arch = "wasm32")]
 use acyclic_fs::browser::IndexedDbObjectStore;
 use acyclic_fs::{CancellationToken, PublicationPermit, WorkBudget, WorkCounters};
+use acyclic_stream::StreamProviderExt as _;
 use indexed_db_futures::database::Database;
 use indexed_db_futures::prelude::*;
 use wasm_bindgen::JsValue;

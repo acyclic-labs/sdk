@@ -1,5 +1,6 @@
 use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
@@ -112,14 +113,45 @@ impl StreamProvider for ModelStream {
         }
         self.call(self.inner.read(request)).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let result = self.inner.commit(request).await;
-        if matches!(self.change, Change::Fence | Change::Retire)
-            && matches!(result, Ok(CommitOutcome::Committed(_)))
-        {
-            self.completed.store(true, Ordering::SeqCst);
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    let result = self.inner.commit(request).await;
+                    if matches!(self.change, Change::Fence | Change::Retire)
+                        && matches!(result, Ok(CommitOutcome::Committed(_)))
+                    {
+                        self.completed.store(true, Ordering::SeqCst);
+                    }
+                    result
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { Err(StreamError::Unsupported) }.await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move { Err(StreamError::Unsupported) }.await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
         }
-        result
     }
     async fn inspect_idempotency(
         &self,
@@ -127,12 +159,7 @@ impl StreamProvider for ModelStream {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn append(&self, _: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-    async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        Err(StreamError::Unsupported)
-    }
+
     async fn follow(
         &self,
         _request: acyclic_stream::FollowRequest,

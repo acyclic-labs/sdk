@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use std::sync::atomic::Ordering;
 
 impl<P: StreamProvider> LostSessionAck<P> {

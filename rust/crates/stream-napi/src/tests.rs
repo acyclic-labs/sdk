@@ -240,18 +240,36 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn append(
+    fn write(
         &self,
-        _request: AppendRequest,
-    ) -> std::result::Result<AppendOutcome, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-
-    async fn fork(
-        &self,
-        _request: ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        Err(StreamError::Unsupported)
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(_request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { Err(StreamError::Unsupported) }.await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(_request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move { Err(StreamError::Unsupported) }.await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+            acyclic_stream::WriteRequest::Commit(_request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move { Err(StreamError::Unsupported) }.await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+        }
     }
 
     async fn read(&self, _request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
@@ -270,13 +288,6 @@ impl StreamProvider for TcpDropProbe {
             Poll::Pending
         })
         .boxed())
-    }
-
-    async fn commit(
-        &self,
-        _request: CommitRequest,
-    ) -> std::result::Result<CommitOutcome, StreamError> {
-        Err(StreamError::Unsupported)
     }
 
     async fn read_commit(

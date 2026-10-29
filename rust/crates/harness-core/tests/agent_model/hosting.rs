@@ -20,6 +20,7 @@ use acyclic_harness_core::{
     model::ModelContent,
     resources::ProviderRef,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError, StreamProvider};
 use std::sync::{Arc, atomic::Ordering};
 
@@ -300,20 +301,53 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.inner.heads(request).await
     }
-    async fn append(
+    fn write(
         &self,
-        request: acyclic_stream::AppendRequest,
-    ) -> std::result::Result<acyclic_stream::AppendOutcome, StreamError> {
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.append(request).await
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::AppendOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.published.fetch_add(1, Ordering::SeqCst);
+                    self.inner.append(request).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Append)
+            }),
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::ForkReceipt,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    self.published.fetch_add(1, Ordering::SeqCst);
+                    self.inner.fork(request).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Fork)
+            }),
+            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
+                let result: std::result::Result<
+                    acyclic_stream::CommitOutcome,
+                    acyclic_stream::StreamError,
+                > = async move {
+                    if self.unknown_first.swap(false, Ordering::SeqCst) {
+                        return Err(StreamError::Unavailable);
+                    }
+                    self.published.fetch_add(1, Ordering::SeqCst);
+                    self.inner.commit(request).await
+                }
+                .await;
+                result.map(acyclic_stream::WriteOutcome::Commit)
+            }),
+        }
     }
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.fork(request).await
-    }
+
     async fn read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -326,16 +360,7 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.inner.follow(request).await
     }
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        if self.unknown_first.swap(false, Ordering::SeqCst) {
-            return Err(StreamError::Unavailable);
-        }
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.commit(request).await
-    }
+
     async fn read_commit(
         &self,
         id: acyclic_stream::CommitId,

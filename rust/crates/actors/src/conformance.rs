@@ -11,6 +11,7 @@ use crate::guest::{
     Manifest, Transition, Trigger,
 };
 use crate::local::{AppliedCut, Clock, Error, PreparedPublish, Store, Subscription};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey,
@@ -50,7 +51,7 @@ pub trait Backend: ProviderPlatform {
         paused: bool,
     ) -> BoxProviderFuture<'a, Result<(), Error>>;
     /// Stop and restart the host; the next placement takes a new epoch.
-    fn restart(&self) -> BoxProviderFuture<'_, Result<(), Error>>;
+    fn restart(&self) -> BoxProviderFuture<'_, std::result::Result<(), Error>>;
 }
 
 /// Compatibility spelling for the same backend contract.

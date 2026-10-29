@@ -32,12 +32,16 @@ impl StreamProvider for Session {
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.0.heads(request).await
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.0.append(request).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.0.write(request)
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.0.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.0.read(request).await
     }
@@ -47,9 +51,7 @@ impl StreamProvider for Session {
     ) -> Result<acyclic_stream::FollowStream, StreamError> {
         self.0.follow(request).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.0.commit(request).await
-    }
+
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.0.read_commit(commit).await
     }

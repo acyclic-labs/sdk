@@ -405,24 +405,18 @@ impl StreamProvider for PostgresStream {
         Ok(view)
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        match self.publish(Command::Append(request), None).await? {
-            Outcome::Append(value) => Ok(value),
-            _ => Err(StreamError::InvalidResponse),
-        }
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        match self.publish(Command::Fork(request), None).await? {
-            Outcome::Fork(value) => Ok(value),
-            _ => Err(StreamError::InvalidResponse),
-        }
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let deadline = request.deadline_unix_millis;
-        match self.publish(Command::Commit(request), deadline).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::InvalidResponse),
-        }
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        Box::pin(async move {
+            let deadline = match &request {
+                crate::WriteRequest::Commit(request) => request.deadline_unix_millis,
+                _ => None,
+            };
+            self.publish(request, deadline).await
+        })
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

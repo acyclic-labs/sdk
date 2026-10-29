@@ -109,12 +109,16 @@ mod replay_tests {
             self.inner.heads(request).await
         }
 
-        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-            self.inner.append(request).await
+        fn write(
+            &self,
+            request: crate::WriteRequest,
+        ) -> crate::BoxProviderFuture<
+            '_,
+            std::result::Result<crate::WriteOutcome, crate::StreamError>,
+        > {
+            self.inner.write(request)
         }
-        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-            self.inner.fork(request).await
-        }
+
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             let missing = self.missing;
             let records = self.inner.read(request).await?;
@@ -126,9 +130,6 @@ mod replay_tests {
             self.inner.follow(request).await
         }
 
-        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-            self.inner.commit(request).await
-        }
         async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
             self.inner.read_commit(commit_id).await
         }
