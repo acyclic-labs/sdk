@@ -11,6 +11,10 @@ use acyclic_harness_client::{
 use acyclic_stream::session::Client;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "endpoint_tests.rs"]
+mod tests;
+
 /// The connection's one credential slot: it drives and observes the root.
 pub(super) const CREDENTIAL: u32 = 0;
 
