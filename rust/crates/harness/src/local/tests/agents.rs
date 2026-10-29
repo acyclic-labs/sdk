@@ -976,7 +976,13 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    settled(&agents, &child).await?;
+    if let Err(error) = settled(&agents, &child).await {
+        return Err(Error::Conflict(format!(
+            "child write did not settle: {error}; model_requests={}; child_state={:?}",
+            provider.request_count(),
+            agents.state(&child).await,
+        )));
+    }
     assert_eq!(provider.request_count(), 2);
     let child_file = publication(1)?;
     let child_state = agents.state(&child).await.map_err(agent)?;
