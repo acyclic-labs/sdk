@@ -111,28 +111,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: Option<&GenerationRef>,
         path: &str,
     ) -> Result<WorkspaceStat> {
-        let workspace = self.open(workspace, None).await?;
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let workspace = self.open(workspace, Some(&io)).await?;
         match generation {
-            Some(reference) => self
-                .generation(&workspace, reference, None)
-                .await?
-                .stat(
-                    path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error)),
-            None => workspace
-                .stat(
-                    path,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| map_error(failure.error)),
+            Some(reference) => io.sdk(
+                self.generation(&workspace, reference, Some(&io))
+                    .await?
+                    .stat(path, &io, io.cancellation())
+                    .await,
+            ),
+            None => io.sdk(
+                self.select_current_workspace(&workspace, &io)
+                    .await?
+                    .stat(path, &io, io.cancellation())
+                    .await,
+            ),
         }
     }
 
@@ -157,33 +150,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         after: Option<&LogicalName>,
         maximum_entries: u32,
     ) -> Result<DirectoryPage> {
-        let workspace = self.open(workspace, None).await?;
-        match generation {
-            Some(reference) => self
-                .generation(&workspace, reference, None)
-                .await?
-                .list_directory(
-                    path,
-                    after,
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| map_error(failure.error)),
-            None => workspace
-                .list_directory(
-                    path,
-                    after,
-                    maximum_entries,
-                    acyclic_fs::WorkBudget::UNBOUNDED,
-                    &acyclic_fs::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value.0)
-                .map_err(|failure| map_error(failure.error)),
-        }
+        let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        let workspace = self.open(workspace, Some(&io)).await?;
+        let (page, _custody) = match generation {
+            Some(reference) => io.sdk(
+                self.generation(&workspace, reference, Some(&io))
+                    .await?
+                    .list_directory(path, after, maximum_entries, &io, io.cancellation())
+                    .await,
+            )?,
+            None => io.sdk(
+                self.select_current_workspace(&workspace, &io)
+                    .await?
+                    .list_directory(path, after, maximum_entries, &io, io.cancellation())
+                    .await,
+            )?,
+        };
+        Ok(page)
     }
 
     pub(in crate::filesystem) fn generation_ref_id(

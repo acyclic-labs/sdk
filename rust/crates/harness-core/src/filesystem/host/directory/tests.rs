@@ -89,6 +89,48 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         b"row",
         "a branch publication must not change the original root"
     );
+    assert_eq!(
+        host.stat(&reference, None, "/rows/02").await?.logical_bytes,
+        Some(10)
+    );
+    assert_eq!(
+        host.stat(&reference, Some(&generation), "/rows/02")
+            .await?
+            .logical_bytes,
+        Some(3)
+    );
+    host.put_content(
+        &volume,
+        &writer,
+        "branch-only",
+        b"branch",
+        "text/plain",
+        "branch-only",
+        4096,
+        &IdempotencyKey::new("selected-branch-directory-entry")?,
+        None,
+        crate::conversation::ContentAccess::default(),
+    )
+    .await?;
+    let current_page = host.list(&reference, None, "/", 8).await?;
+    assert!(
+        current_page
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
+    let pinned_page = host.list(&reference, Some(&generation), "/", 8).await?;
+    assert!(
+        !pinned_page
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
+    assert!(
+        host.stat(&reference, Some(&generation), "/branch-only")
+            .await
+            .is_err()
+    );
     let before_policy_change = child
         .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
         .await?
@@ -205,6 +247,19 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
     repository
         .register_branch_workspace("main", root.id(), None, true)
         .await?;
+    assert_eq!(
+        host.stat(&reference, None, "/rows/02").await?.logical_bytes,
+        Some(3)
+    );
+    assert!(host.stat(&reference, None, "/branch-only").await.is_err());
+    assert!(
+        !host
+            .list(&reference, None, "/", 8)
+            .await?
+            .entries
+            .iter()
+            .any(|entry| entry.name.as_bytes() == b"branch-only")
+    );
     let (_, current) = host
         .list_private_directory(
             &volume,
