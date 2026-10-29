@@ -14,24 +14,21 @@ use std::process::{ChildStderr, ChildStdout};
 /// When a capture stops and how often it rechecks its owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// The capture fails with `TimedOut` once this much time has passed.
-    pub timeout: Duration,
     /// Also run the check this often while nothing else happens. `None`
     /// checks only when output, input, exit or the deadline wakes capture.
     pub check_every: Option<Duration>,
-    /// An original admission deadline, retained across worker submission and
-    /// spawn. When present it replaces the relative `timeout` calculation.
+    /// Original deadline, fixed before submission. `None` denotes overflow
+    /// and is refused before capture; it never starts a fresh worker budget.
     pub deadline: Option<Instant>,
 }
 
 impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
-    pub const fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
-            timeout,
             check_every: None,
-            deadline: None,
+            deadline: capture_now().checked_add(timeout),
         }
     }
 
@@ -39,7 +36,6 @@ impl CaptureSchedule {
     #[must_use]
     pub const fn until(deadline: Instant) -> Self {
         Self {
-            timeout: Duration::ZERO,
             check_every: None,
             deadline: Some(deadline),
         }
@@ -201,15 +197,12 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = schedule
-            .deadline
-            .or_else(|| now.checked_add(schedule.timeout))
-            .ok_or_else(|| {
-                ProcessCaptureFailure::before_capture(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "process deadline overflow",
-                ))
-            })?;
+        let deadline = schedule.deadline.ok_or_else(|| {
+            ProcessCaptureFailure::before_capture(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "process deadline overflow",
+            ))
+        })?;
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;

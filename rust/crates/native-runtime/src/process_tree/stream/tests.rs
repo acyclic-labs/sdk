@@ -180,16 +180,25 @@ async fn receiver_loss_retires_quiet_and_backpressured_children() -> io::Result<
 
 #[tokio::test]
 async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()> {
-    for mode in ["stop", "relative", "admitted"] {
+    for mode in ["stop", "relative", "admitted", "queued"] {
         let schedule = match mode {
             "admitted" => CaptureSchedule::until(Instant::now()),
+            "queued" => {
+                // Model elapsed submission/setup time without sleeping or
+                // occupying the worker pool. The real worker uses wall time.
+                super::super::set_capture_clock(Some(Instant::now() - Duration::from_secs(1)));
+                let schedule = CaptureSchedule::new(Duration::from_millis(100));
+                super::super::set_capture_clock(None);
+                schedule
+            }
             "relative" => CaptureSchedule::new(Duration::from_millis(100)),
             _ => CaptureSchedule::new(Duration::from_secs(5)),
         };
         let (mut output, _input, _, addresses, wake) = start("credit", schedule)?;
         // An elapsed original deadline allows no pipe read. Restarting the
         // relative budget instead delivers data, as the other real runs show.
-        assert_eq!(output.recv().await.is_none(), mode == "admitted");
+        let expired_before_setup = matches!(mode, "admitted" | "queued");
+        assert_eq!(output.recv().await.is_none(), expired_before_setup);
         if mode == "stop" {
             wake.stop()?;
         }
@@ -207,7 +216,7 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
         );
         assert!(failure.cleanup_completed);
         assert!(output.receiver.len() <= 1);
-        if mode == "admitted" {
+        if expired_before_setup {
             assert!(addresses.lock().unwrap().is_empty());
         }
     }
