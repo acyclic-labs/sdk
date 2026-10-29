@@ -3,7 +3,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, main) = fixture(&store).await?;
-    let child = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
+    let child = LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?;
     let impossible = main
         .child_with_accounting(
             &child,
@@ -14,7 +14,7 @@ async fn selected_batch_proves_absent_descendants_in_the_original_authenticated_
         .0;
     let missing = NamespacePath::new(
         vec![
-            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec(), 255)?,
+            LogicalName::new(NameEncoding::Utf8, b"missing".to_vec())?,
             child,
         ],
         config().limits,
@@ -113,7 +113,7 @@ async fn selected_batch_keeps_malformed_bindings_and_resource_failures_fail_clos
         binding_fixture(&store, FileKind::Regular, Some(FileKind::Directory)).await?;
     let query = path
         .child_with_accounting(
-            &LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?,
+            &LogicalName::new(NameEncoding::Utf8, b"child".to_vec())?,
             config().limits,
             &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new()),
             &CancellationToken::new(),

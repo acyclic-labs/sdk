@@ -27,8 +27,9 @@ impl Client<acyclic_objects::http::HttpObjects> {
         actors_endpoint: &str,
         objects_endpoint: &str,
         credential: CredentialProvider,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: impl Into<Option<usize>>,
     ) -> Result<Self, Error> {
+        let maximum_response_bytes = maximum_response_bytes.into();
         let actors = http::Client::with_credential_provider(
             actors_endpoint,
             credential.clone(),

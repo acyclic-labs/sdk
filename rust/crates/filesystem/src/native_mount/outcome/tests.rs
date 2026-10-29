@@ -44,7 +44,7 @@ fn namespace_causes_keep_their_semantics_through_source_and_workspace() {
         (E::Cancelled, NativeFailure::Cancelled),
         (E::AllocationFailed, NativeFailure::OutOfMemory),
         (E::Work(crate::WorkError::Overflow), NativeFailure::Io),
-        (E::TooDeep, NativeFailure::Invalid),
+        (E::PrefixOutOfRange, NativeFailure::Invalid),
     ] {
         assert_eq!(
             source_failure(&MountSourceError::NamespacePath(error.clone())),

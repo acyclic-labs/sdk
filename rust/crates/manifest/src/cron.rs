@@ -1,10 +1,16 @@
-//! Bounded five-field UTC cron admission. Field expansion is at most 60 values.
+//! Five-field UTC cron admission. Field expansion is at most 60 values.
+fn number(text: &str) -> Option<u8> {
+    text.as_bytes()
+        .first()
+        .filter(|digit| digit.is_ascii_digit())?;
+    text.parse().ok()
+}
 fn field(text: &str, min: u8, max: u8) -> Option<u64> {
     let mut mask = 0;
     for item in text.split(',') {
-        let (span, step) = match item.split_once('/') {
-            Some((span, step)) => (span, step.parse::<u8>().ok()?),
-            None => (item, 1),
+        let (span, step, stepped) = match item.split_once('/') {
+            Some((span, step)) => (span, number(step)?, true),
+            None => (item, 1, false),
         };
         if step == 0 || step > max - min + 1 {
             return None;
@@ -12,10 +18,10 @@ fn field(text: &str, min: u8, max: u8) -> Option<u64> {
         let (first, last) = if span == "*" {
             (min, max)
         } else if let Some((first, last)) = span.split_once('-') {
-            (first.parse::<u8>().ok()?, last.parse::<u8>().ok()?)
+            (number(first)?, number(last)?)
         } else {
-            let first = span.parse::<u8>().ok()?;
-            (first, if item.contains('/') { max } else { first })
+            let first = number(span)?;
+            (first, if stepped { max } else { first })
         };
         if first < min || last > max || first > last {
             return None;
@@ -27,15 +33,15 @@ fn field(text: &str, min: u8, max: u8) -> Option<u64> {
     (mask != 0).then_some(mask)
 }
 pub(crate) fn valid(schedule: &str) -> bool {
-    if schedule.len() > 256
-        || !schedule
-            .bytes()
-            .all(|b| b.is_ascii_digit() || matches!(b, b'*' | b',' | b'-' | b'/' | b' '))
-    {
-        return false;
-    }
-    let fields: Vec<_> = schedule.split(' ').collect();
-    let [minute, hour, day, month, weekday] = fields.as_slice() else {
+    let mut fields = schedule.split(' ');
+    let (Some(minute), Some(hour), Some(day), Some(month), Some(weekday), None) = (
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+        fields.next(),
+    ) else {
         return false;
     };
     let (Some(_), Some(_), Some(days), Some(months), Some(_)) = (
@@ -48,7 +54,7 @@ pub(crate) fn valid(schedule: &str) -> bool {
         return false;
     };
     // A restricted weekday can supply a fire via OR even if the day is impossible.
-    if *weekday != "*" {
+    if weekday != "*" {
         return true;
     }
     [31u8, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
