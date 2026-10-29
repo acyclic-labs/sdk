@@ -2,17 +2,7 @@ use super::compute;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
-/// Captured file status, independent of any terminal renderer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffKind {
-    /// Path did not exist at the fork base.
-    Added,
-    /// Path no longer exists.
-    Removed,
-    /// Both endpoints exist and differ.
-    Modified,
-}
+pub use crate::context::DiffKind;
 
 /// Exact line ranges for one unified hunk. Lines remain in the unified patch,
 /// once, rather than being duplicated into another attachment or text store.

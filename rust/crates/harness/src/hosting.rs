@@ -41,8 +41,8 @@ use crate::{
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_harness_client::{
-    AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_AGENT_COMMAND_BYTES,
-    MAX_READ_BYTES, PendingApproval, ReadTarget,
+    AgentBinding, AgentCall, AgentCommand, AgentPageRequest, AgentReply, ChildAgent,
+    MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES, PendingApproval, ReadTarget,
 };
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
@@ -102,6 +102,19 @@ pub trait Platform: ProviderPlatform + 'static {
     ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
         let _ = (key, text);
         Box::pin(async { Ok(None) })
+    }
+
+    /// A page of the selected workspace's pinned, authorized diff query.
+    /// The server has checked the session credential, current policy and agent
+    /// tree before delegation. The source must also check file read/list authority
+    /// before disclosing any path or content, including on continuation pages.
+    fn diff<'a>(
+        &'a self,
+        agent: &'a AgentPath,
+        page: &'a AgentPageRequest,
+    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
+        let _ = (agent, page);
+        Box::pin(async { Err(crate::Error::Unsupported("workspace diff query is unavailable".into())) })
     }
 
     /// The approver principal the verified `principal` decides approvals as:
@@ -382,6 +395,13 @@ where
                     settled: self.tail(agent.conversation()?).await?,
                     statuses: self.tail(agent.status()?).await?,
                     phase: agents.state(agent).await?.phase,
+                })
+            }
+            AgentCommand::Diff { agent, page } => {
+                let agent = self.within_tree(agent)?;
+                Ok(AgentReply::Diff {
+                    items: self.platform.diff(agent, page).await
+                        .map_err(|error| Error::Turn(Box::new(error)))?,
                 })
             }
             AgentCommand::Read {

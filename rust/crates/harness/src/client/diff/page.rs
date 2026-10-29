@@ -1,49 +1,10 @@
 //! Visible output from an already authenticated diff projection.
 
-use super::{DiffKind, DiffView};
+use super::DiffView;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
 use std::ops::Bound::{Excluded, Unbounded};
 
-/// Exclusive position in one exact diff projection. A publication invalidates
-/// its old positions; callers reopen at the new generation rather than mixing
-/// old file offsets with a new patch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiffCursor {
-    // The existing publication digest binds volume, base and generation once,
-    // rather than copying their resource names into every visible page.
-    publication: [u8; 32],
-    path: String,
-    /// None means the file header has not been delivered yet.
-    offset: Option<usize>,
-}
-
-/// A visible fragment of one file, suitable for any frontend. Metadata remains
-/// the whole file's; only `patch` is a fragment. No endpoint is read to page a
-/// projection, and no preceding file or patch prefix is scanned again.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DiffFilePage {
-    /// Exact volume-relative path.
-    pub path: String,
-    /// Change at the pinned endpoints.
-    pub kind: DiffKind,
-    /// Whole-file line counts, independent of this visible fragment.
-    pub added: u64,
-    /// Whole-file line counts, independent of this visible fragment.
-    pub removed: u64,
-    /// Binary files have no text patch.
-    pub binary: bool,
-    /// Content omitted before reading under the query's file-byte allowance.
-    pub omitted_bytes: Option<u64>,
-    /// Whether this file's header was delivered on an earlier page.
-    pub continued: bool,
-    /// At most the requested UTF-8 patch bytes and visible rows.
-    pub patch: String,
-    /// Exact exclusive continuation, or completion of this projection.
-    pub next: Option<DiffCursor>,
-}
+pub use crate::context::{DiffCursor, DiffFilePage};
 
 impl DiffView {
     /// Returns one visible file fragment. The first fragment spends one row on
@@ -122,6 +83,7 @@ impl DiffView {
                 .map(|(path, _)| position(path.clone(), None))
         };
         Ok(Some(DiffFilePage {
+            publication,
             path: path.clone(),
             kind: file.kind,
             added: file.added,

@@ -5,6 +5,7 @@ use acyclic_harness_core::{
     agent::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
     },
+    context::{DiffCursor, DiffFilePage},
     interaction::Interaction,
 };
 use acyclic_stream::{CommitRequest, wire_codec};
@@ -93,6 +94,11 @@ pub enum AgentReply {
         statuses: u64,
         /// The agent's current phase.
         phase: Phase,
+    },
+    /// One visible file fragment from the authorized workspace query.
+    Diff {
+        /// Visible fragments in cursor order; empty only for an empty projection.
+        items: Vec<DiffFilePage>,
     },
     /// One range of a read file, and the file's whole length.
     Content {
@@ -367,6 +373,9 @@ fn validate_reply(
                 Err(CommandError::Invalid)
             };
         }
+        (AgentReply::Diff { items }, AgentCommand::Diff { page, .. }) => {
+            return validate_diff_page(items, page, bytes);
+        }
         (AgentReply::Children { items, next }, AgentCommand::Children { agent, page }) => {
             let mut seen = std::collections::BTreeSet::new();
             if items.iter().any(|item| {
@@ -397,6 +406,69 @@ fn validate_reply(
         })
     {
         return Err(CommandError::Capacity);
+    }
+    Ok(())
+}
+
+fn validate_diff_page(
+    fragments: &[DiffFilePage],
+    page: &crate::AgentPageRequest,
+    encoded_bytes: usize,
+) -> Result<(), CommandError> {
+    if encoded_bytes > page.bytes() as usize {
+        return Err(CommandError::Capacity);
+    }
+    let requested: Option<DiffCursor> = page.cursor()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| CommandError::Invalid)?;
+    if fragments.is_empty() && requested.is_some() {
+        return Err(CommandError::Invalid);
+    }
+    if fragments.len() > page.items() as usize {
+        return Err(CommandError::Capacity);
+    }
+    let mut previous = requested.as_ref();
+    let mut rows = 0usize;
+    for (index, fragment) in fragments.iter().enumerate() {
+        acyclic_harness_core::conversation::validate_content_path(&fragment.path, &mut None)
+            .map_err(|_| CommandError::Invalid)?;
+        rows = rows.checked_add(usize::from(!fragment.continued))
+            .and_then(|rows| rows.checked_add(fragment.patch.split_inclusive('\n').count()))
+            .ok_or(CommandError::Capacity)?;
+        if rows > page.items() as usize || (fragment.continued && fragment.patch.is_empty()) {
+            return Err(CommandError::Capacity);
+        }
+        if (fragment.binary || fragment.omitted_bytes.is_some())
+            && (!fragment.patch.is_empty() || fragment.continued || fragment.added != 0 || fragment.removed != 0)
+        {
+            return Err(CommandError::Invalid);
+        }
+        if previous.is_some_and(|previous| {
+            previous.publication != fragment.publication
+                || previous.path != fragment.path
+                || previous.offset.is_some() != fragment.continued
+        }) || (previous.is_none() && fragment.continued) {
+            return Err(CommandError::Invalid);
+        }
+        if let Some(next) = &fragment.next {
+            acyclic_harness_core::conversation::validate_content_path(&next.path, &mut None)
+                .map_err(|_| CommandError::Invalid)?;
+            let consumed = previous.and_then(|cursor| cursor.offset).unwrap_or(0)
+                .checked_add(fragment.patch.len()).ok_or(CommandError::Invalid)?;
+            if next.publication != fragment.publication
+                || if next.path == fragment.path {
+                    next.offset != Some(consumed)
+                } else {
+                    next.path <= fragment.path || next.offset.is_some()
+                }
+            {
+                return Err(CommandError::Invalid);
+            }
+        } else if index + 1 != fragments.len() {
+            return Err(CommandError::Invalid);
+        }
+        previous = fragment.next.as_ref();
     }
     Ok(())
 }
@@ -555,6 +627,61 @@ mod tests {
             encode_agent_reply(&Ok(reply), &command),
             Err(CommandError::Capacity)
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn diff_pages_preserve_projection_progress_and_visible_credit() -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::context::DiffKind;
+        let agent = AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
+        let cursor = DiffCursor { publication: [7; 32], path: "a.txt".into(), offset: Some(0) };
+        let command = AgentCommand::Diff {
+            agent: agent.clone(),
+            page: AgentPageRequest::new(3, 4096, None)?,
+        };
+        let items = vec![
+            DiffFilePage {
+                publication: [7; 32], path: "a.txt".into(), kind: DiffKind::Added,
+                added: 1, removed: 0, binary: false, omitted_bytes: None,
+                continued: false, patch: String::new(), next: Some(cursor.clone()),
+            },
+            DiffFilePage {
+                publication: [7; 32], path: "a.txt".into(), kind: DiffKind::Added,
+                added: 1, removed: 0, binary: false, omitted_bytes: None,
+                continued: true, patch: "+new\n".into(), next: None,
+            },
+        ];
+        let reply = Ok(AgentReply::Diff { items: items.clone() });
+        let bytes = encode_agent_reply(&reply, &command)?;
+        assert!(matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Diff { items }) if items.len() == 2));
+        // Every malformed value goes through the actual wire envelope parser.
+        for mutation in 0..7 {
+            let mut malformed = items.clone();
+            match mutation {
+                0 => malformed[1].publication = [8; 32],
+                1 => malformed[1].patch.clear(),
+                2 => malformed[0].next.as_mut().unwrap().offset = Some(1),
+                3 => malformed[1].path = "substituted.txt".into(),
+                4 => malformed[1].omitted_bytes = Some(65537),
+                5 => malformed[0].next = None,
+                _ => malformed[1].path = "../outside.txt".into(),
+            }
+            let bytes = Envelope {
+                value: Some(envelope::Value::Reply(serde_json::to_vec(&AgentReply::Diff { items: malformed })?)),
+                reason: None,
+            }.encode_to_vec();
+            assert!(decode_agent_reply(&bytes, &command).is_err(), "accepted malformed diff {mutation}");
+        }
+        let limited = AgentCommand::Diff {
+            agent: agent.clone(), page: AgentPageRequest::new(1, 4096, None)?,
+        };
+        assert!(matches!(decode_agent_reply(&bytes, &limited), Err(CommandError::Capacity)));
+        let continued = AgentCommand::Diff {
+            agent, page: AgentPageRequest::new(1, 4096, Some(serde_json::to_string(&cursor)?))?,
+        };
+        let bytes = encode_agent_reply(&Ok(AgentReply::Diff { items: vec![items[1].clone()] }), &continued)?;
+        assert!(matches!(decode_agent_reply(&bytes, &continued)?, Ok(AgentReply::Diff { .. })));
+        assert!(encode_agent_reply(&Ok(AgentReply::Diff { items: vec![] }), &continued).is_err());
         Ok(())
     }
 
