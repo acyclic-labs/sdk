@@ -345,12 +345,15 @@ impl LocalStream {
     /// Writes one frame through the same ordered owner as a journal batch.
     #[cfg(any(test, loom))]
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
-        self.persist_frames(std::iter::once(frame)).await
+        self.persist_frames(std::iter::once(frame))
+            .await
+            .map(|_| ())
     }
 
     /// The caller retains publication for the entire ordered proposal. The
     /// worker owns every original frame and its reservations until terminal I/O.
-    async fn persist_frames<I>(&self, frames: I) -> Result<(), StreamError>
+    /// Returns the completed physical cursor, not a Stream sequence or flush cut.
+    async fn persist_frames<I>(&self, frames: I) -> Result<u64, StreamError>
     where
         I: Iterator<Item = PreparedFrame> + Send + 'static,
     {
@@ -362,22 +365,23 @@ impl LocalStream {
         let stream = self.worker();
         let key = Arc::as_ptr(&stream.inner.journal) as usize;
         let acquire = move || {
-            let file = stream
-                .inner
-                .journal
-                .lock()
-                .map_err(|_| stream.inner.poison())?
-                .file
-                .lease()
-                .map_err(|error| {
+            let (file, cursor) = {
+                let journal = stream
+                    .inner
+                    .journal
+                    .lock()
+                    .map_err(|_| stream.inner.poison())?;
+                let file = journal.file.lease().map_err(|error| {
                     stream
                         .inner
                         .fail(LocalStreamFailure::io("begin_append", &error))
                 })?;
-            Ok((file, (stream, frames)))
+                (file, journal.bytes)
+            };
+            Ok((file, (stream, frames, cursor)))
         };
         let write = move |file: &acyclic_native_runtime::FileLease,
-                          (stream, frames): &mut (Self, I)| {
+                          (stream, frames, cursor): &mut (Self, I, u64)| {
             let mut written = false;
             for mut frame in frames.by_ref() {
                 #[cfg(feature = "test-support")]
@@ -431,7 +435,7 @@ impl LocalStream {
                         frame.work.as_deref(),
                     ))
                 })?;
-                stream
+                *cursor = stream
                     .inner
                     .journal
                     .lock()
@@ -444,7 +448,7 @@ impl LocalStream {
                 }
                 stream.inner.published();
             }
-            Ok(())
+            Ok(*cursor)
         };
         #[cfg(not(loom))]
         let submitted =
