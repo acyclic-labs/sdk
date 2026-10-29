@@ -172,7 +172,7 @@ impl Fixture {
         let retained = acyclic_fs::kernel::decode_retention_created(&records[0].payload, 4096)?;
         assert_eq!(retained.volume_id, self.workspace.id().volume_id());
         assert_eq!(
-            hex::encode(retained.generation_root.digest.into_bytes()),
+            hex::encode(retained.generation_root.to_bytes()),
             self.file.version()
         );
         assert_eq!(
@@ -223,11 +223,8 @@ async fn private_checkpoints_cannot_claim_a_publication_range_or_head_grant() ->
         Action, Capability, GenerationRange, Generations, Grant, ResourcePattern,
     };
     let fixture = Fixture::new(b"private checkpoint").await?;
-    let generation = GenerationId::new(Digest::from_bytes(
-        hex::decode(fixture.file.version())?
-            .try_into()
-            .map_err(|_| "generation length")?,
-    ));
+    let generation = GenerationId::from_bytes(&hex::decode(fixture.file.version())?)
+        .ok_or("invalid canonical generation")?;
     let io = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
     for generations in [
         Generations::All,

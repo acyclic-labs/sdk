@@ -384,26 +384,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         reference: &FileRef,
         io: Option<&PreparationIo>,
     ) -> Result<GenerationRef> {
-        crate::model::charge_items(io, reference.version().len() as u64)?;
-        let mut bytes = [0; 32];
-        hex::decode_to_slice(reference.version(), &mut bytes).map_err(|_| {
-            stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "file version is not a Filesystem generation",
-            )
-        })?;
-        if let Some(io) = io {
-            io.charge(WorkCounters {
-                source_bytes_read: reference.version().len() as u64,
-                ..Default::default()
-            })?;
-        }
-        bounded_io::generation_ref(
-            &self.provider,
-            GenerationId::new(Digest::from_bytes(bytes)),
-            io,
-        )
+        let generation = bounded_io::generation_version(reference.version(), io)?;
+        bounded_io::generation_ref(&self.provider, generation, io)
     }
     #[cfg(all(
         feature = "filesystem-local",
@@ -558,7 +540,7 @@ fn selected_reference<'a>(
     staged: Option<(FileRef, DecodeReservation<'a>)>,
     io: &'a PreparationIo,
 ) -> Result<(FileRef, DecodeReservation<'a>)> {
-    let version = bounded_io::hex_key(&generation.digest().into_bytes(), Some(io))?;
+    let version = bounded_io::hex_key(&generation.to_bytes(), Some(io))?;
     let version_hold = io.guard_owned(version.capacity() as u64)?;
     let reference = if let Some(mut staged) = staged {
         if staged.0.volume() != volume || staged.0.path() != path {

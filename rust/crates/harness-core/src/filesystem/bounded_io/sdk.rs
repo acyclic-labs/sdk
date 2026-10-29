@@ -120,7 +120,7 @@ pub(in crate::filesystem) fn generation_ref(
     crate::executor::with_history_io(io, |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let provider = crate::core::copy_provider(provider, &mut quota)?;
-        let key = crate::core::copy_copy_vector(&generation.digest().into_bytes(), &mut quota)?;
+        let key = crate::core::copy_copy_vector(&generation.to_bytes(), &mut quota)?;
         let resource = ResourceRef::new(
             crate::resources::ResourceKind::Generation,
             provider,
@@ -134,6 +134,30 @@ pub(in crate::filesystem) fn generation_ref(
     })
 }
 
+pub(in crate::filesystem) fn generation_version(
+    version: &str,
+    io: Option<&PreparationIo>,
+) -> Result<GenerationId> {
+    if let Some(io) = io {
+        io.charge(WorkCounters {
+            source_bytes_read: version.len() as u64,
+            items_examined: version.len() as u64,
+            ..Default::default()
+        })?;
+    }
+    let invalid = || {
+        stock_boundary(
+            io,
+            crate::wire::ErrorCode::Invalid,
+            "file version is not a canonical Filesystem generation",
+        )
+    };
+    let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+    let decoded = bytes.get_mut(..version.len() / 2).ok_or_else(invalid)?;
+    hex::decode_to_slice(version, decoded).map_err(|_| invalid())?;
+    GenerationId::from_bytes(decoded).ok_or_else(invalid)
+}
+
 pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &Generation<A, O>,
     io: Option<&PreparationIo>,
@@ -141,19 +165,23 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(all(any(test, feature = "test-support"), not(target_arch = "wasm32")))]
     acyclic_differential::record(("retain", 0u64));
     use acyclic_fs::LazyWorkspaceError as LazyError;
+    let reference = generation.id().to_bytes();
+    let hex_bytes = reference.len() * 2;
+    let label_bytes = 19 + hex_bytes;
     let encoding = WorkCounters {
-        bytes_encoded: 64,
-        bytes_copied: 83,
+        bytes_encoded: hex_bytes as u64,
+        bytes_copied: label_bytes as u64,
         ..Default::default()
     };
     if let Some(io) = io {
         io.preflight(encoding).map_err(LazyError::Filesystem)?;
     }
-    let hex = blake3::Hash::from_bytes(generation.id().digest().into_bytes()).to_hex();
-    let mut label = [0_u8; 83];
+    let mut storage = [0_u8; 19 + 2 * acyclic_fs::ObjectId::ENCODED_LEN];
+    let label = &mut storage[..label_bytes];
     label[..19].copy_from_slice(b"harness-generation-");
-    label[19..].copy_from_slice(hex.as_bytes());
-    let label = std::str::from_utf8(&label)
+    hex::encode_to_slice(&reference, &mut label[19..])
+        .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
+    let label = std::str::from_utf8(label)
         .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
     let Some(io) = io else {
         return generation

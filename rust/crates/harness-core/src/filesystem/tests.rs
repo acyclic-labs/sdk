@@ -34,7 +34,7 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     let observed = host.resolve(&reference, None).await?;
     assert_eq!(
         observed.generation.as_resource().key(),
-        expected.id().digest().into_bytes()
+        expected.id().to_bytes().as_slice()
     );
 
     let foreign = workspace_ref(
@@ -78,9 +78,74 @@ async fn resolves_exact_memory_generation_and_rejects_foreign_provider() -> Resu
     Ok(())
 }
 
+// The stored body shares its original proof and custody. Opening checks every
+// association field so dropping any part of the reference cannot read the body.
+struct AssociatedObjects(bool);
+
+impl acyclic_fs::ObjectSealer for AssociatedObjects {
+    fn prepare(
+        &self,
+        object: acyclic_fs::HashedObject,
+        _: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> std::result::Result<acyclic_fs::HashedObject, acyclic_fs::ObjectStoreError> {
+        if !self.0 {
+            return Ok(object);
+        }
+        let (_, body) = object.clone().into_sealed();
+        Ok(object.seal(
+            body,
+            acyclic_fs::FileId::from_bytes([17; 16]),
+            GenerationId::new(Digest::from_bytes([18; 32])),
+        ))
+    }
+
+    fn stored_limit(
+        &self,
+        id: acyclic_fs::ObjectId,
+        maximum: u64,
+    ) -> std::result::Result<u64, acyclic_fs::ObjectStoreError> {
+        let expected = self.0.then_some(acyclic_fs::ObjectStorage {
+            locator: id.digest,
+            root_file_id: acyclic_fs::FileId::from_bytes([17; 16]),
+            origin_generation: Digest::from_bytes([18; 32]),
+        });
+        if id.storage != expected {
+            return Err(acyclic_fs::ObjectStoreError::Corrupt);
+        }
+        Ok(maximum)
+    }
+
+    fn open(
+        &self,
+        id: acyclic_fs::ObjectId,
+        bytes: acyclic_stream::OwnedBytes,
+        _: &mut acyclic_fs::AuthorityWork<'_>,
+    ) -> std::result::Result<acyclic_stream::OwnedBytes, acyclic_fs::ObjectStoreError> {
+        self.stored_limit(id, bytes.len() as u64)?;
+        Ok(bytes)
+    }
+}
+
 #[tokio::test]
 async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<()> {
-    let filesystem = Fs::memory();
+    for sealed in [false, true] {
+        let filesystem = Fs::new(
+            acyclic_fs::distributed::StreamAuthorityStore::new(Arc::new(
+                acyclic_stream::MemoryStream::default(),
+            )),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(acyclic_objects::MemoryObjects::memory()))
+                .with_sealer(AssociatedObjects(sealed)),
+            acyclic_fs::EmbeddedCapabilities::MEMORY,
+        );
+        check_staged_content(filesystem, sealed).await?;
+    }
+    Ok(())
+}
+
+async fn check_staged_content<O: AsyncObjectStore + 'static>(
+    filesystem: Fs<acyclic_fs::MemoryAuthorityBackend, O>,
+    sealed: bool,
+) -> Result<()> {
     let provider = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem, &provider, None)?;
     let owner = AgentId::from_bytes([3; 16]);
@@ -197,6 +262,25 @@ async fn staged_content_is_version_pinned_and_requires_exact_grants() -> Result<
         );
     }
     assert_ne!(first.version(), second.version());
+    let generation = host.file_generation(&first, None)?;
+    let decoded = GenerationId::from_bytes(generation.as_resource().key())
+        .expect("published canonical generation");
+    assert_eq!(decoded.object_id().storage.is_some(), sealed);
+    assert_eq!(hex::encode(decoded.to_bytes()), first.version());
+    for invalid in [
+        decoded.digest().into_bytes().to_vec(),
+        decoded.to_bytes()[..decoded.to_bytes().len() - 1].to_vec(),
+        acyclic_fs::ObjectId {
+            kind: acyclic_fs::ObjectKind::BlobChunk,
+            ..decoded.object_id()
+        }
+        .to_bytes()
+        .to_vec(),
+    ] {
+        let mut substituted = first.copy(&mut None)?;
+        substituted.pin_version(hex::encode(invalid), &mut None)?;
+        assert!(host.file_generation(&substituted, None).is_err());
+    }
     assert_eq!(
         host.read_content(&first, &read, 16, None).await?,
         acyclic_stream::OwnedBytes::from_static(b"one")

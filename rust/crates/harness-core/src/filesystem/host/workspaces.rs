@@ -491,12 +491,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if reference.as_resource().provider() != &self.provider {
             return Err(io.invalid("resource belongs to another Filesystem provider"));
         }
-        let key = reference
-            .as_resource()
-            .key()
-            .try_into()
-            .map_err(|_| io.invalid("generation reference key must be 32 bytes"))?;
-        let generation = GenerationId::new(Digest::from_bytes(key));
+        let generation = GenerationId::from_bytes(reference.as_resource().key())
+            .ok_or_else(|| io.invalid("invalid canonical generation reference"))?;
         self.select_generation(workspace, generation, io).await
     }
 
