@@ -46,7 +46,7 @@ impl FileAccess {
     }
 }
 
-/// A native file read completes with exact bytes (empty at EOF) or POSIX errno.
+/// A native file read completes with exact bytes (empty at EOF) or its OS-native error code.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileRead {
     Data(Vec<u8>),

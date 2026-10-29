@@ -253,13 +253,15 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             || request.suspension != value.contract.suspension
             || request.expiration != value.contract.expiration
             || request.budgets != value.contract.budgets
-            || matches!(&request.compatibility, CompatibilityPolicy::Require(required) if !required.is_subset(&value.contract.capabilities))
+            || request.compatibility != value.contract.compatibility
         {
             return Err(unsupported("change the enrolled workspace contract"));
         }
         match self
             .journal
-            .begin(request.idempotency_key, digest, None, || Ok(()))
+            .begin(request.idempotency_key, digest, None, || {
+                settled(&value, request.idempotency_key)
+            })
             .await?
         {
             Admission::Replay(original) => Ok(original),
@@ -288,7 +290,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             return Err(unsupported("replace the admitted selected volume"));
         }
         let digest = intent_digest(&(value.id, &Intent::Attach(machine, &volume)))?;
-        match self.journal.begin(key, digest, None, || Ok(())).await? {
+        match self
+            .journal
+            .begin(key, digest, None, || settled(&value, key))
+            .await?
+        {
             Admission::Replay(original) => Ok(original),
             Admission::Original(head) => {
                 self.journal
@@ -336,7 +342,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             return Err(unsupported("install an automatic suspension producer"));
         }
         let digest = intent_digest(&(value.id, &Intent::Policy(machine, policy)))?;
-        match self.journal.begin(key, digest, None, || Ok(())).await? {
+        match self
+            .journal
+            .begin(key, digest, None, || settled(&value, key))
+            .await?
+        {
             Admission::Replay(original) => Ok(original),
             Admission::Original(head) => {
                 self.journal
@@ -426,6 +436,16 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
     }
 }
 
+fn settled(value: &MachineObservation, key: IdempotencyKey) -> Result<(), ProviderError> {
+    match value.state {
+        MachineState::Running | MachineState::Suspended => Ok(()),
+        MachineState::Destroyed => Err(ProviderError::Conflict(
+            "Machine incarnation is destroyed; recovery: retain its original terminal receipt"
+                .into(),
+        )),
+        _ => Err(ProviderError::Indeterminate(key)),
+    }
+}
 fn unsupported(action: &str) -> ProviderError {
     ProviderError::Unsupported(format!(
         "local Machine cannot {action}; recovery: use the original admitted workspace or a provider with that primitive"

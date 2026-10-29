@@ -164,7 +164,18 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
         MachineState::Destroyed
     );
     assert_eq!(reopened.recover(create_key).await?, created);
-    assert_eq!(reopened.create(request).await?, created);
+    assert_eq!(reopened.create(request.clone()).await?, created);
+    request.idempotency_key = IdempotencyKey::new();
+    assert!(matches!(
+        reopened.create(request).await,
+        Err(ProviderError::Conflict(_))
+    ));
+    assert!(matches!(
+        reopened
+            .set_suspension_policy(machine, SuspensionPolicy::Manual, IdempotencyKey::new())
+            .await,
+        Err(ProviderError::Conflict(_))
+    ));
     assert_eq!(
         reopened.recover(destroy).await?,
         MutationOutcome::MachineDestroyed(machine)
