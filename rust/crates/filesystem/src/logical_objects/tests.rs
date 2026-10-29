@@ -348,3 +348,67 @@ async fn a_root_retains_inside_the_callers_work() -> Result<(), Box<dyn std::err
     assert!(survives_collections(&store, id).await?);
     Ok(())
 }
+
+#[tokio::test]
+async fn writes_hash_each_body_once() -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    let store = store(1 << 20)?;
+    let hashed = acyclic_stream::hashed_on_this_thread;
+    // Storage keys hash a few short names beside the bodies.
+    let once = |hashed: u64, bodies: u64| {
+        assert!(
+            (bodies << 16..(bodies << 16) + 4096).contains(&hashed),
+            "{hashed} bytes hashed for {bodies} bodies"
+        );
+    };
+    let body = |seed: u8| OwnedBytes::from(vec![seed; 1 << 16]);
+    let raw = |seed: u8| {
+        let object = HashedObject::new(ObjectKind::BlobChunk, body(seed));
+        ObjectWrite {
+            object_id: object.object_id(),
+            bytes: object.bytes().clone(),
+        }
+    };
+    let writes = [raw(1), raw(2)];
+    let objects = [
+        HashedObject::new(ObjectKind::BlobChunk, body(3)),
+        HashedObject::new(ObjectKind::BlobChunk, body(4)),
+    ];
+    let single = HashedObject::new(ObjectKind::BlobChunk, body(5));
+    let unsealed = raw(6);
+
+    let before = hashed();
+    store
+        .put(
+            unsealed.object_id,
+            unsealed.bytes.clone(),
+            &mut AuthorityWork::new(BUDGET, &cancel),
+        )
+        .await?;
+    once(hashed() - before, 1);
+
+    let before = hashed();
+    store
+        .put_many(&writes, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    once(hashed() - before, 2);
+
+    let before = hashed();
+    store
+        .put_hashed(single, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    store
+        .put_many_hashed(&objects, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    once(hashed() - before, 0);
+
+    // Control: the store hashes a body it receives without a seal.
+    let before = hashed();
+    store
+        .provider
+        .put(body(7), Vec::new())
+        .await
+        .map_err(ObjectStoreError::LogicalObjects)?;
+    once(hashed() - before, 1);
+    Ok(())
+}

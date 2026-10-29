@@ -32,6 +32,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+pub use acyclic_stream::SealedBytes as Sealed;
 pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
 pub use medium::{Medium, MediumError, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]

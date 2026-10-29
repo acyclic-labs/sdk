@@ -365,14 +365,14 @@ pub enum ObjectIdError {
 /// bytes, which is also its blob digest. The kind is part of [`ObjectId`].
 #[must_use]
 pub fn object_digest(bytes: &[u8]) -> Digest {
-    Digest::from_bytes(*blake3::hash(bytes).as_bytes())
+    Digest::from_bytes(acyclic_stream::content_digest(bytes))
 }
 
 /// Canonical immutable object bytes and the identity their hash proves.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HashedObject {
-    object_id: ObjectId,
-    bytes: acyclic_stream::OwnedBytes,
+    kind: ObjectKind,
+    sealed: acyclic_stream::SealedBytes,
 }
 
 impl HashedObject {
@@ -380,11 +380,8 @@ impl HashedObject {
     #[must_use]
     pub fn new(kind: ObjectKind, bytes: acyclic_stream::OwnedBytes) -> Self {
         Self {
-            object_id: ObjectId {
-                kind,
-                digest: object_digest(&bytes),
-            },
-            bytes,
+            kind,
+            sealed: acyclic_stream::SealedBytes::new(bytes),
         }
     }
 
@@ -404,16 +401,13 @@ impl HashedObject {
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
-        let object_id = ObjectId {
-            kind,
-            digest: object_digest(&bytes),
-        };
+        let sealed = acyclic_stream::SealedBytes::new(bytes);
         work.record_admitted(hash)?;
         work.admit(crate::WorkCounters::default())?;
         cancellation
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
-        Ok(Self { object_id, bytes })
+        Ok(Self { kind, sealed })
     }
 
     /// Transfers a guarded vector into the physical immutable byte owner.
@@ -437,15 +431,6 @@ impl HashedObject {
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
-        let object_id = ObjectId {
-            kind,
-            digest: object_digest(bytes),
-        };
-        work.record_admitted(hash)?;
-        work.admit(crate::WorkCounters::default())?;
-        cancellation
-            .check()
-            .map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
@@ -461,7 +446,13 @@ impl HashedObject {
                 ObjectStoreError::Native(crate::NativeTreeMaterializationError::InvalidLayout)
             }
         })?;
-        Ok(Self { object_id, bytes })
+        let sealed = acyclic_stream::SealedBytes::new(bytes);
+        work.record_admitted(hash)?;
+        work.admit(crate::WorkCounters::default())?;
+        cancellation
+            .check()
+            .map_err(|_| ObjectStoreError::Cancelled)?;
+        Ok(Self { kind, sealed })
     }
 
     /// Admits `bytes` under `object_id` only if they hash to it.
@@ -470,31 +461,47 @@ impl HashedObject {
         not(target_arch = "wasm32")
     ))]
     pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
-        (object_digest(&bytes) == object_id.digest).then_some(Self { object_id, bytes })
+        let object = Self::new(object_id.kind, bytes);
+        (object.object_id() == object_id).then_some(object)
     }
 
     /// The identity the bytes hash to.
     #[must_use]
     pub const fn object_id(&self) -> ObjectId {
-        self.object_id
+        ObjectId {
+            kind: self.kind,
+            digest: Digest::from_bytes(*self.sealed.digest()),
+        }
     }
 
     /// Exact canonical length.
     #[must_use]
     pub fn length(&self) -> u64 {
-        u64::try_from(self.bytes.len()).unwrap_or(u64::MAX)
+        u64::try_from(self.sealed.bytes().len()).unwrap_or(u64::MAX)
     }
 
     /// The canonical bytes.
     #[must_use]
     pub const fn bytes(&self) -> &acyclic_stream::OwnedBytes {
-        &self.bytes
+        self.sealed.bytes()
+    }
+
+    /// The bytes with the digest their hash proved, for layers that reuse it.
+    #[must_use]
+    pub const fn sealed(&self) -> &acyclic_stream::SealedBytes {
+        &self.sealed
+    }
+
+    /// Releases the identity and the sealed bytes.
+    #[must_use]
+    pub fn into_sealed(self) -> (ObjectKind, acyclic_stream::SealedBytes) {
+        (self.kind, self.sealed)
     }
 
     /// Releases the identity and bytes.
     #[must_use]
     pub fn into_parts(self) -> (ObjectId, acyclic_stream::OwnedBytes) {
-        (self.object_id, self.bytes)
+        (self.object_id(), self.sealed.into_bytes())
     }
 }
 

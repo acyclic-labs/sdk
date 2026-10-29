@@ -232,7 +232,11 @@ include!("lib/error.rs");
 include!("lib/tests.rs");
 
 mod owned_bytes;
-pub use owned_bytes::{OwnedBytes, OwnedBytesBacking, UniqueOwnedBytes};
+#[cfg(any(test, feature = "test-support"))]
+pub use owned_bytes::hashed_on_this_thread;
+pub use owned_bytes::{
+    OwnedBytes, OwnedBytesBacking, SealedBytes, UniqueOwnedBytes, content_digest,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use owned_bytes::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
 #[cfg(not(target_arch = "wasm32"))]

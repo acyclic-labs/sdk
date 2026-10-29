@@ -336,7 +336,7 @@ pub(crate) fn get_batch<'a, M: Medium>(
 
 pub(crate) fn put<'a, M: Medium>(
     account: &'a Account<M>,
-    request: ObjectsNativeRequest<(OwnedBytes, Vec<Digest>)>,
+    request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsPutReceipt>, NativeObjectsError> {
     native_input_meter(&meter, &request)?;
@@ -351,7 +351,7 @@ pub(crate) fn put<'a, M: Medium>(
 
 pub(crate) fn put_batch<'a, M: Medium>(
     account: &'a Account<M>,
-    requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+    requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     put_window(account, requests, meter, crate::BATCH_WINDOW)
@@ -360,7 +360,7 @@ pub(crate) fn put_batch<'a, M: Medium>(
 /// [`put_batch`] with `window` members in flight.
 pub(crate) fn put_window<'a, M: Medium>(
     account: &'a Account<M>,
-    requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+    requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
     meter: Meter,
     window: usize,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
