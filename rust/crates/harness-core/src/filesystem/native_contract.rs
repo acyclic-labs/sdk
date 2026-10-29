@@ -189,7 +189,7 @@ impl NativeViewManifest {
             if let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace
                 && (snapshot.workspace_id.into_bytes() == [0; 16]
                     || snapshot.source.identity == [0; 16]
-                    || snapshot.authored_generation.digest().as_bytes().as_slice()
+                    || snapshot.authored_generation.to_bytes().as_slice()
                         != mapping.generation.as_resource().key())
             {
                 return Err(validation_error(
