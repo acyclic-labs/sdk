@@ -362,6 +362,7 @@ impl AgentCommand {
             | Self::Rewind { agent, .. }
             | Self::ClearAll { agent, .. }
             | Self::Children { agent, .. }
+            | Self::Diff { agent, .. }
             | Self::Approvals { agent, .. }
             | Self::Decide { agent, .. }
             | Self::Reply { agent, .. }
@@ -385,6 +386,7 @@ impl AgentCommand {
             Self::ClearAll { .. } => "clear_all",
             Self::Spawn { .. } => "spawn",
             Self::Children { .. } => "children",
+            Self::Diff { .. } => "diff",
             Self::Approvals { .. } => "approvals",
             Self::Decide { .. } => "decide",
             Self::Reply { .. } => "reply",
