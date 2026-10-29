@@ -145,7 +145,7 @@ impl LocalStream {
         }
         journal._ownership_anchor = ownership_anchor;
         commit_clock.unpin();
-        let (failed, _) = watch::channel(false);
+        let (failed, _) = watch::channel(None);
         let progress = SyncProgress {
             ordered: journal.synced,
             flushed: journal.flushed_sequence,
@@ -187,11 +187,18 @@ impl LocalStream {
     }
 
     fn check_available(&self) -> Result<(), StreamError> {
-        if *self.inner.failed.borrow() {
+        if self.inner.failed.borrow().is_some() {
             Err(StreamError::Unavailable)
         } else {
             Ok(())
         }
+    }
+
+    /// The first terminal cause retained by this provider incarnation.
+    /// Reading it does not observe or resolve any individual commit outcome.
+    #[must_use]
+    pub fn failure(&self) -> Option<LocalStreamFailure> {
+        *self.inner.failed.borrow()
     }
 
     fn execute(
@@ -236,7 +243,13 @@ impl LocalStream {
                 self.require_accepted::<true>()?;
             }
             if replica.is_failed() {
-                self.inner.poison();
+                self.inner.fail(LocalStreamFailure::new(
+                    "replicate",
+                    result
+                        .as_ref()
+                        .err()
+                        .map_or("invalid_response", StreamError::code),
+                ));
             }
             result
         }
@@ -304,13 +317,16 @@ impl LocalStream {
             span.record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
-                journal.file.lease().map_err(|_| self.inner.poison())?,
+                journal.file.lease().map_err(|error| {
+                    self.inner
+                        .fail(LocalStreamFailure::io("lease_flush", &error))
+                })?,
                 journal.limits.durability,
             )
         };
         let completion = file
             .flush(|file| sync_file_data(file, durability))
-            .map_err(|_| self.inner.poison())?;
+            .map_err(|error| self.inner.fail(LocalStreamFailure::io("flush", &error)))?;
         #[cfg(feature = "test-support")]
         let device_flushed = matches!(completion, SyncCompletion::Flushed(_));
         let mut journal = self.inner.journal.lock().map_err(|_| self.inner.poison())?;
@@ -362,14 +378,21 @@ impl LocalStream {
                         return Err(if written {
                             // Earlier frames may already be durable. Only reopen
                             // and replay can resolve this partially published proposal.
-                            stream.inner.poison()
+                            stream.inner.fail(LocalStreamFailure::new(
+                                "append",
+                                "partial_proposal_deadline",
+                            ))
                         } else {
                             StreamError::DeadlineElapsed
                         });
                     }
-                    journal
-                        .begin_append(required)
-                        .map_err(|_| stream.inner.poison())?
+                    journal.begin_append(required).map_err(|error| {
+                        stream.inner.fail(LocalStreamFailure::local(
+                            "begin_append",
+                            &error,
+                            stream.work.as_deref(),
+                        ))
+                    })?
                 };
                 // Publication owns this offset through completion. Journal
                 // metadata and earlier flush cuts remain available during I/O.
@@ -378,8 +401,14 @@ impl LocalStream {
                     pause_journal_write(&stream.inner.journal)?;
                     Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
                 })
-                .map_err(|_| stream.inner.poison())?
-                .map_err(|_| stream.inner.poison())?;
+                .map_err(|error| stream.inner.fail(LocalStreamFailure::io("write", &error)))?
+                .map_err(|error| {
+                    stream.inner.fail(LocalStreamFailure::local(
+                        "write",
+                        &error,
+                        frame.work.as_deref(),
+                    ))
+                })?;
                 stream
                     .inner
                     .journal
@@ -396,7 +425,10 @@ impl LocalStream {
             Ok(())
         })
         .await
-        .map_err(|_| self.inner.poison())?
+        .map_err(|_| {
+            self.inner
+                .fail(LocalStreamFailure::new("write", "executor"))
+        })?
     }
 
     // Native builds reduce this to drop. The modeled old variant returns the
@@ -464,7 +496,13 @@ impl LocalStream {
         .await
         .map_err(|_| LocalStreamError::Executor)
         .and_then(|result| result)
-        .map_err(|_| self.inner.poison())
+        .map_err(|error| {
+            self.inner.fail(LocalStreamFailure::local(
+                "compact",
+                &error,
+                self.work.as_deref(),
+            ))
+        })
     }
 
     // Called under visibility before releasing an ordinary replay. A deferred
@@ -555,9 +593,14 @@ impl LocalStream {
                 if progress.completion(sequence, durability).is_some() || journal.syncing {
                     None
                 } else {
-                    let Ok(file) = journal.file.lease() else {
-                        drop(journal);
-                        return Err(self.inner.poison());
+                    let file = match journal.file.lease() {
+                        Ok(file) => file,
+                        Err(error) => {
+                            drop(journal);
+                            return Err(self
+                                .inner
+                                .fail(LocalStreamFailure::io("lease_flush", &error)));
+                        }
                     };
                     journal.syncing = true;
                     Some((file, durability))
@@ -571,7 +614,10 @@ impl LocalStream {
                         inner.flush_through(&file, durability, work.as_deref())
                     })
                     .await
-                    .map_err(|_| self.inner.poison())?;
+                    .map_err(|_| {
+                        self.inner
+                            .fail(LocalStreamFailure::new("flush", "executor"))
+                    })?;
                     // Group commit: one fsync covers every frame written since the last one.
                     if let Some((target, synced_before, journal_bytes)) = flushed {
                         tracing::debug!(

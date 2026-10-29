@@ -132,6 +132,14 @@ impl Observer {
                 }
                 Err(error) => {
                     tracing::debug!(%error, "observer follow failed");
+                    if matches!(
+                        &error,
+                        AgentClientError::Session(WireSessionError::Stream(
+                            StreamError::Unavailable
+                        ))
+                    ) {
+                        return Err(self.connection.stream_failure(error));
+                    }
                     return Err(storage(error));
                 }
             }

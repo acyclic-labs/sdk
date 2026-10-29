@@ -67,15 +67,25 @@ impl CommandJournal for LocalPort {
                 if journal.bytes != head {
                     return Err(StreamError::InvalidResponse);
                 }
-                let lease = journal.file.lease().map_err(|_| StreamError::Unavailable)?;
+                let lease = journal.file.lease().map_err(|error| {
+                    stream
+                        .inner
+                        .fail(LocalStreamFailure::io("lease_read", &error))
+                })?;
                 let mut file = lease.file();
                 file.seek(SeekFrom::Start(from))
-                    .map_err(|_| StreamError::Unavailable)?;
+                    .map_err(|error| stream.inner.fail(LocalStreamFailure::io("seek", &error)))?;
                 let mut cursor = from;
                 let mut entries = Vec::new();
                 while cursor < head && entries.len() < page {
                     let frame = read_frame(file, head - cursor)
-                        .map_err(|_| StreamError::Unavailable)?
+                        .map_err(|error| {
+                            stream.inner.fail(LocalStreamFailure::local(
+                                "read_frame",
+                                &error,
+                                stream.work.as_deref(),
+                            ))
+                        })?
                         .ok_or(StreamError::InvalidResponse)?;
                     let time = frame
                         .command

@@ -137,6 +137,8 @@ include!("local_stream_limits.rs");
 
 include!("local_stream_error.rs");
 
+include!("failure.rs");
+
 include!("local_stream_type.rs");
 
 include!("local_inner.rs");

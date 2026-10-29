@@ -11,6 +11,10 @@ use acyclic_harness_client::{
 use acyclic_stream::session::Client;
 use std::sync::Arc;
 
+#[cfg(test)]
+#[path = "endpoint_tests.rs"]
+mod tests;
+
 /// The connection's one credential slot: it drives and observes the root.
 pub(super) const CREDENTIAL: u32 = 0;
 
@@ -31,12 +35,30 @@ fn exchange(error: impl std::fmt::Display) -> Error {
 }
 
 impl Connection {
+    pub(super) fn stream_failure(&self, error: impl std::fmt::Display) -> Error {
+        match self
+            ._host
+            .as_ref()
+            .and_then(|host| host.agent_stream.as_ref())
+            .and_then(|stream| stream.failure())
+        {
+            Some(cause) => Error::Storage(format!("{error}; {cause}")),
+            None => exchange(error),
+        }
+    }
+
     /// Executes `command` once on this connection's tree.
     ///
     /// # Errors
     /// The session's failure or the host's refusal.
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
-        execute(&self.controls, command).await
+        let result = exchanged(&self.controls, command).await.map_err(exchange)?;
+        match result {
+            Err(error @ AgentExchangeError::Session(acyclic_stream::StreamError::Unavailable)) => {
+                Err(self.stream_failure(error))
+            }
+            result => result.map_err(exchange),
+        }
     }
 
     /// Executes `command` once, keeping its exchange failure typed.

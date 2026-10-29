@@ -21,6 +21,20 @@ pub(crate) struct Work {
 }
 
 impl Work {
+    #[cfg(feature = "local")]
+    pub(crate) fn failure(&self, operation: &'static str) -> Option<crate::LocalStreamFailure> {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|error| crate::LocalStreamFailure {
+                operation,
+                cause: "io",
+                io_kind: Some(error.kind()),
+                raw_os_error: error.raw_os_error(),
+            })
+    }
+
     pub(crate) fn start<'a, T, E, F>(
         meter: Arc<dyn NativeReadMeter>,
         operation: impl FnOnce(Arc<Self>) -> F,

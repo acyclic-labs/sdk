@@ -5,7 +5,7 @@ struct FollowState {
     anchor: Option<crate::CommitId>,
     changed: crate::follow_index::FollowInterest,
     filter: crate::FollowFilter,
-    failed: watch::Receiver<bool>,
+    failed: watch::Receiver<Option<LocalStreamFailure>>,
     done: bool,
     span: obs::OperationSpan,
 }

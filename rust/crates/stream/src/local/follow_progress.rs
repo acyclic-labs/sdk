@@ -59,7 +59,7 @@ struct LocalProgress {
     anchor: Option<crate::CommitId>,
     filter: crate::FollowFilter,
     changed: watch::Receiver<u64>,
-    failed: watch::Receiver<bool>,
+    failed: watch::Receiver<Option<LocalStreamFailure>>,
 }
 impl crate::snapshot::Snapshot for Box<LocalProgress> {
     #[cfg(feature = "test-support")]
