@@ -124,7 +124,9 @@ impl server::Verifier for CredentialGate {
         Box::pin(async move {
             let observation = server::Verifier::observation(&server::KeyFileVerifier, root).await?;
             let _ = entered.send(());
-            published.await.map_err(|_| Error::Storage("credential publication producer closed".into()))?;
+            published
+                .await
+                .map_err(|_| Error::Storage("credential publication producer closed".into()))?;
             Ok(observation)
         })
     }
@@ -255,13 +257,18 @@ enum Producer {
     },
     Host,
     ReplyHost,
+    AbortHost,
+    ReplyAbortHost,
 }
 
 async fn startup_shutdown() -> Outcome {
     let (entered, pending) = oneshot::channel();
     let (publisher, published) = oneshot::channel();
     let mut config = ServerConfig::new(composition(
-        Arc::new(ModelGate { entered: Mutex::new(None), output: Mutex::new(None) }),
+        Arc::new(ModelGate {
+            entered: Mutex::new(None),
+            output: Mutex::new(None),
+        }),
         Owner(None),
     )?);
     config.verifier = Arc::new(CredentialGate {
@@ -270,16 +277,24 @@ async fn startup_shutdown() -> Outcome {
     });
     let listener = listener().await?;
     let (stop, stopping) = oneshot::channel::<()>();
-    let serving = server::serve(listener, config, |_| panic!("unfinished credential was announced"), async {
-        let _ = stopping.await;
-    });
+    let serving = server::serve(
+        listener,
+        config,
+        |_| panic!("unfinished credential was announced"),
+        async {
+            let _ = stopping.await;
+        },
+    );
     tokio::pin!(serving);
     tokio::select! {
         result = &mut serving => return Err(format!("startup completed before credential publication: {result:?}").into()),
         pending = pending => pending?,
     }
     drop(stop);
-    assert!(matches!(serving.await, Err(server::ActorsError::Failed(Error::Cancelled))));
+    assert!(matches!(
+        serving.await,
+        Err(server::ActorsError::Failed(Error::Cancelled))
+    ));
     drop(publisher);
     Ok(())
 }
@@ -293,31 +308,49 @@ async fn startup_completion() -> Outcome {
         published: Mutex::new(Some(published)),
     });
     let host = composition(
-        Arc::new(ModelGate { entered: Mutex::new(None), output: Mutex::new(None) }),
+        Arc::new(ModelGate {
+            entered: Mutex::new(None),
+            output: Mutex::new(None),
+        }),
         Owner(None),
-    )?.open(&verifier).await?;
+    )?
+    .open(&verifier)
+    .await?;
     let (owner, completion) = oneshot::channel::<()>();
     let mut config = ServerConfig::new(host.with_completion(async {
-        completion.await.map_err(|_| Error::Storage("startup runtime producer closed".into()))
+        completion
+            .await
+            .map_err(|_| Error::Storage("startup runtime producer closed".into()))
     }));
     config.verifier = verifier;
     let listener = listener().await?;
-    let serving = server::serve(listener, config, |_| panic!("stopped runtime was announced"), std::future::pending());
+    let serving = server::serve(
+        listener,
+        config,
+        |_| panic!("stopped runtime was announced"),
+        std::future::pending(),
+    );
     tokio::pin!(serving);
     tokio::select! {
         result = &mut serving => return Err(format!("startup completed before credential publication: {result:?}").into()),
         pending = pending => pending?,
     }
     drop(owner);
-    assert!(matches!(serving.await, Err(Error::Storage(reason)) if reason == "startup runtime producer closed"));
+    assert!(
+        matches!(serving.await, Err(Error::Storage(reason)) if reason == "startup runtime producer closed")
+    );
     drop(publisher);
     Ok(())
 }
 
 async fn run(producer: Producer) -> Outcome {
     let drop_model = matches!(producer, Producer::Model);
-    let drop_reply_host = matches!(producer, Producer::ReplyHost);
-    let drop_command = matches!(producer, Producer::Command { .. } | Producer::Host);
+    let drop_reply_host = matches!(producer, Producer::ReplyHost | Producer::ReplyAbortHost);
+    let drop_command = matches!(
+        producer,
+        Producer::Command { .. } | Producer::Host | Producer::AbortHost
+    );
+    let abort_host = matches!(producer, Producer::AbortHost | Producer::ReplyAbortHost);
     eprintln!(
         "STEP endpoint-vector start; closed-model={drop_model}; closed-command={drop_command}"
     );
@@ -396,7 +429,8 @@ async fn run(producer: Producer) -> Outcome {
         } => {
             pending?;
             eprintln!("STEP producer wait armed; closed-model={drop_model}; closed-command={drop_command}");
-            if matches!(producer, Producer::Host | Producer::ReplyHost) { drop(stop.take()); }
+            if abort_host { hosted.abort(); }
+            else if matches!(producer, Producer::Host | Producer::ReplyHost) { drop(stop.take()); }
             else if drop_command { drop(deciding); }
             if drop_model || drop_command { drop(output.take()); }
             else if !drop_reply_host && let Some(output) = output.take() { let _ = output.send(()); }
@@ -409,7 +443,7 @@ async fn run(producer: Producer) -> Outcome {
     if let Some(stop) = stop {
         let _ = stop.send(());
     }
-    let serving = hosted.await?;
+    let serving = hosted.await;
     if drop_model || drop_command || drop_reply_host {
         let failure = result.expect_err("closed producer must fail the waiting client");
         assert!(matches!(
@@ -420,7 +454,6 @@ async fn run(producer: Producer) -> Outcome {
         ));
         if drop_reply_host {
             assert_eq!(failure.case, "reply_liveness");
-            serving?;
         } else if drop_command {
             assert_eq!(
                 failure.case,
@@ -429,13 +462,16 @@ async fn run(producer: Producer) -> Outcome {
                     _ => "root",
                 }
             );
-            serving?;
-        } else {
-            assert!(serving.is_err());
         }
     } else {
         assert!(result?.passed.contains(&"model_turn"));
-        serving?;
+    }
+    if abort_host {
+        assert!(matches!(serving, Err(error) if error.is_cancelled()));
+    } else if drop_model {
+        assert!(serving?.is_err());
+    } else {
+        serving??;
     }
     Ok(())
 }
@@ -470,6 +506,8 @@ async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
         }
         run(Producer::Host).await?;
         run(Producer::ReplyHost).await?;
+        run(Producer::AbortHost).await?;
+        run(Producer::ReplyAbortHost).await?;
         // The connection producer is a real listening socket, not a scripted
         // HTTP response. Closing it must retain the original typed dial error.
         let listener = listener().await?;
