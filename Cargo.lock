@@ -1145,6 +1145,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-manifest",
  "acyclic-objects",
+ "acyclic-stream",
  "axum",
  "bytes",
  "hex",

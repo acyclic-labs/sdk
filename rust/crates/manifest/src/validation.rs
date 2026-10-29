@@ -783,8 +783,6 @@ pub fn verify_artifact(
     artifact: &[u8],
     files: &[(String, Vec<u8>)],
 ) -> Result<(), ManifestError> {
-    use sha2::Digest;
-    let hex = |bytes: &[u8]| hex::encode(sha2::Sha256::digest(bytes));
     validate(manifest)?;
     let entry = manifest
         .environments
@@ -792,11 +790,7 @@ pub fn verify_artifact(
         .find(|candidate| candidate.name == environment)
         .and_then(|candidate| candidate.entries.iter().find(|e| e.name == entry))
         .ok_or_else(|| ManifestError::invalid("entry", "undeclared-entry"))?;
-    require(
-        hex(artifact) == entry.artifact_sha256,
-        "artifact",
-        "artifact-digest",
-    )?;
+    entry.verify_artifact_bytes(artifact)?;
     let declared: HashMap<&str, &EntryAsset> = entry
         .assets
         .iter()
@@ -808,14 +802,40 @@ pub fn verify_artifact(
             .get(path.as_str())
             .ok_or_else(|| ManifestError::invalid("assets", "undeclared-asset"))?;
         require(supplied.insert(path.as_str()), "assets", "duplicate-asset")?;
+        asset.verify_bytes(bytes)?;
+    }
+    require(supplied.len() == declared.len(), "assets", "missing-asset")
+}
+
+fn verify_sha256(bytes: &[u8], encoded: &str, path: &str, rule: &str) -> Result<(), ManifestError> {
+    use sha2::Digest as _;
+    let mut expected = [0; 32];
+    require(
+        hex::decode_to_slice(encoded, &mut expected).is_ok(),
+        path,
+        rule,
+    )?;
+    let actual: [u8; 32] = sha2::Sha256::digest(bytes).into();
+    require(actual == expected, path, rule)
+}
+
+impl Entry {
+    /// Verify loaded entry bytes against the admitted declaration.
+    pub fn verify_artifact_bytes(&self, bytes: &[u8]) -> Result<(), ManifestError> {
+        verify_sha256(bytes, &self.artifact_sha256, "artifact", "artifact-digest")
+    }
+}
+
+impl EntryAsset {
+    /// Verify a lazily loaded module against its exact admitted size and digest.
+    pub fn verify_bytes(&self, bytes: &[u8]) -> Result<(), ManifestError> {
         require(
-            u64::try_from(bytes.len()) == Ok(asset.size),
+            u64::try_from(bytes.len()) == Ok(self.size),
             "assets",
             "asset-size",
         )?;
-        require(hex(bytes) == asset.sha256, "assets", "asset-digest")?;
+        verify_sha256(bytes, &self.sha256, "assets", "asset-digest")
     }
-    require(supplied.len() == declared.len(), "assets", "missing-asset")
 }
 
 /// Lower one named Worker script, preserving its CPU, memory and duration limits.
