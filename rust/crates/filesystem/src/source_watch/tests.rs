@@ -233,23 +233,43 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
     Ok(())
 }
 
-/// Changes the host could not queue are reported as everything, and the
+/// A paused subscriber retains every change or reports actual host queue loss.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn lost_changes_are_reported_as_everything() -> TestResult {
+fn a_paused_watch_preserves_changes_or_reports_host_loss() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
+    let flood = if cfg!(windows) { 3_000 } else { 20_000 };
     {
         let _paused = watch.paused();
-        // More than the host queues: inotify's default queue holds 16384
-        // events; a directory read buffer holds 64 KiB of reports.
-        let flood = if cfg!(windows) { 3_000 } else { 20_000 };
+        // Windows' directory read buffer can lose these reports. Linux's
+        // shared router can continue retaining them while this cursor pauses.
         for index in 0..flood {
             std::fs::write(root.path().join(format!("flood-{index:05}")), b"")?;
         }
     }
     watch.fence()?;
-    assert!(Recorded::everything(&recorded.take()));
+    let changes = recorded.take();
+    #[cfg(windows)]
+    assert!(Recorded::everything(&changes));
+    #[cfg(target_os = "linux")]
+    if !Recorded::everything(&changes) {
+        let mut reported: Vec<_> = changes
+            .iter()
+            .filter_map(|change| match change {
+                HostChange::Rebound(path) | HostChange::Altered(path) => Some(path.as_path()),
+                _ => None,
+            })
+            .collect();
+        reported.sort_unstable();
+        for index in 0..flood {
+            let path = PathBuf::from(format!("flood-{index:05}"));
+            assert!(
+                reported.binary_search(&path.as_path()).is_ok(),
+                "paused watch lost {path:?} without reporting host queue loss"
+            );
+        }
+    }
     std::fs::write(root.path().join("after"), b"x")?;
     watch.fence()?;
     assert!(Recorded::reported(&recorded.take(), Path::new("after")));
