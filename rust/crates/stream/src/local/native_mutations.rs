@@ -1,12 +1,15 @@
 impl LocalStream {
-    fn guarded_commit<E, F, Fut>(
+    fn guarded_commit<T, C, E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T, E>
     where
+        T: Send + 'static,
+        C: FnOnce(CommitOutcome) -> T + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -84,7 +87,8 @@ impl LocalStream {
                 };
                 // Keep the callback's captured lease through the physical terminal.
                 drop(before);
-                work.finish(result).map(|result| result.map_err(E::from))
+                work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
+                    .map(|result| result.map_err(E::from))
             });
             let allocation = acyclic_native_runtime::ReadAllocation::new(
                 &original,
@@ -99,11 +103,16 @@ impl LocalStream {
         })
     }
 
-    fn native_append(
+    fn append_funded<T, C>(
         &self,
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T>
+    where
+        T: Send + 'static,
+        C: FnOnce(AppendOutcome) -> T + Send + 'static,
+    {
         #[cfg(feature = "test-support")]
         acyclic_native_runtime::testing::describe(|| {
             format!(
@@ -140,7 +149,7 @@ impl LocalStream {
                     Ok((outcome, execution.allocation))
                 })
                 .await;
-            work.finish(result)
+            work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
         })
     }
 }

@@ -472,54 +472,72 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_append(
+    fn native_write(
         &self,
-        request: acyclic_stream::AppendRequest,
-        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, AppendOutcome> {
-        let original = meter.clone();
-        acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            let fault = match self.before_append(&request) {
-                Ok(fault) => fault,
-                Err(error) => return Ok(Err(error)),
-            };
-            let mut output = match self.inner.native_append(request, original).await? {
-                Ok(output) => output,
-                Err(error) => return Ok(Err(error)),
-            };
-            if let Err(error) = self.after_append(output.value_mut(), fault) {
-                return Ok(Err(error));
-            }
-            Ok(Ok(output))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
+        request: acyclic_stream::WriteRequest,
         deadline: Option<u64>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
         let original = meter.clone();
-        acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            let (fault, aggregate_fault) = match self.before_commit(&request).await {
-                Ok(faults) => faults,
-                Err(error) => return Ok(Err(error)),
-            };
-            let result = self
-                .inner
-                .native_commit(request, deadline, original.clone())
-                .await?;
-            let mut output = match result {
-                Ok(output) => output,
-                Err(error) => return Ok(Err(error)),
-            };
-            if let Err(error) = self.after_commit(output.value_mut(), fault, aggregate_fault) {
-                return Ok(Err(error));
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                acyclic_stream::NativeProviderFuture::new(&meter, async move {
+                    let fault = match self.before_append(&request) {
+                        Ok(fault) => fault,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let mut output = match self
+                        .inner
+                        .native_write(
+                            acyclic_stream::WriteRequest::Append(request),
+                            deadline,
+                            original,
+                        )
+                        .await?
+                    {
+                        Ok(output) => output,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let acyclic_stream::WriteOutcome::Append(outcome) = output.value_mut() else {
+                        return Ok(Err(StreamError::InvalidResponse));
+                    };
+                    if let Err(error) = self.after_append(outcome, fault) {
+                        return Ok(Err(error));
+                    }
+                    Ok(Ok(output))
+                })
             }
-            Ok(Ok(output))
-        })
+            acyclic_stream::WriteRequest::Commit(request) => {
+                acyclic_stream::NativeProviderFuture::new(&meter, async move {
+                    let (fault, aggregate_fault) = match self.before_commit(&request).await {
+                        Ok(faults) => faults,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let mut output = match self
+                        .inner
+                        .native_write(
+                            acyclic_stream::WriteRequest::Commit(request),
+                            deadline,
+                            original,
+                        )
+                        .await?
+                    {
+                        Ok(output) => output,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let acyclic_stream::WriteOutcome::Commit(outcome) = output.value_mut() else {
+                        return Ok(Err(StreamError::InvalidResponse));
+                    };
+                    if let Err(error) = self.after_commit(outcome, fault, aggregate_fault) {
+                        return Ok(Err(error));
+                    }
+                    Ok(Ok(output))
+                })
+            }
+            acyclic_stream::WriteRequest::Fork(_) => {
+                acyclic_stream::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
     }
 }
 

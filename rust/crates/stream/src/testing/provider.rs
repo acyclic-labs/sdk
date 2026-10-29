@@ -79,15 +79,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().native_inspect_idempotency(key, _meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, AppendOutcome> {
-        self.record(RequestClass::Data);
-        self.inner().native_append(request, _meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_tail(
         &self,
         path: StreamPath,
@@ -106,15 +97,16 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().native_read(request, _meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_write(
         &self,
-        request: CommitRequest,
+        request: crate::WriteRequest,
         deadline: Option<u64>,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, crate::WriteOutcome> {
         self.record(RequestClass::Data);
-        self.inner().native_commit(request, deadline, _meter)
+        self.inner().native_write(request, deadline, meter)
     }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit_guarded<E, F, Fut>(
         &self,

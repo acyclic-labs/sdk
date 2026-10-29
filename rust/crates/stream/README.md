@@ -242,3 +242,11 @@ before the clone. A late refusal retains its original I/O cause and refunds its
 reservations. The eager reader remains a negative control for opening storage
 and first-output work. These source-level allocation counts do not claim a
 backlog-independent total traversal cost.
+
+Funded native Append and Commit use `native_write` with the same canonical
+`WriteRequest` and `WriteOutcome` as portable publication. Their extension
+projections add no boxed future and preserve immediate admission of the concrete
+producer frame. Both commit entry points use the same generic guard owner;
+local callbacks remain owned through detached physical completion. The
+allocation control compares native dispatch with its projection and deliberately
+boxes a projection to expose the otherwise unadmitted extra frame.

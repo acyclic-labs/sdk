@@ -178,17 +178,20 @@ mod probe {
             self.read_request();
             self.inner.native_read(request, meter)
         }
-        fn native_commit(
+        fn native_write(
             &self,
-            request: CommitRequest,
+            request: acyclic_stream::WriteRequest,
             deadline: Option<u64>,
             meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> NativeProviderFuture<'_, CommitOutcome> {
+        ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
+            let acyclic_stream::WriteRequest::Commit(_) = &request else {
+                return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
+            };
             self.append_request();
             let funding = Arc::clone(&meter);
             NativeProviderFuture::new(&funding, async move {
                 self.await_commit_gate().await;
-                self.inner.native_commit(request, deadline, meter).await
+                self.inner.native_write(request, deadline, meter).await
             })
         }
     }

@@ -105,17 +105,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
-    /// Executes the genuine append family on the original native work owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, AppendOutcome> {
-        let _ = request;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
-    }
-
     /// Canonical tail observation on the original ledger.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_tail(
@@ -138,14 +127,15 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
-    /// Canonical commit with allocation admission before its future frame.
+    /// Publishes a genuine request family on its original native work owner.
+    /// The commit-only deadline is independent of the retained request digest.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_write(
         &self,
-        request: CommitRequest,
+        request: WriteRequest,
         deadline: Option<u64>,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
+    ) -> NativeProviderFuture<'_, WriteOutcome> {
         let _ = (request, deadline);
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }

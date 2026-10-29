@@ -215,23 +215,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         self.inner.native_inspect_idempotency(key, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, AppendOutcome> {
-        let original = Arc::clone(&meter);
-        NativeProviderFuture::new(&meter, async move {
-            match self
-                .target(|| acyclic_stream::request::append_digest(&request))
-                .await
-            {
-                Ok(target) => target.native_append(request, original).await,
-                Err(error) => Ok(Err(error)),
-            }
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_tail(
         &self,
         path: StreamPath,
@@ -248,16 +231,27 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         self.inner.native_read(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_write(
         &self,
-        request: CommitRequest,
+        request: acyclic_stream::WriteRequest,
         deadline: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
+    ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&meter, async move {
-            match self.target(|| commit_digest(&request)).await {
-                Ok(target) => target.native_commit(request, deadline, original).await,
+            let target = self
+                .target(|| match &request {
+                    acyclic_stream::WriteRequest::Append(request) => {
+                        acyclic_stream::request::append_digest(request)
+                    }
+                    acyclic_stream::WriteRequest::Fork(request) => {
+                        acyclic_stream::request::fork_digest(request)
+                    }
+                    acyclic_stream::WriteRequest::Commit(request) => commit_digest(request),
+                })
+                .await;
+            match target {
+                Ok(target) => target.native_write(request, deadline, original).await,
                 Err(error) => Ok(Err(error)),
             }
         })
@@ -440,25 +434,26 @@ mod tests {
         ) -> Result<super::CommittedEnvelope, super::StreamError> {
             self.inner.read_commit(id).await
         }
-        fn native_commit(
+
+        fn native_write(
             &self,
-            request: super::CommitRequest,
-            _deadline: Option<u64>,
-            _meter: std::sync::Arc<dyn super::NativeReadMeter>,
-        ) -> super::NativeProviderFuture<'_, super::CommitOutcome> {
-            // A definite answer distinct from the trait default's Unsupported.
-            let result = super::commit_digest(&request).map(|digest| self.write(digest));
-            super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
-        }
-        fn native_append(
-            &self,
-            request: super::AppendRequest,
+            request: acyclic_stream::WriteRequest,
+            _: Option<u64>,
             _: std::sync::Arc<dyn super::NativeReadMeter>,
-        ) -> super::NativeProviderFuture<'_, super::AppendOutcome> {
-            let result =
-                acyclic_stream::request::append_digest(&request).map(|digest| self.write(digest));
+        ) -> super::NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
+            let digest = match &request {
+                acyclic_stream::WriteRequest::Append(request) => {
+                    acyclic_stream::request::append_digest(request)
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    acyclic_stream::request::fork_digest(request)
+                }
+                acyclic_stream::WriteRequest::Commit(request) => super::commit_digest(request),
+            };
+            let result = digest.map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
         }
+
         fn native_commit_guarded<E, F, Fut>(
             &self,
             request: super::CommitRequest,
@@ -513,9 +508,13 @@ mod tests {
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error.to_string())?;
-        let outcome =
-            super::StreamProvider::native_commit(&attested, request, None, work.runtime_meter())
-                .await?;
+        let outcome = acyclic_stream::StreamProviderExt::native_commit(
+            &attested,
+            request,
+            None,
+            work.runtime_meter(),
+        )
+        .await?;
         assert!(matches!(outcome, Err(super::StreamError::AccessDenied)));
         assert_eq!(attestor.0.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(

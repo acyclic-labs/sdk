@@ -107,3 +107,66 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResult<()> {
+    fn capture<F>(build: impl FnOnce() -> F) -> (F, acyclic_test_support::AllocationInfo) {
+        let mut future = None;
+        let allocation = acyclic_test_support::measure(|| future = Some(build()));
+        (future.unwrap(), allocation)
+    }
+    let provider = MemoryStream::default();
+    let request = AppendRequest {
+        path: path("native/projection")?,
+        records: vec![OwnedBytes::from_static(b"opaque").into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let accepted = provider.append(request.clone()).await?;
+    let mut measurements = Vec::new();
+    for projected in [false, true] {
+        let meter = Arc::new(Meter::default());
+        let request = request.clone();
+        let allocation = if projected {
+            let (future, allocation) =
+                capture(|| provider.native_append(request, meter.original()));
+            assert_eq!(
+                meter.allocations.load(Ordering::SeqCst),
+                2,
+                "projection deferred frame admission"
+            );
+            let output = future.await??;
+            assert_eq!(output.value(), &accepted);
+            drop(output);
+            allocation
+        } else {
+            let (future, allocation) = capture(|| {
+                provider.native_write(crate::WriteRequest::Append(request), None, meter.original())
+            });
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), 2);
+            let output = future.await??;
+            assert!(
+                matches!(output.value(), crate::WriteOutcome::Append(outcome) if outcome == &accepted)
+            );
+            drop(output);
+            allocation
+        };
+        assert_eq!(allocation.count_total, 2);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        measurements.push((allocation.count_total, allocation.bytes_total));
+    }
+    assert_eq!(measurements[0], measurements[1]);
+    // Reintroducing a boxed projection has identical records and native totals,
+    // but adds a real frame outside the original admission ledger.
+    let meter = Arc::new(Meter::default());
+    let (future, allocation) =
+        capture(|| Box::pin(provider.native_append(request, meter.original())));
+    let admitted = meter.allocations.load(Ordering::SeqCst);
+    assert_eq!(admitted, 2);
+    assert_eq!(allocation.count_total, admitted + 1);
+    assert_eq!(future.await??.value(), &accepted);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}

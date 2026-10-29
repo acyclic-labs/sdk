@@ -2,6 +2,22 @@
 ///
 /// These methods introduce no provider dispatch or independent observation.
 pub trait StreamProviderExt: StreamProvider {
+    /// Projects funded append publication without another future allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send;
+    /// Projects funded commit publication without another future allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send;
+
     /// Canonical append publication, preserving its genuine retry family.
     fn append(
         &self,
@@ -58,6 +74,48 @@ pub trait StreamProviderExt: StreamProvider {
 }
 
 impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_append(
+        &self,
+        request: AppendRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send {
+        let future = self.native_write(WriteRequest::Append(request), None, meter);
+        async move {
+            let result = future.await?;
+            Ok(result.and_then(|output| {
+                let (outcome, allocation) = output.into_parts();
+                match outcome {
+                    WriteOutcome::Append(outcome) => {
+                        Ok(NativeStreamOutput::new(outcome, allocation))
+                    }
+                    _ => Err(StreamError::InvalidResponse),
+                }
+            }))
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_commit(
+        &self,
+        request: CommitRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send {
+        let future = self.native_write(WriteRequest::Commit(request), deadline, meter);
+        async move {
+            let result = future.await?;
+            Ok(result.and_then(|output| {
+                let (outcome, allocation) = output.into_parts();
+                match outcome {
+                    WriteOutcome::Commit(outcome) => {
+                        Ok(NativeStreamOutput::new(outcome, allocation))
+                    }
+                    _ => Err(StreamError::InvalidResponse),
+                }
+            }))
+        }
+    }
+
     fn append(
         &self,
         request: AppendRequest,

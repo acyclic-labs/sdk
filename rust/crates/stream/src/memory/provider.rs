@@ -452,25 +452,115 @@ impl StreamProvider for MemoryStream {
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        self.native_commit_guarded(request, deadline, meter, || futures::future::ready(Ok(())))
+        before: F,
+    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.guarded_commit(request, deadline, meter, before, std::convert::identity)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        maximum_record_bytes: usize,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
+        Work::start(meter, |work| async move {
+            let provider = self.with_context(Arc::clone(&work));
+            let result = async {
+                let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
+                work.reserve_write(maximum_record_bytes)?;
+                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
+                let ingress = Arc::clone(&slot);
+                let writer_work = Arc::clone(&work);
+                let future = work.record(crate::NativeProviderFuture::try_new(
+                    &work.meter,
+                    async move {
+                        let result = match ingress.receive().await {
+                            Ok(body) => plan.settle(body).await,
+                            Err(error) => Err(error),
+                        };
+                        writer_work.finish(result)
+                    },
+                ))?;
+                Ok((
+                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
+                    None,
+                ))
+            }
+            .await;
+            work.finish(result)
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_guarded<E, F, Fut>(
+    fn native_write(
+        &self,
+        request: crate::WriteRequest,
+        deadline: Option<u64>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        match request {
+            crate::WriteRequest::Append(request) => {
+                Work::start(meter, |work| async move {
+                    let provider = self.with_context(Arc::clone(&work));
+                    let existing = provider.has_replay(&request.idempotency_key).await;
+                    let existing = match existing {
+                        Ok(existing) => existing,
+                        Err(error) => return work.finish(Err(error)),
+                    };
+                    if !existing
+                        && let Err(error) = work.reserve_write(
+                            request
+                                .records
+                                .iter()
+                                .map(AppendRecord::payload_bytes)
+                                .sum(),
+                        )
+                    {
+                        return work.finish(Err(error));
+                    }
+                    work.finish(provider.append_inner(request).await.map(
+                        |(outcome, allocation)| (crate::WriteOutcome::Append(outcome), allocation),
+                    ))
+                })
+            }
+            crate::WriteRequest::Commit(request) => self.guarded_commit(
+                request,
+                deadline,
+                meter,
+                || futures::future::ready(Ok(())),
+                crate::WriteOutcome::Commit,
+            ),
+            crate::WriteRequest::Fork(_) => {
+                crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MemoryStream {
+    fn guarded_commit<T, C, E, F, Fut>(
         &self,
         mut request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T, E>
     where
-        Self: Sized,
+        T: Send + 'static,
+        C: FnOnce(CommitOutcome) -> T + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
@@ -528,69 +618,7 @@ impl StreamProvider for MemoryStream {
                 }
             }
             .await;
-            work.finish(result)
-        })
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_prepare_commit(
-        &self,
-        request: CommitRequest,
-        maximum_record_bytes: usize,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
-        Work::start(meter, |work| async move {
-            let provider = self.with_context(Arc::clone(&work));
-            let result = async {
-                let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
-                work.reserve_write(maximum_record_bytes)?;
-                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
-                let ingress = Arc::clone(&slot);
-                let writer_work = Arc::clone(&work);
-                let future = work.record(crate::NativeProviderFuture::try_new(
-                    &work.meter,
-                    async move {
-                        let result = match ingress.receive().await {
-                            Ok(body) => plan.settle(body).await,
-                            Err(error) => Err(error),
-                        };
-                        writer_work.finish(result)
-                    },
-                ))?;
-                Ok((
-                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
-                    None,
-                ))
-            }
-            .await;
-            work.finish(result)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        Work::start(meter, |work| async move {
-            let provider = self.with_context(Arc::clone(&work));
-            let existing = provider.has_replay(&request.idempotency_key).await;
-            let existing = match existing {
-                Ok(existing) => existing,
-                Err(error) => return work.finish(Err(error)),
-            };
-            if !existing
-                && let Err(error) = work.reserve_write(
-                    request
-                        .records
-                        .iter()
-                        .map(AppendRecord::payload_bytes)
-                        .sum(),
-                )
-            {
-                return work.finish(Err(error));
-            }
-            work.finish(provider.append_inner(request).await)
+            work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
         })
     }
 }

@@ -276,22 +276,28 @@ impl StreamProvider for LocalStream {
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
     }
-    fn native_append(
+
+    fn native_write(
         &self,
-        request: AppendRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        LocalStream::native_append(self, request, meter)
-    }
-    fn native_commit(
-        &self,
-        request: CommitRequest,
+        request: crate::WriteRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        LocalStream::guarded_commit(self, request, deadline, meter, || {
-            futures::future::ready(Ok(()))
-        })
+    ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        match request {
+            crate::WriteRequest::Append(request) => {
+                self.append_funded(request, meter, crate::WriteOutcome::Append)
+            }
+            crate::WriteRequest::Commit(request) => self.guarded_commit(
+                request,
+                deadline,
+                meter,
+                || futures::future::ready(Ok(())),
+                crate::WriteOutcome::Commit,
+            ),
+            crate::WriteRequest::Fork(_) => {
+                crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
     }
 
     fn native_commit_guarded<E, F, Fut>(
@@ -306,7 +312,14 @@ impl StreamProvider for LocalStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        LocalStream::guarded_commit(self, request, deadline, meter, before)
+        LocalStream::guarded_commit(
+            self,
+            request,
+            deadline,
+            meter,
+            before,
+            std::convert::identity,
+        )
     }
     fn native_prepare_commit(
         &self,
