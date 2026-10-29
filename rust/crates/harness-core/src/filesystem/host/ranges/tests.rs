@@ -216,14 +216,17 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     let denied = host.read_pinned_range(&file, range, Some(&io)).await;
     // Authenticating an immutable blob requires its complete selected chunk.
     // This deliberately insufficient allowance must fail on the original ledger.
-    assert!(matches!(
-        denied,
-        Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
-            acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
-                counter: "bytes_hashed", maximum: 65536, ..
-            })
-        )
-    ));
+    assert!(
+        matches!(
+            &denied,
+            Err(Error::NativeWorkspace { source, .. }) if matches!(source.as_ref(),
+                acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "bytes_hashed", maximum: 65536, ..
+                })
+            )
+        ),
+        "authentication returned another result: {denied:?}"
+    );
     let work = acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::WorkBudget {
             source_bytes_read: 64 * 1024,

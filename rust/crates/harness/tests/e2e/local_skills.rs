@@ -4,7 +4,7 @@ use acyclic_harness::{
     context::{CompactionPolicy, ModelContextCapacity, SkillMetadata},
     model::{Model, ModelContent},
     native_settings::SettingsConfig,
-    test_support::{ScriptedModelProvider, ScriptedTurn},
+    test_support::{PromptOutcome, ScriptedModelProvider, ScriptedTurn, prompt_settled},
 };
 use std::{path::Path, sync::Arc};
 
@@ -45,30 +45,20 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
     Ok(Arc::new(LocalHarness::open(config).await?))
 }
 
-/// Prompts the root agent and waits for its turn to settle; a refused turn
-/// never settles and never reaches the provider.
+/// Observe the same committed prompt completion as local scenarios and DST.
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
-    let (agents, root) = harness.agents().await?;
-    let before = agents.state(root).await?.conversation_tail;
-    acyclic_harness::local::agent_conversation::Conversation::open(harness.connect().await?)?
-        .send(&format!("prompt-{before}"), prompt)
-        .await?;
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_millis(if settles { 8_000 } else { 500 });
-    while std::time::Instant::now() < deadline {
-        if agents.state(root).await?.conversation_tail > before {
-            return if settles {
-                Ok(())
-            } else {
-                Err("a refused turn settled".into())
-            };
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    if settles {
-        Err("the turn did not settle".into())
-    } else {
-        Ok(())
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_millis(if settles { 8_000 } else { 500 }),
+        prompt_settled(
+            harness,
+            &acyclic_harness::OperationId::new().to_string(),
+            prompt,
+        ),
+    )
+    .await??;
+    match (settles, outcome) {
+        (true, PromptOutcome::Settled(..)) | (false, PromptOutcome::Failed(_)) => Ok(()),
+        (_, outcome) => Err(format!("skill turn outcome differs: {outcome:?}").into()),
     }
 }
 
@@ -375,30 +365,5 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     };
     assert_eq!(skill.description, "Updated generation");
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn large_skill_directory_stops_at_the_existing_discovery_bound() -> TestResult {
-    let root = super::local_workspace::temporary()?;
-    let home = super::local_workspace::temporary()?;
-    let state = super::local_workspace::temporary()?;
-    for index in 0..300 {
-        write(
-            root.path(),
-            &format!(".agents/skills/s{index}/SKILL.md"),
-            &format!("---\nname: s{index}\ndescription: bounded\n---\nbody"),
-        )?;
-    }
-    let model = provider(1);
-    let harness = open(config(
-        root.path(),
-        home.path(),
-        state.path(),
-        model.clone(),
-    )?)
-    .await?;
-    turn(&harness, "inventory", false).await?;
-    assert!(model.requests().is_empty());
     Ok(())
 }

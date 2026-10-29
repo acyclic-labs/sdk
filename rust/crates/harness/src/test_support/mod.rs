@@ -62,25 +62,30 @@ pub async fn prompt_settled(
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
     use crate::agent::{AgentOutcome, AgentRecord as _, IntentId, Phase, Reply, StatusRecord};
-    use acyclic_stream::StreamProvider as _;
+    use acyclic_stream::{StreamProvider as _, StreamProviderExt as _};
     use futures::TryStreamExt as _;
     let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     let stream = |error: acyclic_stream::StreamError| crate::Error::Storage(error.to_string());
-    let inbox = crate::local::agent_conversation::Conversation::open(harness.connect().await?)?
-        .send(id, prompt)
-        .await?;
-    let id = IntentId::try_from(id).map_err(agent)?;
     let (agents, root) = harness.agents().await?;
     let provider = agents.provider();
+    let status = root.status().map_err(agent)?;
+    let tail = provider.tail(status.clone()).await.map_err(stream)?;
+    // Follow the current state and future commits before publishing the prompt.
+    // Retrying a settled id still sees its terminal state without replaying the
+    // root's entire lifetime of unrelated statuses.
     let mut statuses = acyclic_stream::records_only(
         provider
             .follow(acyclic_stream::FollowRequest::new(
-                root.status().map_err(agent)?,
-                0,
+                status,
+                tail.saturating_sub(1),
             ))
             .await
             .map_err(stream)?,
     );
+    let inbox = crate::local::agent_conversation::Conversation::open(harness.connect().await?)?
+        .send(id, prompt)
+        .await?;
+    let id = IntentId::try_from(id).map_err(agent)?;
     loop {
         let record = statuses
             .try_next()
@@ -105,7 +110,12 @@ pub async fn prompt_settled(
         Reply::Answered { entry, .. } => {
             let bytes = harness
                 .client_reader()?
-                .read(&entry.output, 1 << 20, None, None)?
+                .read(
+                    &entry.output,
+                    entry.output.descriptor().byte_length(),
+                    None,
+                    None,
+                )?
                 .await?;
             let output = serde_json::from_slice(&bytes)
                 .map_err(|error| crate::Error::Invalid(error.to_string()))?;

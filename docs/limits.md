@@ -1587,3 +1587,15 @@ Runtime304 also fails both fixed1MiB memory-credit range/receipt controls (obser
 | Access-record proof input4096-byte early return | `rust/crates/harness-core/src/filesystem/access/verification.rs:43` | Proof input restriction, OPEN | This helper is shared by fuzzing/seeds/shrinking and is not a product admission path. The early return skips the oracle for larger records and needs removal with meaningful original finite-budget and complete round-trip proof coverage. Do not declare it a protective product guard or silently remove fuzz coverage. |
 
 Check305 at9a62cbd6d6 passes native all-target Harness-core/Harness/GraphCoder and Harness browser WASM compilation. The branch composes actual merged1801 at9f53a59b1b; its concurrent publication test hunk now belongs entirely to main, while the original event-only failing receipt remains historical. Runtime304 and its three unresolved range/authentication credit failures are not overwritten by this compile receipt.
+
+
+## Shared prompt completion and remaining skill acceptance waits
+
+| Constant or expression | File:line | Category | Action |
+| --- | --- | --- | --- |
+| Prompt output read1MiB | `rust/crates/harness/src/test_support/mod.rs:107` | 1 arbitrary result cap | Delete. The one shared local/DST/provider prompt helper reads the exact length in its original authenticated FileRef instead of imposing another default ceiling. Whole decoded output residency remains OPEN; no streaming/RSS claim. |
+| Prompt follow from lifetime status0 | `rust/crates/harness/src/test_support/mod.rs:68` | Structural scale prerequisite | Observe the current tail, then follow from its latest state before publishing the prompt. Durable follow retains early completion; settled-id retry still sees the current terminal state. Avoid lifetime replay on each prompt, preserving original inbox-bound reply and typed terminal refusal. No second event producer. |
+| Skill test20ms status probes /500ms absence success | `rust/crates/harness/tests/e2e/local_skills.rs:49` | Readiness polling, DELETE | All skill acceptance waits use the shared actual prompt-settled/failed helper. Keep original8000/500ms failure deadlines, but expiry fails instead of inventing successful refusal. Preserve malformed/duplicate source, lazy bodies, generation-refresh and pinned-read assertions. |
+| Skill directory300 default-count refusal test | `rust/crates/harness/tests/e2e/local_skills.rs` (removed) | 1 deleted-cap test | Delete obsolete default256-discovery-bound test. Default DiscoveryWork has optional None totals. Existing shared native catalog finite directory/entry denial controls remain; no model-context budget is widened to force a larger catalog into one physical request. Paged catalog/context residency remains separately OPEN. |
+
+Changed-source qualification pending. The existing range finite-hash assertion only gains actual-result diagnostics; its exact typed error/counter/65536 policy stays unchanged.
