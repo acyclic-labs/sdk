@@ -237,6 +237,15 @@ fn decode(encoded: &[u8]) -> Option<State> {
                     CommittedMutation::Append(append) => &append.path,
                     CommittedMutation::Fork(fork) => &fork.destination,
                 }),
+                |prefix| {
+                    envelope
+                        .mutations
+                        .binary_search_by(|mutation| match mutation {
+                            CommittedMutation::Append(append) => append.path.as_str().cmp(prefix),
+                            CommittedMutation::Fork(fork) => fork.destination.as_str().cmp(prefix),
+                        })
+                        .is_ok()
+                },
             )
             .ok()?;
         publish(

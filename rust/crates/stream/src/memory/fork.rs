@@ -48,7 +48,10 @@ impl MemoryStream {
             })],
         };
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
+        let (paths, _paths) =
+            self.paths(&state, std::iter::once(&receipt.destination), |prefix| {
+                receipt.destination.as_str() == prefix
+            })?;
         self.reserve_retained(state)?;
         Ok(Decision::Accepted {
             bytes: 0,
