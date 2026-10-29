@@ -80,6 +80,7 @@ impl NativeWatch {
                     && excluded.iter().any(|name| relative.0 == Path::new(name)))
                     || self
                         .shared
+                        .state
                         .lock()
                         .map_err(|_| NativeWatchError::StatePoisoned)?
                         .excluded

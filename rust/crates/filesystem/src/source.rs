@@ -247,6 +247,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
+    /// Waits for a native hint or invalidation without holding the session
+    /// operation lock. Cancellation and observer storage use the caller's
+    /// original native ledger; waking alone does not publish a generation.
+    pub async fn changed_with_native_work(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), SourceError> {
+        let changed = self
+            .inner
+            .lock()
+            .await
+            .watcher
+            .changed_with_native_work(work);
+        changed.await.map_err(engine)
+    }
+
     /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
     pub async fn rescan(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.rescan_with_key(IdempotencyKey::new()).await
