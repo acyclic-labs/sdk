@@ -160,7 +160,10 @@ impl RuntimeScope {
                 self.limits.attachments.map(std::num::NonZeroUsize::get),
                 limits.attachments.map(std::num::NonZeroUsize::get),
             )
-            && limits.render_bytes <= self.limits.render_bytes
+            && self
+                .limits
+                .render_bytes
+                .is_none_or(|maximum| limits.render_bytes.is_some_and(|value| value <= maximum))
             && narrows(
                 self.limits.model_steps.map(std::num::NonZeroUsize::get),
                 limits.model_steps.map(std::num::NonZeroUsize::get),
