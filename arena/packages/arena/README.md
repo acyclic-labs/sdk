@@ -38,6 +38,8 @@ arena board --badge badge.svg
 
 Every race posts the rendered state to OpenRouter: the task text, each fork's changed paths, unified diffs of the changed files (capped at `maxDiffChars`, default 1500 per file), and the last 12 lines of test output. Credential-shaped strings (API keys, AWS and GitHub tokens, `token=`/`password=` pairs, private key blocks) are scrubbed first; pass `redact: false` to turn that off. The scrubber is pattern-based, so keep secrets out of files a worker might touch and out of test output rather than relying on it. `--save-states` writes the same rendered state to disk.
 
+Workers and test commands have no default deadline. Use `--timeout <seconds>` for workers or `--test-timeout <seconds>` for test commands; library callers can set `workerTimeoutMs` and `testTimeoutMs` on `RaceOptions`. `WorkerOptions.timeoutMs` remains an explicit deadline for a directly started worker.
+
 ## Honest notes
 
 Jev favours the fork it sees labelled "A": identical forks scored 0.95 / 0.05 in a self-race. The arena therefore asks twice, once per fork order with the forks relabelled by position, and averages. Identical forks now score 0.50 / 0.50 and real differences still come through at 0.99. Set `ARENA_ROUTE=aggressive` for the routing thresholds that beat a fixed cheap model on the twelve-task eval; the defaults over-escalate. See `arena/evals/REPORT.md` for every experiment.

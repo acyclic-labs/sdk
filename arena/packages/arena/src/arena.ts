@@ -19,6 +19,8 @@ export interface RaceOptions {
   testsOverrideSafety?: boolean;    // a passing probe satisfies requireSafe (default true: tests are ground truth)
   redact?: boolean;                 // scrub credential-shaped strings from the state before it leaves the machine (default true)
   workerTimeoutMs?: number;
+  /** Optional caller-selected deadline for each test command. */
+  testTimeoutMs?: number;
   maxFiles?: number;
   maxDiffChars?: number;
   onEvent?: (line: string) => void;
@@ -108,7 +110,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
         probe = "(no changes in this fork; tests not run)";
         say(`probe ${f.label}: skipped, no changes`);
       } else if (opts.testCommand) {
-        const p = spawnSync("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: 300_000 });
+        const p = spawnSync("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: opts.testTimeoutMs });
         probeOk = p.status === 0;
         probe = ((p.stdout || "") + (p.stderr || "")).trim().split("\n").slice(-12).join("\n");
         say(`probe ${f.label}: ${probeOk ? "pass" : "fail"}`);

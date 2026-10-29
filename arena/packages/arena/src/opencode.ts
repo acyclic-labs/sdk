@@ -1,4 +1,4 @@
-/** One headless OpenCode worker in a directory, on a model, with a time cap.
+/** One headless OpenCode worker in a directory, on a model, with an optional deadline.
  *  stdin is closed on purpose: OpenCode reads piped input when stdin is not a TTY and would wait forever. */
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -31,6 +31,7 @@ export interface WorkerResult {
 }
 
 export interface WorkerOptions {
+  /** Optional caller-selected deadline; omitted means no time limit. */
   timeoutMs?: number;
   binary?: string;
   onEvent?: (e: { type: string; part?: unknown }) => void;
@@ -39,7 +40,7 @@ export interface WorkerOptions {
 
 export function runWorker(dir: string, model: string, task: string, opts: WorkerOptions = {}): Promise<WorkerResult> {
   const binary = opts.binary ?? process.env.OPENCODE_BIN ?? "opencode";
-  const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+  const timeoutMs = opts.timeoutMs;
   const t0 = Date.now();
   const res: WorkerResult = { model, dir, ok: false, exitCode: null, timedOut: false, ms: 0, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 }, steps: 0, toolCalls: 0, text: "" };
@@ -49,7 +50,8 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
     const p = spawn(binary, ["run", "--format", "json", "-m", `openrouter/${model}`, "--dir", dir, task],
       { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_DATA_HOME: dataHome, ...opts.env } });
     let buf = "", err = "";
-    const timer = setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);
+    const timer = timeoutMs === undefined ? undefined
+      : setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);
     const handle = (line: string) => {
       if (!line.trim()) return;
       let e: { type?: string; part?: Record<string, unknown> };

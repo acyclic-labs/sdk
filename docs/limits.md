@@ -440,16 +440,16 @@ Qualification uses the same accepted-byte/count/digest oracle for candidate and 
 
 | Candidate | File:line | Classification | Action |
 |---|---|---|---|
-| `if SLEEP: time.sleep(SLEEP)` | `arena/evals/variance/run.py:51` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `await new Promise((r) => setTimeout(r, delay));` | `arena/packages/arena/src/jev.ts:76` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `const timer = setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);` | `arena/packages/arena/src/opencode.ts:52` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `time.sleep(delay); delay *= 2; continue` | `arena/packages/jev/src/jev/backends/jev.py:100` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `time.sleep(self.latency_ms / 1000.0)` | `arena/packages/jev/src/jev/backends/mock.py:35` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `time.sleep(delay)` | `arena/packages/jev/src/jev/backends/openrouter.py:130` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `let delay = tokio::time::sleep(sleep);` | `plugin/identity/src/lib.rs:611` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:640` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:988` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `tokio::task::yield_now().await;` | `plugin/identity/src/tests/poll_clock.rs:72` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `if SLEEP: time.sleep(SLEEP)` | `arena/evals/variance/run.py:51` | Deliberate workload pacing | Keep caller-selected SLEEP between completed benchmark calls; default zero, no readiness observation. |
+| `await new Promise((r) => setTimeout(r, delay));` | `arena/packages/arena/src/jev.ts:76` | Transient transport backoff | Keep only after HTTP429/500/502/503, under explicit retry policy; never a readiness probe. |
+| `const timer = setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);` | `arena/packages/arena/src/opencode.ts:52` | 1: default product deadline; explicit caller policy retained | Remove the ten-minute default and CLI600-second fallback. Omitted timeout creates no timer; finite caller deadlines retain process termination and close/error settlement. |
+| `time.sleep(delay); delay *= 2; continue` | `arena/packages/jev/src/jev/backends/jev.py:100` | Transient transport backoff | Keep only after HTTP429/500/502/503, under explicit retry policy. |
+| `time.sleep(self.latency_ms / 1000.0)` | `arena/packages/jev/src/jev/backends/mock.py:35` | Deliberate workload latency | Keep explicit latency_ms simulation; default zero, no readiness observation. |
+| `time.sleep(delay)` | `arena/packages/jev/src/jev/backends/openrouter.py:130` | Transient transport backoff | Keep only after HTTP429/500/502/503, under explicit retry policy. |
+| `let delay = tokio::time::sleep(sleep);` | `plugin/identity/src/lib.rs:611` | Product readiness polling, G69 | Open: device authorization repeats token exchange on a timer. Replace only with the original upstream approval/completion producer; preserve dispatched exchange custody and typed cancellation. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:640` | Test readiness polling | Open: wait_for_rotated_credentials repeatedly reads credential state and yields. Await the original persistence completion event; preserve blocked-stdout and rotated-token controls. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:988` | Test readiness polling | Open: blocked-output cancellation observes a quiet300ms interval by yielding and comparing poll counts. Await the original operation cancellation/retirement event, retaining the no-further-exchange negative control. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/tests/poll_clock.rs:72` | Test busy polling | Open: an always-runnable yield loop advances production device timers and real I/O deadlines. Replace with event-driven timer registration/real I/O completion after G69 producer adoption; retain the stalled-I/O deadline negative. |
 | `time.sleep(30)` | `plugin/tests/hosts/managed-session.py:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `time.sleep(30)` | `plugin/tests/hosts/managed-session.py:84` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `assert time.monotonic()<deadline,'owner readiness';time.sleep(.01)` | `plugin/tests/hosts/managed-session.py:99` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
@@ -1883,3 +1883,12 @@ The complete package-generation/grouping test files run23 controls:21 pass,2 fai
 
 
 Script qualification341 runs23 complete controls:22 pass/1 fails, with none skipped/cancelled/todo. The embedded parser and all manifest/missing-dependency/refusal controls pass. The remaining expected harness closure still included the retired direct Objects dependency; actual package manifests/references require Auth, Actors, Harness. That exact fixture is corrected. No compiler/runtime phase ran in341.
+
+## Arena deadline audit
+
+| Constant / policy | File:line | Category | Action |
+|---|---|---|---|
+| Worker timeout default ten minutes; CLI timeout default600 seconds | `arena/packages/arena/src/opencode.ts:43`, `arena/packages/arena/src/cli.ts:82` | 1 | Removed both defaults. Omitted policy creates no deadline; explicit WorkerOptions.timeoutMs / RaceOptions.workerTimeoutMs and --timeout retain the original kill and close/error settlement. |
+| Test command timeout300000ms | `arena/packages/arena/src/arena.ts:113` | 1 | Removed default. RaceOptions.testTimeoutMs / --test-timeout opt in to the existing process deadline. |
+
+These source changes do not close Arena's remaining whole-buffer subprocess output, rendered diff/file omissions or inference context paging. Compilation is pending; no new runtime or performance claim is made.
