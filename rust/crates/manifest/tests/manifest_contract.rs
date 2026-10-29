@@ -994,3 +994,63 @@ fn actor_state_binding_is_own_actor_only_and_cannot_be_selected_by_a_worker()
     assert!(validate(&manifest).is_err());
     Ok(())
 }
+
+#[test]
+fn guest_admission_selects_original_owner_without_resource_authority()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_auth::guest::GuestAdmissionKind;
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    for kind in [
+        GuestAdmissionKind::PlatformAuthority,
+        GuestAdmissionKind::HostAccess,
+    ] {
+        environment
+            .bindings
+            .push(Binding::guest_admission(kind.as_str().into(), kind)?.into());
+        environment
+            .entries
+            .first_mut()
+            .ok_or_else(missing)?
+            .bindings
+            .push(kind.as_str().into());
+    }
+    validate(&manifest)?;
+    let environment = manifest.environments.first().ok_or_else(missing)?;
+    let entry = environment.entries.first().ok_or_else(missing)?;
+    let lowered = lower_actor(environment, entry, "admitted")?;
+    assert_eq!(
+        lowered
+            .bindings()
+            .iter()
+            .filter(|b| b.guest_admission_kind().is_some())
+            .count(),
+        2
+    );
+    let env = environment_typescript(&manifest, &environment.name, &entry.name)?;
+    assert!(env.contains("WasmAuthorityCapability") && env.contains("EventHostAccess"));
+    let json = serde_json::to_value(&manifest)?;
+    // A selector is never allowed to carry caller-provided grant/target authority.
+    for (field, value) in [
+        ("capability", json!("forged")),
+        ("resource", json!("identity:/harness")),
+        ("stateTransaction", json!(true)),
+        ("guestAdmission", json!("unknown")),
+        ("targetAccount", json!("AQ==")),
+    ] {
+        let mut forged = json.clone();
+        let bindings = forged["environments"][0]["bindings"]
+            .as_array_mut()
+            .ok_or("bindings")?;
+        let selected = bindings
+            .iter_mut()
+            .find(|b| b["name"] == "platformAuthority")
+            .ok_or("binding")?;
+        selected[field] = value;
+        assert!(
+            parse(&serde_json::to_vec(&forged)?).is_err(),
+            "accepted {field}"
+        );
+    }
+    Ok(())
+}

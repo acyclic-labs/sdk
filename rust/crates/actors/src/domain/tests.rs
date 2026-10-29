@@ -232,6 +232,7 @@ fn subscription_projection_keeps_canonical_current_head_rule() {
 fn wire_ingress_rechecks_container_constructor_predicates() {
     let invalid_binding = wire::Binding {
         state_transaction: false,
+        guest_admission: None,
         target_account: Vec::new(),
         actor_namespace: None,
         worker_service: None,
@@ -270,6 +271,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     };
     let binding = wire::Binding {
         state_transaction: false,
+        guest_admission: None,
         target_account: Vec::new(),
         actor_namespace: None,
         worker_service: None,
@@ -327,6 +329,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         .bindings
         .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
             state_transaction: false,
+            guest_admission: None,
             target_account: Vec::new(),
             actor_namespace: None,
             worker_service: None,

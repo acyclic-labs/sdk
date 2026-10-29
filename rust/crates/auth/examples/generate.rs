@@ -9,6 +9,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut typescript =
         String::from("// Generated from acyclic-auth contract-derive declarations.\n");
     for declaration in [
+        acyclic_auth::guest::GuestAdmissionKind::decl(&ts_rs::Config::default()),
         PrincipalKind::decl(&ts_rs::Config::default()),
         ResourcePattern::decl(&ts_rs::Config::default()),
         ResourceGrant::decl(&ts_rs::Config::default()),

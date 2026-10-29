@@ -302,7 +302,7 @@ function wasmBinding(): ActorsRustBinding {
 }
 
 interface WasmActorsModule extends ActorsNominalBinding {
-  readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined) => void;
+  readonly validateDeploymentBinding: (name: string, capability: string, resource: string, account: Uint8Array, namespace: string | undefined, worker: string | undefined, stateTransaction: boolean, guestAdmission: string | undefined) => void;
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
 }
@@ -312,14 +312,16 @@ export async function validateDeploymentBinding(binding: import("./generated/sem
   for (const value of [binding.name, binding.capability, binding.resource]) {
     if (typeof value !== "string") throw new TypeError("binding fields must be text");
   }
-  for (const value of [binding.actorNamespace, binding.workerService]) {
+  for (const value of [binding.actorNamespace, binding.workerService, binding.guestAdmission]) {
     if (value !== undefined && typeof value !== "string") throw new TypeError("binding targets must be text");
   }
   if (!(binding.targetAccount instanceof Uint8Array)) throw new TypeError("binding account must be Uint8Array bytes");
   const account = new Uint8Array(binding.targetAccount);
-  const {name, capability, resource, actorNamespace, workerService} = binding;
+  const {name, capability, resource, actorNamespace, workerService, guestAdmission} = binding;
+  const stateTransaction = binding.stateTransaction ?? false;
+  if (typeof stateTransaction !== "boolean") throw new TypeError("binding state selector must be boolean");
   const wasm = await loadWasmModule();
-  wasm.validateDeploymentBinding(name, capability, resource, account, actorNamespace, workerService);
+  wasm.validateDeploymentBinding(name, capability, resource, account, actorNamespace, workerService, stateTransaction, guestAdmission);
 }
 
 let wasmModulePromise: Promise<WasmActorsModule> | undefined;

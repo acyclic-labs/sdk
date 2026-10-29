@@ -217,7 +217,7 @@ fn validate_environment<'a>(
             p,
             "binding-name",
         )?;
-        if binding.is_actor_state() {
+        if binding.is_actor_state() || binding.guest_admission_kind().is_some() {
             continue;
         }
         let grant = grants

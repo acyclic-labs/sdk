@@ -45,6 +45,25 @@ fn lifetime(
     ))
 }
 
+#[test]
+fn guest_binding_stop_during_projection_refuses_ready_value() -> Result<()> {
+    use acyclic_auth::guest::{GuestAdmission, GuestAdmissionKind};
+    let (root, scope) = fixture()?;
+    let (context, stop) = lifetime(&root, &scope)?;
+    let binding = GuestAdmission::admit(root.admit(scope.clone(), context.clone())?)?;
+    let result = binding.project(GuestAdmissionKind::HostAccess, |_, _| {
+        drop(stop);
+        Ok(())
+    });
+    assert!(matches!(result, Err(Error::Cancelled)));
+    assert!(
+        root.admit(scope, context)
+            .and_then(GuestAdmission::admit)
+            .is_err()
+    );
+    Ok(())
+}
+
 struct Forward {
     native: AdmittedAuthority,
     calls: AtomicUsize,

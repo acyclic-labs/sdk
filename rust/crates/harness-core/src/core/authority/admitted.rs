@@ -188,6 +188,23 @@ pub struct AdmittedAuthority {
     custody: Custody,
 }
 
+impl acyclic_auth::trust::ChangeSource for AdmittedAuthority {
+    fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
+        self.caller.verifier.public.changes.check_open()
+    }
+    fn changed(&self) -> acyclic_auth::trust::Changed {
+        self.caller.verifier.public.changes.changed()
+    }
+}
+
+impl acyclic_auth::guest::GuestAdmissionOwner for AdmittedAuthority {
+    type Error = Error;
+
+    fn check(&self) -> Result<()> {
+        AdmittedAuthority::check(self)
+    }
+}
+
 impl AdmittedAuthority {
     fn after_dispatch(error: Error, operation: OperationId) -> Error {
         match error {
@@ -293,6 +310,12 @@ impl AdmittedAuthority {
 
     pub(super) fn check_scope(&self, scope: &Scope) -> Result<()> {
         self.context.check().map_err(|_| Error::Cancelled)?;
+        self.caller
+            .verifier
+            .public
+            .changes
+            .check_open()
+            .map_err(|_| Error::Cancelled)?;
         if let Custody::Platform(source) = &self.custody {
             source.check(scope)?;
         }

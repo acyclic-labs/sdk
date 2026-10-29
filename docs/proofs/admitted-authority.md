@@ -190,3 +190,69 @@ RPC is added. Dispatch and normal retained checks add zero publication calls.
 Each monitor recheck is bounded by its own credential dependencies; existing
 publisher fanout depends on subscribers and is not claimed constant in that
 count. No history, account or agent scan is introduced.
+
+## Guest admission bindings
+
+`Binding::guest_admission(name, GuestAdmissionKind)` selects `platformAuthority`
+or `hostAccess`. These selectors carry no resource grant, target account, caller,
+credential or trust snapshot. The manifest refuses a selector mixed with any of
+those fields or with actor state. Ordinary resource bindings cannot substitute
+for admission. Selected environment types are `WasmAuthorityCapability` and
+`EventHostAccess` respectively.
+
+The trusted opener retains Auth's `GuestAdmission<AdmittedAuthority>` and uses
+`project` to return the original invocation's ports. Both native `AuthorityRoot`
+admission and hosted `from_platform` admission implement the same Auth owner
+contract. This retained owner has no serialization or guest constructor. Its
+`changed` forwards the original trust publication source, including typed source
+loss; it neither keeps a signing producer alive nor creates another notifier.
+The existing guest lifetime monitor remains responsible for fencing original
+funded work and joining private-mapping retirement. Binding materialization does
+not introduce a second monitor.
+
+JavaScript hosts implement `GuestAdmissionHost<A,H>.binding(kind)` over that Rust
+owner and keep the port outside guest memory. `materializeGuestAdmission` accepts
+only that separately retained port and a Rust-validated selection; it never reads
+an authority from guest request/configuration. A missing port refuses before guest
+entry. Local and hosted JavaScript use the same materializer. The isolated host
+fixture is a concrete adapter: `binding` runs the host projection inside the original Rust owner guard,
+then returns its retained authority port or session verifier, sealed scoped
+credential and current policy. Only public proof and scoped callable authority
+cross the boundary; signing custody and append secrets stay in host memory.
+
+Required work per owner admission is one existing synchronous guard plus one
+non-dispatching source-liveness observation. Native liveness reads the existing
+watch closure state without registering or consuming an event; the Wasm adapter
+uses the original owner's synchronous `trustClosed` guard. Each projection guard
+includes that same observation, preventing a lost producer from issuing another
+binding even before its asynchronous wake is delivered. Per selected
+projection it is two guards (before projection and before accepting its ready
+result), one enum branch and one host adapter call. Before this contract there
+was no supported admission binding; identity-resource aliases performed zero
+admission checks and supplied no authority guarantee. After it, materialization
+adds zero syscalls, durability barriers, remote requests, signature verifications,
+mints, timers, tasks, publication channels or credential copies. The retained
+owner is moved into the primitive without allocation. A JS environment retains
+references to the same two ports rather than reminting or cloning credentials per
+selection. The fixture's Wasm adapter additionally encodes/decodes the small kind string at
+its host call boundary and retains two projection callbacks once at setup; no
+callback is allocated per warm selection. The JavaScript adapter observes its original
+abort signal and wall clock before entering Rust, so a same-turn stop cannot wait
+for a Promise continuation before refusing projection. The fixture lazily creates its one public session verifier and sealed
+credential only when host access is selected; these are boundary construction
+costs, not warm selection costs. Guard cost retains the existing dependency-size
+accounting; selection itself is constant in agents, history and manifest size.
+
+Controls enter through independent hosted verification, select the original
+platform owner through Auth, and revoke or drop its actual trust producer while
+idle. The original work stops and its private memory owner completes retirement.
+Both projections refuse afterwards before adapter dispatch. An unrelated live
+source remains pending as a negative control. A native projection that stops its
+original invocation while returning a ready value refuses at the result boundary.
+The public JavaScript validator preserves both selector fields through its Wasm
+bridge; Rust remains the single authority-field admission rule. Manifest and real
+Wasm validator forgery controls mix admission with grant, resource, target and state or
+select an unknown kind. The real JavaScript host control admits a guest through
+the public materializer, observes original revocation, and refuses retained/new
+work; missing bindings and guest-shaped admission objects refuse. None of these
+controls waits on a timer or treats a timeout as evidence.

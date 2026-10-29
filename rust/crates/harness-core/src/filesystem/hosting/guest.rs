@@ -465,10 +465,16 @@ mod tests {
                 operations,
                 changes,
             )?;
-            let runtime = crate::core::RuntimeAuthority::admitted(
-                admitted,
-                crate::OperationId::from_bytes([74; 16]),
-            );
+            let binding = acyclic_auth::guest::GuestAdmission::admit(admitted)?;
+            let runtime = binding.project(
+                acyclic_auth::guest::GuestAdmissionKind::PlatformAuthority,
+                |owner, _| {
+                    Ok(crate::core::RuntimeAuthority::admitted(
+                        owner.clone(),
+                        crate::OperationId::from_bytes([74; 16]),
+                    ))
+                },
+            )?;
             let verifier = runtime.verifier(&mut None)?;
             let verified = verifier.authenticate_scope(&scope, &mut None)?;
             let cancellation = CancellationToken::new();
@@ -505,7 +511,9 @@ mod tests {
                 Some(context),
                 work.clone(),
             )?;
-            futures::pin_mut!(monitor, detached);
+            let changed = binding.changed();
+            futures::pin_mut!(monitor, detached, changed);
+            assert!(changed.as_mut().now_or_never().is_none());
             assert!(monitor.as_mut().now_or_never().is_none());
             assert!(detached.as_mut().now_or_never().is_none());
             assert!(cancellation.check().is_ok());
@@ -514,6 +522,22 @@ mod tests {
             } else {
                 issuer.revoke_workload(&scope)?;
             }
+            assert!(changed.as_mut().now_or_never().is_some());
+            let dispatched = std::cell::Cell::new(false);
+            for kind in [
+                acyclic_auth::guest::GuestAdmissionKind::PlatformAuthority,
+                acyclic_auth::guest::GuestAdmissionKind::HostAccess,
+            ] {
+                assert!(
+                    binding
+                        .project(kind, |_, _| {
+                            dispatched.set(true);
+                            Ok(())
+                        })
+                        .is_err()
+                );
+            }
+            assert!(!dispatched.get(), "revoked binding reached projection");
             // The immutable independent snapshot alone still accepts history.
             public.verify(&scope, &mut None)?;
             assert!(

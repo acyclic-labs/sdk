@@ -17,7 +17,9 @@ use wasm_bindgen::prelude::*;
 pub struct HostFixtureAuthority {
     root: AuthorityRoot,
     admitted: AdmittedAuthority,
+    binding: acyclic_auth::guest::GuestAdmission<AdmittedAuthority>,
     parent: acyclic_auth::verify::VerifiedCapability,
+    customer: acyclic_auth::verify::VerifiedCapability,
     context: Context,
     operation: OperationId,
     caller: CallerContext,
@@ -152,14 +154,44 @@ impl HostFixtureAuthority {
             }
         });
         let admitted = root.admit(scope, context.clone()).map_err(error)?;
+        let binding =
+            acyclic_auth::guest::GuestAdmission::admit(admitted.clone()).map_err(error)?;
         Ok(Self {
             root,
             admitted,
+            binding,
             parent,
+            customer,
             context,
             operation,
             caller,
         })
+    }
+
+    /// Host-only projection admission. The JavaScript adapter returns the SAME
+    /// invocation ports after this boundary; no guest descriptor supplies them.
+    pub fn binding(&self, kind: &str, project: &js_sys::Function) -> Result<JsValue, JsValue> {
+        let kind = acyclic_auth::guest::GuestAdmissionKind::parse(kind)
+            .ok_or_else(|| error("invalid guest admission projection"))?;
+        self.binding
+            .project(kind, |_, _| Ok(project.call0(&JsValue::UNDEFINED)))
+            .map_err(error)?
+    }
+
+    /// Only sealed scoped session evidence crosses into the guest.
+    #[wasm_bindgen(js_name = bindingCredential)]
+    pub fn binding_credential(&self) -> Result<Vec<u8>, JsValue> {
+        self.admitted.check().map_err(error)?;
+        self.customer
+            .encode_sealed()
+            .map(|mut value| std::mem::take(&mut *value))
+            .map_err(error)
+    }
+
+    #[wasm_bindgen(js_name = trustClosed)]
+    pub fn trust_closed(&self) -> bool {
+        self.context.check().is_err()
+            || acyclic_auth::trust::ChangeSource::check_open(&self.admitted).is_err()
     }
 
     pub fn admission(&self) -> Result<JsValue, JsValue> {
