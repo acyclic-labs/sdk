@@ -640,10 +640,10 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
+#[tokio::test]
+async fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("observed"))?;
@@ -655,7 +655,8 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     watch.accept_lazy_baseline()?;
 
     std::fs::write(&file, b"unobserved")?;
-    std::thread::sleep(Duration::from_millis(100));
+    // A completed producer fence proves the unobserved write cannot arrive later.
+    watch.fence(Duration::from_secs(5))?;
     assert!(matches!(
         watch
             .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -666,42 +667,45 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     let portable = crate::path::PortablePath::parse("/observed", VolumeLimits::default())?;
     let observed = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     watch.watch_directory(&observed)?;
+    let work = native_watch_work()?;
+    let changed = watch.changed_with_native_work(&work);
     std::fs::write(&file, b"after")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 2,
-                    WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
-                }) =>
+    tokio::time::timeout(Duration::from_secs(5), async {
+        changed.await?;
+        loop {
+            match watch
+                .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
             {
-                break;
+                WatchBatch::Changes { changes, .. }
+                    if changes.iter().any(|change| match change {
+                        WatchChange::Created(path)
+                        | WatchChange::Modified(path)
+                        | WatchChange::Arrived(path)
+                        | WatchChange::MetadataChanged(path)
+                        | WatchChange::Removed(path) => path.depth() == 2,
+                        WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
+                    }) =>
+                {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                WatchBatch::Changes { .. } => {}
+                WatchBatch::RescanRequired { reason, .. } => {
+                    return Err(format!("demand watcher invalidated: {reason}").into());
+                }
             }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
+            watch.changed_with_native_work(&work).await?;
         }
-    }
+    })
+    .await??;
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
+#[tokio::test]
+async fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let root = tempfile::tempdir()?;
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
@@ -712,35 +716,38 @@ fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory(
     let portable = crate::path::PortablePath::parse("/future/child", VolumeLimits::default())?;
     let absent = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     watch.watch_directory(&absent)?;
+    let work = native_watch_work()?;
+    let changed = watch.changed_with_native_work(&work);
     std::fs::create_dir(root.path().join("future"))?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 1,
-                    WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
-                }) =>
+    tokio::time::timeout(Duration::from_secs(5), async {
+        changed.await?;
+        loop {
+            match watch
+                .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
             {
-                break;
+                WatchBatch::Changes { changes, .. }
+                    if changes.iter().any(|change| match change {
+                        WatchChange::Created(path)
+                        | WatchChange::Modified(path)
+                        | WatchChange::Arrived(path)
+                        | WatchChange::MetadataChanged(path)
+                        | WatchChange::Removed(path) => path.depth() == 1,
+                        WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
+                    }) =>
+                {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                WatchBatch::Changes { .. } => {}
+                WatchBatch::RescanRequired { reason, .. } => {
+                    return Err(format!("demand watcher invalidated: {reason}").into());
+                }
             }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
+            watch.changed_with_native_work(&work).await?;
         }
-    }
+    })
+    .await??;
     Ok(())
 }
 
