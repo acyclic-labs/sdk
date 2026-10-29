@@ -44,8 +44,10 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
   } catch (error) {
     if (!String(error.stderr).includes('HTTP 404')) throw error;
   }
-  for (let depth = 0; ref?.type === 'tag'; depth++) {
-    if (depth > 10) throw new Error('Tag nesting exceeds the release limit');
+  const tags = new Set();
+  while (ref?.type === 'tag') {
+    if (tags.has(ref.sha)) throw new Error('Release tag references form a cycle');
+    tags.add(ref.sha);
     ref = JSON.parse(gh('api', `repos/${repository}/git/tags/${ref.sha}`)).object;
   }
   if (ref && (ref.type !== 'commit' || ref.sha !== source)) {
