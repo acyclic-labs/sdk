@@ -144,8 +144,8 @@ impl TurnContext for LocalContext {
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?;
-            let (executor, context) =
-                Tasks::bind(&local.harness, executor, agent, turn, authority)?;
+            let bindings = local.turn_bindings(agent, authority).await?;
+            let (executor, context) = Tasks::bind(&bindings, executor, agent, turn, authority)?;
             let executor = executor.with_live_reply(crate::executor::LiveReply::new(
                 Arc::clone(writer),
                 format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
@@ -160,6 +160,71 @@ impl TurnContext for LocalContext {
             let _ = context;
             Ok(executor)
         })
+    }
+}
+
+impl LocalHarness {
+    /// An agent's default files and commands select the same project. The
+    /// root reuses its admitted binding; a child opens its retained fork.
+    async fn turn_bindings(
+        &self,
+        agent: &AgentState,
+        authority: &TurnAuthority,
+    ) -> Result<Arc<crate::runtime::AgentHarness>> {
+        let project = agent
+            .volumes
+            .iter()
+            .find(|binding| binding.name == "project")
+            .map(|binding| &binding.volume)
+            .ok_or_else(|| Error::Invalid("agent has no project volume".into()))?;
+        if project == &self.project {
+            return Ok(Arc::clone(&self.harness));
+        }
+        let verifier = authority.issuer.verifier(&mut None)?;
+        #[cfg(any(test, feature = "native-execution"))]
+        if let Some(workspace) = &self.workspace {
+            let scratch = agent
+                .volumes
+                .iter()
+                .find(|binding| binding.name == "scratch")
+                .map(|binding| binding.volume.clone())
+                .ok_or_else(|| Error::Invalid("agent has no scratch volume".into()))?;
+            let view = workspace.spawned_project_view(project).await?;
+            let owner = super::workspace::owner::AgentOwner(agent.path.clone());
+            let (workspace, _) = workspace
+                .bound_task_view(view, project, scratch, &owner, &authority.scope)
+                .await?;
+            let (tools, writer) = workspace
+                .executor(
+                    (project, &self.files, self.limits.file_bytes),
+                    Arc::clone(&self.clock),
+                    &authority.scope,
+                    &verifier,
+                )
+                .await?;
+            return Ok(self.harness.with_workspace(
+                Some(tools),
+                crate::runtime::ContentBindings {
+                    reader: Arc::clone(&authority.content.reader),
+                    writer: Some(writer),
+                },
+            ));
+        }
+        let writer = crate::filesystem::FilesystemContentPublisher::new(
+            Arc::clone(&self.files),
+            project,
+            &verifier,
+            &authority.scope,
+            self.limits.file_bytes,
+            None,
+        )?;
+        Ok(self.harness.with_workspace(
+            None,
+            crate::runtime::ContentBindings {
+                reader: Arc::clone(&authority.content.reader),
+                writer: Some(writer),
+            },
+        ))
     }
 }
 

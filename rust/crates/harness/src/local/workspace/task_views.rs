@@ -15,6 +15,35 @@ pub(super) fn view_options(
 }
 
 impl LocalWorkspace {
+    /// Binds a spawned agent to its retained project fork and this filesystem's
+    /// shared native instance. Model tools and native hosts use the same view.
+    pub(in crate::local) async fn bound_task_view(
+        &self,
+        view: workspace::View,
+        project: &VolumeRef,
+        scratch: VolumeRef,
+        owner: &dyn super::owner::ViewOwner,
+        signed: &Scope,
+    ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
+        let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
+        let key = project.storage_name(&mut None)?;
+        let mounts = if let Some(mounts) = state
+            .allocated_mounts
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            mounts
+        } else {
+            let mounts = self.bound_mounts(project, scratch, signed).await?;
+            state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
+            mounts
+        };
+        let workspace = self
+            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), signed)
+            .await?;
+        Ok((workspace, mounts))
+    }
+
     /// All task views enter the filesystem's shared instance. The host may
     /// select its already admitted workspace namespace; ordinary harnesses
     /// share the process root. No host adapter mounts a task view itself.
