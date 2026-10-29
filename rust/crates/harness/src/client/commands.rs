@@ -279,7 +279,11 @@ impl CommandCatalog {
 
     /// A prompt command or skill body with its frontmatter removed and its
     /// `$ARGUMENTS` replaced by `arguments`.
-    pub fn expand(body: &[u8], arguments: &str, maximum_bytes: u64) -> Result<String> {
+    pub fn expand(
+        body: &[u8],
+        arguments: &str,
+        maximum_bytes: impl Into<Option<u64>>,
+    ) -> Result<String> {
         let body = if has_frontmatter(body) {
             let (_, _, start) = crate::context::frontmatter_end(body)?;
             &body[start..]

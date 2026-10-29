@@ -122,7 +122,7 @@ proptest! {
             for name in ["one", "two"] {
                 storage.stage(OperationId::new(), &format!("notes/{name}"), b"data", "text/plain", name).await?;
             }
-            let tool = storage.list_files_tool(Limits { file_bytes: 4096, ..Limits::default() })?;
+            let tool = storage.list_files_tool(Limits { file_bytes: Some(4096), ..Limits::default() })?;
             let invocation = ToolInvocation {
                 operation_id: OperationId::new(), call_id: "cached-list".into(), name: "acyclic.list_files".into(),
                 arguments: json!({"path":"notes", "maximum_entries":8}),

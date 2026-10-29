@@ -86,7 +86,7 @@ impl AgentApprovalPolicy {
     /// The immutable request file of approval `id`.
     pub(crate) async fn request(&self, files: &dyn ApprovalFiles, id: &str) -> Result<Vec<u8>> {
         files
-            .read(&request_path(id), Some(self.limits.file_bytes))
+            .read(&request_path(id), self.limits.file_bytes)
             .await?
             .ok_or_else(|| Error::NotFound("approval request is not open".into()))
     }
@@ -235,7 +235,7 @@ impl AgentApprovals {
             &*self.files,
             &request_path(&request),
             bytes,
-            Some(self.policy.limits.file_bytes),
+            self.policy.limits.file_bytes,
         )
         .await?;
         Ok(())
@@ -263,7 +263,7 @@ impl AgentApprovals {
         let request = request_id(id);
         let policy = &*self.policy;
         let bytes = policy.request(&*self.files, &request).await?;
-        let view = ApprovalRequest::new(&request, &bytes, Some(policy.limits.file_bytes))?;
+        let view = ApprovalRequest::new(&request, &bytes, policy.limits.file_bytes)?;
         // Each automatic review is durable before the traversal moves past it,
         // so the chain advances at most once per approver.
         for _ in 0..=policy.policy.approvers.len() {
@@ -306,15 +306,11 @@ impl AgentApprovals {
                 continue;
             }
             let path = decision_path(&request, &expected.principal);
-            let Some(decided) = self
-                .files
-                .read(&path, Some(policy.limits.file_bytes))
-                .await?
-            else {
+            let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
                 self.wait(Some((request, matches!(approver, Approver::Parent))))?;
                 return Ok(None);
             };
-            let decision = ApprovalDecisionFile::decode(&decided, Some(policy.limits.file_bytes))?;
+            let decision = ApprovalDecisionFile::decode(&decided, policy.limits.file_bytes)?;
             if decision.principal != expected.principal
                 || decision.request_sha256 != expected.request_sha256
                 || decision.expected_version != VERSION
@@ -395,17 +391,14 @@ pub async fn decided_request(
     principal: &str,
 ) -> Result<Option<Vec<u8>>> {
     if files
-        .read(
-            &decision_path(id, principal),
-            Some(policy.limits.file_bytes),
-        )
+        .read(&decision_path(id, principal), policy.limits.file_bytes)
         .await?
         .is_none()
     {
         return Ok(None);
     }
     files
-        .read(&request_path(id), Some(policy.limits.file_bytes))
+        .read(&request_path(id), policy.limits.file_bytes)
         .await
 }
 
@@ -424,7 +417,7 @@ pub async fn decide(
     reason: Option<String>,
 ) -> Result<()> {
     let bytes = policy.request(files, id).await?;
-    let view = ApprovalRequest::new(id, &bytes, Some(policy.limits.file_bytes))?;
+    let view = ApprovalRequest::new(id, &bytes, policy.limits.file_bytes)?;
     let principal = match responder {
         ApprovalResponder::Human(principal)
         | ApprovalResponder::Rules(principal)
@@ -439,7 +432,7 @@ pub async fn decide(
     let path = decision_path(id, &principal);
     let encoded =
         serde_json::to_vec(&decision).map_err(|error| Error::Storage(error.to_string()))?;
-    if let Some(existing) = files.read(&path, Some(policy.limits.file_bytes)).await? {
+    if let Some(existing) = files.read(&path, policy.limits.file_bytes).await? {
         return if existing == encoded {
             Ok(())
         } else {
@@ -457,6 +450,6 @@ pub async fn decide(
         &decision,
     )
     .await?;
-    super::files::create_exact(files, &path, encoded, Some(policy.limits.file_bytes)).await?;
+    super::files::create_exact(files, &path, encoded, policy.limits.file_bytes).await?;
     Ok(())
 }

@@ -118,7 +118,7 @@ impl LocalHarness {
         &self,
         workspace: &LocalWorkspace,
         paths: &[String],
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Result<Vec<(usize, Vec<u8>)>> {
         let (selected, pending) = workspace.selected_view().await?;
         if let Some((operation, _)) = pending {
@@ -202,8 +202,14 @@ impl LocalHarness {
                 .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
                 .await?;
             remaining = remaining
-                .checked_sub(chunk.bytes.as_ref().len() as u64)
-                .ok_or_else(|| Error::Invalid("mentioned files exceed the byte bound".into()))?;
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(chunk.bytes.as_ref().len() as u64)
+                        .ok_or_else(|| {
+                            Error::Invalid("mentioned files exceed the byte bound".into())
+                        })
+                })
+                .transpose()?;
             copies.insert(path.to_owned(), chunk.bytes);
         }
         let directory = self.publish_mention_copies(base, copies).await?;

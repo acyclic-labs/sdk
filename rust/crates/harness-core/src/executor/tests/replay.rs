@@ -828,6 +828,10 @@ async fn optional_policies_preserve_unbounded_execution_and_finite_authority() -
     let scope = RuntimeScope::new(Capabilities::default(), limits)?;
     for finite in [
         Limits {
+            file_bytes: Some(1),
+            ..limits
+        },
+        Limits {
             render_bytes: Some(1),
             ..limits
         },

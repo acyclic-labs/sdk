@@ -157,7 +157,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &delta,
-                        Some(self.stock.limits.file_bytes),
+                        self.stock.limits.file_bytes,
                         "assistant output exceeds file limit",
                         self.io,
                     )?;

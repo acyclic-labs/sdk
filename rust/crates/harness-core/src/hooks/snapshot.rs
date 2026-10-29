@@ -18,7 +18,7 @@ impl Hooks {
                 "hook configuration path exceeds path bound".into(),
             ));
         }
-        let bytes = self.encode(Some(limits.file_bytes))?;
+        let bytes = self.encode(limits.file_bytes)?;
         let digest = blake3::hash(&bytes);
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest.as_bytes()[..16]);

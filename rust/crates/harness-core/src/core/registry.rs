@@ -273,7 +273,9 @@ impl SchemaRegistry {
         limits.validate_file(&record.content, &mut None)?;
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
-        if byte_length > limits.file_bytes
+        if limits
+            .file_bytes
+            .is_some_and(|maximum| byte_length > maximum)
             || limits
                 .render_bytes
                 .is_some_and(|maximum| byte_length > maximum)

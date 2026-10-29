@@ -318,7 +318,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, Some(limits.file_bytes), None, io).await?;
+        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
     }
     Ok(output)
 }

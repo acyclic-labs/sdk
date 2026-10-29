@@ -176,9 +176,13 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
         .verify_manifest(&manifest, 1, &Limits::default(), None)?
         .await?;
     let mut narrow = Limits::default();
-    narrow.file_bytes = manifest.descriptor().byte_length().saturating_add(1);
-    narrow.render_bytes = Some(narrow.file_bytes);
-    assert!(narrow.file_bytes < member.descriptor().byte_length());
+    narrow.file_bytes = Some(manifest.descriptor().byte_length().saturating_add(1));
+    narrow.render_bytes = narrow.file_bytes;
+    assert!(
+        narrow
+            .file_bytes
+            .is_some_and(|maximum| maximum < member.descriptor().byte_length())
+    );
     assert!(matches!(
         composite
             .verify_manifest(&manifest, 1, &narrow, None)?

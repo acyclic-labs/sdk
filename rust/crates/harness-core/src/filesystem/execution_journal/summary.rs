@@ -199,11 +199,7 @@ impl ExecutionSummary {
         #[cfg(target_arch = "wasm32")]
         let digest_io = io;
         let digest = crate::executor::with_history_io(digest_io, |work| {
-            crate::executor::json::canonical_json_digest(
-                &record.event,
-                Some(limits.file_bytes),
-                work,
-            )
+            crate::executor::json::canonical_json_digest(&record.event, limits.file_bytes, work)
         })?;
         self.accept_verified(
             (record.sequence, key, digest),

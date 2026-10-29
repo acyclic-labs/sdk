@@ -165,12 +165,14 @@ fn descriptor_checks_exact_bytes() -> Result<()> {
 fn configured_limits_reject_oversized_references() -> Result<()> {
     let file = file(AgentId::new(), "message.txt")?;
     let mut limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     limits.validate(&mut None)?;
     assert!(limits.validate_file(&file, &mut None).is_err());
-    limits.file_bytes = 5;
+    limits.file_bytes = Some(5);
+    limits.validate_file(&file, &mut None)?;
+    limits.file_bytes = None;
     limits.validate_file(&file, &mut None)?;
     limits.model_events_per_step = std::num::NonZeroUsize::new(1);
     limits.validate(&mut None)?;

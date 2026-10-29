@@ -150,7 +150,7 @@ async fn first_request_declares_project_and_user_skills_without_loading_bodies()
     let harness = open(
         config(root.path(), home.path(), state.path(), model.clone())?.limits(
             acyclic_harness::conversation::Limits {
-                file_bytes: 65_536,
+                file_bytes: Some(65_536),
                 ..Default::default()
             },
         ),

@@ -14,7 +14,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     };
     let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
     crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), None, &invocation, None)?;
-    crate::executor::json::json_byte_length(&invocation, Some(wide.limits().file_bytes), &mut None)
+    crate::executor::json::json_byte_length(&invocation, wide.limits().file_bytes, &mut None)
         .map(|_| ())?;
     let tools = echo_tools(
         adapter.clone(),
@@ -23,7 +23,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
         crate::tool::json_projection_schema(json!({"type":"object"})),
     )?;
     let narrow = Limits {
-        file_bytes: 128,
+        file_bytes: Some(128),
         ..wide.limits()
     };
     let executor = StockExecutor::new(
@@ -34,7 +34,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     )
     .with_tool_authority(wide, allowed()?)?
     .with_limits(narrow);
-    assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
+    assert!(executor.tool_scope.limits().file_bytes.is_none());
+    assert_eq!(executor.limits.file_bytes, Some(128));
     let journal = Journal::default();
     let mut messages = vec![call_message(&invocation)];
     let before = messages.clone();

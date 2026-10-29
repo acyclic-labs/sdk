@@ -291,7 +291,7 @@ impl TaskContext {
                 granted_prefix,
                 path,
                 expected_generation,
-                Some(scope.limits().file_bytes),
+                scope.limits().file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
                     io,
@@ -415,7 +415,7 @@ impl TaskContext {
             .observe_staged_once(
                 operation_id,
                 replacement,
-                Some(scope.limits.file_bytes),
+                scope.limits.file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
                     io,

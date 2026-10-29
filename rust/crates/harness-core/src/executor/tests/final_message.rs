@@ -106,7 +106,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
 #[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     let mut admission = ModelEventAdmission::default();
@@ -143,7 +143,7 @@ fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
 #[test]
 fn completed_message_is_bounded_before_admission() -> Result<()> {
     let limits = Limits {
-        file_bytes: 4,
+        file_bytes: Some(4),
         ..Limits::default()
     };
     for text in ["", "λ λ"] {

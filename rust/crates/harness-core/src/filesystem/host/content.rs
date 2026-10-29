@@ -11,7 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         bytes: &[u8],
         media_type: &str,
         display_name: &str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         key: &IdempotencyKey,
         expected_generation: Option<&GenerationRef>,
         access: crate::conversation::ContentAccess<'_, '_>,
@@ -20,10 +20,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        let maximum_bytes = maximum_bytes.into();
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         if expected_generation.is_some() {
-            crate::tool::edit::validate_edit_bound(Some(maximum_bytes))?;
+            crate::tool::edit::validate_edit_bound(maximum_bytes)?;
         }
         self.put_content_impl(
             volume,

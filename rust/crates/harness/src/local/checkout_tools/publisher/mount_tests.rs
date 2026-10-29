@@ -34,7 +34,7 @@ async fn native_fixture() -> Result<(
         harness.files.clone(),
         &harness.project,
         &harness.verifier,
-        Some(harness.limits.file_bytes),
+        harness.limits.file_bytes,
     );
     Ok((directory, state, harness, publisher))
 }

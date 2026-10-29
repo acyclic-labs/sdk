@@ -28,7 +28,7 @@ export type WasmLimitsInput = WasmNativeLimitsWire;
 export type WasmToolJsonValue = null | string | number | boolean | readonly WasmToolJsonValue[] | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export type WasmToolJsonSchema = boolean | Readonly<{ [key: string]: WasmToolJsonValue }>;
 export interface WasmNativeLimitsWire {
-    readonly file_bytes: bigint;
+    readonly file_bytes: bigint | null;
     readonly path_bytes: bigint | null;
     readonly attachments: bigint | null;
     readonly render_bytes: bigint | null;
@@ -140,7 +140,7 @@ export type WasmModelJsonSchema =
     | boolean
     | Readonly<{ readonly [key: string]: WasmModelJsonValue }>;
 export interface WasmModelLimitsInput {
-    readonly file_bytes: number | bigint;
+    readonly file_bytes: number | bigint | null;
     readonly path_bytes: number | bigint | null;
     readonly attachments: number | bigint | null;
     readonly render_bytes: number | bigint | null;

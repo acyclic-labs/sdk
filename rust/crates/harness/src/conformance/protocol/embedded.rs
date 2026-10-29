@@ -160,7 +160,7 @@ pub async fn open<B: Backend + ?Sized>(
         Turns {
             executors: Arc::new(executors),
             limits: TurnLimits {
-                maximum_bytes: 1 << 20,
+                maximum_bytes: Some(1 << 20),
                 max_steps: Some(4),
                 history_turns: Some(8),
             },

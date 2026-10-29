@@ -85,7 +85,13 @@ async fn sampling_media(
     let media = media.ok_or_else(|| {
         Error::Unsupported("MCP sampling media was not selected by this host".into())
     })?;
-    let maximum_bytes = media.maximum_bytes.min(context.scope().limits().file_bytes);
+    let maximum_bytes = context
+        .scope()
+        .limits()
+        .file_bytes
+        .map_or(media.maximum_bytes, |maximum| {
+            media.maximum_bytes.min(maximum)
+        });
     let encoded_bound = maximum_bytes
         .checked_add(2)
         .and_then(|length| (length / 3).checked_mul(4))

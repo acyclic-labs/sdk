@@ -151,7 +151,10 @@ impl RuntimeScope {
             ancestor.is_none_or(|maximum| child.is_some_and(|value| value <= maximum))
         };
         grants.is_subset_of(&self.grants)
-            && limits.file_bytes <= self.limits.file_bytes
+            && self
+                .limits
+                .file_bytes
+                .is_none_or(|maximum| limits.file_bytes.is_some_and(|value| value <= maximum))
             && narrows(
                 self.limits.path_bytes.map(std::num::NonZeroUsize::get),
                 limits.path_bytes.map(std::num::NonZeroUsize::get),
