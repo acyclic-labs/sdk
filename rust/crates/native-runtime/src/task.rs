@@ -47,10 +47,7 @@ where
     );
     let progress = waiting.context().clone();
     let completion = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "persistence worker cannot submit to its own service",
-        ))
+        Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
     } else {
         progress.in_scope(|| {
             crate::task_completion(
