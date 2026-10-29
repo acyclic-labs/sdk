@@ -447,7 +447,8 @@ impl LocalStream {
             Ok(())
         };
         #[cfg(not(loom))]
-        let submitted = acyclic_native_runtime::FileLease::submit("streams", "append", &key, acquire, write);
+        let submitted =
+            acyclic_native_runtime::FileLease::submit("streams", "append", &key, acquire, write);
         #[cfg(loom)]
         let submitted = query_model::submit_file("streams", "append", &key, acquire, write);
         submitted.await.map_err(|_| {
@@ -646,9 +647,12 @@ impl LocalStream {
                         Ok(inner.flush_through(file, durability, work.as_deref()))
                     };
                     #[cfg(not(loom))]
-                    let submitted = acyclic_native_runtime::FileLease::submit("streams", "flush", &key, acquire, flush);
+                    let submitted = acyclic_native_runtime::FileLease::submit(
+                        "streams", "flush", &key, acquire, flush,
+                    );
                     #[cfg(loom)]
-                    let submitted = query_model::submit_file("streams", "flush", &key, acquire, flush);
+                    let submitted =
+                        query_model::submit_file("streams", "flush", &key, acquire, flush);
                     let flushed = submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))
