@@ -42,9 +42,11 @@ mod guest;
 mod host;
 mod providers;
 mod serving;
+mod workspace;
 use host::{HostModel, HostTool};
 pub use providers::WasmAgentProviders;
 use providers::{Objects, Providers};
+pub use workspace::WasmMachinesWorkspace;
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
 type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>;
@@ -207,6 +209,13 @@ impl WasmAgentRegistry {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Retains the platform's admitted Machines workspace. The same binding
+    /// supplies shell execution to guests and the ordinary agent server.
+    #[wasm_bindgen(js_name = bindMachinesWorkspace)]
+    pub fn bind_machines_workspace(&mut self, workspace: &WasmMachinesWorkspace) {
+        self.bind_workspace(workspace.executor(), &["shell"]);
     }
 
     /// Registers one immutable tool revision; turns may call it.

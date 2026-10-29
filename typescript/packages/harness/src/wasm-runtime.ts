@@ -22,7 +22,7 @@ export function assertBrowserWasmExports(value: unknown): void {
   }
   const exports = value as Record<string, unknown>;
   const authority = hasClass(exports, "WasmAgentAuthority", "wasmagentauthority", ["issueScope", "free"], true);
-  const registry = hasClass(exports, "WasmAgentRegistry", "wasmagentregistry", ["registerTool", "configureModel", "free"], true);
+  const registry = hasClass(exports, "WasmAgentRegistry", "wasmagentregistry", ["registerTool", "configureModel", "bindMachinesWorkspace", "free"], true);
   const agents = hasClass(exports, "WasmAgents", "wasmagents", [
     "create", "send", "cancel", "archive", "pause", "list", "read", "readFile", "free",
   ]) && hasStaticMethods(exports, "WasmAgents", "wasmagents", ["open", "openHosting"]);

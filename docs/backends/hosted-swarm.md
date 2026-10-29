@@ -23,6 +23,26 @@ Workspace availability is selected per tool name: a Machines shell binding
 declares `shell`, without also advertising the separate `fs` workspace command.
 Unimplemented tools receive neither model definitions nor call grants.
 
+For a portable host, retain the original Machine admission observation and the
+selected `VolumeRef`. Construct the public workspace with the same caller and
+verifier used to admit the server:
+
+```rust
+let workspace = machines.workspace(observation, &volume, scope, verifier)?;
+let workspace = acyclic_harness::WasmMachinesWorkspace::from(workspace);
+registry.bind_machines_workspace(&workspace);
+```
+
+The trusted Rust platform opener returns that opaque handle from the same WASM
+module. JavaScript can pass it to `registry.bindMachinesWorkspace(workspace)`
+before opening `WasmAgentServer` or `AgentGuest`. Both use the same registry and
+`Providers::executors` composition. The handle retains the actual authenticated
+provider, selected Machine and volume, parent verifier and execution authority;
+each turn supplies its original task context and cancellation. It accepts no
+replacement shell callback or serialized credential. The platform must supply
+its actual public Machines transport and admitted workspace opener; this handle
+alone does not supply that transport or deployment admission.
+
 Keep the same root intent when reopening storage. An uncertain root publication
 returns `ActorsError::Unknown` with its `PendingActors` composition. Retain that
 handle, then pass it as `ServerConfig::harness` after the provider's recovery
