@@ -281,6 +281,27 @@ impl WasmAgentServer {
             .await
     }
 
+    /// One Actor fetch the platform routed to this endpoint: the discovery or
+    /// command URL, with the caller's original prepared command as its body.
+    /// It becomes the exact envelope a session ActorCall carries and runs
+    /// through the same authenticated call; the reply is the response body.
+    #[wasm_bindgen(js_name = fetchCall)]
+    pub async fn fetch_call(
+        &self,
+        url: String,
+        body: js_sys::Uint8Array,
+        credential: js_sys::Uint8Array,
+    ) -> std::result::Result<Vec<u8>, JsValue> {
+        let binding = AgentBinding::new(&self.binding).map_err(boundary_error)?;
+        let invocation = binding
+            .routed(&url, snapshot(&body)?)
+            .map_err(boundary_error)?;
+        let credential = snapshot(&credential)?;
+        let reply = self.invoke(invocation, Bytes::from(credential)).await?;
+        let reply = wire::InvokeActorResponse::decode(reply.as_slice()).map_err(boundary_error)?;
+        Ok(reply.body)
+    }
+
     /// Convenience for a trusted platform's own controls; uses that platform's
     /// credential through the same command codec and session dispatch.
     #[wasm_bindgen(unchecked_return_type = "AgentReply")]

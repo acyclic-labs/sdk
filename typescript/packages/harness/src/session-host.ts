@@ -13,6 +13,22 @@ export interface GrpcSessionResponse {
 
 interface Server {
   grpcSession(next: (signal: AbortSignal) => Promise<Uint8Array | null>, signal?: AbortSignal): Promise<HostedSession>;
+  fetchCall(url: string, body: Uint8Array, credential: Uint8Array): Promise<Uint8Array>;
+}
+
+const SESSION_PATH = "/acyclic.stream.v1.StreamSessionService/Session";
+
+/** The one Actor fetch entry of a hosted harness: the Stream session, or an
+ * agent call the platform routed here from a session ActorCall, with the
+ * caller's original command as the body. Rust owns the agent route table,
+ * command admission and authorization under the caller's `credential`. */
+export async function serveActorFetch(host: Server, request: Request, credential: Uint8Array): Promise<GrpcSessionResponse | Response> {
+  if (new URL(request.url).pathname === SESSION_PATH) return serveGrpcSession(host, request);
+  if (request.method !== "POST") throw failure("invalid_argument");
+  // The URL passes unchanged; Rust's AgentBinding::routed owns its one canonical form.
+  const reply = await host.fetchCall(request.url, new Uint8Array(await request.arrayBuffer()), credential);
+  // The reply is a fresh, unshared buffer from the Rust call; no copy is made.
+  return new Response(reply as Uint8Array<ArrayBuffer>, { status: 200, headers: { "content-type": "application/octet-stream" } });
 }
 
 function failure(code: string): Error & { readonly code: string } {
@@ -28,7 +44,7 @@ function cause(error: unknown): Error & { readonly code: string } {
  * platform adapts these response parts to its public HTTP/2 response primitive.
  * Rust owns all protobuf, session authorization, credit and ActorCall dispatch. */
 export async function serveGrpcSession(host: Server, request: Request): Promise<GrpcSessionResponse> {
-  if (new URL(request.url).pathname !== "/acyclic.stream.v1.StreamSessionService/Session"
+  if (new URL(request.url).pathname !== SESSION_PATH
     || request.method !== "POST" || !request.body) throw failure("invalid_argument");
   const contentType = request.headers.get("content-type")?.split(";", 1)[0]?.trim();
   if (contentType !== "application/grpc" && contentType !== "application/grpc+proto") throw failure("unsupported");

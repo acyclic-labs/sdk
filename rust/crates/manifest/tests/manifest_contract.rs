@@ -282,7 +282,7 @@ proptest! {
             prop_assert!(SecretReference::new(value.clone()).is_err());
             let mut json: Value = serde_json::from_slice(include_bytes!("../fuzz/corpus/manifest_json/valid.json"))?;
             *json.pointer_mut("/environments/0/secrets/0/reference").ok_or_else(missing)? = value.into();
-            prop_assert!(parse(&serde_json::to_vec(&json)?).is_err());
+            prop_assert_eq!(parse(&serde_json::to_vec(&json)?).map_err(|error| error.rule), Err("secret-reference".to_owned()));
         }
         let reference = SecretReference::new(format!("secrets:/models/{payload}"));
         prop_assert_eq!(reference.is_ok(), payload.len() <= 63);
@@ -1050,6 +1050,79 @@ fn guest_admission_selects_original_owner_without_resource_authority()
         assert!(
             parse(&serde_json::to_vec(&forged)?).is_err(),
             "accepted {field}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn artifacts_are_exactly_the_declared_entry_and_assets() -> Result<(), Box<dyn std::error::Error>> {
+    use sha2::Digest;
+    let hex = |bytes: &[u8]| hex::encode(sha2::Sha256::digest(bytes));
+    let (artifact, module) = (
+        b"export const actor = {};".to_vec(),
+        b"\0asm\x01\0\0\0".to_vec(),
+    );
+    let mut manifest = fixture()?;
+    let entry = manifest
+        .environments
+        .first_mut()
+        .and_then(|environment| environment.entries.first_mut())
+        .ok_or_else(missing)?;
+    entry.artifact_sha256 = hex(&artifact);
+    let undeclared = manifest.clone();
+    let entry = manifest
+        .environments
+        .first_mut()
+        .and_then(|environment| environment.entries.first_mut())
+        .ok_or_else(missing)?;
+    entry.assets.push(EntryAsset {
+        path: "harness.wasm".into(),
+        sha256: hex(&module),
+        size: module.len().try_into()?,
+        media_type: "application/wasm".into(),
+        role: AssetRole::Module,
+    });
+    let rule = |manifest: &DeploymentManifest, artifact: &[u8], files: &[(String, Vec<u8>)]| {
+        verify_artifact(manifest, "production", "agent", artifact, files)
+            .map_err(|error| error.rule)
+    };
+    let file = |bytes: &[u8]| vec![("harness.wasm".to_owned(), bytes.to_vec())];
+    assert_eq!(rule(&manifest, &artifact, &file(&module)), Ok(()));
+    // Negative control: a manifest that declares no assets cannot carry the module.
+    assert_eq!(
+        rule(&undeclared, &artifact, &file(&module)),
+        Err("undeclared-asset".into())
+    );
+    assert_eq!(rule(&manifest, &artifact, &[]), Err("missing-asset".into()));
+    assert_eq!(
+        rule(&manifest, &artifact, &file(b"\0asm")),
+        Err("asset-size".into())
+    );
+    let mut altered = module.clone();
+    *altered.last_mut().ok_or_else(missing)? = 1;
+    assert_eq!(
+        rule(&manifest, &artifact, &file(&altered)),
+        Err("asset-digest".into())
+    );
+    assert_eq!(
+        rule(&manifest, b"export {}", &file(&module)),
+        Err("artifact-digest".into())
+    );
+    for (pointer, invalid) in [
+        ("/path", json!("../harness.wasm")),
+        ("/path", json!("lib/harness.wasm")),
+        ("/mediaType", json!("text/javascript")),
+        ("/size", json!(0)),
+        ("/sha256", json!("0".repeat(64))),
+    ] {
+        let mut json = serde_json::to_value(&manifest)?;
+        *json
+            .pointer_mut(&format!("/environments/0/entries/0/assets/0{pointer}"))
+            .ok_or_else(missing)? = invalid;
+        assert_eq!(
+            parse(&serde_json::to_vec(&json)?).map_err(|error| error.rule),
+            Err("entry-asset".into())
         );
     }
     Ok(())

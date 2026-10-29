@@ -2,11 +2,14 @@ import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
   type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority, type WasmFileRefWire,
   type WasmSessionAuthority, type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-export { serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
+export { serveActorFetch, serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
+/** Instantiate the harness module once from the platform-delivered bytes or module. */
+export { default as initializeHosting } from "../generated/wasm/acyclic_harness_wasm.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
 import { decodeMetadata, type EventStorage } from "./event-storage.js";
 
 export { EventStreamLedger, streamLedgerPort } from "./event-ledger.js";
+export { ActorStateStorage, type ActorState, type ActorStateView } from "./actor-state-storage.js";
 export type { StreamLedger, ImmutableObjects, ProviderReply } from "./event-ledger.js";
 export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
@@ -249,14 +252,24 @@ export class EventAgentHost {
   binding(): Uint8Array { return this.host.binding(); }
 
   /** Canonical calls may await a spawn while a separate wake delivers it. */
-  async call(invocation: Uint8Array, credential: Uint8Array): Promise<Uint8Array> {
+  call(invocation: Uint8Array, credential: Uint8Array): Promise<Uint8Array> {
+    return this.dispatch(() => this.host.call(invocation, credential));
+  }
+
+  /** The same call, from an Actor fetch routed to this endpoint: `url` is the
+   * discovery or command route and `body` the caller's original command. */
+  fetchCall(url: string, body: Uint8Array, credential: Uint8Array): Promise<Uint8Array> {
+    return this.dispatch(() => this.host.fetchCall(url, body, credential));
+  }
+
+  private async dispatch(run: () => Promise<Uint8Array>): Promise<Uint8Array> {
     await this.command(async signal => {
       const identity = this.identity();
       if (identity?.stage !== "ready") throw new Error("STEP actor-call failed; recovery: complete the original root placement");
       await this.resume(identity, signal);
     });
     const generation = this.events.generation;
-    try { return await this.host.call(invocation, credential); }
+    try { return await run(); }
     finally { if (this.events.generation !== generation) await this.wake(); }
   }
 

@@ -1,0 +1,60 @@
+{
+  "options": {
+    "filesystem_database": "harness-actor-fs",
+    "stream_database": "harness-actor-stream",
+    "maximum_object_bytes": 1048576,
+    "filesystem_provider": { "namespace": "harness-actor", "family": "filesystem", "version": "2" },
+    "stream_limits": {
+      "commands": 10000, "journal_bytes": 16777216, "paths": 1000, "path_bytes": 262144,
+      "records": 10000, "payload_bytes": 16777216, "commits": 10000, "idempotency_results": 10000
+    },
+    "limits": {
+      "file_bytes": 1048576, "path_bytes": 4096, "attachments": 32, "render_bytes": 1048576,
+      "model_steps": 16, "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
+    },
+    "principal": "owner",
+    "preset": {
+      "model": null, "prompt": null, "tools": [], "web_tools": false, "max_steps": null, "max_children": 8,
+      "approval_policy": { "approvers": [{ "kind": "rules", "principal": "owner", "rules": [], "fallback": "allow" }] }
+    }
+  },
+  "ledger_limits": {
+    "commands": 65536, "journal_bytes": 268435456, "paths": 1000, "path_bytes": 262144,
+    "records": 10000, "payload_bytes": 16777216, "commits": 10000, "idempotency_results": 10000
+  },
+  "model": {
+    "provider": "anthropic",
+    "selection": "anthropic/claude-haiku-5-5",
+    "spec": {
+      "adapter": "anthropic",
+      "authentication": { "api_key_secret": { "secret_reference": "secrets:/models/anthropic" } },
+      "base_url": "https://api.anthropic.com/v1",
+      "max_event_bytes": 1048576,
+      "models": { "claude-haiku-5-5": { "capacity": { "context_tokens": 200000, "output_tokens": 8192 } } }
+    },
+    "limits": {
+      "file_bytes": 1048576, "path_bytes": 4096, "attachments": 32, "render_bytes": 1048576,
+      "model_steps": 16, "model_events_per_step": 64, "tool_calls_per_step": 16, "context_messages": 128
+    },
+    "compaction": { "kind": "disabled" }
+  },
+  "deployment": {
+    "environment": "production",
+    "entry": "harness",
+    "jurisdiction": "",
+    "limits": { "handlerTimeoutMillis": "600000", "memoryBytes": "268435456", "checkpointBytes": "1024" },
+    "subscriptions": [{ "subscriptionId": "inbox", "streamPath": "harness/inbox", "start": { "cursor": "0" }, "placementAnchor": true }],
+    "bindings": [
+      { "name": "eventStorage", "capability": "", "resource": "", "stateTransaction": true },
+      { "name": "streamJournal", "capability": "", "resource": "", "stateTransaction": true },
+      { "name": "immutableObjects", "capability": "harnessObjects", "resource": "objects:/harness" },
+      { "name": "hostAccess", "capability": "", "resource": "", "guestAdmission": "hostAccess" },
+      { "name": "platformAuthority", "capability": "", "resource": "", "guestAdmission": "platformAuthority" },
+      { "name": "machinesWorkspace", "capability": "harnessMachines", "resource": "machines:/harness" }
+    ],
+    "grants": [
+      { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/get", "objects/put"] }, "limits": null },
+      { "name": "harnessMachines", "grant": { "resource": { "name": "machines:/harness", "prefix": true }, "actions": ["machines/exec", "machines/read"] }, "limits": null }
+    ]
+  }
+}

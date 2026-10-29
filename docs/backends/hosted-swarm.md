@@ -203,6 +203,36 @@ bindings must supply storage, verified admission, model and Machines I/O, and th
 platform's HTTP or socket framing. The native integration check does not qualify
 that deployment or its live inference provider.
 
+## Deployable Actor artifact
+
+`@acyclic-labs/harness-actor` is that same event host and session engine as one
+Actor application. Build it from an owner configuration with `options`,
+`ledger_limits`, `model` and `deployment`:
+
+```sh
+bun scripts/build-harness-actor.mjs --config owner.json --out artifact
+```
+
+`artifact/` then holds `harness-actor.mjs`, which exports `actor`, every
+WebAssembly module it loads, and `agent-deploy.json`. The entry declares each
+module in its `assets` with path, SHA-256, size, media type and role. `verifyArtifact` admits an
+artifact only when its files are exactly the entry and those declared assets. The
+build runs that check, then loads the artifact from only the declared files,
+before writing it. The entry selects
+the bindings named in `src/bindings.ts`; the platform defines each binding's
+resource kind. Its model credential is only a `secrets:/` reference, and the
+validator refuses an inline value with the `secret-reference` rule. A deployment
+missing any harness binding is refused before deployment, and an environment
+without a bound authority is refused on restore. `eventStorage` and
+`streamJournal` both select the actor's own state transaction binding: host
+metadata, wake rows, journal frames and the alarm commit as one packet, and
+journal history is paged, never copied into metadata. `fetch` is the one entry,
+`serveActorFetch`: it serves the Stream session as a guest response stream whose
+terminal gRPC trailers follow the body, and runs an agent call the platform
+routed from a session ActorCall (`/agents/bind`, `/agents/command`, with the
+caller's original command as the body) through the same authenticated call,
+under the credential of the invocation's `hostAccess` admission.
+
 ## Required work
 
 | Operation | Required work | Removed work |

@@ -84,6 +84,20 @@
         "react",
       ],
     },
+    "typescript/packages/harness-actor": {
+      "name": "@acyclic-labs/harness-actor",
+      "version": "0.2.0",
+      "dependencies": {
+        "@acyclic-labs/actors": "0.2.0",
+        "@acyclic-labs/harness": "0.2.0",
+        "@acyclic-labs/workers": "0.2.0",
+      },
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+        "@types/node": "26.6.5",
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/inference": {
       "name": "@acyclic-labs/inference",
       "version": "0.2.0",
@@ -189,6 +203,8 @@
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
 
     "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
+
+    "@acyclic-labs/harness-actor": ["@acyclic-labs/harness-actor@workspace:typescript/packages/harness-actor"],
 
     "@acyclic-labs/inference": ["@acyclic-labs/inference@workspace:typescript/packages/inference"],
 
