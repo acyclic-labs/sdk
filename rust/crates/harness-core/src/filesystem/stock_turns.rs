@@ -93,7 +93,7 @@ impl TurnContext for Grants {
     fn prepare<'a>(
         &'a self,
         (executor, limits): (StockExecutor, Limits),
-        _: &'a AgentState,
+        agent: &'a AgentState,
         turn: OperationId,
         _: &'a ModelContent,
         authority: &'a TurnAuthority,
@@ -108,10 +108,8 @@ impl TurnContext for Grants {
                     .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
             );
             let scope = RuntimeScope::new(grants, limits)?;
-            let executor =
-                executor.with_tool_authority(scope.clone(), authority.approval.clone())?;
             if authority.workspace_tools.is_none() {
-                return Ok(executor);
+                return executor.with_tool_authority(scope, authority.approval.clone());
             }
             let harness = crate::runtime::Bindings {
                 workspace_tools: authority.workspace_tools.clone(),
@@ -120,8 +118,7 @@ impl TurnContext for Grants {
                 artifacts: None,
             }
             .build()?;
-            let task = harness.agent_context(&authority.grants, authority.content.clone())?;
-            executor.with_task_context(&task, turn)
+            Tasks::bind(&harness, executor, agent, turn, authority).map(|(executor, _)| executor)
         })
     }
 }
