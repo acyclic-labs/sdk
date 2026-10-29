@@ -49,27 +49,21 @@ pub(crate) fn copy_bytes<E: From<CanonicalDecodeError>>(
 pub struct DecodeLimits {
     /// Maximum complete canonical object bytes.
     pub maximum_object_bytes: u64,
-    /// Maximum bytes in one logical name.
-    pub maximum_name_bytes: u32,
     /// Maximum entries or children in one page.
     pub maximum_page_items: u32,
     /// Maximum canonical bytes in one authenticated index/page object.
     pub maximum_page_bytes: u32,
     /// Maximum authenticated page levels followed by one operation.
     pub maximum_page_height: u16,
-    /// Maximum distinct authenticated pages retained for cycle/alias checks.
-    pub maximum_visited_pages: u32,
 }
 
 impl Default for DecodeLimits {
     fn default() -> Self {
         Self {
             maximum_object_bytes: 64 * 1024 * 1024,
-            maximum_name_bytes: 255,
             maximum_page_items: 1_024,
             maximum_page_bytes: 256 * 1024,
             maximum_page_height: 64,
-            maximum_visited_pages: 4_096,
         }
     }
 }
@@ -80,14 +74,22 @@ impl DecodeLimits {
     pub fn for_volume(config: VolumeConfig) -> Self {
         Self {
             maximum_object_bytes: config.limits.maximum_object_bytes,
-            maximum_name_bytes: config.limits.maximum_component_bytes,
             maximum_page_items: config.limits.maximum_directory_page_entries,
             maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes)
                 .unwrap_or(u32::MAX),
             maximum_page_height: config.limits.maximum_page_height,
-            maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-                .unwrap_or(u32::MAX),
         }
+    }
+
+    /// A depth-first stack holds at most one page's fanout per active level.
+    /// This structural bound is independent of the total tree size.
+    pub(crate) fn maximum_pending_frontier(self) -> Result<usize, crate::WorkError> {
+        usize::from(self.maximum_page_height)
+            .checked_mul(
+                usize::try_from(self.maximum_page_items).map_err(|_| crate::WorkError::Overflow)?,
+            )
+            .and_then(|count| count.checked_add(1))
+            .ok_or(crate::WorkError::Overflow)
     }
 
     pub(crate) fn maximum_page_object_bytes(self) -> u64 {
@@ -99,7 +101,6 @@ impl DecodeLimits {
         self.maximum_page_items >= minimum_items
             && self.maximum_page_bytes != 0
             && self.maximum_page_height != 0
-            && self.maximum_visited_pages != 0
     }
 }
 
@@ -263,6 +264,10 @@ impl<E: From<CanonicalDecodeError>, O: FnMut(ReadAllocationStep) -> Result<(), E
 }
 
 impl<'a> Decoder<'a> {
+    pub(crate) fn remaining_bytes(&self) -> usize {
+        self.bytes.len() - self.cursor
+    }
+
     pub(crate) fn new<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
         domain: &[u8],
@@ -445,6 +450,31 @@ impl<'a> Decoder<'a> {
     ) -> Result<Vec<u8>, E> {
         let source = self.bounded_slice(maximum, observe)?;
         copy_bytes(source, u64::from(!source.is_empty()), observe)
+    }
+
+    /// Copies one length-prefixed value after checking it fits the actual input.
+    pub(crate) fn bytes<E: From<CanonicalDecodeError>>(
+        &mut self,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Vec<u8>, E> {
+        let source = self.slice(observe)?;
+        copy_bytes(source, u64::from(!source.is_empty()), observe)
+    }
+
+    /// Borrows a length-prefixed field only when it fits the actual input.
+    pub(crate) fn slice<E: From<CanonicalDecodeError>>(
+        &mut self,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<&'a [u8], E> {
+        let length = usize::try_from(self.u32(observe)?)
+            .map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+        self.take(length).map_err(Into::into)
+    }
+
+    pub(crate) fn skip_bytes(&mut self) -> Result<usize, CanonicalDecodeError> {
+        Ok(self
+            .slice(&mut |_| Ok::<_, CanonicalDecodeError>(()))?
+            .len())
     }
 
     pub(crate) fn skip_bounded_bytes(

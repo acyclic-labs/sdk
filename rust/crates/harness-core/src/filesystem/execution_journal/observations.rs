@@ -343,11 +343,11 @@ where
         let event_digest = crate::executor::with_history_io(io, |work| {
             crate::executor::json::canonical_json_digest(
                 event,
-                if io.is_some() {
+                Some(if io.is_some() {
                     acyclic_stream::MAX_RECORD_BYTES as u64
                 } else {
                     u64::MAX
-                },
+                }),
                 work,
             )
         })?;

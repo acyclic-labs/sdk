@@ -155,7 +155,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let limits = Limits {
         render_bytes: 32_768,
         file_bytes: 32_768,
-        context_messages: 32,
+        context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
     let (publisher, reader, private, scope) = storage(&fixture).await?;
@@ -246,7 +246,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
         operation_id: OperationId::new(),
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let first = executor.model_step(journal.as_ref(), &turn, 0, &[]).await?;
     assert_request(provider.as_ref(), &manifest, reader.as_ref()).await?;
@@ -274,7 +274,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
     let limits = Limits {
         render_bytes: 32_768,
         file_bytes: 32_768,
-        context_messages: 32,
+        context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
     let (publisher, reader, private, scope) = storage(&fixture).await?;
@@ -329,7 +329,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
             &counted,
             tools()?,
             Limits {
-                context_messages: 1,
+                context_messages: std::num::NonZeroUsize::new(1),
                 ..limits
             }
         )
@@ -391,7 +391,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
             reference.clone(),
             &counted,
             ToolRegistry::default(),
-            Limits { path_bytes: 16, ..limits },
+            Limits { path_bytes: std::num::NonZeroUsize::new(16), ..limits },
         ).await,
         Err(Error::Invalid(message)) if message == "manifest skill path exceeds path bound"
     ));
@@ -401,7 +401,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
         &counted,
         ToolRegistry::default(),
         Limits {
-            path_bytes: "skills/long-name/SKILL.md".len(),
+            path_bytes: std::num::NonZeroUsize::new("skills/long-name/SKILL.md".len()),
             ..limits
         },
     )
@@ -430,7 +430,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
     let limits = Limits {
         render_bytes: 32_768,
         file_bytes: 32_768,
-        context_messages: 32,
+        context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
     let (publisher, reader, _, _) = storage(&fixture).await?;
@@ -455,7 +455,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             ..limits
         },
         Limits {
-            path_bytes: 1,
+            path_bytes: std::num::NonZeroUsize::new(1),
             ..limits
         },
     ] {

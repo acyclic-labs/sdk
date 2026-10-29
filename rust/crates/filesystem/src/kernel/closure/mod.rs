@@ -1,4 +1,4 @@
-//! Bounded whole-generation authentication before authority publication.
+//! Whole-generation authentication before authority publication.
 
 use super::{
     AttributeName, BlobNode, DecodeLimits, ExtentKind, ExtentPage, FilePayload, FileRecord,
@@ -14,17 +14,11 @@ use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
 
-/// Hard closure-walk limits admitted before generation publication.
+/// Canonical shape and semantic capabilities required before publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClosureLimits {
     /// Canonical decoder/page limits.
     pub decode: DecodeLimits,
-    /// Maximum distinct immutable objects read by the proof.
-    pub maximum_objects: u64,
-    /// Maximum path-independent file records.
-    pub maximum_files: u64,
-    /// Maximum cumulative canonical bytes read.
-    pub maximum_object_bytes: u64,
     /// Exact namespace profile whose representable kinds are admitted.
     pub profile: FilesystemProfile,
     /// Whether symbolic-link records are admitted.
@@ -46,7 +40,8 @@ pub struct GenerationProof {
     pub file_count: u64,
     /// Logical regular-file bytes, counting each file identity once, including holes.
     pub logical_file_bytes: u128,
-    /// Sorted immutable objects authenticated by this proof.
+    /// Immutable objects authenticated by this proof. Ordinary proofs use sorted
+    /// identities; publication proofs order dependencies before their parents.
     pub objects: Vec<ObjectId>,
     /// Exact proof work.
     pub work: WorkCounters,
@@ -67,33 +62,9 @@ pub enum ClosureError {
     /// Parent lower/upper bounds do not match authenticated child content.
     #[error("routing bounds do not match authenticated child content")]
     RoutingBoundsMismatch,
-    /// Closure exceeds its object-count bound.
-    #[error("generation closure has {observed} objects; maximum is {maximum}")]
-    TooManyObjects {
-        /// Distinct objects encountered.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
-    /// Closure exceeds its file-count bound.
-    #[error("generation closure has {observed} files; maximum is {maximum}")]
-    TooManyFiles {
-        /// File records encountered.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
     /// The sum of logical regular-file sizes cannot be represented.
     #[error("generation logical file byte total overflowed")]
     LogicalBytesOverflow,
-    /// Closure exceeds its cumulative canonical-byte bound.
-    #[error("generation closure read {observed} bytes; maximum is {maximum}")]
-    ClosureBytesExceeded {
-        /// Cumulative canonical bytes read.
-        observed: u64,
-        /// Admitted maximum.
-        maximum: u64,
-    },
     /// File table contains the same stable identity twice.
     #[error("duplicate file record {0:?}")]
     DuplicateFileRecord(FileId),
@@ -181,7 +152,7 @@ mod memory;
 pub(crate) use memory::{CachedProofs, ProofGuard, ProofMeter};
 mod published;
 use crate::kernel::allocation::retained::RetainedArc;
-use memory::{ProofVec, map_get, map_insert, set_insert};
+use memory::{ProofVec, index_get, map_get, map_insert, set_insert};
 use published::ProofSlot;
 pub(crate) use published::Unpublished;
 mod walk;
@@ -223,14 +194,6 @@ pub(super) async fn generation_closure<S: crate::AsyncObjectStore>(
 ) -> Result<GenerationProof, GenerationProofFailure> {
     if generation_root.kind != ObjectKind::GenerationRoot {
         return Err(OperationFailure::before_work(ClosureError::WrongObjectKind));
-    }
-    if limits.maximum_objects == 0 {
-        return Err(OperationFailure::before_work(
-            ClosureError::TooManyObjects {
-                observed: 1,
-                maximum: 0,
-            },
-        ));
     }
     let meter = ProofMeter::standalone(budget, cancellation)
         .map_err(|error| OperationFailure::new(closure_error(error), WorkCounters::UNCHARGED))?;

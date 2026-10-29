@@ -11,7 +11,11 @@ impl Resident {
         if depth > self.bounds.maximum_depth.min(256) {
             return Err(boundary("JSON nesting limit exceeded", code));
         }
-        if self.nodes >= self.bounds.maximum_items {
+        if self
+            .bounds
+            .maximum_items
+            .is_some_and(|maximum| self.nodes >= maximum)
+        {
             return Err(boundary("JSON item limit exceeded", code));
         }
         let bytes = self
@@ -19,7 +23,11 @@ impl Resident {
             .checked_add(1)
             .and_then(|bytes| bytes.checked_add(payload as u64))
             .ok_or_else(|| boundary("JSON byte limit exceeded", code))?;
-        if bytes > self.bounds.maximum_bytes {
+        if self
+            .bounds
+            .maximum_bytes
+            .is_some_and(|maximum| bytes > maximum)
+        {
             return Err(boundary("JSON byte limit exceeded", code));
         }
         charge.borrow_mut()(JsonCodecCharge::Inspect { items: 1 })?;

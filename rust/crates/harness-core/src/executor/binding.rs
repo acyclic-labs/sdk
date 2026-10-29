@@ -161,7 +161,7 @@ impl StockExecution<'_> {
             .transpose()?
             .unwrap_or(0);
         let (tail, records) = self
-            .step_records(journal, input.operation_id, 0, true, 1, |event| {
+            .step_records(journal, input.operation_id, 0, true, Some(1), |event| {
                 matches!(event, ExecutionEvent::Started { .. })
             })
             .await?;

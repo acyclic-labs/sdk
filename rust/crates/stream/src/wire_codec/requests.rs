@@ -245,10 +245,17 @@ fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> u
 /// Count every possible field, then use the ordinary nesting calculation so
 /// length-delimiter growth is included at every protobuf boundary.
 #[cfg(feature = "local")]
-pub(crate) fn prepared_commit_command_len(request: &CommitRequest, maximum: usize) -> usize {
-    let fields = 1 + crate::MAX_RECORD_KEYS + 3 * crate::MAX_RECORD_ATTRIBUTES;
+pub(crate) fn prepared_commit_command_len(
+    request: &CommitRequest,
+    capacity: crate::PreparedRecordCapacity,
+) -> usize {
+    let fields = 1_usize
+        .saturating_add(capacity.keys)
+        .saturating_add(3_usize.saturating_mul(capacity.attributes));
     let field_overhead = 1 + prost::length_delimiter_len(crate::MAX_COMMAND_BYTES);
-    let record = maximum.saturating_add(fields.saturating_mul(field_overhead));
+    let record = capacity
+        .payload_bytes
+        .saturating_add(fields.saturating_mul(field_overhead));
     block_len(commit_len_with(request, &|_| record))
 }
 
@@ -565,7 +572,6 @@ mod tests {
         for records in [
             Vec::new(),
             vec![OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES + 1])],
-            vec![OwnedBytes::from_static(b""); crate::MAX_ITEMS + 1],
             vec![
                 OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES]);
                 crate::MAX_COMMAND_BYTES / crate::MAX_RECORD_BYTES + 1

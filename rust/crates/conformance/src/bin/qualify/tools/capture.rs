@@ -57,7 +57,7 @@ pub(super) fn restore_gen(args: &[String]) -> Result<(), Failure> {
                 destination: destination.clone(),
                 expected_root_identity: None,
                 maximum_directory_entries: 1_024,
-                maximum_extent_spans: 65_536,
+                maximum_extent_spans: None,
                 transfer_bytes: 8 * 1024 * 1024,
             },
             WorkCounters::UNBOUNDED,
@@ -145,13 +145,20 @@ pub(super) async fn bench_inner(
         .map_err(engine_err("checkout"))?
         .value;
 
-    let mut watch = NativeWatch::open(
+    let watch_work = acyclic_fs::NativeMaterializationWork::new(WorkCounters::UNBOUNDED, &cancel)
+        .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
         source,
+        if cfg!(windows) {
+            FilesystemProfile::Windows
+        } else {
+            FilesystemProfile::Posix
+        },
         NativeWatchOptions {
             limits: VolumeLimits::default(),
-            maximum_queued_changes: 65_536,
             recursive: true,
         },
+        &watch_work,
     )
     .map_err(engine_err("watch open"))?;
     let rescan = watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
@@ -159,8 +166,8 @@ pub(super) async fn bench_inner(
     let options = CaptureOptions {
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source).map_err(engine_err("identity"))?,
-        maximum_paths: 4_000_000,
-        maximum_extent_spans: 65_536,
+        maximum_paths: None,
+        maximum_extent_spans: None,
     };
 
     let started = Instant::now();
@@ -208,10 +215,14 @@ pub(super) async fn bench_inner(
     let mut capture_commit = Vec::with_capacity(rounds);
     for round in 0..rounds {
         let target = source.join(format!("bench-mutation-{}.txt", round % 5));
+        let changed = watch.changed_with_native_work(&watch_work);
         let mutated_at = Instant::now();
         fs::write(&target, format!("round {round} at {mutated_at:?}\n"))?;
 
-        // Poll until the watcher reports the change (event-arrival latency).
+        // Read retained hints only after the watch's actual readiness event.
+        // Early delivery remains queued, so creating the future before the
+        // mutation and polling it later cannot miss the event.
+        changed.await.map_err(engine_err("watch changed"))?;
         let batch = loop {
             let batch = watch
                 .poll(4_096, WorkCounters::UNBOUNDED, &cancel)
@@ -220,7 +231,10 @@ pub(super) async fn bench_inner(
             match &batch {
                 WatchBatch::Changes { changes, .. } if !changes.is_empty() => break batch,
                 WatchBatch::Changes { .. } => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    watch
+                        .changed_with_native_work(&watch_work)
+                        .await
+                        .map_err(engine_err("watch changed"))?;
                 }
                 WatchBatch::RescanRequired { reason, .. } => {
                     return Err(format!("rescan required mid-bench: {reason:?}").into());
@@ -360,16 +374,10 @@ pub(super) fn volume_config() -> VolumeConfig {
         _ if cfg!(windows) => FilesystemProfile::Windows,
         _ => FilesystemProfile::Posix,
     };
-    let mut config = VolumeConfig {
+    VolumeConfig {
         profile,
         ..VolumeConfig::portable(Lifecycle::Durable)
-    };
-    // A baseline capture is one atomic authored transaction covering every
-    // path in the repo; the default 2,048-mutation batch cap rejects any
-    // real tree. Sized for large monorepos.
-    config.limits.maximum_mutations_per_batch = 4_194_304;
-    config.limits.maximum_paths_per_batch = 4_194_304;
-    config
+    }
 }
 
 pub(super) async fn capture_and_commit(
@@ -407,8 +415,8 @@ pub(super) async fn capture_and_commit(
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source)
             .map_err(engine_err("root identity"))?,
-        maximum_paths: 4_000_000,
-        maximum_extent_spans: 65_536,
+        maximum_paths: None,
+        maximum_extent_spans: None,
     };
     let started = Instant::now();
     let receipt = capture_baseline(
@@ -509,7 +517,7 @@ pub(super) async fn materialize(
             destination: destination.to_path_buf(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
             transfer_bytes: 8 * 1024 * 1024,
         },
         WorkCounters::UNBOUNDED,

@@ -29,6 +29,8 @@ struct State<W: Write> {
     closed: bool,
     closing: bool,
     restored: bool,
+    // Native notification only: callbacks must not reenter the owner.
+    on_close: Option<Box<dyn Fn() -> io::Result<()> + Send + Sync>>,
     #[cfg(test)]
     fail_next_spawn: bool,
     worker: Option<Arc<JoinHandle<()>>>,
@@ -113,6 +115,7 @@ impl<W: Write + Send + 'static> Owner<W> {
                 closed: false,
                 closing: false,
                 restored: false,
+                on_close: None,
                 #[cfg(test)]
                 fail_next_spawn: false,
                 worker: None,
@@ -130,6 +133,19 @@ impl<W: Write + Send + 'static> Owner<W> {
         } else {
             Ok(())
         }
+    }
+
+    /// Attach the input adapter's native notification before publishing it.
+    pub(crate) fn notify_close(
+        &self,
+        notify: impl Fn() -> io::Result<()> + Send + Sync + 'static,
+    ) -> io::Result<()> {
+        let mut state = self.state.lock().map_err(|_| io::ErrorKind::Other)?;
+        if state.closed {
+            notify()?;
+        }
+        state.on_close = Some(Box::new(notify));
+        Ok(())
     }
 
     pub(crate) fn run<R: Send + 'static>(
@@ -154,9 +170,7 @@ impl<W: Write + Send + 'static> Owner<W> {
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            let remaining = deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(1));
+            let remaining = deadline.saturating_duration_since(Instant::now());
             state = this.wait(state, remaining)?;
         }
         if !restoring && state.closed {
@@ -332,7 +346,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         this: &Arc<Self>,
         os_restore: fn(&mut W) -> io::Result<()>,
     ) -> io::Result<()> {
-        {
+        let notification = {
             let mut state = this.state.lock().map_err(|_| io::ErrorKind::Other)?;
             while state.closing {
                 state = this.wake.wait(state).map_err(|_| io::ErrorKind::Other)?;
@@ -341,8 +355,10 @@ impl<W: Write + Send + 'static> Owner<W> {
                 return Ok(());
             }
             state.closed = true;
+            let notification = state.on_close.as_ref().map_or(Ok(()), |notify| notify());
             state.closing = true;
-        }
+            notification
+        };
         let result = this.quiesce(true).and_then(|()| {
             let result = Self::execute(
                 this,
@@ -366,7 +382,7 @@ impl<W: Write + Send + 'static> Owner<W> {
         // restore action above may publish restored, after native completion.
         state.closing = false;
         this.wake.notify_all();
-        result
+        notification.and(result)
     }
 }
 
@@ -744,11 +760,23 @@ mod tests {
                 RestoreGuard::new(Vec::<u8>::new(), &Capabilities::default()),
                 |_| {},
             );
+            let notified = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&notified);
+            owner
+                .notify_close(move || {
+                    observed.store(true, Ordering::Release);
+                    Ok(())
+                })
+                .unwrap();
             assert!(owner.check_open().is_ok());
             let closing = Arc::clone(&owner);
             let worker = thread::spawn(move || Owner::close(&closing, |_| Ok(())));
             let _ = owner.check_open(); // Either side of the concurrent close is valid.
             worker.join().unwrap().unwrap();
+            assert!(
+                notified.load(Ordering::Acquire),
+                "pending input was not notified"
+            );
             let next_read = if broken { Ok(()) } else { owner.check_open() };
             assert!(next_read.is_err(), "input ignored the terminal close fence");
         });

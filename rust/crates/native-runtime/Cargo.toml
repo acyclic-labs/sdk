@@ -50,6 +50,8 @@ libc = "0.2.175"
 [target.'cfg(target_vendor = "apple")'.dependencies]
 security-framework = "=3.7.0"
 libc = "0.2.175"
+
+[target.'cfg(unix)'.dependencies]
 rustix.workspace = true
 
 [target.'cfg(windows)'.dependencies]

@@ -861,7 +861,7 @@ where
                 .observe_staged_once(
                     operation,
                     None,
-                    self.maximum_bytes,
+                    Some(self.maximum_bytes),
                     ContentAccess::default(),
                 )
                 .map_err(turn)?

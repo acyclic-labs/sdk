@@ -7,7 +7,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         operation: OperationId,
         paths: &BTreeMap<String, Option<crate::FileId>>,
     ) -> Result<(), GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut state = self.load().await?;
             let pending = state.pending.as_mut().ok_or(GitCompatError::InvalidState)?;
             if pending.id.operation_id() != operation
@@ -29,8 +29,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             if self.publish(state).await? {
                 return Ok(());
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(GitCompatError::Contended)
     }
 }
 
@@ -80,9 +80,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 Err(GitCompatError::NothingToCommit) => return Ok(None),
                 Err(error) => return Err(error),
             };
-            state.record_request(request, self.unanswered(), &output);
+            state
+                .record_request(request, self.unanswered(), &output)
+                .map_err(GitCompatError::RequestObservation)?;
             if continues != request {
-                state.record_request(continues, self.unanswered(), &output);
+                state
+                    .record_request(continues, self.unanswered(), &output)
+                    .map_err(GitCompatError::RequestObservation)?;
             }
             Ok(Some(output))
         })

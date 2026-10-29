@@ -1,5 +1,12 @@
 use super::*;
 
+pub(super) struct WatchOptions {
+    pub(super) pin_name: bool,
+    pub(super) complete: Option<bool>,
+    pub(super) recursive: bool,
+    pub(super) maximum_buffer_bytes: u64,
+}
+
 impl NativeSourceWatch {
     pub(crate) fn start_driver<W: SourceDemandReadWork>(
         root: &crate::native_host::HostRoot,
@@ -26,10 +33,6 @@ impl NativeSourceWatch {
             work,
         )
     }
-    #[allow(
-        clippy::too_many_lines,
-        reason = "This state transition keeps admission, effects and resource retirement in one frame."
-    )]
     pub(super) fn open_watch_growing_to<W: SourceDemandReadWork>(
         root: std::os::windows::io::BorrowedHandle<'_>,
         delivery: Arc<Delivery>,
@@ -39,6 +42,33 @@ impl NativeSourceWatch {
         maximum_buffer_bytes: u64,
         work: &mut W,
     ) -> Result<Self, DemandError> {
+        Self::open_on_hub(
+            root,
+            delivery,
+            WatchOptions {
+                pin_name,
+                complete,
+                recursive,
+                maximum_buffer_bytes,
+            },
+            hub::global,
+            work,
+        )
+    }
+
+    pub(super) fn open_on_hub<W: SourceDemandReadWork>(
+        root: std::os::windows::io::BorrowedHandle<'_>,
+        delivery: Arc<Delivery>,
+        options: WatchOptions,
+        hub: impl FnOnce() -> Result<Arc<hub::Hub>, DemandError>,
+        work: &mut W,
+    ) -> Result<Self, DemandError> {
+        let WatchOptions {
+            pin_name,
+            complete,
+            recursive,
+            maximum_buffer_bytes,
+        } = options;
         work.admit(READ)?;
         let carrier = delivery.prepare_startup_failure(work)?;
         let budget = work.with_original_leaf(|work| work.budget);
@@ -60,7 +90,8 @@ impl NativeSourceWatch {
             if !native {
                 reserve_cleanup(work, io_work(1, 2))?;
             }
-            hub::ensure()?;
+            let hub = hub()?;
+            hub.check()?;
             for allocation in [
                 size_of::<OVERLAPPED>() as u64,
                 INITIAL_BUFFER_BYTES,
@@ -70,7 +101,9 @@ impl NativeSourceWatch {
                 bytes += allocation;
             }
             ownership.retain(bytes, work)?;
-            shared = Some(Arc::new(Shared {
+            shared = Some(Arc::new_cyclic(|owner| Shared {
+                hub,
+                hub_links: Mutex::new(hub::Links::new(owner.clone())),
                 directory: AtomicPtr::new(std::ptr::null_mut()),
                 extended: AtomicBool::new(true),
                 complete: AtomicBool::new(complete.unwrap_or(false)),
@@ -119,7 +152,9 @@ impl NativeSourceWatch {
                 );
             }
             work.started_io(WRITE)?;
-            hub::attach(state, HANDLE(state.directory.load(Ordering::Acquire)))?;
+            state
+                .hub
+                .attach(state, HANDLE(state.directory.load(Ordering::Acquire)))?;
             let mut reads = state.lock_reads();
             if let Err(error) = state.issue(&mut reads, work) {
                 if !matches!(&error, DemandError::Io(error) if error.raw_os_error() == Some(ERROR_INVALID_FUNCTION.to_hresult().0))

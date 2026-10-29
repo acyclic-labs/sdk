@@ -36,25 +36,15 @@ fn settle(info: &HeldRoot, file: &fs::File) -> Result<()> {
     info.sync_directory().map_err(storage)
 }
 
-fn bounded(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
-    // Pointer records follow the existing local owner-record bound. An opaque
-    // exclude file is streamed separately and never needs a size-based buffer.
-    const MAXIMUM_METADATA_BYTES: u64 = 65_536;
-    if file.metadata()?.len() > MAXIMUM_METADATA_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Git metadata pointer exceeds the local metadata bound",
-        )
-        .into());
-    }
+fn read_pointer(file: fs::File) -> std::result::Result<Vec<u8>, DemandError> {
     // Git writes pointer paths as raw filename bytes, which need not be UTF-8.
+    let length = file.metadata()?.len();
     let mut text = Vec::new();
-    file.take(MAXIMUM_METADATA_BYTES + 1)
-        .read_to_end(&mut text)?;
-    if text.len() as u64 > MAXIMUM_METADATA_BYTES {
+    file.take(length.saturating_add(1)).read_to_end(&mut text)?;
+    if text.len() as u64 != length {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            "Git metadata pointer grew beyond its admitted bound",
+            "Git metadata pointer changed while reading",
         )
         .into());
     }
@@ -201,7 +191,7 @@ fn metadata(root: &SearchRoot) -> Result<Option<HeldRoot>> {
         None => Ok(None),
         Some(Target::Directory(git)) => Ok(Some(git)),
         Some(Target::File(file)) => {
-            let text = bounded(file).map_err(storage)?;
+            let text = read_pointer(file).map_err(storage)?;
             let pointer = pointer_line(&text)?
                 .strip_prefix(b"gitdir: ")
                 .ok_or_else(|| Error::Invalid("checkout .git file has no gitdir pointer".into()))?;
@@ -217,7 +207,7 @@ fn common(git: HeldRoot) -> Result<HeldRoot> {
     match resolve(&search, Path::new("commondir"))? {
         None => Ok(git),
         Some(Target::File(file)) => {
-            let text = bounded(file).map_err(storage)?;
+            let text = read_pointer(file).map_err(storage)?;
             directory(&search, &pointer_path(pointer_line(&text)?)?)
         }
         Some(Target::Directory(_)) => Err(Error::Invalid("Git commondir is a directory".into())),
@@ -419,18 +409,6 @@ mod tests {
             file.rewind().unwrap();
             prop_assert_eq!(contains(&file, pattern).unwrap().0, expected);
         }
-    }
-
-    #[test]
-    fn oversized_pointer_records_are_rejected_before_publication() {
-        let temporary = tempfile::tempdir().unwrap();
-        let mut file = fs::File::create(temporary.path().join(".git")).unwrap();
-        file.write_all(b"gitdir: ").unwrap();
-        file.set_len(65_537).unwrap();
-        let held = acyclic_fs::hold_root(temporary.path()).unwrap();
-        assert!(bounded(fs::File::open(temporary.path().join(".git")).unwrap()).is_err());
-        assert!(Exclusion::capture(&held).is_err());
-        assert!(!temporary.path().join(".volumes").exists());
     }
 
     fn git(root: &Path, arguments: &[&str]) -> String {

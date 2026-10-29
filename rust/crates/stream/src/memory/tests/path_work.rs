@@ -9,7 +9,7 @@ fn paths(input: Vec<Vec<u8>>) -> Vec<StreamPath> {
             StreamPath::new(
                 parts
                     .into_iter()
-                    .map(|part| char::from(b'a' + part).to_string())
+                    .map(|part| ["a", "a-", "a.", "b"][usize::from(part)].to_owned())
                     .collect::<Vec<_>>()
                     .join("/"),
             )
@@ -72,10 +72,11 @@ proptest! {
         let destinations = paths(destinations);
         let provider = provider(&known);
         let state = futures::executor::block_on(provider.state.read());
-        let actual = result(missing_paths(&state, destinations.iter()));
+        let explicit = |prefix: &str| destinations.binary_search_by(|path| path.as_str().cmp(prefix)).is_ok();
+        let actual = result(missing_paths(&state, destinations.iter(), explicit));
         verify(&state, &destinations, &actual);
         prop_assert_eq!(&actual, &result(old_missing_paths(&state, destinations.iter())));
-        let (planned, _) = provider.paths(&state, destinations.iter()).unwrap();
+        let (planned, _) = provider.paths(&state, destinations.iter(), explicit).unwrap();
         prop_assert_eq!(actual, planned.iter().map(|(path, _)| path.as_str().to_owned()).collect::<Vec<_>>());
 
     }
@@ -91,7 +92,10 @@ fn ten_thousand_existing_appends_do_one_path_lookup_each() {
     assert_eq!(old_missing_paths(&state, destinations()).count(), 0);
     let before = PATH_LOOKUPS.with(std::cell::Cell::get);
     PATH_LOOKUPS.with(|count| count.set(0));
-    assert_eq!(missing_paths(&state, destinations()).count(), 0);
+    assert_eq!(
+        missing_paths(&state, destinations(), |prefix| path.as_str() == prefix).count(),
+        0
+    );
     let after = PATH_LOOKUPS.with(std::cell::Cell::get);
     let bound = |lookups| lookups <= 10_000;
     assert!(bound(after), "existing path lookup budget exceeded");
@@ -102,6 +106,44 @@ fn ten_thousand_existing_appends_do_one_path_lookup_each() {
     assert_eq!(before, 30_000);
     assert_eq!(after, 10_000);
     eprintln!("existing_path_lookups appends=10000 before={before} after={after}");
+}
+
+#[test]
+fn wide_creation_uses_logarithmic_explicit_parent_lookup() {
+    let destinations = (0..2049)
+        .map(|index| StreamPath::new(format!("root/p{index:04}/leaf")).unwrap())
+        .collect::<Vec<_>>();
+    let provider = MemoryStream::default();
+    let state = futures::executor::block_on(provider.state.read());
+    let comparisons = std::cell::Cell::new(0usize);
+    let before = result(old_missing_paths(
+        &state,
+        destinations.iter().inspect(|_| {
+            comparisons.set(comparisons.get() + 1);
+        }),
+    ));
+    let old = comparisons.replace(0);
+    let after = result(missing_paths(&state, destinations.iter(), |prefix| {
+        destinations
+            .binary_search_by(|path| {
+                comparisons.set(comparisons.get() + 1);
+                path.as_str().cmp(prefix)
+            })
+            .is_ok()
+    }));
+    verify(&state, &destinations, &after);
+    assert_eq!(before, after);
+    let bound = 2 * destinations.len() * (destinations.len().ilog2() as usize + 2);
+    assert!(
+        comparisons.get() <= bound,
+        "explicit parent lookup rescans destinations"
+    );
+    assert!(old > bound, "original full scan must fail the same budget");
+    eprintln!(
+        "wide_parent_comparisons paths={} before={old} after={}",
+        destinations.len(),
+        comparisons.get()
+    );
 }
 
 #[test]
@@ -118,7 +160,11 @@ fn negative_control_existing_parent_does_not_imply_existing_destination() {
     verify(
         &state,
         &destinations,
-        &result(missing_paths(&state, incorrectly_skipped)),
+        &result(missing_paths(&state, incorrectly_skipped, |prefix| {
+            destinations
+                .binary_search_by(|path| path.as_str().cmp(prefix))
+                .is_ok()
+        })),
     );
 }
 
@@ -159,15 +205,26 @@ fn existing_commit_path_planning_scans_each_destination_once() {
     PATH_LOOKUPS.with(|count| count.set(0));
     for _ in 0..10_000 {
         // Previous production implementation counts then reconstructs the scan.
-        assert_eq!(missing_paths(&state, std::iter::once(&path)).count(), 0);
-        assert_eq!(missing_paths(&state, std::iter::once(&path)).count(), 0);
+        assert_eq!(
+            missing_paths(&state, std::iter::once(&path), |prefix| path.as_str()
+                == prefix)
+            .count(),
+            0
+        );
+        assert_eq!(
+            missing_paths(&state, std::iter::once(&path), |prefix| path.as_str()
+                == prefix)
+            .count(),
+            0
+        );
     }
     let before = PATH_LOOKUPS.with(std::cell::Cell::get);
     PATH_LOOKUPS.with(|count| count.set(0));
     for _ in 0..10_000 {
         assert!(
             provider
-                .paths(&state, std::iter::once(&path))
+                .paths(&state, std::iter::once(&path), |prefix| path.as_str()
+                    == prefix)
                 .unwrap()
                 .0
                 .is_empty()

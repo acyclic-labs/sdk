@@ -98,7 +98,7 @@ async fn cursor_history_time_and_admission_fail_closed() -> Result<(), Box<dyn E
             Err(AccountingError::InvalidBounds)
         ));
     }
-    for maximum in [0, 257] {
+    for maximum in [0] {
         assert!(matches!(
             page(
                 &authority,

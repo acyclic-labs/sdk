@@ -129,7 +129,7 @@ fn slug_and_title_are_deterministic() {
 }
 
 #[test]
-fn preview_version_paths_are_injective_and_portable() {
+fn preview_version_storage_preserves_portable_distinct_names() {
     assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
     assert_eq!(safe_version("preview:1").unwrap(), "~707265766965773a31");
     assert_eq!(safe_version("preview_1").unwrap(), "preview_1");
@@ -142,16 +142,7 @@ fn preview_version_paths_are_injective_and_portable() {
     assert_eq!(safe_version("CON").unwrap(), "~434f4e");
     assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
     assert_eq!(safe_version("a/b").unwrap(), "~612f62");
-    assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
-    assert!(safe_version(&"a".repeat(256))
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds 255 bytes"));
-    assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
-    assert!(safe_version(&":".repeat(128))
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds 255 bytes"));
+
 }
 
 #[test]

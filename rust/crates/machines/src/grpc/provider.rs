@@ -67,14 +67,16 @@ machine_mutations! {
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         obs::operation!("acyclic.machines.exec", observation, async {
-            let timeout =
-                Duration::from_millis(command.timeout_ms) + Duration::from_secs(1);
+            let timeout = command.timeout_ms.map(|timeout| {
+                Duration::from_millis(timeout).checked_add(Duration::from_secs(1))
+                    .ok_or_else(|| ProviderError::Invalid("exec observation deadline overflow".into()))
+            }).transpose()?;
             let deadline = self.endpoint.deadline(timeout, command.expiry_unix_ms)?;
             let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
             let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
             let mut request = Request::new(input);
-            request.set_timeout(deadline.remaining());
+            if let Some(remaining) = deadline.remaining() { request.set_timeout(remaining); }
             let output = deadline
                 .run(client.exec(request))
                 .await
@@ -115,9 +117,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
         obs::operation!("acyclic.machines.read_output", observation, async {
-            if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
-                return Err(ProviderError::Invalid("invalid console read limit".into()));
-            }
+            let limit = page_limit(u64::from(limit), MAX_OUTPUT_READ_BYTES)?;
             let value = self
                 .client()
                 .await?
@@ -235,11 +235,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
         obs::operation!("acyclic.machines.list_machines", observation, async {
-            if limit == 0 || limit > MAX_PAGE_SIZE {
-                return Err(ProviderError::Invalid(
-                    "machine page limit must be 1..=256".into(),
-                ));
-            }
+            let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
             let page = self
                 .client()
                 .await?
@@ -343,9 +339,6 @@ machine_mutations! {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.fork", observation, async {
-            if count.get() > MAX_FORK_CHILDREN {
-                return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-            }
             let value = self
                 .client()
                 .await?
@@ -372,9 +365,6 @@ machine_mutations! {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.fork_machine", observation, async {
-            if count.get() > MAX_FORK_CHILDREN {
-                return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-            }
             let value = self
                 .client()
                 .await?
@@ -484,11 +474,7 @@ machine_mutations! {
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
         obs::operation!("acyclic.machines.events", observation, async {
-            if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-                return Err(ProviderError::Invalid(
-                    "event page limit must be 1..=1024".into(),
-                ));
-            }
+            let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
             let value = self
                 .client()
                 .await?

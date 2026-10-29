@@ -22,9 +22,12 @@ pub struct BrowserJoinPlan {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserJoinOptions {
     pub(in crate::bindings) history: String,
-    pub(in crate::bindings) maximum_generations: u32,
-    pub(in crate::bindings) maximum_changes: u32,
-    pub(in crate::bindings) maximum_conflicts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::bindings) maximum_generations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::bindings) maximum_changes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::bindings) maximum_conflicts: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[tsify(type = "Uint8Array")]
     pub(in crate::bindings) source_generation: Option<Vec<u8>>,
@@ -69,9 +72,9 @@ impl BrowserChangeSet {
     pub async fn compose(
         &self,
         next: &BrowserChangeSet,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_changes: JsValue,
     ) -> Result<BrowserChangeSet, JsValue> {
-        let maximum_changes = wasm_u32(&maximum_changes)?;
+        let maximum_changes = wasm_optional_u32(&maximum_changes)?;
         let engine = sdk_value!(unbounded_future!(
             self.engine,
             compose(&next.engine, maximum_changes)

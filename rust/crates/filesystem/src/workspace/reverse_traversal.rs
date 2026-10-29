@@ -194,7 +194,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     volume: &Volume<A, O>,
     root: &crate::kernel::GenerationRoot,
     ids: &[FileId],
-    maximum_entries: u32,
+    maximum_entries: impl Into<Option<u32>>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
@@ -210,11 +210,12 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
 pub(super) async fn collect_selected<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
     ids: &[FileId],
-    maximum_entries: u32,
+    maximum_entries: impl Into<Option<u32>>,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
+    let maximum_entries = maximum_entries.into();
     let (records, allocation) = crate::kernel::lookup_file_records_async_with_accounting(
         view.objects,
         view.root.file_table,
@@ -229,7 +230,7 @@ pub(super) async fn collect_selected<O: AsyncObjectStore>(
     let bytes = workspace_vec_bytes(&records);
     let records = crate::kernel::Owned::new(records, allocation, bytes);
     let result = async {
-        let mut emitted = 0_u32;
+        let mut emitted = 0_u64;
         for record in records.value.iter().flatten().copied() {
             let mut paths = crate::kernel::direct_paths::DirectPaths::new(
                 view.root,
@@ -242,7 +243,9 @@ pub(super) async fn collect_selected<O: AsyncObjectStore>(
                 loop {
                     // The authenticated count proves another alias remains;
                     // do not reconstruct that path after the output is full.
-                    if emitted == maximum_entries && aliases < record.link_count {
+                    if maximum_entries.is_some_and(|maximum| emitted == u64::from(maximum))
+                        && aliases < record.link_count
+                    {
                         return Ok(false);
                     }
                     let Some(path) = paths.next(view.objects, accounting, cancellation).await?

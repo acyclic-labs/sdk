@@ -149,10 +149,15 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
     }
     let current = message(10_001, MessageKind::User, content, None);
     let limits = Limits {
-        context_messages: 3,
+        context_messages: std::num::NonZeroUsize::new(3),
         ..Limits::default()
     };
     assert!(select_turn_delta(&conversation, &current, true, None, limits).is_err());
+    let all = select_turn_delta(&conversation, &current, true, None, Limits::default())?;
+    assert_eq!(all.message_ids.len(), 10_001);
+    assert_eq!(all.message_ids.last(), Some(&current.id));
+    assert_eq!(all.conversation_revision, 10_001);
+
     let payload = file(agent, "source.json", "application/json", b"data")?;
     let checkpoint = crate::context::CanonicalContextCheckpoint {
         operation_id: OperationId::new(),
@@ -194,7 +199,7 @@ fn canonical_checkpoint_selects_exact_bounded_delta_from_ten_thousand_records() 
             true,
             Some((&checkpoint, pinned.clone())),
             Limits {
-                context_messages: 2,
+                context_messages: std::num::NonZeroUsize::new(2),
                 ..limits
             }
         )
@@ -291,8 +296,8 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
         ..Resolver::default()
     };
     let limits = Limits {
-        context_messages: 256,
-        attachments: 1,
+        context_messages: std::num::NonZeroUsize::new(256),
+        attachments: std::num::NonZeroUsize::new(1),
         render_bytes: 128 * 1024,
         ..Limits::default()
     };
@@ -311,7 +316,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     );
     assert_eq!(resolver.calls.load(Ordering::SeqCst), 0);
     let limits = Limits {
-        attachments: 2,
+        attachments: std::num::NonZeroUsize::new(2),
         ..limits
     };
     assert!(
@@ -465,16 +470,21 @@ async fn native_manifest_resolution(foreign_bytes: bool) -> Result<()> {
         Invalid
     };
     assert!(matches!(
-        attachments::resolve(&message, &resolver, 1, Some(&io)).await,
+        attachments::resolve(&message, &resolver, std::num::NonZeroUsize::new(1), Some(&io)).await,
         Err(Error::NativeBoundary { code, .. }) if code == expected
     ));
     assert_eq!(resolver.ordinary.load(Ordering::SeqCst), 0);
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     work.cancellation().cancel();
     assert!(
-        attachments::resolve(&message, &resolver, 1, Some(&io))
-            .await
-            .is_err()
+        attachments::resolve(
+            &message,
+            &resolver,
+            std::num::NonZeroUsize::new(1),
+            Some(&io)
+        )
+        .await
+        .is_err()
     );
     assert_eq!(resolver.native.load(Ordering::SeqCst), 1);
     Ok(())

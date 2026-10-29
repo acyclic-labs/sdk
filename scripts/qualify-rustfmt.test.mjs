@@ -47,6 +47,7 @@ function gateFixture() {
   for (const name of ["gate-lite.sh", "gate-rust-format.sh", "qualify-rustfmt.mjs", "rustfmt-manifests.py"]) {
     copyFileSync(join(repo, "scripts", name), join(root, "scripts", name));
   }
+  copyFileSync(join(repo, "scripts", "process-capture.mjs"), join(root, "scripts", "process-capture.mjs"));
   writeFileSync(join(root, ".gate-scope-mode"), "full\n");
   return root;
 }

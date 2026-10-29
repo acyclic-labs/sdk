@@ -394,7 +394,7 @@ pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
         &'a self,
         _operation_id: OperationId,
         _replacement: Option<(&'a VolumeRef, &'a str)>,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess {

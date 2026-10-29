@@ -155,7 +155,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     );
     eprintln!("qualification phase: I/O child finished; parallel clients starting");
     let parallel = if kind == "macos-nfs" {
-        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS)
+        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS).await
     } else {
         Ok(())
     };
@@ -297,29 +297,27 @@ fn wait_for_watch(
     sentinel: &Path,
 ) -> Result<(), Failure> {
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut last_error = None;
     while Instant::now() < deadline {
-        match receiver.recv_timeout(Duration::from_millis(250)) {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Ok(event)) if event.need_rescan() => {
+                return Err("native watcher lost continuity before the sentinel".into());
+            }
             Ok(Ok(event)) if event.paths.iter().any(|path| path == sentinel) => {
                 return Ok(());
             }
-            Ok(Ok(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Ok(Err(error)) => last_error = Some(error),
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(format!("native watcher failed: {error}").into()),
+            Err(mpsc::RecvTimeoutError::Timeout) => break,
             Err(error) => return Err(format!("watcher channel failed: {error}").into()),
         }
     }
-    Err(last_error
-        .map_or_else(
-            || "no sentinel watcher event observed within 15 seconds".to_owned(),
-            |error| format!("no sentinel watcher event observed; last watcher error: {error}"),
-        )
-        .into())
+    Err("no sentinel watcher event observed within 15 seconds".into())
 }
 
 fn wait_for_watch_after_child(
     receiver: &mpsc::Receiver<notify::Result<notify::Event>>,
     sentinel: &Path,
-    child: &Result<std::process::Output, Failure>,
+    child: &Result<CapturedOutput, Failure>,
 ) -> Result<(), Failure> {
     match child {
         Ok(output) if output.status.success() => wait_for_watch(receiver, sentinel),

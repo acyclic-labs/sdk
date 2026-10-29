@@ -8,11 +8,11 @@ impl<
     S: LazyWorkspaceStore,
 > LazyWorkspace<A, O, D, S>
 {
-    /// Reads a complete regular file under an explicit byte bound.
+    /// Reads a complete regular file with an optional caller-selected byte bound.
     pub async fn read(
         &self,
         path: &str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
         self.read_current(path, None, maximum, SourceNodeKind::RegularFile, ctx)
@@ -87,10 +87,11 @@ impl<
         &self,
         path: &str,
         range: Option<crate::ByteRange>,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         kind: SourceNodeKind,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let maximum = maximum.into();
         let lookup = self.lookup(path, ctx).await?;
         let result = if lookup.0.stat().kind == kind {
             self.read_resolved(&lookup.0, path, range, maximum, ctx)
@@ -181,9 +182,10 @@ impl<
         lookup: &LazyLookup,
         path: &str,
         range: Option<crate::ByteRange>,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let maximum = maximum.into();
         let stat = lookup.stat();
         let range = match stat.kind {
             SourceNodeKind::RegularFile => {
@@ -193,7 +195,7 @@ impl<
                         .logical_bytes
                         .ok_or(LazyWorkspaceError::NotRegularFile)?,
                 });
-                if range.length > maximum {
+                if maximum.is_some_and(|maximum| range.length > maximum) {
                     return Err(LazyWorkspaceError::TooLarge);
                 }
                 Some(range)
@@ -221,6 +223,10 @@ impl<
                 }
             }
             LazyLookup::Source { source, node } => {
+                let source_bound = match range {
+                    Some(range) => range.length,
+                    None => maximum.ok_or(LazyWorkspaceError::NotRegularFile)?,
+                };
                 let namespace = self.namespace_path(path, ctx)?;
                 let result = accounted!(ctx, |work, cancel| async {
                     if let Some(range) = range {
@@ -241,7 +247,7 @@ impl<
                                 *source,
                                 &namespace.value,
                                 node.version,
-                                maximum,
+                                source_bound,
                                 work,
                                 cancel,
                             )
@@ -252,7 +258,7 @@ impl<
                 result?
             }
         };
-        if bytes.bytes.len() as u64 > maximum {
+        if maximum.is_some_and(|maximum| bytes.bytes.len() as u64 > maximum) {
             drop(bytes);
             return Err(LazyWorkspaceError::TooLarge);
         }

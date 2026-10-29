@@ -3,9 +3,6 @@
 use crate::sync::Mutex;
 use std::collections::BTreeMap;
 
-/// Bounded compare-and-swap retries before a coordinator reports contention.
-pub(crate) const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
-
 /// Record carrying a monotonic optimistic-concurrency revision.
 pub(crate) trait Revisioned {
     fn revision(&self) -> u64;

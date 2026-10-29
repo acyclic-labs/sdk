@@ -98,7 +98,10 @@ impl ContextManifest {
             }
             let mut matched = 0;
             for skill in &self.discovery.skills {
-                if skill.source.path.len() > limits.path_bytes {
+                if limits
+                    .path_bytes
+                    .is_some_and(|maximum| skill.source.path.len() > maximum.get())
+                {
                     return Err(stock_boundary(
                         io,
                         ErrorCode::Invalid,
@@ -148,7 +151,10 @@ impl ContextManifest {
                 .ok_or_else(|| {
                     stock_boundary(io, ErrorCode::Invalid, "manifest message count overflows")
                 })?;
-            if count > limits.context_messages {
+            if limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+            {
                 return Err(stock_boundary(
                     io,
                     ErrorCode::Invalid,
@@ -173,8 +179,8 @@ impl ContextManifest {
             std::marker::PhantomData,
             bytes,
             JsonBounds {
-                maximum_bytes: limits.render_bytes,
-                maximum_items: limits.render_bytes,
+                maximum_bytes: Some(limits.render_bytes),
+                maximum_items: Some(limits.render_bytes),
                 maximum_depth: 256,
             },
             None,
@@ -195,8 +201,11 @@ impl ContextManifest {
     ) -> Result<FileRef> {
         let bytes = self.encode(limits)?;
         crate::conversation::validate_content_path(path, &mut None)?;
-        // Bounded by what it renders (`encode`), not by the file bound.
-        if path.len() > limits.path_bytes {
+        // The manifest is independent of the selected input-file policy.
+        if limits
+            .path_bytes
+            .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(Error::Invalid(
                 "context manifest publication exceeds file bounds".into(),
             ));

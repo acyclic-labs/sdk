@@ -29,16 +29,17 @@ impl McpHttpProvider for NativeMcpHttpProvider {
         request: McpHttpRequest,
     ) -> BoxProviderFuture<'a, Result<McpHttpResponse>> {
         Box::pin(async move {
-            if request.timeout_ms == 0 || request.maximum_response_bytes == 0 {
-                return Err(Error::Invalid("HTTP exchange needs finite bounds".into()));
+            if request.timeout_ms == Some(0) || request.maximum_response_bytes == Some(0) {
+                return Err(Error::Invalid(
+                    "HTTP exchange needs positive configured allowances".into(),
+                ));
             }
             let method = reqwest::Method::from_bytes(request.method.as_bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?;
-            let mut builder = self
-                .0
-                .request(method, &request.endpoint)
-                .timeout(Duration::from_millis(u64::from(request.timeout_ms)))
-                .body(request.body);
+            let mut builder = self.0.request(method, &request.endpoint).body(request.body);
+            if let Some(timeout) = request.timeout_ms {
+                builder = builder.timeout(Duration::from_millis(timeout));
+            }
             for (key, value) in request.headers {
                 builder = builder.header(key, value);
             }
@@ -61,7 +62,10 @@ impl McpHttpProvider for NativeMcpHttpProvider {
             let body = response.bytes_stream().map(move |chunk| {
                 let chunk = chunk.map_err(|_| Error::Indeterminate(operation))?;
                 received = received.saturating_add(chunk.len());
-                if received as u64 > u64::from(request.maximum_response_bytes) {
+                if request
+                    .maximum_response_bytes
+                    .is_some_and(|maximum| received as u64 > u64::from(maximum))
+                {
                     return Err(Error::Indeterminate(operation));
                 }
                 Ok(chunk)
@@ -194,7 +198,7 @@ mod tests {
                 format!("http://{address}/mcp"),
                 Some("session".into()),
                 8192,
-                1000,
+                if mode == "json" { None } else { Some(1000) },
                 None,
             )?;
             let result = transport.call(operation, "echo", json!({}), None).await;

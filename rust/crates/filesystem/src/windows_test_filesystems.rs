@@ -100,15 +100,21 @@ pub(crate) fn junction(alias: &std::path::Path, target: &std::path::Path) -> io:
     let directory = std::fs::OpenOptions::new()
         .access_mode(windows::Win32::Foundation::GENERIC_WRITE.0)
         .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0 | FILE_SHARE_DELETE.0)
-        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0 | FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .custom_flags(
+            FILE_FLAG_BACKUP_SEMANTICS.0
+                | FILE_FLAG_OPEN_REPARSE_POINT.0
+                | windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0,
+        )
         .open(alias)?;
     acyclic_native_runtime::device_control_in_place(
         &directory,
         windows::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT,
         &data,
         &mut [],
+        acyclic_native_runtime::NativeOperationKind::Write,
         None,
-    )?;
+    )?
+    .into_complete()?;
     Ok(())
 }
 

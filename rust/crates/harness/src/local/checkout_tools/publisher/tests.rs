@@ -351,7 +351,7 @@ async fn committed_uploads_recover_checkout_before_capture_and_never_reapply_com
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess::default(),
         )?
         .await?
@@ -776,7 +776,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                             .observe_staged_once(
                                 operation,
                                 None,
-                                1024,
+                                Some(1024),
                                 crate::conversation::ContentAccess {
                                     ceiling: Some(&ceiling),
                                     io: None,
@@ -1023,7 +1023,7 @@ async fn raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling() ->
             .observe_staged_once(
                 OperationId::new(),
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: Some(&restricted),
                     io: None

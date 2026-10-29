@@ -293,7 +293,7 @@ where
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -557,9 +557,18 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.effective_scope().limits().path_bytes
-                || after
-                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+                || after.is_some_and(|name| {
+                    context
+                        .effective_scope()
+                        .limits()
+                        .path_bytes
+                        .is_some_and(|maximum| name.len() > maximum.get())
+                })
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {
@@ -587,14 +596,12 @@ where
                 .map_err(Error::from)?;
                 let (bytes, custody) = work.copy_bytes(name.as_bytes()).map_err(Error::from)?;
                 cursor_custody = Some(custody);
-                Some(
-                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX).map_err(|_| {
-                        Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "private directory cursor is not a logical child name",
-                        }
-                    })?,
-                )
+                Some(LogicalName::new(NameEncoding::Utf8, bytes).map_err(|_| {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "private directory cursor is not a logical child name",
+                    }
+                })?)
             } else {
                 cursor_custody = None;
                 None

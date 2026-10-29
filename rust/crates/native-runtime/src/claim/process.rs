@@ -2,11 +2,14 @@
 //! process it names.
 
 use super::protocol::Liveness;
-use super::record::{Process, RECORD_LIMIT, Record};
+use super::record::Process;
+use crate::meter::read_operation;
 use crate::{FileLock, FileLockMode};
+use crate::{NativeReadMeter, ReadAllocation};
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::OnceLock;
 
 static OWNER: OnceLock<Option<ProcessOwner>> = OnceLock::new();
@@ -55,24 +58,18 @@ impl ProcessOwner {
         // exclude them: a filesystem whose locks always succeed cannot hold it.
         match FileLock::try_acquire(File::open(&path)?, FileLockMode::Shared) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            _ => return Err(io::Error::from(io::ErrorKind::Unsupported)),
+            _ => return Err(io::Error::from(io::ErrorKind::Unsupported).into()),
         }
         let process = Process {
             pid,
-            start: start_identity(pid).unwrap_or_default(),
+            start: start_identity(pid, None)
+                .map(|identity| identity.bytes)
+                .unwrap_or_default(),
             lock: path_bytes(&path)?,
-            lock_identity: identity_bytes(&lock)?,
+            lock_identity: identity_bytes(&lock, None)
+                .map_err(ProbeError::into_io)?
+                .bytes,
         };
-        // Every record names this process with a fixed-width token, so one
-        // check covers them all: a record too long to read back whole is
-        // never written, and each claim holds its own file lock instead.
-        let longest = Record {
-            process: process.clone(),
-            token: u64::MAX,
-        };
-        if longest.encode().len() > RECORD_LIMIT {
-            return Err(io::Error::from(io::ErrorKind::InvalidFilename));
-        }
         Ok(Self {
             process,
             _lock: lock,
@@ -87,47 +84,54 @@ pub(super) const PROBES: u64 = 3;
 /// What can be proven about the process a record names. Only a positive proof
 /// of death is `Dead`; every probe that fails to answer is `Unknown`. Counts
 /// each probe it makes in `probes`.
-pub(super) fn liveness(process: &Process, probes: &mut u64, probe: super::LockProbe) -> Liveness {
-    let Some(path) = bytes_path(&process.lock) else {
-        return Liveness::Unknown;
-    };
+pub(super) fn liveness(
+    process: &Process<&[u8]>,
+    probes: &mut u64,
+    probe: super::LockProbe,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<Liveness> {
     *probes += 1;
-    match File::open(&path) {
-        Ok(lock) => match identity_bytes(&lock) {
-            Ok(identity) if identity == process.lock_identity => {
-                match probe(lock) {
-                    // Its owner holds it exclusively for life.
+    match crate::namespace::open_read_encoded(process.lock, meter)? {
+        Ok(lock) => match identity_bytes(&lock, meter) {
+            Ok(identity) if identity.bytes.as_slice() == process.lock_identity => {
+                Ok(match read_operation(meter, || probe(lock))? {
                     Ok(_) => Liveness::Dead,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => Liveness::Alive,
                     Err(_) => Liveness::Unknown,
-                }
+                })
             }
-            // Another file now has that name: the named one is gone.
-            Ok(_) => without_lock(process, probes),
-            Err(_) => Liveness::Unknown,
+            Ok(_) => without_lock(process, probes, meter),
+            Err(ProbeError::Io(_)) => Ok(Liveness::Unknown),
+            Err(ProbeError::Work(error)) => Err(error),
         },
-        Err(error) if error.kind() == io::ErrorKind::NotFound => without_lock(process, probes),
-        Err(_) => Liveness::Unknown,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            without_lock(process, probes, meter)
+        }
+        Err(_) => Ok(Liveness::Unknown),
     }
 }
 
-/// For a process lock that is gone: whether the process that held it lives.
-/// Something other than its owner can remove it on Unix, such as a
-/// temporary-file cleaner, so a missing lock alone proves nothing there.
-fn without_lock(process: &Process, probes: &mut u64) -> Liveness {
+/// A missing lock proves death only through the platform's original identity
+/// and lifecycle checks. Admission failure never becomes an unknown OS probe.
+fn without_lock(
+    process: &Process<&[u8]>,
+    probes: &mut u64,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<Liveness> {
     #[cfg(target_os = "linux")]
     {
         if process.start.is_empty() {
-            return Liveness::Unknown;
+            return Ok(Liveness::Unknown);
         }
-        // The boot, then the process.
         *probes += 2;
-        match start_identity(process.pid) {
-            Ok(start) if start == process.start => Liveness::Alive,
-            // Another boot, or another process with a reused pid.
-            Ok(_) => Liveness::Dead,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Liveness::Dead,
-            Err(_) => Liveness::Unknown,
+        match start_identity(process.pid, meter) {
+            Ok(start) if start.bytes.as_slice() == process.start => Ok(Liveness::Alive),
+            Ok(_) => Ok(Liveness::Dead),
+            Err(ProbeError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                Ok(Liveness::Dead)
+            }
+            Err(ProbeError::Io(_)) => Ok(Liveness::Unknown),
+            Err(ProbeError::Work(error)) => Err(error),
         }
     }
     #[cfg(target_vendor = "apple")]
@@ -136,35 +140,60 @@ fn without_lock(process: &Process, probes: &mut u64) -> Liveness {
             .ok()
             .and_then(rustix::process::Pid::from_raw)
         else {
-            return Liveness::Unknown;
+            return Ok(Liveness::Unknown);
         };
         *probes += 1;
-        match rustix::process::test_kill_process(pid) {
-            Ok(()) | Err(rustix::io::Errno::PERM) => {
-                *probes += 1;
-                // A zombie awaiting its parent's wait holds no files. A reused
-                // pid reads as alive: a refusal, never two owners.
-                if zombie(pid) {
-                    Liveness::Dead
-                } else {
-                    Liveness::Alive
-                }
+        let present = match read_operation(meter, || {
+            rustix::process::test_kill_process(pid).map_err(io::Error::from)
+        })? {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::PERM.raw_os_error()) => {
+                true
             }
-            Err(rustix::io::Errno::SRCH) => Liveness::Dead,
-            Err(_) => Liveness::Unknown,
+            Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+                return Ok(Liveness::Dead);
+            }
+            Err(_) => false,
+        };
+        if !present {
+            return Ok(Liveness::Unknown);
         }
+        *probes += 1;
+        Ok(if read_operation(meter, || Ok(zombie(pid)))?? {
+            Liveness::Dead
+        } else {
+            Liveness::Alive
+        })
     }
-    // The owner's lock denies removal and renaming while it is open, and a
-    // sweep removes it only while holding its lock.
     #[cfg(windows)]
     {
-        let _ = (process, probes);
-        Liveness::Dead
+        // The lock's owner denied removal/renaming for its whole lifetime.
+        let _ = (process, probes, meter);
+        Ok(Liveness::Dead)
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
     {
-        let _ = (process, probes);
-        Liveness::Unknown
+        let _ = (process, probes, meter);
+        Ok(Liveness::Unknown)
+    }
+}
+
+/// Separates a native observation from refusal on the original work. Inline
+/// variants preserve the exact error without allocating an error wrapper.
+enum ProbeError {
+    Io(io::Error),
+    Work(io::Error),
+}
+impl From<io::Error> for ProbeError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+impl ProbeError {
+    fn into_io(self) -> io::Error {
+        match self {
+            Self::Io(error) | Self::Work(error) => error,
+        }
     }
 }
 
@@ -186,7 +215,7 @@ fn path_bytes(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
-        Err(io::Error::from(io::ErrorKind::Unsupported))
+        Err(io::Error::from(io::ErrorKind::Unsupported).into())
     }
 }
 
@@ -214,23 +243,69 @@ pub(super) fn bytes_path(bytes: &[u8]) -> Option<PathBuf> {
     }
 }
 
+struct Identity {
+    bytes: Vec<u8>,
+    _allocation: Option<ReadAllocation>,
+}
+
+impl Identity {
+    fn copy(parts: &[&[u8]], meter: Option<&Arc<dyn NativeReadMeter>>) -> io::Result<Self> {
+        let size = parts.iter().try_fold(0_usize, |size, part| {
+            size.checked_add(part.len())
+                .ok_or(io::ErrorKind::InvalidInput)
+        })?;
+        let mut value = Self {
+            bytes: Vec::new(),
+            _allocation: meter
+                .map(|meter| ReadAllocation::new(meter, size))
+                .transpose()?,
+        };
+        value
+            .bytes
+            .try_reserve_exact(size)
+            .map_err(|error| match meter {
+                Some(meter) => meter.allocation_failed(error),
+                None => io::ErrorKind::OutOfMemory.into(),
+            })?;
+        if let Some(allocation) = &mut value._allocation {
+            allocation.reconcile_capacity(value.bytes.capacity())?;
+        }
+        if let Some(meter) = meter {
+            meter.admit_codec(0, size as u64, 0)?;
+        }
+        for part in parts {
+            value.bytes.extend_from_slice(part);
+        }
+        if let Some(meter) = meter {
+            meter.record_codec(0, size as u64, 0)?;
+        }
+        Ok(value)
+    }
+}
+
 /// The identity of a process lock, so a record never names a different file
 /// that later took its path.
-fn identity_bytes(file: &File) -> io::Result<Vec<u8>> {
+fn identity_bytes(
+    file: &File,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<Identity, ProbeError> {
     #[cfg(any(target_os = "linux", target_vendor = "apple"))]
     {
-        let (device, inode) = crate::file_identity(file)?;
-        Ok([device.to_le_bytes(), inode.to_le_bytes()].concat())
+        let (device, inode) =
+            read_operation(meter, || crate::file_identity(file)).map_err(ProbeError::Work)??;
+        Identity::copy(&[&device.to_le_bytes(), &inode.to_le_bytes()], meter)
+            .map_err(ProbeError::Work)
     }
     #[cfg(windows)]
     {
-        let (volume, id) = crate::file_identity(file)?;
-        Ok([&volume.to_le_bytes()[..], &id[..]].concat())
+        let (volume, id) =
+            read_operation(meter, || crate::file_identity(file)).map_err(ProbeError::Work)??;
+        Identity::copy(&[&volume.to_le_bytes(), &id], meter).map_err(ProbeError::Work)
     }
     #[cfg(not(any(target_os = "linux", target_vendor = "apple", windows)))]
     {
-        let _ = file;
-        Err(io::Error::from(io::ErrorKind::Unsupported))
+        let _ = (file, meter);
+        Err(io::Error::from(io::ErrorKind::Unsupported).into())
     }
 }
 
@@ -277,7 +352,7 @@ fn user_id() -> io::Result<u32> {
     #[cfg(target_vendor = "apple")]
     return Ok(rustix::process::getuid().as_raw());
     #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
-    Err(io::Error::from(io::ErrorKind::Unsupported))
+    Err(io::Error::from(io::ErrorKind::Unsupported).into())
 }
 
 /// Removes the process locks of processes that have died. A lock is removed
@@ -307,26 +382,37 @@ fn sweep(directory: &Path) {
 /// nothing. Reads into fixed buffers, so a probe allocates only the identity
 /// it returns.
 #[cfg(target_os = "linux")]
-fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
+fn start_identity(
+    pid: u32,
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<Identity, ProbeError> {
     use std::io::Write as _;
     use std::os::unix::ffi::OsStrExt as _;
     let malformed = || io::Error::from(io::ErrorKind::InvalidData);
     // Read first, so a missing /proc is never mistaken for a missing process.
     let mut boot = [0; 64];
-    let boot =
-        read_bounded(Path::new("/proc/sys/kernel/random/boot_id"), &mut boot).map_err(|error| {
-            match error.kind() {
-                io::ErrorKind::NotFound => io::Error::from(io::ErrorKind::Unsupported),
-                _ => error,
-            }
-        })?;
+    let boot = read_bounded(
+        Path::new("/proc/sys/kernel/random/boot_id"),
+        &mut boot,
+        meter,
+    )
+    .map_err(|error| match error {
+        ProbeError::Io(error) if error.kind() == io::ErrorKind::NotFound => {
+            ProbeError::Io(io::ErrorKind::Unsupported.into())
+        }
+        error => error,
+    })?;
     let mut name = [0; 32];
     let mut cursor = io::Cursor::new(&mut name[..]);
     write!(cursor, "/proc/{pid}/stat")?;
     let length = usize::try_from(cursor.position()).map_err(|_| malformed())?;
     let name = name.get(..length).ok_or_else(malformed)?;
     let mut stat = [0; 4096];
-    let stat = read_bounded(Path::new(std::ffi::OsStr::from_bytes(name)), &mut stat)?;
+    let stat = read_bounded(
+        Path::new(std::ffi::OsStr::from_bytes(name)),
+        &mut stat,
+        meter,
+    )?;
     let stat = std::str::from_utf8(stat).map_err(|_| malformed())?;
     // Fields are counted after the parenthesized command name, which may
     // itself contain spaces.
@@ -338,16 +424,12 @@ fn start_identity(pid: u32) -> io::Result<Vec<u8>> {
     // Exited, or a zombie whose threads have all exited. A leader that exited
     // before its other threads also reads as a zombie, but they live on.
     if state == "X" || state == "x" || (state == "Z" && threads == "1") {
-        return Err(io::Error::from(io::ErrorKind::NotFound));
+        return Err(io::Error::from(io::ErrorKind::NotFound).into());
     }
     // Field 22, the start tick.
     let start = fields.nth(1).ok_or_else(malformed)?;
     let boot = std::str::from_utf8(boot).map_err(|_| malformed())?.trim();
-    let mut identity = Vec::with_capacity(boot.len() + 1 + start.len());
-    identity.extend_from_slice(boot.as_bytes());
-    identity.push(b':');
-    identity.extend_from_slice(start.as_bytes());
-    Ok(identity)
+    Identity::copy(&[boot.as_bytes(), b":", start.as_bytes()], meter).map_err(ProbeError::Work)
 }
 
 /// Whether process `pid` has exited and awaits its parent's wait. `false`
@@ -383,30 +465,52 @@ fn zombie(pid: rustix::process::Pid) -> bool {
 
 /// The whole of the file at `path`, which must fit `buffer`.
 #[cfg(target_os = "linux")]
-fn read_bounded<'a>(path: &Path, buffer: &'a mut [u8]) -> io::Result<&'a [u8]> {
+fn read_bounded<'a>(
+    path: &Path,
+    buffer: &'a mut [u8],
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> Result<&'a [u8], ProbeError> {
     use std::io::Read as _;
-    let mut file = File::open(path)?;
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut file = crate::namespace::open_read_encoded(path.as_os_str().as_bytes(), meter)
+        .map_err(ProbeError::Work)??;
     let mut filled = 0;
     loop {
         let Some(rest) = buffer.get_mut(filled..) else {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
+            return Err(io::Error::from(io::ErrorKind::InvalidData).into());
         };
         if rest.is_empty() {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
+            return Err(io::Error::from(io::ErrorKind::InvalidData).into());
         }
-        match file.read(rest) {
+        let mut bytes = meter
+            .map(|meter| {
+                crate::NativeByteReservation::new(
+                    meter.clone(),
+                    crate::NativeOperationKind::Read,
+                    rest.len(),
+                )
+            })
+            .transpose()
+            .map_err(ProbeError::Work)?;
+        let read = read_operation(meter, || file.read(rest)).map_err(ProbeError::Work)?;
+        if let Some(bytes) = &mut bytes {
+            bytes
+                .record(read.as_ref().copied().unwrap_or(0))
+                .map_err(ProbeError::Work)?;
+        }
+        match read {
             Ok(0) => break,
             Ok(read) => filled += read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     }
     buffer
         .get(..filled)
-        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData).into())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn start_identity(_: u32) -> io::Result<Vec<u8>> {
-    Err(io::Error::from(io::ErrorKind::Unsupported))
+fn start_identity(_: u32, _: Option<&Arc<dyn NativeReadMeter>>) -> Result<Identity, ProbeError> {
+    Err(io::Error::from(io::ErrorKind::Unsupported).into())
 }

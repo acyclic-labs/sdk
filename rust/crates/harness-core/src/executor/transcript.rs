@@ -63,10 +63,18 @@ pub(crate) struct RequestManifest {
 #[cfg(feature = "filesystem")]
 pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
     admitted.file_bytes <= current.file_bytes
-        && admitted.path_bytes <= current.path_bytes
-        && admitted.attachments <= current.attachments
+        && current
+            .path_bytes
+            .is_none_or(|maximum| admitted.path_bytes.is_some_and(|value| value <= maximum))
+        && current
+            .attachments
+            .is_none_or(|maximum| admitted.attachments.is_some_and(|value| value <= maximum))
         && admitted.render_bytes <= current.render_bytes
-        && admitted.context_messages <= current.context_messages
+        && current.context_messages.is_none_or(|maximum| {
+            admitted
+                .context_messages
+                .is_some_and(|value| value <= maximum)
+        })
 }
 
 #[cfg(feature = "filesystem")]
@@ -448,7 +456,11 @@ async fn load_request_inner(
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::PreparedModelRequest> {
     let manifest = load_manifest(journal, reference, io).await?;
-    if manifest.messages.count == 0 || manifest.messages.count as usize > limits.context_messages {
+    if manifest.messages.count == 0
+        || limits
+            .context_messages
+            .is_some_and(|maximum| manifest.messages.count as usize > maximum.get())
+    {
         return Err(invalid(io));
     }
     let header =

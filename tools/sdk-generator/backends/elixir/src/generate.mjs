@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
@@ -10,7 +10,7 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = { ...JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"), "utf8")),
   ...JSON.parse(readFileSync(join(directory, "../../../shared/protoc.json"), "utf8")) };
 // Command/toolchain injection supports tiny offline fixtures. CLI pins are fixed.
-export function generate(args, { command = spawnSync, toolchain = pinned } = {}) {
+export function generate(args, { command = captureCommand, toolchain = pinned } = {}) {
   const source = realpathSync(args["source-root"]), authority = realpathSync(args.authority);
   const protoc = realpathSync(args.protoc), plugin = realpathSync(args["elixir-plugin"]);
   const runtime = realpathSync(args["runtime-root"]), runtimeIndex = realpathSync(args["runtime-inventory"]);
@@ -36,7 +36,7 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
     Object.assign(env, { HOME: home, PATH: [join(runtime, runtimePin.roots[1], "bin"), join(runtime, runtimePin.roots[0], "bin"), "/usr/bin", "/bin"].join(":"),
       ERL_FLAGS: "+S 1:1", ELIXIR_ERL_OPTIONS: "+fnu", LC_ALL: "C.UTF-8" });
     const run = (exe, argv) => {
-      const result = command(exe, argv, { cwd: temporary, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
+      const result = command(exe, argv, { cwd: temporary, env, encoding: "utf8", timeout: 180_000 });
       if (result.error || result.status !== 0) throw new Error(`Elixir generation command failed: ${result.stderr ?? ""}`);
       return result.stdout.trim();
     };

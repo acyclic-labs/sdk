@@ -39,8 +39,6 @@ fn history(entries: u32, bytes: u64, ops: &[(u8, u8)], fault: Fault) -> TestCase
         ObjectCacheOptions {
             maximum_entries: entries,
             maximum_bytes: bytes,
-            maximum_in_flight: 1,
-            maximum_waiters_per_object: 1,
         },
     )
     .unwrap();

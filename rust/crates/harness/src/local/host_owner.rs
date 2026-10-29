@@ -148,8 +148,8 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Keeps each native request's saved result until its client withdraws
+    /// the request after reading its durable reply under `directory`.
     #[must_use]
     pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
         self.requests = Some(directory);
@@ -260,13 +260,26 @@ impl HostWorkspaceOwner {
 
     async fn agents(&self, task: &AgentPath) -> Result<Value> {
         let (state, _) = self.native.session(task).await?;
-        let mut agents = Vec::with_capacity(state.open_children.len());
-        for child in &state.open_children {
-            let (child_state, session) = self.native.session(child).await?;
-            agents.push(json!({"task":child,"reference":session.reference,
+        let mut agents = Vec::new();
+        let mut after = None;
+        loop {
+            let page = state
+                .open_children
+                .page(after.as_ref(), 256)
+                .await
+                .map_err(storage)?;
+            if page.is_empty() {
+                break;
+            }
+            for id in &page {
+                let child = task.child(id).map_err(storage)?;
+                let (child_state, session) = self.native.session(&child).await?;
+                agents.push(json!({"task":child,"reference":session.reference,
                 "control":session.control,"settled":session.settled,
                 "running":session.claimed().is_some(),
                 "pending":session.pending(&child_state)}));
+            }
+            after = page.last().cloned();
         }
         Ok(json!({ "agents": agents }))
     }
@@ -365,7 +378,7 @@ impl HostWorkspaceOwner {
             .await;
         self.attach(task).await?;
         if let Some(child) = &merged {
-            let (state, session) = self.native.session(child).await?;
+            let (state, session) = self.native.session(&child).await?;
             if session.claimed().is_some() || session.pending(&state) > 0 {
                 return Err(Error::Conflict(
                     "native session is still running; wait for its captured result before merging"
@@ -382,7 +395,7 @@ impl HostWorkspaceOwner {
                 operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                 unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
                     let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
-                    directory.join("requests").join(&file).exists()
+                    directory.join("requests").join(&file).try_exists()
                 }),
             });
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)

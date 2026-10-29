@@ -70,7 +70,6 @@ fn requested(name: &str) -> Result<NamespacePath, Box<dyn std::error::Error>> {
         vec![LogicalName::new(
             NameEncoding::Utf8,
             name.as_bytes().to_vec(),
-            limits.maximum_component_bytes,
         )?]
     };
     Ok(NamespacePath::new(components, limits)?)

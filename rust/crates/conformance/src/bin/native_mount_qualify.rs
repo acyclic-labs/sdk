@@ -66,7 +66,6 @@ const MACOS_NFS_PARALLEL_CLIENTS: usize = 4;
 const MACOS_NFS_LARGE_TREE_ENTRIES: usize = 512;
 #[cfg(windows)]
 const QUALIFICATION_MODIFIED_NS: i64 = 1_700_000_000_000_000_000;
-const MAX_CHILD_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Eq, PartialEq)]
 struct CheckoutSnapshot {

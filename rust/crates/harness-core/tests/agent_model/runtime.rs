@@ -28,7 +28,6 @@ impl TurnDriver for Spawner {
         let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
         Box::pin(async move {
             Ok(TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: if first {
                     vec![Out::Spawn {
@@ -313,6 +312,121 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
 }
 
 #[tokio::test]
+async fn conversation_follow_waits_on_actual_status_publication_and_preserves_refusals() -> Result {
+    use acyclic_stream::{
+        CommitMutation, CommitOutcome, CommitRequest, FollowRequest, StreamError, StreamProvider,
+        StreamProviderExt,
+    };
+    use futures::TryStreamExt;
+
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider.clone(),
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    // The primitive's missing-path contract still refuses and creates nothing.
+    assert!(matches!(
+        provider
+            .follow(FollowRequest::new(root.conversation()?, 0))
+            .await,
+        Err(StreamError::NotFound)
+    ));
+    assert!(matches!(
+        host.follow_conversation(&root, 1).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    let mut cancelled = Box::pin(host.follow_conversation(&root, 0));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(cancelled.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    drop(cancelled);
+    assert!(matches!(
+        provider.tail(root.conversation()?).await,
+        Err(StreamError::NotFound)
+    ));
+
+    let mut following = Box::pin(host.follow_conversation(&root, 0));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(following.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    let entry = ConversationEntry {
+        inbox: 1,
+        input: TurnInput::Message {
+            from: user(),
+            id: intent("message"),
+            body: Box::new(super::driver::file("input")?),
+            attachments: None,
+        },
+        output: super::driver::file("output")?,
+        outcome: Default::default(),
+    }
+    .encode()?;
+    assert!(matches!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: root.conversation()?,
+                        records: vec![entry.clone().into()]
+                    },
+                    CommitMutation::Append {
+                        path: root.status()?,
+                        records: vec![
+                            StatusRecord {
+                                phase: Phase::Idle,
+                                cursor: 2,
+                                conversation: 1
+                            }
+                            .encode()?
+                            .into()
+                        ]
+                    },
+                ],
+                idempotency_key: intent_key("conversation-follow", &["publish"])?,
+            })
+            .await?,
+        CommitOutcome::Committed(_)
+    ));
+    let mut records = following.await?;
+    let first = records
+        .try_next()
+        .await?
+        .ok_or("conversation follow ended")?;
+    assert_eq!(first.sequence, 0);
+    assert_eq!(first.value.as_ref(), entry.as_slice());
+    drop(records);
+    assert!(matches!(
+        host.follow_conversation(&root, 2).await,
+        Err(Error::Stream(StreamError::OutOfRange))
+    ));
+    assert!(matches!(
+        host.follow_conversation(&AgentPath::root(&id(9)), 0).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+
+    let closed = host.create(&intent("closed"), adopted(id(2))).await?;
+    host.archive(&closed, &user(), &intent("archive")).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    assert!(matches!(
+        host.state(&closed).await?.phase,
+        Phase::Done { .. }
+    ));
+    assert!(matches!(
+        host.follow_conversation(&closed, 0).await,
+        Err(Error::Stream(StreamError::NotFound))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
@@ -516,47 +630,6 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         host.spawned(&root, inbox, &intent("s")).await,
         Err(Error::Conflict(_))
     ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_root_with_every_child_open_commits_and_refuses_one_more() -> Result {
-    // Every open child is in the root's checkpoint, so a root at the limit
-    // is the largest the child set makes it; that state must commit.
-    let provider = Arc::new(MemoryStream::default());
-    let host = AgentHost::new(
-        provider,
-        Spawner(AtomicUsize::new(1)),
-        ActorReference::new(b"account", b"agents", b"owner")?,
-        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-        Arc::new(SystemClock),
-    )?;
-    let root = host.create(&intent("create"), adopted(id(1))).await?;
-    let request = |n: usize| {
-        InboxRecord::Spawn(SpawnRequest {
-            by: user(),
-            id: intent(&format!("s{n}")),
-            brief: Box::new(super::driver::file("task").expect("file")),
-        })
-    };
-    let mut last = 0;
-    for n in 0..=MAX_OPEN_CHILDREN {
-        let Delivered::Committed { inbox } = host.send(&root, &user(), &request(n)).await? else {
-            return Err("spawn request was not committed".into());
-        };
-        last = inbox;
-    }
-    let failures = host.runtime().drain().await;
-    assert!(failures.is_empty(), "{failures:?}");
-    let state = host.state(&root).await?;
-    assert_eq!(state.open_children.len(), MAX_OPEN_CHILDREN);
-    let (spawn, _) = requested_child(&root, last)?;
-    assert_eq!(
-        host.spawned(&root, last, &spawn).await?,
-        SpawnOutcome::Refused {
-            reason: SpawnRefusal::Limit
-        }
-    );
     Ok(())
 }
 

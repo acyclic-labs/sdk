@@ -1,13 +1,11 @@
 use super::*;
 
-fn store(entries: u32, fills: u32) -> CachedObjectStore<()> {
+fn store(entries: u32) -> CachedObjectStore<()> {
     CachedObjectStore::new(
         (),
         ObjectCacheOptions {
             maximum_entries: entries,
             maximum_bytes: 16,
-            maximum_in_flight: fills,
-            maximum_waiters_per_object: 2,
         },
     )
     .unwrap()
@@ -31,7 +29,7 @@ fn decoded() -> DecodedCacheValue {
 }
 
 fn isolated(alias: bool) {
-    let first = store(4, 2);
+    let first = store(4);
     let mut second = first.share_cache_with(()).unwrap();
     if alias {
         Arc::get_mut(&mut second.shared).unwrap().id = first.shared.id;
@@ -86,7 +84,7 @@ fn namespace_alias_negative_control() {
 
 #[test]
 fn pooled_eviction_preserves_an_active_payload() {
-    let first = store(1, 1);
+    let first = store(1);
     let second = first.share_cache_with(()).unwrap();
     first
         .insert(
@@ -128,8 +126,8 @@ fn plan(cache: &CachedObjectStore<()>) -> Result<ReadPlan, ObjectStoreError> {
 }
 
 #[test]
-fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
-    let first = store(2, 1);
+fn fills_coalesce_only_within_their_namespace() {
+    let first = store(2);
     let second = first.share_cache_with(()).unwrap();
     let ReadPlan::Leader(flight) = plan(&first).unwrap() else {
         panic!("no leader")
@@ -138,9 +136,12 @@ fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
         panic!("no follower")
     };
     assert!(Arc::ptr_eq(&flight, &follower));
-    assert!(matches!(plan(&second), Err(ObjectStoreError::Rejected(_))));
+    let ReadPlan::Leader(other) = plan(&second).unwrap() else {
+        panic!("namespace inherited another namespace's flight")
+    };
+    assert!(!Arc::ptr_eq(&flight, &other));
     first.clear().unwrap();
-    assert_eq!(second.stats().unwrap().in_flight, 1);
+    assert_eq!(second.stats().unwrap().in_flight, 2);
     ActiveFlightGuard {
         store: &first,
         object_id: object(1),
@@ -148,9 +149,7 @@ fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
     }
     .finish(None)
     .unwrap();
-    let ReadPlan::Leader(flight) = plan(&second).unwrap() else {
-        panic!("pool slot not released")
-    };
+    let flight = other;
     ActiveFlightGuard {
         store: &second,
         object_id: object(1),

@@ -56,7 +56,7 @@ impl NativeCheckout {
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
         let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
-            .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -67,7 +67,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -78,7 +78,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -98,7 +98,7 @@ impl NativeCheckout {
                 None,
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
                 |_| async {
                     acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
@@ -124,19 +124,11 @@ impl NativeCheckout {
         operations: Vec<NativeTransactionOperation>,
         operation_id: Buffer,
         maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeAuthoredLiveMutationResult> {
         let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
-        let maximum =
-            usize::try_from(self.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
-        if operations.len() > maximum || operations.capacity() > maximum {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "transaction exceeds the configured mutation bound",
-            ));
-        }
         let authored = operations
             .into_iter()
             .map(|operation| native_authored_transaction(operation, self.config))
@@ -153,7 +145,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await;
@@ -196,10 +188,10 @@ impl NativeCheckout {
         &self,
         operation_id: Buffer,
         maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeLiveMutationResult> {
         let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -211,7 +203,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await;
@@ -228,8 +220,11 @@ impl NativeCheckout {
     }
 
     #[napi]
-    pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
-        let maximum_conflicts = maximum_conflicts.into_inner();
+    pub async fn rebase_head(
+        &self,
+        maximum_conflicts: Option<NapiU32>,
+    ) -> Result<NativeRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;

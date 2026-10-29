@@ -171,17 +171,6 @@ fn native_media_preserves_configuration_and_validates_bounds() -> Result<()> {
         },
     });
     result.validate_limits(Limits::default(), &mut None)?;
-    assert!(
-        result
-            .validate_limits(
-                Limits {
-                    attachments: 0,
-                    ..Limits::default()
-                },
-                &mut None
-            )
-            .is_err()
-    );
     assert!(result.contains_native_media());
     assert_eq!(
         result.file_refs().collect::<Vec<_>>(),
@@ -349,7 +338,7 @@ async fn prefix_depth_three_reopens_and_authenticates_history() -> Result<()> {
             &head,
             &reader,
             Limits {
-                context_messages: prepared.request().messages.len(),
+                context_messages: std::num::NonZeroUsize::new(prepared.request().messages.len()),
                 ..limits
             },
             None

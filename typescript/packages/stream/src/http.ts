@@ -4,7 +4,6 @@ import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -25,7 +24,7 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #endpoint: string;
   readonly #credential: CredentialProvider;
   readonly #fetcher: typeof fetch;
-  readonly #maximum: number;
+  readonly #maximum: number | undefined;
   readonly #observer: AcyclicObserver | undefined;
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
@@ -35,8 +34,8 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory), true, options.revisionScope);
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
-    this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
-    if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
+    this.#maximum = options.maximumResponseBytes;
+    if (this.#maximum !== undefined && (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const input = wireInspectIdempotencyRequest(key);
@@ -75,8 +74,8 @@ export class HttpStreamProvider implements StreamProvider {
     if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
-    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
-      throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
+      throw new StreamError("invalid_argument", "child page limit must be a positive integer");
     }
     await validateWireRequest({
       kind: "children_page",
@@ -205,7 +204,7 @@ function parseHostedError(text: string): { readonly code?: string; readonly mess
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
-async function boundedText(response: Response, maximum: number, sizes?: OperationSizes): Promise<string> {
+async function boundedText(response: Response, maximum: number | undefined, sizes?: OperationSizes): Promise<string> {
   const reader = response.body?.getReader();
   if (reader === undefined) return "";
   const chunks: Uint8Array[] = []; let total = 0;
@@ -214,7 +213,7 @@ async function boundedText(response: Response, maximum: number, sizes?: Operatio
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maximum) { await reader.cancel().catch(() => undefined); throw new StreamError("response_too_large", "response exceeds configured bound", response.status); }
+      if (maximum !== undefined && total > maximum) { await reader.cancel().catch(() => undefined); throw new StreamError("response_too_large", "response exceeds configured bound", response.status); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -224,6 +223,3 @@ async function boundedText(response: Response, maximum: number, sizes?: Operatio
   return decoder.decode(bytes);
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
-
-/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;

@@ -37,11 +37,11 @@ fn validate_handshake(
     }
     if capabilities.maximum_request_bytes == 0
         || capabilities.maximum_response_bytes == 0
-        || capabilities.maximum_transaction_mutations == 0
+        || capabilities.maximum_transaction_mutations == Some(0)
         || capabilities.maximum_page_items == 0
     {
         return Err(HostedFsError::InvalidResponse(
-            "filesystem capabilities contain an unbounded limit",
+            "filesystem capabilities contain a zero bound",
         ));
     }
     Ok(capabilities)

@@ -16,11 +16,8 @@ pub(crate) async fn chunk_at<S: AsyncObjectStore>(
     }
     let mut first = 0;
     let mut end = None;
-    for height in 0..=limits.maximum_page_height {
+    for _ in 0..=limits.maximum_page_height {
         accounting.check()?;
-        if u32::from(height) >= limits.maximum_visited_pages {
-            return Err(BlobReadError::CycleOrHeight.into());
-        }
         if root.kind != ObjectKind::Blob {
             return Err(BlobReadError::WrongRootKind.into());
         }

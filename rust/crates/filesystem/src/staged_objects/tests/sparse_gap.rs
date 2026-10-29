@@ -7,8 +7,10 @@ pub(super) fn prepare(file: &std::fs::File) -> std::io::Result<()> {
         windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
         &[],
         &mut [],
+        acyclic_native_runtime::NativeOperationKind::Write,
         None,
-    )?;
+    )?
+    .into_complete()?;
     Ok(())
 }
 

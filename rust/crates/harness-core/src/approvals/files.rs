@@ -49,7 +49,6 @@ impl<'a> ApprovalRequest<'a> {
     pub fn new(id: &'a str, bytes: &'a [u8], maximum_bytes: u64) -> Result<Self> {
         check_bound(bytes.len(), maximum_bytes)?;
         if id.is_empty()
-            || id.len() > 255
             || id == "."
             || id == ".."
             || !id

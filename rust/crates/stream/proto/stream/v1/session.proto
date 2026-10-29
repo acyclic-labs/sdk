@@ -31,7 +31,6 @@ message SessionHello {
   string destination_node = 3;
   uint64 receive_bytes = 4; // finite aggregate payload credit
   uint32 receive_frames = 5; // finite aggregate frame credit
-  repeated bytes credentials = 6; // bounded slots, oldest index first
 }
 // Empty credential drops the slot and closes every channel bound to it.
 message SessionCredential {

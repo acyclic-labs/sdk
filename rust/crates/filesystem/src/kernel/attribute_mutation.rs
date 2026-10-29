@@ -122,19 +122,17 @@ impl Format for AttributeFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone(maximum_bytes, steps)
+        key.try_clone(steps)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(AttributeEntry {
-            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, steps)?,
             value_bytes: value.value_bytes,
             value: value.value,
         })
@@ -258,7 +256,6 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     mutations: Vec<AttributeMutation>,
-    maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &crate::CancellationToken,
@@ -268,7 +265,6 @@ pub async fn apply_attribute_mutations<S: crate::AsyncObjectStore>(
         store,
         root,
         &mutations,
-        maximum_mutations,
         limits,
         &mut accounting,
         cancellation,
@@ -281,7 +277,6 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
     store: &S,
     root: ObjectId,
     mutations: &[AttributeMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
@@ -294,7 +289,6 @@ pub(crate) async fn apply_attribute_mutations_with_accounting<S: crate::AsyncObj
         store,
         root,
         mutations,
-        maximum_mutations,
         limits,
         accounting,
         cancellation,
@@ -327,7 +321,6 @@ fn standalone_error(error: crate::FsError) -> AttributeMutationError {
 fn map_error(error: persistent_btree::Error<AttributeMutationError>) -> AttributeMutationError {
     match error {
         persistent_btree::Error::Empty => AttributeMutationError::Empty,
-        persistent_btree::Error::TooManyMutations => AttributeMutationError::TooManyMutations,
         persistent_btree::Error::WrongRootKind => AttributeMutationError::WrongRootKind,
         persistent_btree::Error::InvalidLimits => AttributeMutationError::InvalidLimits,
         persistent_btree::Error::PageItemTooLarge => AttributeMutationError::PageItemTooLarge,
@@ -354,9 +347,6 @@ pub enum AttributeMutationError {
     /// Batch is empty.
     #[error("attribute mutation batch is empty")]
     Empty,
-    /// Batch exceeds its admitted operation count.
-    #[error("attribute mutation count exceeds its bound")]
-    TooManyMutations,
     /// Root has the wrong object kind.
     #[error("attribute root has the wrong object kind")]
     WrongRootKind,

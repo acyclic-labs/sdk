@@ -8,7 +8,7 @@ pub struct ProcessCapture<'a> {
     /// Fully composed executable, arguments, environment and working directory.
     pub command: &'a Command,
     /// Original monotonic deadline allowance.
-    pub timeout: Duration,
+    pub timeout: Option<Duration>,
     /// Shared stdout and stderr bound.
     pub maximum: usize,
     /// Original literal input or exchange allowance.
@@ -95,7 +95,7 @@ mod tests {
             let command = Command::new("must-not-spawn");
             let capture = || ProcessCapture {
                 command: &command,
-                timeout: Duration::from_millis(10),
+                timeout: Some(Duration::from_millis(10)),
                 maximum: 8,
                 input: None,
             };

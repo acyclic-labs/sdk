@@ -240,12 +240,6 @@ pub enum FsError {
     /// A dirty overlay must be safely rebased or discarded before refresh.
     #[error("pending overlay mutations require safe rebase before refresh")]
     PendingMutationsRequireRebase,
-    /// Uncommitted operations exceed the volume's atomic replay bound.
-    #[error("checkout pending mutation count exceeds the volume limit")]
-    TooManyPendingMutations,
-    /// Caller-supplied mutation storage exceeds the admitted persistent bound.
-    #[error("mutation input capacity exceeds the volume limit")]
-    ExcessiveMutationCapacity,
     /// Retaining a bounded replay log failed.
     #[error("pending mutation replay log allocation failed")]
     PendingMutationAllocationFailed,

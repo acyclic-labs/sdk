@@ -82,9 +82,6 @@ pub(crate) fn actor_error(cause: crate::agent::Error) -> JsValue {
 }
 
 pub(super) fn agent_path(agent: JsString) -> Result<AgentPath, JsValue> {
-    if agent.length() as usize > acyclic_stream::MAX_PATH_BYTES {
-        return Err(error("invalid_agent_path", "agent path exceeds byte bound"));
-    }
     AgentPath::try_from(
         agent
             .as_string()

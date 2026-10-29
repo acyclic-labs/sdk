@@ -405,10 +405,10 @@ impl crate::NativeStreamProvider for LocalStream {
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
-        self.prepare_commit(request, maximum, meter)
+        self.prepare_commit(request, capacity, meter)
     }
 }
 

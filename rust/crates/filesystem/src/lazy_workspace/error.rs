@@ -14,10 +14,13 @@ pub enum LazyWorkspaceError {
     /// Original provider failure.
     #[error(transparent)]
     Demand(#[from] DemandError),
+    /// The host scheduler could not resume a contended publication.
+    #[error(transparent)]
+    Scheduling(#[from] acyclic_stream::StreamError),
     /// Companion-store failure.
     #[error("lazy state failed: {0}")]
     Store(String),
-    /// Durable state exhausted its bounded retries.
+    /// An operation targeted a superseded durable state.
     #[error("lazy state changed concurrently")]
     Concurrent,
     /// The provider no longer matches the frozen source.

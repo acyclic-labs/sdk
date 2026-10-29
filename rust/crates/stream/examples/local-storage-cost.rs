@@ -40,9 +40,9 @@ mod benchmark {
         let count = args.next().map_or(Ok(1000), |arg| arg.parse::<u64>())?;
         // Lower the stock recovery bound to exercise maintenance in a short run.
         // Memory and payload ceilings remain stock, and durability is unchanged.
-        let journal_operations = args.next().map_or(Ok(128), |arg| arg.parse::<u64>())?;
+        let compaction_operations = args.next().map_or(Ok(128), |arg| arg.parse::<u64>())?;
         let limits = LocalStreamLimits {
-            journal_operations,
+            compaction_operations,
             ..Default::default()
         };
         if count == 0 {

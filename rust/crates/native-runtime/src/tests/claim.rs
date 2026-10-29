@@ -388,59 +388,16 @@ fn a_claim_by_relative_path_is_held_by_its_absolute_path() -> io::Result<()> {
     Ok(())
 }
 
-/// A runtime directory whose process lock path makes a record longer than
-/// any record, while keeping the native path below the OS pathname ceiling.
-/// Derive the suffix from the fixture root so deeper admitted roots cannot
-/// accidentally turn this record-size proof into a pathname-size failure.
-#[cfg(target_os = "linux")]
-fn long_runtime_directory(base: &Path) -> io::Result<PathBuf> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mut runtime = base.to_path_buf();
-    let mut remaining = crate::claim::RECORD_LIMIT
-        .checked_sub(128 + base.as_os_str().as_encoded_bytes().len())
-        .ok_or(io::ErrorKind::InvalidInput)?;
-    while remaining > 201 {
-        runtime.push("r".repeat(200));
-        remaining -= 201;
-    }
-    runtime.push(
-        "r".repeat(
-            remaining
-                .checked_sub(1)
-                .ok_or(io::ErrorKind::InvalidInput)?,
-        ),
-    );
-    std::fs::create_dir_all(&runtime)?;
-    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
-    Ok(runtime)
-}
-
 #[cfg(target_os = "linux")]
 #[test]
-fn a_process_whose_record_would_not_fit_holds_its_claims_instead() -> io::Result<()> {
-    let directory = tempfile::tempdir()?;
-    let runtime = long_runtime_directory(directory.path())?;
-    let path = directory.path().join("owner.lock");
-    let mut owner = Owner::spawn_with(&path, &[("XDG_RUNTIME_DIR", &runtime)])?;
-    // No record that a reader could take only in part.
-    assert_eq!(std::fs::metadata(&path)?.len(), 0);
-    assert!(contended(StoreClaim::acquire(&path)));
-    owner.0.kill()?;
-    owner.0.wait()?;
-    drop(StoreClaim::acquire(&path)?);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn a_claim_file_longer_than_any_record_refuses() -> io::Result<()> {
+fn trailing_bytes_after_a_complete_claim_record_refuse() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
     // A whole record of a dead owner, and then more: not that record.
     let mut bytes = lockless_record(directory.path(), u32::MAX, b"boot:1");
     std::fs::write(&path, &bytes)?;
     drop(StoreClaim::acquire(&path)?);
-    bytes.resize(crate::claim::RECORD_LIMIT + 1, 0);
+    bytes.push(0);
     std::fs::write(&path, &bytes)?;
     assert!(contended(StoreClaim::acquire(&path)));
     let file = crate::FileLock::new(std::fs::File::open(&path)?);
@@ -479,54 +436,55 @@ fn a_claim_check_counts_each_read_it_makes() -> io::Result<()> {
     Ok(())
 }
 
-/// A record naming a process whose lock path is as long as a record allows,
-/// so a check makes every allocation and probe it can.
-#[cfg(target_os = "linux")]
-fn longest_lockless_record(directory: &Path) -> Vec<u8> {
-    let mut lock = directory.join("gone");
-    let mut record = Vec::new();
-    loop {
-        let longer = lock.join("l");
-        let candidate =
-            crate::claim::foreign_record(std::process::id(), b"another-boot:1", &longer);
-        if candidate.len() > crate::claim::RECORD_LIMIT {
-            return record;
-        }
-        lock = longer;
-        record = candidate;
-    }
-}
-
+/// A real long record is read on the original request, with physical buffer
+/// custody retired before return. Explicit allocation refusal still prevents
+/// its allocator boundary, and malformed framing needs no payload allocation.
 #[cfg(target_os = "linux")]
 #[test]
-fn a_claim_check_allocates_within_its_bound() -> io::Result<()> {
+fn claim_checks_fund_actual_records_and_preserve_explicit_refusals() -> io::Result<()> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("owner.lock");
-    let held = directory.path().join("held.lock");
-    let _claim = StoreClaim::acquire(&held)?;
-    let mut oversized = lockless_record(directory.path(), u32::MAX, b"boot:1");
-    oversized.resize(crate::claim::RECORD_LIMIT + 1, 0);
-    let records = [
-        Vec::new(),
-        longest_lockless_record(directory.path()),
-        oversized,
-        std::fs::read(&held)?,
-    ];
-    for record in records {
-        std::fs::write(&path, &record)?;
-        let file = crate::FileLock::new(std::fs::File::open(&path)?);
-        let mut checked = None;
-        let allocated = acyclic_test_support::measure(|| {
-            checked = Some(StoreClaim::check(&file).map(|check| check.read_operations));
-        });
-        let read_operations = checked.ok_or_else(|| io::Error::other("unchecked"))??;
-        assert!(
-            allocated.count_total <= StoreClaim::CHECK_ALLOCATIONS
-                && allocated.bytes_total <= StoreClaim::CHECK_ALLOCATION_BYTES,
-            "a {}-byte record checked in {read_operations} reads allocated {allocated:?}",
-            record.len()
-        );
-    }
+    let record = crate::claim::foreign_record(
+        u32::MAX,
+        &vec![b'x'; 65_537],
+        &directory.path().join("gone"),
+    );
+    std::fs::write(&path, &record)?;
+    let file = crate::FileLock::new(std::fs::File::open(&path)?);
+    let meter = Arc::new(super::ReadBudgetMeter::new(1000, 1024 * 1024));
+    let original: Arc<dyn NativeReadMeter> = meter.clone();
+    assert!(!StoreClaim::check_metered(&file, &original)?.claimed);
+    assert!(meter.used_allocations.load(Ordering::Acquire) > 0);
+    assert!(meter.read_attempts.load(Ordering::Acquire) > 0);
+    assert_eq!(meter.memory.load(Ordering::Acquire), 0);
+    let denied = Arc::new(super::ReadBudgetMeter::new(1000, 1024 * 1024));
+    denied.deny_allocations.store(true, Ordering::Release);
+    let original: Arc<dyn NativeReadMeter> = denied.clone();
+    assert!(StoreClaim::check_metered(&file, &original).is_err());
+    assert_eq!(denied.used_allocations.load(Ordering::Acquire), 0);
+    assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+    let mut probe_budget = super::ReadBudgetMeter::new(1000, 1024 * 1024);
+    probe_budget.allocation_limit = 1; // the record, with no second allocation grant
+    let probe_budget = Arc::new(probe_budget);
+    let original: Arc<dyn NativeReadMeter> = probe_budget.clone();
+    assert!(StoreClaim::check_metered(&file, &original).is_err());
+    assert_eq!(probe_budget.used_allocations.load(Ordering::Acquire), 1);
+    assert_eq!(probe_budget.memory.load(Ordering::Acquire), 0);
+    let cancelled = Arc::new(super::ReadBudgetMeter::new(1000, 1024 * 1024));
+    cancelled.cancelled.store(true, Ordering::Release);
+    let original: Arc<dyn NativeReadMeter> = cancelled.clone();
+    assert!(StoreClaim::check_metered(&file, &original).is_err());
+    assert_eq!(cancelled.read_attempts.load(Ordering::Acquire), 0);
+    assert_eq!(cancelled.memory.load(Ordering::Acquire), 0);
+    // The large file's header contradicts the record grammar: inspect only
+    // fixed scratch space, without allocating the declared file size.
+    std::fs::write(&path, vec![0; 131_073])?;
+    let malformed = Arc::new(super::ReadBudgetMeter::new(1000, 1024 * 1024));
+    let original: Arc<dyn NativeReadMeter> = malformed.clone();
+    assert!(StoreClaim::check_metered(&file, &original)?.claimed);
+    assert_eq!(malformed.used_allocations.load(Ordering::Acquire), 0);
+    // Every refusal above leaves the original file bytes untouched.
+    assert_eq!(std::fs::metadata(&path)?.len(), 131_073);
     Ok(())
 }
 

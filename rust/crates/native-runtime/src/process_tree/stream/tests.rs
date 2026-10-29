@@ -104,7 +104,7 @@ fn start(
     let output = tree.stream_capture(
         &crate::TaskSpawner::current(),
         schedule,
-        usize::MAX,
+        None,
         None,
         Handler {
             wake: wake.clone(),
@@ -192,7 +192,7 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
                 schedule
             }
             "relative" => CaptureSchedule::new(Duration::from_millis(100)),
-            _ => CaptureSchedule::new(Duration::from_secs(5)),
+            _ => CaptureSchedule::new(None),
         };
         let (mut output, _input, _, addresses, wake) = start("credit", schedule)?;
         // An elapsed original deadline allows no pipe read. Restarting the

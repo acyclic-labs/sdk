@@ -35,8 +35,17 @@ test('shared gate rejects codegen-only failures and scopes PR consumers; old che
   try {
     mkdirSync(join(cwd, 'scripts')); mkdirSync(join(cwd, 'bin'));
     writeFileSync(join(cwd, 'metadata.json'), JSON.stringify(metadata));
+    for (const name of ['check-feature-matrix.mjs', 'publish-cargo-crates.mjs', 'publication-receipt.mjs']) {
+      writeFileSync(join(cwd, 'scripts', name), readFileSync(new URL(name, import.meta.url)));
+    }
+    mkdirSync(join(cwd, 'release'));
+    for (const name of ['cargo-crates.json', 'cargo-equivalent-archives.json']) {
+      writeFileSync(join(cwd, 'release', name), readFileSync(new URL('../release/' + name, import.meta.url)));
+    }
     writeFileSync(join(cwd, 'scripts/check-consumer-builds.mjs'),
       readFileSync(new URL('./check-consumer-builds.mjs', import.meta.url)));
+    writeFileSync(join(cwd, 'scripts/process-capture.mjs'),
+      readFileSync(new URL('./process-capture.mjs', import.meta.url)));
     writeFileSync(join(cwd, 'feature.mjs'), 'process.exit(Number(process.env.FEATURE_RC ?? 0));\n');
     const cargo = join(cwd, 'bin/cargo');
     writeFileSync(cargo, `#!/usr/bin/env node
@@ -69,7 +78,7 @@ else if(args[0]==='build' && args.includes('acyclic-harness-conformance') && pro
       assert.equal(result.status, expected, result.stdout + result.stderr);
       const builds = readFileSync(join(cwd, 'calls'), 'utf8').split('\n').filter(Boolean)
         .map(line => JSON.parse(line)).filter(args => args[0] === 'build');
-      assert.equal(builds.length, negative ? 0 : affected ? 2 : 5);
+      assert.equal(builds.length, negative ? 0 : affected ? 2 : 5, result.stdout + result.stderr);
       if (!negative) assert.match(result.stdout, /consumer builds wall: seconds=[\d.]+ workers=1/);
       if (affected) assert.ok(builds.every(args => args.includes('acyclic-harness-conformance')));
       if (reject && !negative) assert.match(result.stderr, /queries overflow the depth limit/);

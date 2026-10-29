@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createMachine, listMachines, machineEvents, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
-import { normalize_identity as rustNormalizeIdentity, validatePageSize, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { normalize_identity as rustNormalizeIdentity, pageSize as rustPageSize, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -312,18 +312,31 @@ describe("Machines simulation", () => {
     expect(await provider.events(created.machines[0]!.id, null, 16)).toEqual(firstEvents);
   });
 
-  test("Rust page validation rejects coerced JavaScript values", () => {
-    const validatePage = validatePageSize as unknown as (pageSize: unknown) => void;
-    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, 257, 1.5]) {
-      expect(() => validatePage(pageSize)).toThrow();
+  test("Rust page normalization rejects coerced and inexact JavaScript values", () => {
+    const normalizePage = rustPageSize as unknown as (pageSize: unknown, chunk: number) => number;
+    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => normalizePage(pageSize, 256)).toThrow();
     }
-    validatePage(1);
+    expect(() => normalizePage(1, 0)).toThrow();
   });
 
-  test("delegates machine page limits to the Rust provider boundary", async () => {
+  test("large page hints retain every machine through Rust page continuation", async () => {
     const provider = new SimulatedMachines();
-    await expect(listMachines(provider, { pageSize: 0, maximum: 1 }).next()).rejects.toThrow();
-    await expect(listMachines(provider, { pageSize: 257, maximum: 257 }).next()).rejects.toThrow();
+    const expected: string[] = [];
+    for (let index = 0; index < 1025; index++) {
+      const created = await provider.create(request(`large-page-${index}`));
+      if (created.kind !== "created") throw new Error("wrong create outcome");
+      expected.push(created.machine.id);
+    }
+    expected.sort();
+    for (const pageSize of [257, Number.MAX_SAFE_INTEGER]) {
+      const observed: string[] = [];
+      for await (const id of listMachines(provider, { pageSize })) observed.push(id);
+      expect(observed).toEqual(expected);
+    }
+    const selected: string[] = [];
+    for await (const id of listMachines(provider, { pageSize: 257, maximum: 257 })) selected.push(id);
+    expect(selected).toEqual(expected.slice(0, 257));
   });
 
   test("validates page size before custom providers are called", async () => {
@@ -335,7 +348,7 @@ describe("Machines simulation", () => {
       }
     }
     const provider = new RecordingProvider();
-    for (const pageSize of [0, 257, 1.5]) {
+    for (const pageSize of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
       await expect(listMachines(provider, { pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
     }
     expect(provider.calls).toBe(0);

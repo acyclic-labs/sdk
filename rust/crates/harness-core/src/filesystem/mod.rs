@@ -303,12 +303,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
-                const RECORD_BYTES: u64 = 6
-                    * (crate::conversation::MAX_PATH_BYTES as u64
-                        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                        + 1024);
-                let original_receipt =
-                    read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = read_metadata(&prior, &receipt_path, io).await?;
                 let original_receipt = if internal_class.is_some() {
                     recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
                         .await?
@@ -349,16 +344,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })
                 }?;
-                let committed = self
-                    .read_retained_file(&prior, &reference, maximum_bytes, io)?
+                self.authenticate_retained_file(&prior, &reference, Some(bytes), io)?
                     .await?;
-                if committed.as_ref() != bytes {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to different content",
-                    ));
-                }
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
@@ -447,7 +434,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            self.read_retained_file(&generation, &reference, maximum_bytes, io)?
+            self.authenticate_retained_file(&generation, &reference, Some(bytes), io)?
                 .await?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;

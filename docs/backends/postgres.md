@@ -15,6 +15,14 @@ plus SELECT/INSERT, sequence access, advisory locks and LISTEN/NOTIFY. Use a loc
 Unix socket or an authenticated TLS proxy;
 the initial adapter connection uses `NoTls`.
 
+Namespace names have no SDK length ceiling. Connect hashes the name once into a
+32-byte journal key and retains the complete name in its generation row. The
+generation upsert compares the exact spelling under the `C` collation, so a key
+collision refuses rather than reopening another namespace. Journal indexes,
+advisory locks and notifications use the fixed key; diagnostic connection names
+use a non-authoritative key prefix. Warm operations do not copy or transmit the
+original name. This is the v1 schema; existing databases need fresh tables.
+
 Pass `Arc<PostgresStream>` to `StreamAuthorityStore::new`, combine with
 `LogicalObjectStore::new(Arc::new(Store::new(S3Medium::new(bucket, prefix, capabilities)?).account(account)?))`,
 and supply both to `Fs::new` with durable embedded capabilities. Enable

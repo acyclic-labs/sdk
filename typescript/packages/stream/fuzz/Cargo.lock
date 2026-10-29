@@ -8,7 +8,9 @@ version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
  "acyclic-proto-build",
+ "arc-swap",
  "ed25519-dalek",
+ "futures",
  "prost",
  "sha2 0.11.1",
  "subtle",
@@ -29,9 +31,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-host-platform"
+version = "0.2.0"
+
+[[package]]
 name = "acyclic-native-runtime"
 version = "0.2.0"
 dependencies = [
+ "acyclic-host-platform",
  "blake3",
  "bytes",
  "compio-buf",
@@ -40,11 +47,13 @@ dependencies = [
  "getrandom 0.3.4",
  "keyring",
  "libc",
+ "linux-keyutils",
  "pin-project-lite",
  "rustix",
  "serde",
  "subtle",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "windows",
@@ -67,6 +76,7 @@ name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-native-runtime",
  "acyclic-proto-build",
  "async-trait",
@@ -75,13 +85,11 @@ dependencies = [
  "bytes",
  "futures",
  "js-sys",
- "loom",
  "pin-project-lite",
  "prost",
  "ruzstd",
  "serde_json",
  "sha2 0.11.1",
- "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -154,6 +162,15 @@ name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bc62ac97cc33321f50863d514c3bc38a453947a8f9e781137e47c7401020aed"
+
+[[package]]
+name = "arc-swap"
+version = "1.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c049c0be4daef0b145cb3555416b3b8ef5b7888a38aea1a3a155801fe7b0810b"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "arrayvec"
@@ -1303,6 +1320,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "linux-keyutils"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83270a18e9f90d0707c41e9f35efada77b64c0e6f3f1810e71c8368a864d5590"
+dependencies = [
+ "bitflags",
+ "libc",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2234,7 +2261,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -2313,6 +2340,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
 dependencies = [
  "futures-core",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-util"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e464cf451ba96ebfc6f9b6542f17ee8b8956e33f1e40d9690624e59d7a7f8a4b"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "libc",
  "pin-project-lite",
  "tokio",
 ]

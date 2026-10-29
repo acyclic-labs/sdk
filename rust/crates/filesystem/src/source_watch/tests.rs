@@ -5,13 +5,13 @@ use crate::demand::DemandError;
 use crate::native_host::HostRoot;
 use crate::native_host::NativeHostWork;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<HostChange>>);
+struct Recorded(Mutex<Vec<HostChange>>, Condvar);
 
 impl HostChangeSink for Recorded {
     fn logical_owned_bytes(&self) -> u64 {
@@ -28,6 +28,7 @@ impl HostChangeSink for Recorded {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .extend_from_slice(changes);
+        self.1.notify_all();
         Ok(())
     }
 
@@ -41,6 +42,7 @@ impl HostChangeSink for Recorded {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .extend_from_slice(changes);
+        self.1.notify_all();
         Ok(())
     }
 
@@ -86,10 +88,22 @@ impl Recorded {
                 super::HostChangeWide::Everything => HostChange::Everything,
                 super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
             }));
+        self.1.notify_all();
     }
 
     fn take(&self) -> Vec<HostChange> {
         std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    fn wait_for(&self, reported: impl Fn(&[HostChange]) -> bool) -> Vec<HostChange> {
+        let changes = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut changes, _) = self
+            .1
+            .wait_timeout_while(changes, std::time::Duration::from_secs(10), |changes| {
+                !reported(changes)
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *changes)
     }
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {
@@ -119,20 +133,14 @@ impl Recorded {
     }
 }
 
-/// Everything reported until `reported` holds of it, or ten seconds pass. A
+/// Waits on actual sink delivery until the predicate or the test deadline.
 fn reports_until(
     watch: &NativeSourceWatch,
     recorded: &Recorded,
     reported: impl Fn(&[HostChange]) -> bool,
 ) -> std::io::Result<Vec<HostChange>> {
     watch.fence()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut changes = recorded.take();
-    while !reported(&changes) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        changes.extend(recorded.take());
-    }
-    Ok(changes)
+    Ok(recorded.wait_for(reported))
 }
 
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
@@ -232,23 +240,43 @@ fn a_fence_delivers_every_change_completed_before_it() -> TestResult {
     Ok(())
 }
 
-/// Changes the host could not queue are reported as everything, and the
+/// A paused subscriber retains every change or reports actual host queue loss.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn lost_changes_are_reported_as_everything() -> TestResult {
+fn a_paused_watch_preserves_changes_or_reports_host_loss() -> TestResult {
     let root = tempfile::tempdir()?;
     let (watch, recorded) = watch(root.path())?;
+    let flood = if cfg!(windows) { 3_000 } else { 20_000 };
     {
         let _paused = watch.paused();
-        // More than the host queues: inotify's default queue holds 16384
-        // events; a directory read buffer holds 64 KiB of reports.
-        let flood = if cfg!(windows) { 3_000 } else { 20_000 };
+        // Windows' directory read buffer can lose these reports. Linux's
+        // shared router can continue retaining them while this cursor pauses.
         for index in 0..flood {
             std::fs::write(root.path().join(format!("flood-{index:05}")), b"")?;
         }
     }
     watch.fence()?;
-    assert!(Recorded::everything(&recorded.take()));
+    let changes = recorded.take();
+    #[cfg(windows)]
+    assert!(Recorded::everything(&changes));
+    #[cfg(target_os = "linux")]
+    if !Recorded::everything(&changes) {
+        let mut reported: Vec<_> = changes
+            .iter()
+            .filter_map(|change| match change {
+                HostChange::Rebound(path) | HostChange::Altered(path) => Some(path.as_path()),
+                _ => None,
+            })
+            .collect();
+        reported.sort_unstable();
+        for index in 0..flood {
+            let path = PathBuf::from(format!("flood-{index:05}"));
+            assert!(
+                reported.binary_search(&path.as_path()).is_ok(),
+                "paused watch lost {path:?} without reporting host queue loss"
+            );
+        }
+    }
     std::fs::write(root.path().join("after"), b"x")?;
     watch.fence()?;
     assert!(Recorded::reported(&recorded.take(), Path::new("after")));
@@ -304,16 +332,11 @@ fn a_removed_root_makes_the_watch_inexact() -> TestResult {
     std::fs::create_dir(&root)?;
     let (watch, recorded) = watch(&root)?;
     std::fs::remove_dir(&root)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while watch.is_exact() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the watch stayed exact"
-        );
-        let _ = watch.fence();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(Recorded::everything(&recorded.take()));
+    let _ = watch.fence();
+    assert!(Recorded::everything(
+        &recorded.wait_for(Recorded::everything)
+    ));
+    assert!(!watch.is_exact(), "the watch stayed exact");
     Ok(())
 }
 
@@ -344,16 +367,11 @@ fn a_root_whose_path_moves_makes_the_watch_inexact() -> TestResult {
     watch.fence()?;
     assert!(watch.is_exact());
     std::fs::rename(parent.path().join("a"), parent.path().join("b"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while watch.is_exact() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the watch stayed exact"
-        );
-        let _ = watch.fence();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(Recorded::everything(&recorded.take()));
+    let _ = watch.fence();
+    assert!(Recorded::everything(
+        &recorded.wait_for(Recorded::everything)
+    ));
+    assert!(!watch.is_exact(), "the watch stayed exact");
     Ok(())
 }
 
@@ -480,14 +498,8 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         b"real notification",
     )?;
     watch.fence_with_work(std::time::Duration::from_secs(10), &mut work)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut changes = recorded.take();
-    while !Recorded::reported(&changes, Path::new("after-precancel"))
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        changes.extend(recorded.take());
-    }
+    let changes =
+        recorded.wait_for(|changes| Recorded::reported(changes, Path::new("after-precancel")));
     assert!(
         Recorded::reported(&changes, Path::new("after-precancel")),
         "{changes:?}"

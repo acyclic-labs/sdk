@@ -88,8 +88,11 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
                 windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
                 &[],
                 &mut [],
+                acyclic_native_runtime::NativeOperationKind::Write,
                 None,
             )
+            .unwrap()
+            .into_complete()
             .unwrap();
             file.write_all(&vec![1; bytes]).unwrap();
             file.seek(SeekFrom::Start(0)).unwrap();
@@ -102,8 +105,8 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-        maximum_paths: count,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(count),
+        maximum_extent_spans: Some(8),
     };
     runtime.block_on(async {
         let mut initial = workspace

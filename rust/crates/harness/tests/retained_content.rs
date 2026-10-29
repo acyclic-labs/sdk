@@ -57,7 +57,6 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &scope,
         &volume,
         VolumeOperation::Write,
-        65_536,
         &mut None,
     )?;
     let read = ContentGrant::verify(
@@ -65,7 +64,6 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
         &scope,
         &volume,
         VolumeOperation::Read,
-        65_536,
         &mut None,
     )?;
 
@@ -174,7 +172,6 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &attached_scope,
             &volume,
             VolumeOperation::Write,
-            65_536,
             &mut None,
         )
         .is_err()

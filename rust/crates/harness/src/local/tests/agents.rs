@@ -8,7 +8,9 @@ use crate::{
     agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -22,24 +24,41 @@ fn agent(error: impl std::fmt::Display) -> Error {
 }
 
 async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<Vec<u8>>> {
-    match stream
-        .read(ReadRequest {
-            key: None,
-            path,
-            from: 0,
-            limit: 16,
-            at_least: Default::default(),
-        })
-        .await
-    {
-        Ok(records) => Ok(records
-            .map_ok(|record| record.value.to_vec())
-            .try_collect()
+    let tail = match stream.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(agent(error)),
+    };
+    let mut from = 0;
+    let mut values = Vec::new();
+    while from < tail {
+        let mut page = stream
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from,
+                limit: (tail - from).min(16) as u32,
+                at_least: Default::default(),
+            })
             .await
-            .map_err(agent)?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
-        Err(error) => Err(agent(error)),
+            .map_err(agent)?;
+        let start = from;
+        while let Some(record) = page.try_next().await.map_err(agent)? {
+            if record.sequence != from || from >= tail {
+                return Err(Error::Conflict(
+                    "conversation read was not contiguous".into(),
+                ));
+            }
+            from += 1;
+            values.push(record.value.to_vec());
+        }
+        if from == start {
+            return Err(Error::Conflict(
+                "conversation ended before its captured tail".into(),
+            ));
+        }
     }
+    Ok(values)
 }
 
 /// The root's conversation once it has settled every input sent before
@@ -1327,18 +1346,14 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         ));
     };
     let listed = listed(&harness, manifest).await?;
-    // Negative control: the same files listed inline in the record, as the
-    // message carried them before, exceed the stream's record bound.
+    // Compare the compact record with the full inline manifest so this
+    // checks reference publication independently of any record-size policy.
     let inline = serde_json::to_vec(&listed).map_err(agent)?;
-    assert!(
-        inline.len() > crate::agent::MAX_RECORD_BYTES,
-        "{} inline bytes fit a record",
-        inline.len()
-    );
     // The records stay one reference: as small as a one-file prompt's.
     let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
         assert!(record.len() < 4096, "{} record bytes", record.len());
+        assert!(record.len() < inline.len());
     }
     assert_eq!(listed.len(), MENTIONS);
     // The model sees the prompt and every file, in mention order.
@@ -1444,12 +1459,11 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
     Ok(())
 }
 
-/// A copy's path has one length however long the mentioned path is, so a
-/// path at the path bound is mentioned like any other. The control: naming
-/// a copy by its path below the same directory exceeds the bound.
+/// Long mentions preserve complete identities while copied attachments use
+/// fixed-width names, independent of the source path length.
 #[tokio::test]
-async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Result<()> {
-    use crate::conversation::MAX_PATH_BYTES;
+async fn a_long_mention_is_copied_under_a_fixed_length_name() -> Result<()> {
+    const SOURCE_PATH_BYTES: usize = 8193;
     let directory = tempfile::tempdir().map_err(agent)?;
     let project = volume(directory.path()).await?;
     let provider = text();
@@ -1464,15 +1478,15 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
         project.provider().clone(),
         &project.storage_name(&mut None)?,
     )?;
-    // Nested 200-byte components, then a file name, to one byte under the bound.
+    // Cross the former logical path ceiling with ordinary-sized components.
     let mut parents = Vec::new();
     let mut long = String::new();
-    while MAX_PATH_BYTES - 1 - long.len() > 200 {
+    while SOURCE_PATH_BYTES - 1 - long.len() > 200 {
         long.push_str(&format!("{}{}/", parents.len() % 10, "d".repeat(199)));
         parents.push(format!("/{}", long.trim_end_matches('/')));
     }
-    long.push_str(&"f".repeat(MAX_PATH_BYTES - 1 - long.len()));
-    assert_eq!(long.len() + 1, MAX_PATH_BYTES);
+    long.push_str(&"f".repeat(SOURCE_PATH_BYTES - 1 - long.len()));
+    assert_eq!(long.len() + 1, SOURCE_PATH_BYTES);
     let mutations = parents
         .into_iter()
         .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
@@ -1520,7 +1534,7 @@ async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Re
         assert_eq!(bytes.as_ref(), text.as_bytes());
     }
     let (directory, _) = listed[1].path().rsplit_once('/').expect("copy directory");
-    assert!(format!("{directory}/{long}").len() > MAX_PATH_BYTES);
+    assert!(format!("{directory}/{long}").len() > SOURCE_PATH_BYTES);
     Ok(())
 }
 
@@ -1607,20 +1621,20 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     );
     // The next turn replays that message, attachments expanded, under the
     // same bound.
-    client.send("next", "next").await?;
-    let conversation = root.conversation().map_err(agent)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    while records(&**agents.provider(), conversation.clone())
-        .await?
-        .len()
-        < 2
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the second turn did not settle"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    let mut following = agents.follow_conversation(&root, 1).await.map_err(agent)?;
+    let inbox = client.send("next", "next").await?;
+    let record = tokio::time::timeout(std::time::Duration::from_secs(8), following.try_next())
+        .await
+        .map_err(agent)?
+        .map_err(agent)?
+        .ok_or_else(|| Error::Storage("conversation follow ended before the second turn".into()))?;
+    assert_eq!(record.sequence, 1);
+    assert_eq!(
+        ConversationEntry::decode(&record.value)
+            .map_err(agent)?
+            .inbox,
+        inbox
+    );
     let request = provider.last_request().expect("a second model request");
     let replayed = request
         .messages

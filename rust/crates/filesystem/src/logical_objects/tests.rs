@@ -11,7 +11,53 @@ fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let provider = MemoryObjects::memory();
-    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(maximum)
+    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(Some(maximum))
+}
+
+#[tokio::test]
+#[cfg(not(target_arch = "wasm32"))]
+async fn unbounded_read_bounds_continue_without_aggregate_overflow()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_test_native_io();
+    let store = LogicalObjectStore::new(Arc::new(MemoryObjects::memory()));
+    let cancellation = CancellationToken::new();
+    let objects = [
+        HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"first")),
+        HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"second")),
+    ];
+    for object in &objects {
+        store
+            .put(
+                object.object_id(),
+                object.bytes().clone(),
+                &mut AuthorityWork::new(BUDGET, &cancellation),
+            )
+            .await?;
+    }
+    let order = [1, 0, 1];
+    let requests = order.map(|index| ObjectReadRequest {
+        object_id: objects[index].object_id(),
+        maximum_bytes: u64::MAX,
+    });
+    for native in [false, true] {
+        let original = crate::NativeMaterializationWork::new(BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let baseline = original.live_allocation_bytes();
+        let mut context = if native {
+            AuthorityWork::native(&original, &cancellation)
+        } else {
+            AuthorityWork::new(BUDGET, &cancellation)
+        };
+        let (reads, allocation) = store.read_many(&requests, &mut context).await?;
+        assert_eq!(reads.len(), order.len());
+        for (read, index) in reads.iter().zip(order) {
+            assert_eq!(read.bytes, *objects[index].bytes());
+        }
+        drop(reads);
+        drop(allocation);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+    Ok(())
 }
 
 #[tokio::test]

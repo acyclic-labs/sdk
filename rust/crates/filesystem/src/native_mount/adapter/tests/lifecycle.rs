@@ -82,8 +82,8 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
     let options = CaptureOptions {
         source_root: directory.path().to_path_buf(),
         expected_root_identity: capture_root_identity(directory.path())?,
-        maximum_paths: 2,
-        maximum_extent_spans: 64,
+        maximum_paths: Some(2),
+        maximum_extent_spans: Some(64),
     };
     let cancellation = CancellationToken::new();
     let mut single_bytes = 0;

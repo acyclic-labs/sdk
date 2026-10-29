@@ -70,20 +70,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: crate::executor::json::canonical_json_digest(
-                &schema,
-                u64::MAX,
-                &mut None,
-            )?,
+            schema_digest: crate::executor::json::canonical_json_digest(&schema, None, &mut None)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(|value| {
-                    crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None)
-                })
+                .map(|value| crate::executor::json::canonical_json_digest(value, None, &mut None))
                 .transpose()?,
             configuration_schema,
         };

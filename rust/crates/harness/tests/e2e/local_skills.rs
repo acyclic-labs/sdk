@@ -389,28 +389,3 @@ async fn volume_first_request_declares_skills_and_refreshes_after_generation_cha
     assert!(!serde_json::to_string(&model.requests())?.contains("PRIVATE-BODY"));
     Ok(())
 }
-
-#[tokio::test]
-async fn large_skill_directory_stops_at_the_existing_discovery_bound() -> TestResult {
-    let root = super::local_workspace::temporary()?;
-    let home = super::local_workspace::temporary()?;
-    let state = super::local_workspace::temporary()?;
-    for index in 0..300 {
-        write(
-            root.path(),
-            &format!(".agents/skills/s{index}/SKILL.md"),
-            &format!("---\nname: s{index}\ndescription: bounded\n---\nbody"),
-        )?;
-    }
-    let model = provider(1);
-    let harness = open(config(
-        root.path(),
-        home.path(),
-        state.path(),
-        model.clone(),
-    )?)
-    .await?;
-    turn(&harness, "inventory", false).await?;
-    assert!(model.requests().is_empty());
-    Ok(())
-}

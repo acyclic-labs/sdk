@@ -14,7 +14,6 @@ const native = installed.endsWith(".node") ? {
     .NativeFs.open(root, objectCache),
   DEFAULT_OBJECT_CACHE_OPTIONS: {
     maximumEntries: 8, maximumBytes: 1_048_576n,
-    maximumInFlight: 2, maximumWaitersPerObject: 2,
   },
 } : await import(pathToFileURL(join(resolve(installed), "dist/native.js")).href);
 const child = promisify(execFile);

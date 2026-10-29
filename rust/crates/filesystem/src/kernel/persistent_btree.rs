@@ -326,20 +326,8 @@ where
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
-    let maximum_visited = mutations
-        .len()
-        .checked_mul(usize::from(limits.maximum_page_height))
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| M::map_error(Error::InvalidLimits))?
-        .min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| M::map_error(Error::InvalidLimits))?,
-        );
     let visited = if root.is_some() {
-        Some(VisitedObjectSet::new_with_accounting(
-            maximum_visited,
-            accounting,
-        )?)
+        Some(VisitedObjectSet::new_with_accounting(accounting)?)
     } else {
         None
     };

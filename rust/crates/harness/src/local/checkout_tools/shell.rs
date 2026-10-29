@@ -27,10 +27,8 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: self.environment.clone(),
             inherit_environment: false,
-            timeout_ms: 300_000,
-            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
-            // Presentation is bounded below; streaming output is not a reason to stop a command.
-            maximum_output_bytes: usize::MAX,
+            timeout_ms: None,
+            maximum_output_bytes: maximum_output,
             standard_input: None,
             process_custody: workspace.processes.clone(),
         };

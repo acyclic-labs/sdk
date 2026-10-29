@@ -26,10 +26,10 @@ pub struct ExecutionRecordQuery<'a> {
     pub step: u32,
     /// Includes the operation's initial binding in the selection.
     pub include_started: bool,
-    /// Bound on all observations admitted for this step, including summary work.
-    pub maximum_step_records: usize,
-    /// Bound on the selected output records.
-    pub maximum: usize,
+    /// Optional policy bound on all observations, including summary work.
+    pub maximum_step_records: Option<usize>,
+    /// Optional policy bound on the selected output records.
+    pub maximum: Option<usize>,
     /// Selection applied only after authenticating each indexed observation.
     pub select: &'a (dyn Fn(&ExecutionEvent) -> bool + Send + Sync),
 }
@@ -41,12 +41,17 @@ pub type IndexedExecutionFuture<'a> =
     crate::conversation::BoundedContentFuture<'a, Option<IndexedExecutionRecords>>;
 
 impl ExecutionRecordQuery<'_> {
-    pub(crate) fn step_bound(limits: Limits) -> usize {
+    pub(crate) fn step_bound(limits: Limits) -> Option<usize> {
         limits
             .model_events_per_step
-            .saturating_mul(2)
-            .saturating_add(limits.tool_calls_per_step.saturating_mul(3))
-            .saturating_add(7)
+            .zip(limits.tool_calls_per_step)
+            .map(|(events, calls)| {
+                events
+                    .get()
+                    .saturating_mul(2)
+                    .saturating_add(calls.get().saturating_mul(3))
+                    .saturating_add(7)
+            })
     }
 }
 

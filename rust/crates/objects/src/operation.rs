@@ -40,24 +40,30 @@ pub(crate) async fn admit<T>(
 #[cfg(feature = "grpc")]
 pub(crate) fn deadline(
     context: Option<&Context>,
-    fallback: Duration,
-) -> Result<tokio::time::Instant, Error> {
+    timeout: Option<Duration>,
+) -> Result<Option<tokio::time::Instant>, Error> {
     let remaining = match context {
         Some(context) => {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| Error::from(crate::wire::ErrorCode::Unavailable))?;
-            Duration::from_millis(context.deadline_unix_millis())
-                .checked_sub(now)
-                .filter(|remaining| !remaining.is_zero())
-                .ok_or(acyclic_auth::operation::Stopped::Deadline)?
+            Some(
+                Duration::from_millis(context.deadline_unix_millis())
+                    .checked_sub(now)
+                    .filter(|remaining| !remaining.is_zero())
+                    .ok_or(acyclic_auth::operation::Stopped::Deadline)?,
+            )
         }
-        None => fallback,
+        None => timeout,
     };
-    if remaining > MAX_DEADLINE {
-        return Err(crate::wire::ErrorCode::InvalidArgument.into());
-    }
-    tokio::time::Instant::now()
-        .checked_add(remaining)
-        .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
+    remaining
+        .map(|remaining| {
+            if remaining.is_zero() || remaining > MAX_DEADLINE {
+                return Err(crate::wire::ErrorCode::InvalidArgument.into());
+            }
+            tokio::time::Instant::now()
+                .checked_add(remaining)
+                .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
+        })
+        .transpose()
 }

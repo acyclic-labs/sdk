@@ -6,6 +6,9 @@ pub enum GitCompatError<E: std::error::Error + 'static> {
     /// Durable adapter failed.
     #[error("Git compatibility store failed: {0}")]
     Store(E),
+    /// The original request owner could not authenticate reply withdrawal.
+    #[error("Git compatibility request observation failed: {0}")]
+    RequestObservation(std::io::Error),
     /// Persisted state is incompatible or internally inconsistent.
     #[error("Git compatibility state is invalid")]
     InvalidState,
@@ -35,9 +38,9 @@ pub enum GitCompatError<E: std::error::Error + 'static> {
         /// Stable explanation of the unsupported capability.
         reason: String,
     },
-    /// Optimistic state contention exceeded the bounded retry policy.
-    #[error("Git compatibility state remained contended")]
-    Contended,
+    /// The host scheduler could not resume a contended publication.
+    #[error(transparent)]
+    Scheduling(#[from] acyclic_stream::StreamError),
     /// Another sequencer transition must be completed or aborted first.
     #[error("Git compatibility transition {0:?} is still pending")]
     TransitionPending(GitTransitionId),

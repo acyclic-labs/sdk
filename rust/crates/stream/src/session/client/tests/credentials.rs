@@ -36,7 +36,6 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 destination_node: "node".into(),
                 receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                 receive_frames: crate::MAX_ITEMS as u32,
-                credentials: vec![],
             }),
         ))
         .await?;
@@ -314,4 +313,65 @@ async fn rotating_client(
     )
     .await?;
     Ok(client)
+}
+
+#[tokio::test]
+async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> TestResult {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let provider = Arc::new(MemoryStream::default());
+        append(&provider, "events", 1).await?;
+        let fixture = Fixture::open(provider.clone(), "node").await?;
+        let client = Client::with_connector(
+            fixture._channel.clone(),
+            Some("Bearer fixture".parse()?),
+            None,
+            Arc::new(|_| Box::pin(future::ready(Err(StreamError::Unavailable)))),
+        );
+        let credential = crate::session::testing::credential();
+        let count = (crate::MAX_COMMAND_BYTES / credential.len()).max(crate::MAX_ITEMS) + 1;
+        // No yield: all updates queue before the pool runs, and their aggregate
+        // exceeds the former Hello/slot-byte limit. Slot IDs remain sparse.
+        for slot in 0..count {
+            client.register_credential(u32::try_from(slot)?, credential.clone())?;
+        }
+        client.register_credential(u32::MAX, credential)?;
+        let mut frames = client
+            .subscribe(wire::SessionSubscription {
+                credential: u32::MAX,
+                resume: Some(cursor(0)),
+                kind: Some(Kind::Follow(wire::SessionFollow {
+                    resource: crate::wire_codec::session::stream_resource("events"),
+                    delivery: wire::SessionDelivery::All as i32,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            })
+            .await?;
+        loop {
+            let value = frames.next().await.ok_or("missing record")??;
+            if let Some(Body::Data(data)) = value.body {
+                assert!(matches!(data.item, Some(Item::Record(record)) if record.sequence == 0));
+                break;
+            }
+        }
+        let mut records = client
+            .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 0))
+            .await?;
+        assert_eq!(next(&mut records).await?.sequence, 0);
+        client.register_credential(u32::MAX, Bytes::new())?;
+        let error = loop {
+            match frames.next().await {
+                Some(Ok(_)) => (),
+                Some(Err(error)) => break error,
+                None => return Err("revocation must refuse its channel".into()),
+            }
+        };
+        assert_eq!(error, StreamError::AccessDenied);
+        // The same physical session and independent slot remain usable.
+        append(&provider, "events", 1).await?;
+        assert_eq!(next(&mut records).await?.sequence, 1);
+        assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    })
+    .await?
 }

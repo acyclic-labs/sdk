@@ -26,7 +26,7 @@ try {
   const manifest = guest.manifest();
   assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
   let deliveries = 0;
-  const counted = { manifest: () => manifest, onRecord: (delivery, signal) => { deliveries += 1; return guest.onRecord(delivery, signal); } };
+  const counted = { manifest: () => manifest, onRecord: (delivery, signal, interrupt) => { deliveries += 1; return guest.onRecord(delivery, signal, interrupt); } };
   agents = fixture.hosting(providers, counted);
   phase("one agent turn runs in the guest; the host publishes it");
   const a = await agents.create("agent-guest", "hello");
@@ -41,7 +41,7 @@ try {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
 } finally {
-  agents?.free();
+  await fixture?.close(agents);
   guest?.free();
   providers?.free();
   fixture?.free();

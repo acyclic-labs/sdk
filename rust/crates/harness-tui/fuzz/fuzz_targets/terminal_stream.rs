@@ -1,7 +1,7 @@
 #![no_main]
 
 use acyclic_harness_tui::key_event::{InputEvent, KeyEvent, KeyModifiers};
-use acyclic_harness_tui::term::{Decoder, PROBE_LIMIT};
+use acyclic_harness_tui::term::Decoder;
 use libfuzzer_sys::fuzz_target;
 
 #[path = "../../tests/support/terminal_keys.rs"]
@@ -43,17 +43,10 @@ fuzz_target!(|data: &[u8]| {
     assert_eq!(split.take_events(), expected);
     assert_eq!(split.replies(), whole.replies());
 
-    // Reject both oversized and malformed UTF-8 pastes. Valid input following
-    // the terminator in the same chunk, and in later chunks, must survive.
+    // Malformed UTF-8 is still rejected. Valid input following the terminator
+    // in the same chunk, and in later chunks, must survive.
     let mut rejected = b"\x1b[200~".to_vec();
-    if data.first().is_some_and(|byte| byte & 1 != 0) {
-        rejected.resize(
-            rejected.len() + PROBE_LIMIT + 1 + data.len().min(1024),
-            b'p',
-        );
-    } else {
-        rejected.push(0xff);
-    }
+    rejected.push(0xff);
     rejected.extend_from_slice(b"\x1b[201~");
     rejected.extend_from_slice(&stream);
     assert!(split.feed(&rejected).is_err());

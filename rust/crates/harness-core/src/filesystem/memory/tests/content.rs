@@ -14,7 +14,7 @@ proptest::proptest! {
             let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
             let write = ContentGrant::verify(
                 &storage.verifier(), &storage.scope, &storage.volume,
-                VolumeOperation::Write, 1024, &mut None,
+                VolumeOperation::Write, &mut None,
             )?;
             let key = IdempotencyKey::new(key)?;
             let original = storage.host.put_content(
@@ -130,7 +130,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         .observe_staged_once(
             operation,
             None,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&observed_io),
@@ -212,7 +212,7 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
             .observe_staged_once(
                 denied_operation,
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: Some(&observed_io)
@@ -395,7 +395,6 @@ async fn native_host_original_key_recovers_immutable_upload_after_head_edit() ->
         &storage.scope,
         &storage.volume,
         VolumeOperation::Write,
-        1024,
         &mut None,
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();

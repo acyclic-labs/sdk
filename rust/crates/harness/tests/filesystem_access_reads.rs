@@ -113,7 +113,6 @@ impl<O: acyclic_fs::AsyncObjectStore + 'static> Fixture<O> {
             &scope,
             &volume,
             VolumeOperation::Write,
-            4096,
             &mut None,
         )?;
         let file = if initialize {
@@ -378,7 +377,6 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     assert!(
@@ -806,7 +804,6 @@ async fn empty_pinned_reads_keep_zero_byte_bounds_and_current_authority()
         &fixture.scope,
         &fixture.volume,
         VolumeOperation::Write,
-        4096,
         &mut None,
     )?;
     let empty = fixture

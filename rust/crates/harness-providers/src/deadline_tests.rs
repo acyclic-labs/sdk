@@ -114,7 +114,86 @@ fn cause(error: &Error) -> String {
 }
 
 fn bounded(history: History, idle_ms: u32, total_ms: u32) -> Arc<dyn HttpTransport> {
-    Bounded::new(Arc::new(Script(history)), TimeoutSpec { idle_ms, total_ms })
+    Bounded::new(
+        Arc::new(Script(history)),
+        TimeoutSpec {
+            idle_ms: Some(idle_ms.into()),
+            total_ms: Some(total_ms.into()),
+        },
+    )
+}
+
+#[test]
+fn optional_deadlines_preserve_long_exchanges_without_arming_timers() {
+    struct NoTimers(Script);
+    impl HttpTransport for NoTimers {
+        fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
+            self.0.send(request)
+        }
+        fn delay(&self, _: Duration) -> BoxProviderFuture<'static, ()> {
+            panic!("unbounded exchange armed a deadline timer")
+        }
+        fn now(&self) -> Duration {
+            self.0.now()
+        }
+    }
+    let long = u64::from(u32::MAX) + 1;
+    assert_eq!(
+        run(Bounded::new(
+            Arc::new(NoTimers(Script(History {
+                head: long,
+                gaps: vec![3_600_001, long],
+                silent: false,
+            }))),
+            TimeoutSpec::DEFAULT
+        )),
+        (2, None)
+    );
+    let selected: TimeoutSpec = serde_json::from_value(serde_json::json!({
+        "total_ms":long + 1,
+    }))
+    .unwrap();
+    assert_eq!(
+        run(Bounded::new(
+            Arc::new(Script(History {
+                head: long,
+                gaps: vec![0],
+                silent: false,
+            })),
+            selected
+        )),
+        (1, None)
+    );
+    for (timeouts, head, expected) in [
+        (
+            TimeoutSpec {
+                idle_ms: Some(100),
+                total_ms: None,
+            },
+            long,
+            "no response bytes for 100 ms",
+        ),
+        (
+            TimeoutSpec {
+                idle_ms: None,
+                total_ms: Some(100),
+            },
+            0,
+            "exchange exceeded 100 ms",
+        ),
+    ] {
+        assert_eq!(
+            run(Bounded::new(
+                Arc::new(Script(History {
+                    head,
+                    gaps: vec![101],
+                    silent: false,
+                })),
+                timeouts
+            )),
+            (0, Some(expected.into()))
+        );
+    }
 }
 
 const IDLE: u32 = 100;
@@ -141,7 +220,7 @@ proptest! {
         runtime.block_on(async {
             let transport = Bounded::new(Arc::new(Script(History {
                 head: u64::from(total), gaps: vec![], silent: false,
-            })), TimeoutSpec { idle_ms: u32::MAX, total_ms: total });
+            })), TimeoutSpec { idle_ms: Some(u64::from(u32::MAX)), total_ms: Some(u64::from(total)) });
             let error = if headers {
                 let mut send = pin!(transport.send(request()));
                 assert!(send.as_mut().now_or_never().is_none());
@@ -254,12 +333,12 @@ fn the_unguarded_body_stays_pending_past_the_deadlines() {
 fn zero_deadlines_are_rejected() {
     for timeouts in [
         TimeoutSpec {
-            idle_ms: 0,
-            total_ms: 1,
+            idle_ms: Some(0),
+            total_ms: Some(1),
         },
         TimeoutSpec {
-            idle_ms: 1,
-            total_ms: 0,
+            idle_ms: Some(1),
+            total_ms: Some(0),
         },
     ] {
         assert!(timeouts.validate().is_err());
@@ -270,16 +349,13 @@ fn zero_deadlines_are_rejected() {
 #[test]
 fn native_timeout_does_not_allocate_a_discarded_diagnostic() {
     let allocated = acyclic_test_support::measure(|| {
-        let error = timeout(true, Expired::Total, TimeoutSpec::DEFAULT);
+        let error = timeout(true, Expired::Total(3_600_000));
         assert!(matches!(&error, Error::ModelUnavailable { excerpt, .. } if excerpt.is_empty()));
     });
     assert_eq!(allocated.count_total, 0);
     // Negative control: the previous native path built this text and discarded it.
     let discarded = acyclic_test_support::measure(|| {
-        std::hint::black_box(format!(
-            "exchange exceeded {} ms",
-            TimeoutSpec::DEFAULT.total_ms
-        ));
+        std::hint::black_box(format!("exchange exceeded {} ms", 3_600_000));
     });
     assert!(discarded.count_total > 0);
 }
@@ -317,7 +393,7 @@ proptest! {
                 head: 0, gaps: vec![], silent: true,
             }));
             let deadlines = Deadlines::start(transport, TimeoutSpec {
-                idle_ms: 100, total_ms: u32::MAX,
+                idle_ms: Some(100), total_ms: Some(u64::from(u32::MAX)),
             }, false);
             let ready: BoxProviderStream<'static, Result<Bytes>> = if eof {
                 Box::pin(futures::stream::empty())
@@ -366,9 +442,9 @@ proptest! {
             let gaps = if partial { vec![0] } else { vec![] };
             let history = History { head: 0, gaps, silent: true };
             let timeouts = if idle {
-                TimeoutSpec { idle_ms: 100, total_ms: u32::MAX }
+                TimeoutSpec { idle_ms: Some(100), total_ms: Some(u64::from(u32::MAX)) }
             } else {
-                TimeoutSpec { idle_ms: u32::MAX, total_ms: 100 }
+                TimeoutSpec { idle_ms: Some(u64::from(u32::MAX)), total_ms: Some(100) }
             };
             let bounded = Bounded::new(Arc::new(Starved(history.clone())), timeouts);
             let mut body = bounded.send(request()).await.expect("headers").body;
@@ -422,14 +498,14 @@ fn deadlines_expire_once_the_clock_passes_them() {
                 }));
                 let (timeouts, expected) = if idle {
                     let timeouts = TimeoutSpec {
-                        idle_ms: 100,
-                        total_ms: u32::MAX,
+                        idle_ms: Some(100),
+                        total_ms: Some(u64::from(u32::MAX)),
                     };
                     (timeouts, "no response bytes for 100 ms")
                 } else {
                     let timeouts = TimeoutSpec {
-                        idle_ms: u32::MAX,
-                        total_ms: 100,
+                        idle_ms: Some(u64::from(u32::MAX)),
+                        total_ms: Some(100),
                     };
                     (timeouts, "exchange exceeded 100 ms")
                 };
@@ -482,13 +558,13 @@ fn a_millisecond_platform_reaches_every_deadline() {
         let transport: Arc<dyn HttpTransport> = Arc::new(Coarse(Arc::default()));
         let timeouts = if idle {
             TimeoutSpec {
-                idle_ms: 100,
-                total_ms: u32::MAX,
+                idle_ms: Some(100),
+                total_ms: Some(u64::from(u32::MAX)),
             }
         } else {
             TimeoutSpec {
-                idle_ms: u32::MAX,
-                total_ms: 100,
+                idle_ms: Some(u64::from(u32::MAX)),
+                total_ms: Some(100),
             }
         };
         let deadlines = Deadlines::start(transport, timeouts, false);
@@ -531,8 +607,8 @@ fn native_deadline_timers_are_admitted_exactly_on_the_ledger() {
             silent: true,
         };
         let timeouts = TimeoutSpec {
-            idle_ms: 100,
-            total_ms: u32::MAX,
+            idle_ms: Some(100),
+            total_ms: Some(u64::from(u32::MAX)),
         };
         let bounded = Bounded::new(Arc::new(Script(history)), timeouts);
         let mut body = bounded

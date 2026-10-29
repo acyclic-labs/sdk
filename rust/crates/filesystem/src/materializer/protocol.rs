@@ -106,7 +106,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
             let current = self
                 .load(journal.plan.operation_id)
                 .await?
-                .ok_or(MaterializationError::Contended)?;
+                .ok_or(MaterializationError::IncompatibleJournal)?;
             if current.plan != journal.plan {
                 return Err(MaterializationError::PlanConflict);
             }
@@ -355,7 +355,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         &self,
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             if let Some(work) = self.observed_work()? {
                 journal.work = work;
             }
@@ -377,8 +377,15 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 return Err(MaterializationError::PlanConflict);
             }
             journal = current;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = self.backend.native_work() {
+                work.charge(crate::WorkCounters {
+                    items_examined: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                })?;
+            }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(MaterializationError::Contended)
     }
     fn observed_work(
         &self,

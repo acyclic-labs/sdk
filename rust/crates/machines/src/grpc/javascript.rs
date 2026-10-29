@@ -54,8 +54,8 @@ impl<D: transport::Deadline> transport::Endpoint for Endpoint<D> {
     async fn client(&self) -> Result<Client, ProviderError> {
         Ok(Client(self.open.clone()))
     }
-    fn deadline(&self, timeout: Duration, expiry: Option<u64>) -> Result<D, ProviderError> {
-        (self.budget)(Some(timeout), expiry)
+    fn deadline(&self, timeout: Option<Duration>, expiry: Option<u64>) -> Result<D, ProviderError> {
+        (self.budget)(timeout, expiry)
     }
     fn absolute_deadline(&self, expiry: u64) -> Result<D, ProviderError> {
         (self.budget)(None, Some(expiry))

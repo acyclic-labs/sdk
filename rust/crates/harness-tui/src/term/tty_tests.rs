@@ -11,7 +11,7 @@ fn empty_input_returns_would_block_without_waiting_under_state() -> io::Result<(
     let pty = rustix_openpty::openpty(None, None)?;
     let _master = File::from(pty.controller);
     let mut tty = RawTty::from_file(File::from(pty.user))?;
-    let result = tty.receive(&mut [0; 8], Instant::now() + Duration::from_millis(1));
+    let result = tty.read(&mut [0; 8]);
     let restored = tty.restore();
     // The old implementation slept until the deadline and returned zero,
     // keeping lifecycle::active locked for the entire wait.

@@ -72,6 +72,6 @@ fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
     let ServiceStartOutcome::Failed(reason) = outcome else {
         return Err(io::Error::other("an oversized failure was not reported"));
     };
-    assert_eq!(reason.len(), 4096);
+    assert_eq!(reason, "x".repeat(10_000));
     Ok(())
 }

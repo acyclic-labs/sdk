@@ -21,11 +21,17 @@ export async function seed(root, files = {}, io = { mkdir, writeFile }) {
     let bytes = value;
     if (typeof value !== "string") {
       if (value.repeat !== undefined) {
-        assert.ok(Number.isSafeInteger(value.count) && value.count >= 0 && value.count <= 4 * 1024 * 1024,
-          "fixture repetition requires a bounded byte count");
-        assert.ok(typeof value.repeat === "string" && Buffer.byteLength(value.repeat) === 1,
+        const { count, repeat } = value;
+        assert.ok(Number.isSafeInteger(count) && count >= 0,
+          "fixture repetition requires a nonnegative safe integer byte count");
+        assert.ok(typeof repeat === "string" && Buffer.byteLength(repeat) === 1,
           "fixture repetition requires one byte");
-        bytes = Buffer.alloc(value.count, value.repeat);
+        bytes = (function* () {
+          const chunk = Buffer.alloc(Math.min(count, 64 * 1024), repeat);
+          for (let remaining = count; remaining > 0; remaining -= chunk.length) {
+            yield remaining < chunk.length ? chunk.subarray(0, remaining) : chunk;
+          }
+        })();
       } else bytes = Buffer.from(value.base64, "base64");
     }
     await io.writeFile(target, bytes);

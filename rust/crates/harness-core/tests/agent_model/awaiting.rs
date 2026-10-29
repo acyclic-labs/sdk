@@ -43,7 +43,6 @@ fn child(parent: &AgentPath) -> std::result::Result<AgentPath, Error> {
 
 fn step(checkpoint: &[u8], outs: Vec<Out>, wait: Wait) -> TurnStep {
     TurnStep {
-        reserved_children: 0,
         checkpoint: Some(checkpoint.to_vec()),
         outs,
         wait,
@@ -80,7 +79,6 @@ impl TurnDriver for Waiter {
     ) -> TurnFuture<'a> {
         Box::pin(async move {
             let settled = || TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Input,

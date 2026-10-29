@@ -212,11 +212,6 @@ async fn live_fork_forks_a_suspended_source_without_waking_it() {
             .await,
         Err(ProviderError::NotFound(_))
     ));
-    let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap_or(NonZeroU32::MAX);
-    assert!(matches!(
-        provider.fork_machine(parent.id, too_many, key(0x24)).await,
-        Err(ProviderError::Invalid(_))
-    ));
 }
 
 #[tokio::test]

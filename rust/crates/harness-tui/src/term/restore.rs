@@ -193,15 +193,11 @@ impl<W: Write> RestoreGuard<W> {
     /// Input cannot mutate the displayed state. Keep this operation narrow:
     /// exposing the writer here would also permit untracked output changes.
     #[cfg(all(unix, not(loom)))]
-    pub(crate) fn receive(
-        &mut self,
-        bytes: &mut [u8],
-        deadline: std::time::Instant,
-    ) -> io::Result<usize>
+    pub(crate) fn receive(&mut self, bytes: &mut [u8]) -> io::Result<usize>
     where
-        W: super::ProbeIo,
+        W: std::io::Read,
     {
-        self.writer.receive(bytes, deadline)
+        self.writer.read(bytes)
     }
 
     pub(crate) fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {

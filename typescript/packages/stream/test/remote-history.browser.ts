@@ -82,8 +82,8 @@ export async function verifyHistoryTimeoutPolicy(stream: WasmStream) {
   const [gap, chunk] = control.counterexample;
   const failed = await received(gap, chunk, true);
   if (!failed.expired || failed.error === undefined || failed.complete) throw new Error("control did not catch a deadline abort");
-  // The unary operation retains the actual production one-second deadline.
+  // Unary replies also survive a slow complete transfer without a caller deadline.
   const unary = await transfer(() => stream.dispatch("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "browser/events" }))), 600, 1);
-  if (!unary.expired || unary.error === undefined) throw new Error("unary deadline was removed");
-  return { schedules: 32, negativeControl: control.counterexample, unaryDeadline: true };
+  if (unary.expired || unary.error !== undefined || unary.value === undefined || unary.elapsed <= 1000) throw new Error("unary reply was cut off by a default deadline");
+  return { schedules: 32, negativeControl: control.counterexample, completeUnaryReply: true };
 }

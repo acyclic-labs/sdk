@@ -137,10 +137,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub async fn diff_to<W: crate::facade::FsWork>(
         &self,
         to: &Generation<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(ChangeSet<A, O>, crate::AuthorityAllocation), WorkspaceError> {
+        let maximum_changes = maximum_changes.into();
+
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let (changes, allocation) = match &mut accounting {
@@ -210,10 +212,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     }
 
     /// Reads one complete regular file from this exact generation.
+    /// `None` imposes no byte policy; explicit finite bounds are checked before reading.
     pub async fn read<W: crate::facade::FsWork>(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
@@ -221,7 +224,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             &self.workspace,
             GenerationSelector::Exact(self.id),
             path,
-            maximum_bytes,
+            maximum_bytes.into(),
             work,
             cancellation,
         )

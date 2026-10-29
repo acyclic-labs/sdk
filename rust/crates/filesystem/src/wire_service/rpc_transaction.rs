@@ -9,17 +9,8 @@ where
     ) -> Result<Response<wire::MutationResponse>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.mutations.is_empty()
-            || u32::try_from(request.mutations.len()).unwrap_or(u32::MAX)
-                > self.limits.maximum_transaction_mutations
-        {
-            return Err(Status::invalid_argument(
-                "transaction mutation count is invalid",
-            ));
-        }
-        if request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
-        {
+        self.require_transaction_count(request.mutations.len())?;
+        if request.maximum_conflicts == Some(0) {
             return Err(Status::invalid_argument(
                 "transaction conflict bound is invalid",
             ));

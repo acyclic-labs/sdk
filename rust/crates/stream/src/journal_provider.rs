@@ -54,9 +54,9 @@ extern "C" {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JournalStreamLimits {
     /// Maximum retained accepted commands. Refusals consume no journal entry.
-    pub commands: u32,
+    pub commands: Option<u32>,
     /// Maximum retained bytes, including command clocks and deadlines.
-    pub journal_bytes: u64,
+    pub journal_bytes: Option<u64>,
     /// Capacity of the canonical Stream state machine.
     pub memory: MemoryLimits,
 }
@@ -64,8 +64,8 @@ pub struct JournalStreamLimits {
 impl Default for JournalStreamLimits {
     fn default() -> Self {
         Self {
-            commands: 65_536,
-            journal_bytes: 256 * 1024 * 1024,
+            commands: None,
+            journal_bytes: None,
             memory: MemoryLimits::default(),
         }
     }
@@ -74,16 +74,17 @@ impl Default for JournalStreamLimits {
 impl JournalStreamLimits {
     fn configuration(self) -> Vec<u8> {
         [
-            u64::from(self.commands),
+            self.commands.map(u64::from),
             self.journal_bytes,
-            self.memory.paths as u64,
-            self.memory.path_bytes as u64,
-            self.memory.records as u64,
-            self.memory.payload_bytes as u64,
-            self.memory.commits as u64,
-            self.memory.idempotency_results as u64,
+            self.memory.paths.map(|value| value as u64),
+            self.memory.path_bytes.map(|value| value as u64),
+            self.memory.records.map(|value| value as u64),
+            self.memory.payload_bytes.map(|value| value as u64),
+            self.memory.commits.map(|value| value as u64),
+            self.memory.idempotency_results.map(|value| value as u64),
         ]
         .into_iter()
+        .flat_map(|value| [u64::from(value.is_some()), value.unwrap_or_default()])
         .flat_map(u64::to_le_bytes)
         .collect()
     }
@@ -119,7 +120,7 @@ impl JournalStream {
     /// Opens a host journal with configure, flush, read and append primitives. This
     /// constructor performs no network I/O and starts no detached work.
     pub async fn open(journal: JsValue, limits: JournalStreamLimits) -> Result<Self, StreamError> {
-        if !journal.is_object() || limits.commands == 0 || limits.journal_bytes == 0 {
+        if !journal.is_object() || limits.commands == Some(0) || limits.journal_bytes == Some(0) {
             return Err(StreamError::InvalidArgument);
         }
         let existing = OPEN.with(|open| {

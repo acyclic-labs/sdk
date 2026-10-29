@@ -245,11 +245,17 @@ impl Connection {
             0,
             Body::Hello(wire::SessionHello {
                 version: 1,
-                credentials: vec![credential(&granted_resource).into()],
                 client_id: Bytes::from_static(b"fs-test"),
                 destination_node: "local".into(),
                 receive_bytes: if credit { 1_000_000 } else { 0 },
                 receive_frames: if credit { 100 } else { 0 },
+            }),
+        )))?;
+        sender.unbounded_send(Ok(frame(
+            0,
+            Body::Credential(wire::SessionCredential {
+                slot: 0,
+                credential: credential(&granted_resource).into(),
             }),
         )))?;
         sender.unbounded_send(Ok(frame(

@@ -20,14 +20,16 @@ pub struct JoinBuilder<A: 'static, O: 'static> {
     pub(super) target: Workspace<A, O>,
     pub(super) history: JoinHistory,
     pub(super) git_metadata: bool,
-    pub(super) maximum_generations: u32,
-    pub(super) maximum_changes: u32,
-    pub(super) maximum_conflicts: u32,
+    pub(super) maximum_generations: Option<u32>,
+    pub(super) maximum_changes: Option<u32>,
+    pub(super) maximum_conflicts: Option<u32>,
 }
 
 impl<A: 'static, O: 'static> JoinBuilder<A, O> {
     pub(super) fn validate_workspaces(&self) -> Result<(), WorkspaceError> {
-        if self.maximum_generations == 0 || self.maximum_changes == 0 || self.maximum_conflicts == 0
+        if self.maximum_generations == Some(0)
+            || self.maximum_changes == Some(0)
+            || self.maximum_conflicts == Some(0)
         {
             return Err(WorkspaceError::JoinLimit);
         }
@@ -92,14 +94,17 @@ impl<A: 'static, O: 'static> JoinBuilder<A, O> {
         self
     }
 
-    /// Sets exact bounded lineage, diff, and conflict frontiers.
-    pub const fn bounds(
+    /// Selects optional lineage, diff and conflict policies; None is unbounded.
+    pub fn bounds(
         mut self,
-        maximum_generations: u32,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_generations: impl Into<Option<u32>>,
+        maximum_changes: impl Into<Option<u32>>,
+        maximum_conflicts: impl Into<Option<u32>>,
     ) -> Self {
-        self.maximum_generations = maximum_generations;
+        let maximum_changes = maximum_changes.into();
+        let maximum_conflicts = maximum_conflicts.into();
+
+        self.maximum_generations = maximum_generations.into();
         self.maximum_changes = maximum_changes;
         self.maximum_conflicts = maximum_conflicts;
         self
@@ -361,9 +366,9 @@ pub struct JoinPlan<A: 'static, O: 'static> {
     pub(super) base_workspace: Workspace<A, O>,
     pub(super) history: JoinHistory,
     pub(super) git_metadata: bool,
-    pub(super) maximum_generations: u32,
-    pub(super) maximum_changes: u32,
-    pub(super) maximum_conflicts: u32,
+    pub(super) maximum_generations: Option<u32>,
+    pub(super) maximum_changes: Option<u32>,
+    pub(super) maximum_conflicts: Option<u32>,
 }
 
 impl<A: 'static, O: 'static> JoinPlan<A, O> {

@@ -297,33 +297,6 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
     Ok(())
 }
 
-#[tokio::test]
-async fn journal_capacity_rejects_before_mutating_visible_state()
--> Result<(), Box<dyn std::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let limits = LocalStreamLimits {
-        journal_bytes: u64::try_from(HEADER_BYTES).map_err(std::io::Error::other)?,
-        ..LocalStreamLimits::default()
-    };
-    let provider = LocalStream::open(directory.path(), limits).await?;
-    assert!(matches!(
-        provider
-            .append(AppendRequest {
-                path: StreamPath::new("capacity")?,
-                records: vec![(Bytes::from_static(b"must-not-appear")).into()],
-                if_tail: Some(0),
-                idempotency_key: crate::IdempotencyKey::unique(),
-            })
-            .await,
-        Err(StreamError::Capacity)
-    ));
-    assert!(matches!(
-        provider.tail(StreamPath::new("capacity")?).await,
-        Err(StreamError::NotFound)
-    ));
-    Ok(())
-}
-
 /// Appends one record to `path` and returns the journal's length after.
 async fn append_one(
     provider: &LocalStream,
@@ -418,7 +391,7 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
 
 fn compacting_limits() -> LocalStreamLimits {
     LocalStreamLimits {
-        journal_operations: 8,
+        compaction_operations: 8,
         ..LocalStreamLimits::default()
     }
 }

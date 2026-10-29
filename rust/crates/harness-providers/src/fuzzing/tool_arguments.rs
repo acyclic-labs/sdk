@@ -11,7 +11,7 @@ use futures::TryStreamExt as _;
 const MAXIMUM: usize = 1 << 20;
 const PROVIDER_ID: &str = "call";
 const NAME: &str = "echo";
-const RETAINED_LIMIT: &str = "retained model state exceeds aggregate byte or item limit";
+const RETAINED_LIMIT: &str = "retained model state exceeds configured byte policy";
 
 fn chat_event(text: &str) -> serde_json::Value {
     serde_json::json!({"choices":[{"delta":{"tool_calls":[{

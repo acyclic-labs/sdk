@@ -159,7 +159,10 @@ async fn exact_capture_inherits_nested_ignore_rules_with_local_negation() {
     let mut transaction = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x49; 16])).await;
     unbounded!(transaction, create_dir_all("/src")).expect("directory");
     transaction
-        .write_text("/src/.gitignore", "*.tmp\n!keep.tmp\n")
+        .write_text(
+            "/src/.gitignore",
+            &format!("#{}\n*.tmp\n!keep.tmp\n", "x".repeat(1024 * 1024)),
+        )
         .await
         .expect("nested policy");
     transaction

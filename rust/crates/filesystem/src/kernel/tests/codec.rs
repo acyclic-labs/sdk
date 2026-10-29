@@ -280,7 +280,7 @@ mod properties {
             map.into_iter()
                 .filter_map(|(name, (id, kind))| {
                     Some(TreeEntry {
-                        name: LogicalName::new(NameEncoding::Utf8, name.into_bytes(), 255).ok()?,
+                        name: LogicalName::new(NameEncoding::Utf8, name.into_bytes()).ok()?,
                         file_id: FileId::from_bytes([id; 16]),
                         kind,
                     })
@@ -418,11 +418,6 @@ mod properties {
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             if let Some(maximum_page_items) = fewer(entries.len()) {
                 let tight = DecodeLimits { maximum_page_items, ..limits };
-                prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
-            }
-            let longest = entries.iter().map(|entry| entry.name.as_bytes().len()).max();
-            if let Some(maximum_name_bytes) = longest.and_then(fewer) {
-                let tight = DecodeLimits { maximum_name_bytes, ..limits };
                 prop_assert!(decode_tree_page(&encoded, tight, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err(), "page bounds");
             }
         }

@@ -748,6 +748,7 @@ dependencies = [
  "nix 0.31.3",
  "proptest",
  "ratatui",
+ "ratatui-core",
  "rustix",
  "rustix-openpty",
  "serde",
@@ -2129,6 +2130,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 

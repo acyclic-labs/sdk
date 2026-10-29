@@ -152,6 +152,10 @@ pub(crate) trait HostChangeSink: Send + Sync {
     /// failure report.
     fn delivery_lost(&self) {}
 
+    /// The batch callback and its original ledger scope have returned. Wake
+    /// observers here, so their wakers can safely re-enter either ledger.
+    fn delivery_finished(&self) {}
+
     #[cfg(windows)]
     fn host_changed_wide(
         &self,

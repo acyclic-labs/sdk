@@ -675,7 +675,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &[id],
                     // Bindings can outnumber file records through hard links.
                     // The original work budget bounds demanded parent edges.
-                    u32::MAX,
+                    None,
                     accounting,
                     cancellation,
                 )

@@ -10,7 +10,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|input: &[u8]| {
     for instruction_bytes in [0, 1, 16, 4096] {
         let bounds = ContextDiscoveryLimits {
-            instruction_bytes,
+            instruction_bytes: Some(instruction_bytes),
             ..Default::default()
         };
         if bounds.validate_instruction(input).is_ok() {
@@ -22,7 +22,7 @@ fuzz_target!(|input: &[u8]| {
     let limits = Limits {
         render_bytes: 4096,
         file_bytes: 4096,
-        context_messages: 16,
+        context_messages: std::num::NonZeroUsize::new(16),
         ..Default::default()
     };
     if input.len() > limits.render_bytes as usize {
@@ -62,7 +62,7 @@ fuzz_target!(|input: &[u8]| {
     round_trip!(acyclic_harness::context::ContextSummary);
     for path_bytes in [1, 16, 64, 4096] {
         let limits = Limits {
-            path_bytes,
+            path_bytes: std::num::NonZeroUsize::new(path_bytes),
             ..limits
         };
         if let Ok(manifest) = ContextManifest::decode(input, limits) {

@@ -597,7 +597,6 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
     let limits = DecodeLimits {
         maximum_page_items: 2,
         maximum_page_height: 1,
-        maximum_visited_pages: 2,
         ..DecodeLimits::default()
     };
     let range = ByteRange {
@@ -721,7 +720,7 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
             chunk_bytes: 2,
             page_items: 2,
             page_bytes: 127,
-            maximum_blob_bytes: 3,
+            maximum_blob_bytes: Some(3),
         },
         WorkBudget::UNBOUNDED,
         &cancellation,

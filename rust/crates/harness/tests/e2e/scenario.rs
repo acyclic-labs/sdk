@@ -155,7 +155,7 @@ fn limit_overrides_preserve_defaults_and_reject_unknown_keys() -> Result<(), Str
         br#"{"prompt":"x","turns":[],"limits":{"model_events_per_step":2},"expect":{"text":"x"}}"#,
     )?;
     let limits = case.execution_limits()?;
-    assert_eq!(limits.model_events_per_step, 2);
+    assert_eq!(limits.model_events_per_step, std::num::NonZeroUsize::new(2));
     assert_eq!(
         limits.file_bytes,
         acyclic_harness::conversation::Limits::default().file_bytes

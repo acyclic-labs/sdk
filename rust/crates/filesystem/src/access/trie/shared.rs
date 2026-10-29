@@ -107,7 +107,7 @@ impl CompiledPolicy {
         remaining: &mut usize,
         mut reserve: impl FnMut(usize) -> Result<(), InvalidPolicy>,
     ) -> Result<Self, InvalidPolicy> {
-        let mut available = (*remaining).min(MAXIMUM_WORK);
+        let mut available = *remaining;
         let before = available;
         let result = (|| {
             let empty = Capability {
@@ -245,7 +245,7 @@ impl CompiledPolicy {
     pub fn logical_owned_bytes(&self) -> u64 {
         (size_of::<Self>()
             + 2 * size_of::<usize>()
-            + self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
+            + self.alphabet.pages.capacity() * size_of::<[u32; 256]>()
             + self
                 .alphabet
                 .page_ids
@@ -359,8 +359,8 @@ impl CompiledPolicy {
     }
 
     // Keep product-state identifiers so path steps need no lookup or allocation.
-    // Only reachable pairs count towards the DFA bound. The common universal
-    // ceiling has one state and can use the shared program's dense identifiers.
+    // Only reachable pairs allocate storage. The common universal ceiling has
+    // one state and can use the shared program's dense identifiers.
     fn reachable_pairs(
         &self,
         view: &PathTrie,
@@ -370,16 +370,16 @@ impl CompiledPolicy {
         if view.states.len() == 1 {
             return Ok(None);
         }
-        let maximum = self
-            .states
+        self.states
             .len()
-            .saturating_mul(view.states.len())
-            .min(MAXIMUM_STATES);
-        reserve(2 * maximum * size_of::<usize>())?;
-        let mut reachable = Vec::with_capacity(maximum);
-        let mut pending = Vec::with_capacity(maximum);
-        reachable.push(0);
-        pending.push(0);
+            .checked_mul(view.states.len())
+            .ok_or(InvalidPolicy("combined policy state identifier overflow"))?;
+        // Queue discovered pairs once. A tree index avoids moving the growing
+        // sorted result on every discovery; dense visits use one final sort.
+        let pair_storage = 32 * size_of::<usize>();
+        reserve(pair_storage)?;
+        let mut reachable = vec![0];
+        let mut seen = BTreeSet::from([0]);
         let symbols = || {
             self.alphabet
                 .symbols
@@ -388,37 +388,41 @@ impl CompiledPolicy {
                 .copied()
         };
         let mut other = None;
-        for ch in (1..=0x10ffff).filter_map(char::from_u32) {
-            spend(
-                remaining,
-                self.alphabet.symbols.len() + view.alphabet.symbols.len() + 1,
-            )?;
-            if !symbols().any(|symbol| symbol == ch) {
+        for ch in (0..=0x10ffff).filter_map(char::from_u32) {
+            spend(remaining, 3)?;
+            if self.alphabet.symbol(ch) == Some(self.alphabet.symbols.len())
+                && view.alphabet.symbol(ch) == Some(view.alphabet.symbols.len())
+            {
                 other = Some(ch);
                 break;
             }
         }
         let other = other.ok_or(InvalidPolicy("combined policy has no other symbol"))?;
         let mut cursor = 0;
-        while let Some(&state) = pending.get(cursor) {
+        while let Some(&state) = reachable.get(cursor) {
             cursor += 1;
             for ch in symbols().chain(std::iter::once(other)) {
                 spend(
                     remaining,
-                    reachable.len().checked_ilog2().unwrap_or(0) as usize + 3,
+                    12 * (reachable.len().checked_ilog2().unwrap_or(0) as usize + 1) + 3,
                 )?;
                 let next = self.step(state / view.states.len(), ch)? * view.states.len()
                     + view.ceiling_step(state % view.states.len(), ch)?;
-                if let Err(index) = reachable.binary_search(&next) {
-                    if reachable.len() == MAXIMUM_STATES {
-                        return Err(InvalidPolicy("combined policy exceeds DFA state limit"));
-                    }
-                    spend(remaining, reachable.len() - index + 1)?;
-                    reachable.insert(index, next);
-                    pending.push(next);
+                if !seen.contains(&next) {
+                    reserve(pair_storage)?;
+                    seen.insert(next);
+                    reachable.push(next);
                 }
             }
         }
+        spend(
+            remaining,
+            reachable
+                .len()
+                .checked_mul(reachable.len().checked_ilog2().unwrap_or(0) as usize + 1)
+                .ok_or(InvalidPolicy("glob compilation work overflow"))?,
+        )?;
+        reachable.sort_unstable();
         Ok(Some(reachable))
     }
 }
@@ -688,12 +692,15 @@ fn compile_paths(
         .iter()
         .flatten()
         .all(|rule| rule.resource.path == "**");
-    reserve(super::super::compilation::determinization(
+    reserve(super::super::compilation::determinization_scratch(
         nfa.nodes.len(),
         symbols.len(),
-        size_of::<State>() + size_of::<Vec<usize>>() + ends.len() * size_of::<usize>(),
-        if uniform { 1 } else { MAXIMUM_STATES },
     )?)?;
+    let mut admission = StateAdmission {
+        reserve,
+        symbols: symbols.len(),
+        state_bytes: size_of::<State>() + size_of::<Vec<usize>>() + ends.len() * size_of::<usize>(),
+    };
     let matches = RefCell::new(Vec::<Vec<usize>>::new());
     let outcomes = |subset: &[usize]| {
         matches.borrow_mut().push(
@@ -708,6 +715,7 @@ fn compile_paths(
         }; 12]
     };
     let states = if uniform {
+        admission.state(nfa.nodes.len())?;
         spend(available, nfa.nodes.len() + ends.len() * 24)?;
         vec![terminal(
             vec![0; symbols.len() + 1],
@@ -722,6 +730,7 @@ fn compile_paths(
             outcomes,
             ends.len(),
             available,
+            &mut admission,
         )?
     };
     Ok(Paths {

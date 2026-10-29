@@ -1,12 +1,14 @@
 async fn fold_additions<S: AsyncObjectStore>(
     store: &S,
     requested: ResolutionView<'_>,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     limits: DecodeLimits,
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     while let Some((ours_id, theirs_id)) = state.folds.value.pop() {
         let (ours_before, ours) = state.record(ours_id, accounting)?;
         let (theirs_before, theirs) = state.record(theirs_id, accounting)?;
@@ -79,10 +81,13 @@ async fn fold_additions<S: AsyncObjectStore>(
             )?;
             state.replace(fold.theirs, (theirs_before, None), accounting)?;
             name.retire(accounting)?;
-        } else if state.conflicts.value.len() < maximum_conflicts as usize {
-            state
-                .conflicts
-                .ensure_for_push(maximum_conflicts as usize, accounting)?;
+        } else if state.conflicts.value.len()
+            < maximum_conflicts.map_or(usize::MAX, |maximum| maximum as usize)
+        {
+            state.conflicts.ensure_for_push(
+                maximum_conflicts.map_or(usize::MAX, |maximum| maximum as usize),
+                accounting,
+            )?;
             let Owned {
                 value: name,
                 mut allocation,
@@ -180,14 +185,14 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                         .and_then(|index| transitions.value.get(index))
                         .is_some_and(|entry| entry.before == before && entry.after == after);
                     if !unchanged {
-                        if state.remaining_changes == 0 {
+                        if state.changes.remaining == Some(0) {
                             return Err(FsError::MergeChangeLimit);
                         }
                         let (diff, allocation) = diff_tree_entries_with_accounting(
                             store,
                             before,
                             after,
-                            state.remaining_changes,
+                            state.changes.remaining,
                             limits,
                             accounting,
                             cancellation,
@@ -218,12 +223,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                             retired_contribution?;
                             return Err(error);
                         }
-                        state.remaining_changes = state
-                            .remaining_changes
-                            .checked_sub(
-                                u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?,
-                            )
-                            .ok_or(FsError::MergeChangeLimit)?;
+                        state.changes.consume(count)?;
                         let entry = DirectoryTransition {
                             directory: *directory,
                             before,

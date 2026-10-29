@@ -81,7 +81,9 @@ impl MemoryStream {
         self.absorb(&mut allocation, claim)?;
         facts.push(CommittedMutation::Append(fact));
         let (mut histories, _histories) = self.histories(&state, &facts)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&request.path))?;
+        let (paths, _paths) = self.paths(&state, std::iter::once(&request.path), |prefix| {
+            request.path.as_str() == prefix
+        })?;
         let retained = self.reserve_retained(state)?;
         let mut envelope = CommittedEnvelope {
             commit_id,

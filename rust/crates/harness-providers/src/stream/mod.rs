@@ -49,7 +49,7 @@ pub(crate) struct State<'work> {
 pub(crate) fn events<'a>(
     adapter: Adapter,
     body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
     events_named(adapter, body, maximum, dispatch, None, None)
@@ -58,11 +58,12 @@ pub(crate) fn events<'a>(
 pub(crate) fn events_named<'a>(
     adapter: Adapter,
     body: BoxProviderStream<'a, Result<Bytes>>,
-    maximum: usize,
+    maximum: impl Into<Option<usize>>,
     dispatch: ModelDispatch,
     names: Option<&'a crate::tool_names::Names<'a>>,
     origin: Option<acyclic_harness_core::model::ReasoningOrigin>,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+    let maximum = maximum.into();
     Box::pin(async_stream::try_stream! {
         let mut input = sse::decode(body, maximum);
         let mut state = State::new(maximum);
@@ -246,7 +247,7 @@ impl<'work> State<'work> {
         self.calls.values().map(|call| call.arguments.as_str())
     }
 
-    pub(crate) fn new(maximum: usize) -> Self {
+    pub(crate) fn new(maximum: impl Into<Option<usize>>) -> Self {
         Self {
             calls: BTreeMap::new(),
             metadata: serde_json::Map::new(),
@@ -260,9 +261,10 @@ impl<'work> State<'work> {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn native(
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         work: &'work acyclic_fs::NativeMaterializationWork,
     ) -> Self {
+        let maximum = maximum.into();
         Self {
             budget: budget::Budget::native(maximum, work),
             ..Self::new(maximum)

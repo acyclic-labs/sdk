@@ -61,7 +61,10 @@ impl FileProjectionPolicy {
         }
         if let Self::ProjectInstructions(source) = self {
             source.validate(work)?;
-            if source.path().len() > limits.path_bytes {
+            if limits
+                .path_bytes
+                .is_some_and(|maximum| source.path().len() > maximum.get())
+            {
                 return Err(invalid(work, "instruction source exceeds path bound"));
             }
             if InstructionSource::with_identity(file, source).framed_bytes()? > limits.render_bytes

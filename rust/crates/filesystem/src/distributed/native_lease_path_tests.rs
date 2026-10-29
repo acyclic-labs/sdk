@@ -13,7 +13,7 @@ fn legacy_path(
     expiry: u64,
     work: &mut AuthorityWork<'_>,
 ) -> Result<StreamPath, AuthorityStoreError> {
-    let mut text = [0; acyclic_stream::MAX_PATH_BYTES];
+    let mut text = [0; 65_535];
     let length = legacy::encode(workspace, lease, expiry, &mut text, Some(work))?;
     let text = std::str::from_utf8(text.get(..length).ok_or(crate::WorkError::Overflow)?)
         .map_err(|_| authority_corrupt("lease path is not UTF-8", work))?;

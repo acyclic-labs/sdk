@@ -185,8 +185,10 @@ impl HostedTransaction {
     /// Publishes every accumulated mutation atomically.
     pub async fn commit(
         self,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
     ) -> Result<wire::MutationResponse, HostedFsError> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let span = crate::obs::span!(
             INFO,
             "acyclic.fs.hosted.commit",
@@ -199,9 +201,7 @@ impl HostedTransaction {
                 self.workspace
                     .filesystem
                     .require_transaction_bound(self.mutations.len())?;
-                self.workspace
-                    .filesystem
-                    .require_page_bound(maximum_conflicts, "transaction conflicts")?;
+
                 let mut client = self.workspace.filesystem.client.clone();
                 Ok(client
                     .apply_transaction(
@@ -226,14 +226,14 @@ impl HostedTransaction {
     /// without publishing the transaction.
     pub async fn rebase(
         &self,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
     ) -> Result<wire::RebaseTransactionResponse, HostedFsError> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         self.workspace
             .filesystem
             .require_transaction_bound(self.mutations.len())?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_conflicts, "transaction conflicts")?;
+
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .rebase_transaction(

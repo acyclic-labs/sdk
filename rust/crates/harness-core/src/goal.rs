@@ -1,14 +1,8 @@
-//! File-driven goal state and bounded continuation decisions.
+//! File-driven goal state and optional continuation policies.
 
 use crate::{Error, OperationId, Result, TaskId, conversation::VolumeClass};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
-
-/// Maximum bytes in a YAML-quoted status reason, including its quotes.
-pub const GOAL_REASON_BYTES: usize = 128;
-/// Bytes reserved beyond the Markdown body for any canonical status rewrite.
-pub const GOAL_METADATA_HEADROOM: usize =
-    "---\nstatus: blocked\nreason: \n---\n".len() + GOAL_REASON_BYTES;
 
 /// Validated goal frontmatter status.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -58,7 +52,6 @@ impl GoalState {
         let text = std::str::from_utf8(bytes)
             .map_err(|_| Error::Invalid("GOAL.md requires UTF-8".into()))?;
         let (frontmatter, markdown) = parse(text)?;
-        encoded_reason(frontmatter.reason.as_deref())?;
         Ok(Self {
             status: frontmatter.status,
             reason: frontmatter.reason,
@@ -136,11 +129,7 @@ impl GoalContinuationPolicy {
     #[must_use]
     pub fn blocked(&self, goal: &GoalView) -> Option<String> {
         let maximum = self.max_continuations?;
-        // This fixed ASCII reason, even at u32::MAX, fits GOAL_REASON_BYTES.
-        let reason = format!(
-            "\"Maximum goal continuations reached (limit {}).\"",
-            maximum,
-        );
+        let reason = format!("Maximum goal continuations reached (limit {}).", maximum);
         Some(status_contents(
             GoalStatus::Blocked,
             Some(&reason),
@@ -171,13 +160,6 @@ impl GoalView {
             reason,
             markdown,
         } = GoalState::from_bytes(bytes, maximum_bytes)?;
-        if maximum_bytes < GOAL_METADATA_HEADROOM as u64
-            || markdown.len() as u64 > maximum_bytes - GOAL_METADATA_HEADROOM as u64
-        {
-            return Err(Error::Invalid(
-                "goal body leaves no status metadata headroom".into(),
-            ));
-        }
         Ok(Self {
             source,
             status,
@@ -187,10 +169,9 @@ impl GoalView {
     }
 
     /// Encodes an ordinary file rewrite, preserving the accepted Markdown body.
-    /// Reasons must fit the reserved metadata allowance after YAML escaping.
-    pub fn status_contents(&self, status: GoalStatus, reason: Option<&str>) -> Result<String> {
-        let reason = encoded_reason(reason)?;
-        Ok(status_contents(status, reason.as_deref(), &self.markdown))
+    /// The ordinary file writer applies its selected policy to the encoded bytes.
+    pub fn status_contents(&self, status: GoalStatus, reason: Option<&str>) -> String {
+        status_contents(status, reason, &self.markdown)
     }
 
     /// Content revision, unaffected by unrelated writes to the same volume.
@@ -225,39 +206,23 @@ pub fn continuation_operation(task: TaskId, settled_turn: OperationId) -> Operat
     OperationId::from_bytes(id)
 }
 
-fn encoded_reason(reason: Option<&str>) -> Result<Option<String>> {
-    reason
-        .map(|reason| {
-            // YAML escaping never shortens the input; reject before allocating.
-            if reason.len() > GOAL_REASON_BYTES.saturating_sub(2) {
-                return Err(Error::Invalid(
-                    "goal reason exceeds metadata allowance".into(),
-                ));
+fn write_reason(encoded: &mut String, reason: &str) {
+    encoded.push('"');
+    for ch in reason.chars() {
+        match ch {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            ' '..='~' => encoded.push(ch),
+            // Escape controls, line separators and Unicode noncharacters
+            // as well as other non-ASCII scalars. YAML supports \U for
+            // astral scalars without JSON's surrogate-pair ambiguity.
+            ch if u32::from(ch) <= 0xffff => {
+                write!(encoded, "\\u{:04X}", u32::from(ch)).expect("writing to a String")
             }
-            let mut encoded = String::from("\"");
-            for ch in reason.chars() {
-                match ch {
-                    '"' => encoded.push_str("\\\""),
-                    '\\' => encoded.push_str("\\\\"),
-                    ' '..='~' => encoded.push(ch),
-                    // Escape controls, line separators and Unicode noncharacters
-                    // as well as other non-ASCII scalars. YAML supports \U for
-                    // astral scalars without JSON's surrogate-pair ambiguity.
-                    ch if u32::from(ch) <= 0xffff => write!(encoded, "\\u{:04X}", u32::from(ch))
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                    ch => write!(encoded, "\\U{:08X}", u32::from(ch))
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                }
-                if encoded.len() + 1 > GOAL_REASON_BYTES {
-                    return Err(Error::Invalid(
-                        "goal reason exceeds metadata allowance".into(),
-                    ));
-                }
-            }
-            encoded.push('"');
-            Ok(encoded)
-        })
-        .transpose()
+            ch => write!(encoded, "\\U{:08X}", u32::from(ch)).expect("writing to a String"),
+        }
+    }
+    encoded.push('"');
 }
 
 fn status_contents(status: GoalStatus, reason: Option<&str>, markdown: &str) -> String {
@@ -266,10 +231,30 @@ fn status_contents(status: GoalStatus, reason: Option<&str>, markdown: &str) -> 
         GoalStatus::Blocked => "blocked",
         GoalStatus::Done => "done",
     };
-    match reason {
-        Some(reason) => format!("---\nstatus: {status}\nreason: {reason}\n---\n{markdown}"),
-        None => format!("---\nstatus: {status}\n---\n{markdown}"),
+    let reason_bytes = reason.map_or(0, |reason| {
+        "\nreason: \"\"".len()
+            + reason
+                .chars()
+                .map(|ch| match ch {
+                    '"' | '\\' => 2,
+                    ' '..='~' => 1,
+                    ch if u32::from(ch) <= 0xffff => 6,
+                    _ => 10,
+                })
+                .sum::<usize>()
+    });
+    let mut contents = String::with_capacity(
+        "---\nstatus: \n---\n".len() + status.len() + reason_bytes + markdown.len(),
+    );
+    contents.push_str("---\nstatus: ");
+    contents.push_str(status);
+    if let Some(reason) = reason {
+        contents.push_str("\nreason: ");
+        write_reason(&mut contents, reason);
     }
+    contents.push_str("\n---\n");
+    contents.push_str(markdown);
+    contents
 }
 
 fn parse(text: &str) -> Result<(Frontmatter, &str)> {

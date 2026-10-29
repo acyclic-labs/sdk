@@ -227,7 +227,7 @@ pub(crate) fn validate_url(base: &str) -> Result<url::Url> {
 }
 
 pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()> {
-    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == 0 {
+    if provider.trim().is_empty() || provider.contains('/') || config.max_event_bytes == Some(0) {
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;

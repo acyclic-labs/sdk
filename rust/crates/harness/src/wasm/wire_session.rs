@@ -27,9 +27,6 @@ pub(super) fn resource(value: JsString) -> Result<String, JsValue> {
 
 impl ReadKey {
     fn parse(value: JsString) -> Result<Self, JsValue> {
-        if value.length() as usize > acyclic_stream::MAX_PATH_BYTES + 4 {
-            return Err(error("CLIENT_PATH_CAPACITY"));
-        }
         let text = value
             .as_string()
             .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
@@ -84,10 +81,6 @@ fn command_bytes(view: &Uint8Array, capacity_code: &str) -> Result<Vec<u8>, JsVa
 }
 
 fn path(value: JsString) -> Result<StreamPath, JsValue> {
-    // Stream paths are ASCII, so UTF-16 length is a valid pre-copy cap.
-    if value.length() as usize > acyclic_stream::MAX_PATH_BYTES {
-        return Err(error("CLIENT_PATH_CAPACITY"));
-    }
     let value = value
         .as_string()
         .ok_or_else(|| error("CLIENT_INVALID_PATH"))?;
@@ -177,9 +170,6 @@ impl WasmWireSession {
     /// Register the credential on the shared pool after checking its byte bound.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(&self, slot: u32, credential: Uint8Array) -> Result<(), JsValue> {
-        if slot as usize >= acyclic_stream::session::Limits::default().channels {
-            return Err(error("CLIENT_CREDENTIAL_CAPACITY"));
-        }
         let credential = command_bytes(&credential, "CLIENT_CREDENTIAL_CAPACITY")?;
         self.session
             .borrow()

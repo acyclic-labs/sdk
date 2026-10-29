@@ -42,31 +42,20 @@ impl<A, O> CheckoutMountSource<A, O> {
         let runtime = CallbackRuntime::existing()?;
         let cancellation =
             CancellationToken::new_with_native_work(&work).map_err(MountSourceError::NativeWork)?;
-        for bytes in [
-            std::mem::size_of::<StdMutex<CaptureSourceGate>>(),
-            std::mem::size_of::<std::sync::Condvar>(),
-        ] {
-            let mut allocation = work
-                .claim(bytes as u64, 1, crate::WorkCounters::UNCHARGED)
-                .map_err(MountSourceError::NativeWork)?;
-            root_allocation
-                .absorb(&mut allocation)
-                .map_err(MountSourceError::NativeWork)?;
-        }
+        let bytes =
+            crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<CaptureSourceSignal>())
+                .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?;
+        let mut allocation = work
+            .claim(bytes as u64, 1, crate::WorkCounters::UNCHARGED)
+            .map_err(MountSourceError::NativeWork)?;
+        root_allocation
+            .absorb(&mut allocation)
+            .map_err(MountSourceError::NativeWork)?;
         let cleanup_credit = work
             .reserve_work(crate::WorkCounters {
-                items_examined: 2,
+                items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             })
-            .map_err(MountSourceError::NativeWork)?;
-        let final_credit = cleanup_credit
-            .partition_work(
-                crate::WorkCounters {
-                    items_examined: 1,
-                    ..crate::WorkCounters::UNCHARGED
-                },
-                None,
-            )
             .map_err(MountSourceError::NativeWork)?;
         Ok(Self {
             checkout,
@@ -81,14 +70,15 @@ impl<A, O> CheckoutMountSource<A, O> {
                 ),
             cancellation,
             folded_directories: super::folded_cache::FoldedDirectoryCache::new(),
-            capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
-            capture_quiesced: Arc::new(std::sync::Condvar::new()),
+            capture_signal: Arc::new(CaptureSourceSignal {
+                _allocation: Some(root_allocation),
+                ..CaptureSourceSignal::default()
+            }),
             runtime,
             native_original: Some(work),
             native_io_original: native_original.cloned(),
             native_callback_guard: None,
-            cleanup_credit: StdMutex::new(Some((cleanup_credit, final_credit))),
-            _namespace_allocation: Some(root_allocation),
+            cleanup_credit: StdMutex::new(Some(cleanup_credit)),
             _source_allocation: None,
         })
     }

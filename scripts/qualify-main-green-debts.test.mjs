@@ -114,7 +114,7 @@ test('a passing executable terminates its live background child with closed outp
   const source = `
     const {spawn} = require('node:child_process');
     const child = spawn(process.execPath, ['-e',
-      'process.send(process.pid);setInterval(()=>{},1000)'],
+      'process.send(process.pid,()=>Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0))'],
       {stdio: ['ignore', 'ignore', 'ignore', 'ipc']});
     child.once('message', pid => {
       child.disconnect();
@@ -192,7 +192,7 @@ test('the watchdog terminates a real non-exiting test process group', async () =
   let expire;
   let child;
   const execution = executeTest(process.execPath, ['-e',
-    'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], {
+    'require("node:fs").writeSync(1,"ready\\n");Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0)'], {
     launch(executable, args, options) { child = spawn(executable, args, options); return child; },
     arm(callback, milliseconds) { assert.equal(milliseconds, 10_000); expire = callback; return 1; },
     disarm() {},

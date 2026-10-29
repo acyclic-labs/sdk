@@ -147,7 +147,6 @@ async fn expiring_fork(offset: u64) -> Result<(), Box<dyn Error>> {
         &scope,
         &fixture.volume,
         VolumeOperation::Read,
-        65536,
         &mut None,
     )?;
     let target = VolumeRef::new(

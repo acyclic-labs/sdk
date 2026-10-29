@@ -1,9 +1,6 @@
 const BIGINT_FIELDS = new Set([
   "maximumObjectBytes",
   "maximumReadBytes",
-  "maximumFilesPerGeneration",
-  "maximumObjectsPerGeneration",
-  "maximumGenerationBytes",
   "maximumBytes",
 ]);
 

@@ -45,7 +45,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         .build()?;
     runtime.block_on(async {
         let directory = tempfile::tempdir()?;
-        let limits = LocalStreamLimits { journal_operations: 4, ..LocalStreamLimits::default() };
+        let limits = LocalStreamLimits { compaction_operations: 4, ..LocalStreamLimits::default() };
         let provider = LocalStream::open(directory.path(), limits).await?;
         let path = StreamPath::new("agents/a")?;
         let AppendOutcome::Committed(seed) = provider.append(AppendRequest {
@@ -144,7 +144,7 @@ fn append_to_follow_latency_with_frequent_compaction() -> Result {
         for transport in ["local", "grpc"] {
             let directory = tempfile::tempdir()?;
             let provider = LocalStream::open(directory.path(), LocalStreamLimits {
-                journal_operations: 4, ..LocalStreamLimits::default()
+                compaction_operations: 4, ..LocalStreamLimits::default()
             }).await?;
             let path = StreamPath::new("latency")?;
             provider.append(AppendRequest { path: path.clone(), records: vec![(Bytes::from_static(b"seed")).into()],

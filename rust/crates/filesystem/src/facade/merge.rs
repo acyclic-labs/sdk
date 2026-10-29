@@ -130,7 +130,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_conflicts,
             resolutions,
         } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_generations == Some(0)
+            || maximum_changes == Some(0)
+            || maximum_conflicts == Some(0)
+        {
             return Err(WorkspaceError::JoinLimit.into());
         }
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
@@ -379,11 +382,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub async fn prepare_merge(
         &mut self,
         theirs: GenerationId,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_changes: impl Into<Option<u32>>,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<MergePreparation> {
+        let maximum_changes = maximum_changes.into();
+        let maximum_conflicts = maximum_conflicts.into();
+
         if self.mode.access != AccessMode::ReadWrite
             || self.mode.mutations != MutationMode::PrivateOverlay
         {
@@ -392,7 +398,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if self.prepared_merge_parent.is_some() {
             return Err(OperationFailure::before_work(FsError::PreparedMergePending));
         }
-        if maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_changes == Some(0) || maximum_conflicts == Some(0) {
             return Err(OperationFailure::before_work(FsError::MergeChangeLimit));
         }
         let theirs_id = theirs.object_id();

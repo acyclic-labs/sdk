@@ -118,12 +118,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Transactio
             FilePayload::Regular { logical_bytes, .. } => *logical_bytes,
             _ => return Err(WorkspaceError::NotRegularFile),
         };
-        let step = self
-            .checkout
-            .volume_config()
-            .limits
-            .maximum_read_bytes
-            .max(1);
+        let step = crate::kernel::CONTENT_READ_CHUNK_BYTES;
         let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
         let mut offset = 0;
         while offset < length {

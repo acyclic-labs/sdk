@@ -1,4 +1,4 @@
-//! Bounded native change notifications for materialized checkouts.
+//! Native change notifications for materialized checkouts.
 #![allow(
     clippy::result_large_err,
     reason = "Watch admission failures must not allocate another error owner."
@@ -24,7 +24,7 @@ use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind};
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -215,13 +215,11 @@ impl WatchBatchOriginal {
     }
 }
 
-/// Bounded native watcher configuration.
+/// Native watcher configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeWatchOptions {
     /// Volume path/name bounds used while converting host paths.
     pub limits: VolumeLimits,
-    /// Maximum queued native changes before typed invalidation.
-    pub maximum_queued_changes: u32,
     /// Whether descendants are observed recursively.
     pub recursive: bool,
 }
@@ -257,22 +255,100 @@ impl NativeWatchOptions {
     pub const fn new(limits: VolumeLimits) -> Self {
         Self {
             limits,
-            maximum_queued_changes: 16_384,
             recursive: true,
         }
     }
+}
 
-    fn validate(self) -> Result<Self, NativeWatchError> {
-        if self.maximum_queued_changes == 0 {
-            return Err(NativeWatchError::InvalidOptions);
+/// Retained delivery state and its event. The event is inline in the existing
+/// control allocation; an idle observer owns no thread, timer or queue slot.
+#[derive(Debug)]
+struct WatchState {
+    state: Mutex<SharedState>,
+    changed: tokio::sync::Notify,
+}
+
+impl WatchState {
+    fn new(state: SharedState) -> Self {
+        Self {
+            state: Mutex::new(state),
+            changed: tokio::sync::Notify::new(),
         }
-        Ok(self)
+    }
+
+    fn delivery(self: &Arc<Self>) -> WatchDelivery {
+        WatchDelivery(Arc::clone(self))
+    }
+
+    fn ready(&self, queued: &AtomicUsize) -> Result<bool, NativeWatchError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?;
+        if state.closed {
+            return Err(NativeWatchError::SourceUnavailable);
+        }
+        let ready = state.invalidation.is_some() || queued.load(Ordering::Acquire) != 0;
+        #[cfg(any(target_os = "linux", windows))]
+        let ready = ready || state.pending_rename.is_some();
+        Ok(state.rescan.is_none() && ready)
+    }
+}
+
+/// Notification access independent of the mutable watcher operation owner.
+/// Cloning shares the original controls and allocates no subscription payload.
+#[derive(Clone)]
+pub(crate) struct NativeWatchSubscription {
+    shared: Arc<WatchState>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl NativeWatchSubscription {
+    pub(crate) fn changed_with_native_work(
+        &self,
+        original: &crate::NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        let shared = Arc::clone(&self.shared);
+        let queued = Arc::clone(&self.queued);
+        let original = original.clone();
+        async move {
+            original.admit(WorkCounters::UNCHARGED)?;
+            if shared.ready(&queued)? {
+                return Ok(());
+            }
+            let cancelled = original.scope_cancellation_wait()?;
+            let mut cancelled = std::pin::pin!(cancelled);
+            loop {
+                let changed = shared.changed.notified();
+                let mut changed = std::pin::pin!(changed);
+                changed.as_mut().enable();
+                original.admit(WorkCounters::UNCHARGED)?;
+                if shared.ready(&queued)? {
+                    return Ok(());
+                }
+                tokio::select! {
+                    () = changed.as_mut() => {},
+                    () = cancelled.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
+                }
+            }
+        }
+    }
+}
+
+/// Declared before producer locks, so publication wakes observers only after
+/// the batch, its accounting and all state guards have retired.
+struct WatchDelivery(Arc<WatchState>);
+
+impl Drop for WatchDelivery {
+    fn drop(&mut self) {
+        self.0.changed.notify_waiters();
     }
 }
 
 #[derive(Debug)]
 struct SharedState {
     invalidation: Option<WatchInvalidationReason>,
+    closed: bool,
     rescan: Option<u64>,
     #[cfg(any(target_os = "linux", windows))]
     pending_rename: Option<PendingRename>,
@@ -307,6 +383,7 @@ impl SharedState {
     const fn new(invalidation: Option<WatchInvalidationReason>) -> Self {
         Self {
             invalidation,
+            closed: false,
             rescan: None,
             #[cfg(any(target_os = "linux", windows))]
             pending_rename: None,
@@ -341,7 +418,7 @@ impl SharedState {
 #[derive(Debug)]
 #[must_use = "keep the scan owner until finish_rescan or abort"]
 pub struct NativeWatchRescan {
-    shared: Arc<Mutex<SharedState>>,
+    shared: Arc<WatchState>,
     epoch: u64,
     invalidation: Option<WatchInvalidationReason>,
 }
@@ -365,7 +442,8 @@ impl NativeWatchRescan {
     }
 
     fn abandon(&self, reason: WatchInvalidationReason) {
-        if let Ok(mut shared) = self.shared.lock()
+        let _delivery = self.shared.delivery();
+        if let Ok(mut shared) = self.shared.state.lock()
             && shared.rescan == Some(self.epoch)
         {
             shared.abandon_rescan(reason);
@@ -386,8 +464,6 @@ struct NativeEventContext {
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    #[cfg(any(target_os = "linux", windows))]
-    maximum_queued_changes: u32,
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -399,7 +475,15 @@ enum NativeWatchDriver {
 }
 
 #[cfg(target_os = "linux")]
-impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
+impl crate::source_watch::HostChangeSink for NativeEventDelivery {
+    fn delivery_finished(&self) {
+        self.shared.changed.notify_waiters();
+    }
+
+    fn delivery_lost(&self) {
+        lose_delivery(&self.shared, &self.fenced);
+    }
+
     fn logical_owned_bytes(&self) -> u64 {
         0
     }
@@ -408,7 +492,7 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
         changes: &[crate::source_watch::HostChange],
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
-        invalidate_root_hints(self, changes, work)
+        invalidate_root_hints(&self.shared, changes, work)
     }
 
     fn host_changed_with_native_work(
@@ -416,7 +500,7 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
         changes: &[crate::source_watch::HostChange],
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), crate::demand::DemandError> {
-        invalidate_root_hints(self, changes, work)
+        invalidate_root_hints(&self.shared, changes, work)
     }
 }
 
@@ -424,7 +508,7 @@ impl crate::source_watch::HostChangeSink for Mutex<SharedState> {
 /// invalidates only when the host lost them.
 #[cfg(target_os = "linux")]
 fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
-    state: &Mutex<SharedState>,
+    state: &Arc<WatchState>,
     changes: &[crate::source_watch::HostChange],
     work: &mut W,
 ) -> Result<(), crate::demand::DemandError> {
@@ -436,6 +520,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
         })?;
         if matches!(change, crate::source_watch::HostChange::Everything) {
             state
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
@@ -452,7 +537,7 @@ fn invalidate_root_hints<W: crate::demand::SourceDemandReadWork>(
 #[cfg(any(target_os = "macos", all(test, unix)))]
 struct RootHints {
     root: PathBuf,
-    shared: Arc<Mutex<SharedState>>,
+    shared: Arc<WatchState>,
     fenced: Arc<Condvar>,
     _root_allocation: Option<crate::NativeAllocation>,
 }
@@ -471,6 +556,7 @@ impl RootHints {
         work.check()?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         let mut cookie = false;
@@ -513,6 +599,10 @@ impl RootHints {
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
 impl crate::source_watch::HostChangeSink for RootHints {
+    fn delivery_finished(&self) {
+        self.shared.changed.notify_waiters();
+    }
+
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64 + self.root.capacity() as u64
     }
@@ -540,9 +630,9 @@ impl crate::source_watch::HostChangeSink for RootHints {
 
 /// Holds a lost delivery batch as the watch's state: it stays invalidated,
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
-#[cfg(any(test, target_os = "macos"))]
-fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
-    if let Ok(mut state) = shared.lock() {
+fn lose_delivery(shared: &Arc<WatchState>, fenced: &Condvar) {
+    let _delivery = shared.delivery();
+    if let Ok(mut state) = shared.state.lock() {
         state
             .invalidation
             .get_or_insert(WatchInvalidationReason::BackendError);
@@ -554,8 +644,8 @@ fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
 struct NativeEventDelivery {
     context: NativeEventContext,
     sender: QueueSender<QueuedWatchChange>,
-    shared: Arc<Mutex<SharedState>>,
-    queued: Arc<AtomicU32>,
+    shared: Arc<WatchState>,
+    queued: Arc<AtomicUsize>,
     fenced: Arc<Condvar>,
 }
 
@@ -610,6 +700,7 @@ impl NativeEventDelivery {
         {
             let mut state = self
                 .shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?;
             state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
@@ -633,6 +724,7 @@ impl NativeEventDelivery {
         work.check()?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if state
@@ -672,21 +764,6 @@ impl NativeEventDelivery {
         // replacement. Fence and capture still verify its native identity.
         if relative.as_os_str().is_empty() && mask & !(libc::IN_ATTRIB | libc::IN_ISDIR) != 0 {
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
-            return Ok(());
-        }
-        let completes_rename = mask & libc::IN_MOVED_TO != 0
-            && state
-                .pending_rename
-                .as_ref()
-                .is_some_and(|pending| pending.tracker == cookie);
-        if !completes_rename
-            && self
-                .queued
-                .load(Ordering::Acquire)
-                .saturating_add(u32::from(state.pending_rename.is_some()))
-                >= self.context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             return Ok(());
         }
         let payload = match namespace_hint_with_work(
@@ -831,9 +908,6 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
         })?;
         let _ = name?;
         count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-        if count > usize::from(limits.maximum_path_depth) {
-            return Err(DemandError::InvalidRequest);
-        }
     }
     let backing = count
         .checked_mul(size_of::<LogicalName>())
@@ -878,27 +952,21 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
             })?;
             let name = name?;
             let ((encoding, bytes), mut allocation) = match name {
-                HintName::Host(name) => crate::native_name::host_name_bytes_with_source_work(
-                    name,
-                    profile,
-                    limits.maximum_component_bytes,
-                    work,
-                ),
+                HintName::Host(name) => {
+                    crate::native_name::host_name_bytes_with_source_work(name, profile, work)
+                }
                 #[cfg(windows)]
-                HintName::Wide(name) => crate::native_name::host_wide_name_bytes_with_source_work(
-                    name,
-                    profile,
-                    limits.maximum_component_bytes,
-                    work,
-                ),
+                HintName::Wide(name) => {
+                    crate::native_name::host_wide_name_bytes_with_source_work(name, profile, work)
+                }
             }?;
             if allocation.is_none() {
                 claimed = claimed
                     .checked_add(bytes.capacity() as u64)
                     .ok_or(WorkError::Overflow)?;
             }
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                .map_err(|_| DemandError::InvalidRequest)?;
+            let name =
+                LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
             // Keep the name before its guard on every custody-transfer error.
             let mut incoming = (name, allocation.take());
             if let (Some(owner), Some(allocation)) = (&mut owned.1, &mut incoming.1) {
@@ -1031,6 +1099,14 @@ struct WindowsRootSink {
 
 #[cfg(windows)]
 impl crate::source_watch::HostChangeSink for WindowsRootSink {
+    fn delivery_finished(&self) {
+        self.delivery.shared.changed.notify_waiters();
+    }
+
+    fn delivery_lost(&self) {
+        lose_delivery(&self.delivery.shared, &self.delivery.fenced);
+    }
+
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64
     }
@@ -1108,6 +1184,7 @@ impl WindowsRootSink {
         let mut state = self
             .delivery
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         for change in changes {
@@ -1207,6 +1284,7 @@ impl WindowsRootSink {
         work.check()?;
         self.delivery
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
@@ -1224,6 +1302,7 @@ impl WindowsRootSink {
         let mut state = self
             .delivery
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         self.deliver_names_locked(names, action, &mut state, work)
@@ -1239,24 +1318,6 @@ impl WindowsRootSink {
         use crate::demand::DemandError;
         work.check()?;
         if state.invalidation.is_some() {
-            return Ok(());
-        }
-        let completes_rename = action.is_some_and(|(action, cookie)| {
-            action == 5
-                && state
-                    .pending_rename
-                    .as_ref()
-                    .is_some_and(|pending| pending.tracker == cookie)
-        });
-        if !completes_rename
-            && self
-                .delivery
-                .queued
-                .load(Ordering::Acquire)
-                .saturating_add(u32::from(state.pending_rename.is_some()))
-                >= self.delivery.context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             return Ok(());
         }
         let payload = match namespace_hint_names_with_work(
@@ -1436,8 +1497,8 @@ pub struct NativeWatch {
     held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
     windows_delivery: Arc<NativeEventDelivery>,
-    queued: Arc<AtomicU32>,
-    shared: Arc<Mutex<SharedState>>,
+    queued: Arc<AtomicUsize>,
+    shared: Arc<WatchState>,
     fenced: Arc<Condvar>,
     fences: u64,
     epoch: u64,
@@ -1579,6 +1640,17 @@ impl Drop for NativeWatchHeldRoot {
     }
 }
 
+impl Drop for NativeWatch {
+    fn drop(&mut self) {
+        let _delivery = self.shared.delivery();
+        self.shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .closed = true;
+    }
+}
+
 impl NativeWatch {
     /// Opens the platform-recommended event source.
     pub fn open(
@@ -1633,6 +1705,7 @@ impl NativeWatch {
         &mut self,
         original: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeWatchError> {
+        let _delivery = self.shared.delivery();
         original.admit(WorkCounters::UNCHARGED)?;
         let mut work = crate::NativeMaterializationWork::clone(original);
         if let Some(pending) = self.pending_source_watch.as_ref() {
@@ -1698,12 +1771,14 @@ impl NativeWatch {
         }
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         #[cfg(any(target_os = "linux", windows))]
         let pending = state.pending_rename.take();
         let fence = state.fence.take();
         state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);
+        state.closed = true;
         drop(state);
         #[cfg(any(target_os = "linux", windows))]
         drop(pending);
@@ -1726,7 +1801,7 @@ impl NativeWatch {
         if cfg!(any(target_os = "linux", target_os = "macos", windows))
             && !(cfg!(target_os = "linux") && options.recursive)
         {
-            let root = Self::ordinary_root(root.as_ref(), options, &mut work)
+            let root = Self::ordinary_root(root.as_ref(), &mut work)
                 .map_err(|error| OperationFailure::new(error, work.receipt()))?;
             let native = crate::NativeMaterializationWork::from_demand(work)
                 .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
@@ -1762,11 +1837,9 @@ impl NativeWatch {
 
     fn ordinary_root<W: crate::demand::SourceDemandReadWork>(
         requested: &Path,
-        options: NativeWatchOptions,
         work: &mut W,
     ) -> Result<PathBuf, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        options.validate()?;
         work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
@@ -1822,7 +1895,6 @@ impl NativeWatch {
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        let options = options.validate()?;
         if cfg!(target_os = "linux")
             && options.recursive
             && (original.is_some()
@@ -1847,7 +1919,7 @@ impl NativeWatch {
         let root_path = if original.is_some() {
             requested_root
         } else {
-            ordinary_root = Self::ordinary_root(requested_root, options, work)?;
+            ordinary_root = Self::ordinary_root(requested_root, work)?;
             &ordinary_root
         };
         let cleanup = original
@@ -1894,31 +1966,16 @@ impl NativeWatch {
             .ok_or(NativeWatchError::SourceUnavailable)?;
         let held = &*held;
         let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
-        let capacity = usize::try_from(options.maximum_queued_changes)
-            .map_err(|_| NativeWatchError::InvalidOptions)?;
-        let queue_bytes = (capacity as u64)
-            .checked_mul(size_of::<WatchChange>() as u64)
-            .ok_or(WorkError::Overflow)?;
-        let queue_allocation = if let Some(original) = original {
-            // Queue capacity is an admission bound. Its backing grows with
-            // occupancy and carries its own original-ledger allocation guard.
-            Some(original.claim(0, 0, crate::WorkCounters::UNCHARGED)?)
-        } else {
-            work.claim_allocation(
-                queue_bytes,
-                u64::from((queue_bytes) != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(demand_watch_error)?;
-            None
-        };
+        let queue_allocation = original
+            .map(|original| original.claim(0, 0, crate::WorkCounters::UNCHARGED))
+            .transpose()?;
         Self::startup_control(work)?;
-        let (sender, receiver) = crate::watch_queue::bounded(capacity, queue_allocation);
+        let (sender, receiver) = crate::watch_queue::channel(queue_allocation);
         Self::startup_control(work)?;
-        let queued = Arc::new(AtomicU32::new(0));
+        let queued = Arc::new(AtomicUsize::new(0));
         Self::startup_control(work)?;
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
-        let shared = Arc::new(Mutex::new(state));
+        let shared = Arc::new(WatchState::new(state));
         Self::startup_control(work)?;
         let fenced = Arc::new(Condvar::new());
         #[cfg(windows)]
@@ -1930,8 +1987,6 @@ impl NativeWatch {
             root_identity,
             profile,
             limits: options.limits,
-            #[cfg(any(target_os = "linux", windows))]
-            maximum_queued_changes: options.maximum_queued_changes,
             _root_allocation: context_allocation,
         };
         #[cfg(windows)]
@@ -1956,8 +2011,6 @@ impl NativeWatch {
                 root_identity,
                 profile,
                 limits: options.limits,
-                #[cfg(target_os = "linux")]
-                maximum_queued_changes: options.maximum_queued_changes,
                 _root_allocation: context_allocation,
             };
             let callback_shared = Arc::clone(&shared);
@@ -1971,7 +2024,7 @@ impl NativeWatch {
                     &callback_shared,
                     &callback_queued,
                 );
-                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
+                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.state.lock())
                     && state
                         .fence
                         .as_ref()
@@ -2009,7 +2062,6 @@ impl NativeWatch {
                     root_identity,
                     profile,
                     limits: options.limits,
-                    maximum_queued_changes: options.maximum_queued_changes,
                     _root_allocation: event_allocation,
                 },
                 sender: linux_sender,
@@ -2017,7 +2069,7 @@ impl NativeWatch {
                 queued: Arc::clone(&queued),
                 fenced: Arc::clone(&fenced),
             });
-            let sink = Arc::clone(&shared);
+            let sink = Arc::clone(&events);
             Some(
                 crate::source_watch::NativeSourceWatch::start_with_events_with_work(
                     held, sink, events, work,
@@ -2033,6 +2085,7 @@ impl NativeWatch {
             if !options.recursive {
                 let registrations = Self::windows_registrations(held, work)?;
                 shared
+                    .state
                     .lock()
                     .map_err(|_| NativeWatchError::StatePoisoned)?
                     .registered = Some(registrations);
@@ -2483,6 +2536,7 @@ impl NativeWatch {
         let result = (|| {
             let mut state = self
                 .shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?;
             let registered = state
@@ -2560,7 +2614,7 @@ impl NativeWatch {
     /// paths exactly.
     #[cfg(all(test, windows))]
     pub(crate) fn windows_match_exactly(&self) {
-        if let Ok(mut state) = self.shared.lock()
+        if let Ok(mut state) = self.shared.state.lock()
             && let Some(registered) = &mut state.registered
         {
             registered.exact = true;
@@ -2571,6 +2625,7 @@ impl NativeWatch {
     #[cfg(all(test, windows))]
     pub(crate) fn windows_registered(&self) -> usize {
         self.shared
+            .state
             .lock()
             .ok()
             .and_then(|state| {
@@ -2590,6 +2645,7 @@ impl NativeWatch {
         work.check()?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if let Some(registered) = &mut state.registered {
@@ -2621,6 +2677,7 @@ impl NativeWatch {
         #[cfg(test)]
         let exact = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .registered
@@ -2645,6 +2702,7 @@ impl NativeWatch {
                 let candidate = {
                     let state = self
                         .shared
+                        .state
                         .lock()
                         .map_err(|_| NativeWatchError::StatePoisoned)?;
                     let Some(registered) = &state.registered else {
@@ -2686,6 +2744,7 @@ impl NativeWatch {
                 {
                     let mut state = self
                         .shared
+                        .state
                         .lock()
                         .map_err(|_| NativeWatchError::StatePoisoned)?;
                     if let Some(registered) = &mut state.registered
@@ -2907,6 +2966,7 @@ impl NativeWatch {
             return Ok(());
         }
         self.shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation = Some(WatchInvalidationReason::RootChanged);
@@ -2929,6 +2989,7 @@ impl NativeWatch {
         work.check().map_err(demand_watch_error)?;
         if self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .rescan
@@ -2939,6 +3000,7 @@ impl NativeWatch {
         match self.prepare_rescan_with_work(work) {
             Ok((epoch, invalidation)) => {
                 self.shared
+                    .state
                     .lock()
                     .map_err(|_| NativeWatchError::StatePoisoned)?
                     .rescan = Some(epoch);
@@ -2959,7 +3021,7 @@ impl NativeWatch {
     // received no scan. Partial native cleanup stays owned by this watcher;
     // its hints remain unusable until a complete baseline succeeds.
     fn abandon_rescan(&mut self) {
-        if let Ok(mut shared) = self.shared.lock() {
+        if let Ok(mut shared) = self.shared.state.lock() {
             shared.abandon_rescan(WatchInvalidationReason::BackendError);
         }
         // A poisoned state remains fail-closed through every public method.
@@ -2971,6 +3033,7 @@ impl NativeWatch {
     ) -> Result<(u64, Option<WatchInvalidationReason>), NativeWatchError> {
         let mut shared = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         let queued = self.queued.load(Ordering::Acquire);
@@ -3039,6 +3102,7 @@ impl NativeWatch {
     ) -> Result<Result<crate::WindowsUsnContinuity, crate::WindowsUsnError>, NativeWatchError> {
         let mut shared = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if shared.rescan.is_some()
@@ -3083,6 +3147,7 @@ impl NativeWatch {
         rescan: NativeWatchRescan,
         work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
+        let _delivery = self.shared.delivery();
         work.check().map_err(demand_watch_error)?;
         if !Arc::ptr_eq(&self.shared, &rescan.shared) || self.epoch != rescan.epoch {
             return Err(NativeWatchError::RescanOwnerMismatch);
@@ -3093,6 +3158,7 @@ impl NativeWatch {
         work.check().map_err(demand_watch_error)?;
         let mut shared = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if shared.rescan != Some(rescan.epoch) {
@@ -3266,6 +3332,7 @@ impl NativeWatch {
         work.check().map_err(demand_watch_error)?;
         let mut shared = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         let old = (
@@ -3311,6 +3378,7 @@ impl NativeWatch {
         timeout: Duration,
         work: &mut W,
     ) -> Result<(), NativeWatchError> {
+        let _delivery = self.shared.delivery();
         work.check().map_err(demand_watch_error)?;
         let pending = match (&self.pending_source_watch, &self.watcher) {
             (Some(owner), _) | (_, NativeWatchDriver::StartupFailure(owner)) => Some(owner),
@@ -3321,6 +3389,7 @@ impl NativeWatch {
                 Arc::clone(owner),
             ));
             self.shared
+                .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .invalidation
@@ -3331,6 +3400,7 @@ impl NativeWatch {
         let started = Instant::now();
         if timeout.is_zero() {
             self.shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .invalidation
@@ -3343,6 +3413,7 @@ impl NativeWatch {
             .map_err(demand_watch_error)?
         {
             self.shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .invalidation = Some(WatchInvalidationReason::RootChanged);
@@ -3380,6 +3451,7 @@ impl NativeWatch {
             .map_err(demand_watch_error)?;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if !unchanged {
@@ -3454,6 +3526,7 @@ impl NativeWatch {
     pub(crate) fn confirmable(&self) -> Result<bool, NativeWatchError> {
         Ok(self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation
@@ -3517,6 +3590,7 @@ impl NativeWatch {
             && self.await_cookie(timeout).is_ok_and(|delivered| delivered);
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         state.fence = None;
@@ -3567,6 +3641,7 @@ impl NativeWatch {
     fn write_cookie(&self, cookie: &Path) -> Result<bool, NativeWatchError> {
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         if state.invalidation.is_some() {
@@ -3576,6 +3651,7 @@ impl NativeWatch {
         drop(state);
         if std::fs::File::create_new(cookie).is_err() {
             self.shared
+                .state
                 .lock()
                 .map_err(|_| NativeWatchError::StatePoisoned)?
                 .fence = None;
@@ -3591,6 +3667,7 @@ impl NativeWatch {
         let deadline = Instant::now() + timeout;
         let mut state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         while state.fence.is_some() && state.invalidation.is_none() {
@@ -3613,6 +3690,7 @@ impl NativeWatch {
     fn fence_homes(&self) -> Result<Vec<PathBuf>, NativeWatchError> {
         let state = self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         let homes = state
@@ -3636,6 +3714,27 @@ impl NativeWatch {
             .then_some(host)
             .into_iter()
             .collect())
+    }
+
+    /// Waits for retained hints, invalidation or producer retirement without
+    /// inspecting the filesystem. Readiness never certifies a clean baseline:
+    /// consume it with `poll_with_native_work_guarded` or a fenced rescan.
+    ///
+    /// The returned future owns its subscription, so a source-session lock can
+    /// be released before awaiting. Dropping it unregisters both funded
+    /// cancellation observers and the inline notification waiter.
+    pub fn changed_with_native_work(
+        &self,
+        original: &crate::NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        self.subscription().changed_with_native_work(original)
+    }
+
+    pub(crate) fn subscription(&self) -> NativeWatchSubscription {
+        NativeWatchSubscription {
+            shared: Arc::clone(&self.shared),
+            queued: Arc::clone(&self.queued),
+        }
     }
 
     /// Moves at most `maximum_changes` contiguous hints from the native queue.
@@ -3701,6 +3800,7 @@ impl NativeWatch {
         }
         if self
             .shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .rescan
@@ -3730,12 +3830,13 @@ impl NativeWatch {
                     reason,
                 }
             } else {
-                let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
-                let capacity =
-                    usize::try_from(queued).map_err(|_| NativeWatchError::InvalidOptions)?;
+                let capacity = self
+                    .queued
+                    .load(Ordering::Acquire)
+                    .min(maximum_changes as usize);
                 let next = self
                     .next_sequence
-                    .checked_add(u64::from(queued))
+                    .checked_add(capacity as u64)
                     .ok_or(NativeWatchError::SequenceExhausted)?;
                 let bytes = capacity
                     .checked_mul(size_of::<WatchChange>())
@@ -3843,7 +3944,10 @@ impl NativeWatch {
             };
             // Serialize invalidation with publication, but never hold the work meter across arbitrary consumer code or physical data destruction.
             let shared = self.shared.clone();
-            let mut state = shared.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+            let mut state = shared
+                .state
+                .lock()
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
             if let Some(reason) = state.seal_invalidation() {
                 drop(batch);
                 batch = WatchBatch::RescanRequired {
@@ -3895,6 +3999,7 @@ impl NativeWatch {
             return Ok(());
         }
         self.shared
+            .state
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?
             .invalidation = Some(WatchInvalidationReason::RootChanged);
@@ -3903,15 +4008,18 @@ impl NativeWatch {
 
     fn invalidation(&self) -> Result<Option<WatchInvalidationReason>, NativeWatchError> {
         self.shared
+            .state
             .lock()
             .map(|mut state| state.seal_invalidation())
             .map_err(|_| NativeWatchError::StatePoisoned)
     }
 
     fn invalidate_after_poll_failure(&self, reason: WatchInvalidationReason) {
+        let _delivery = self.shared.delivery();
         // Recovery must remain possible even after cancellation or poisoning.
         let mut state = self
             .shared
+            .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.invalidation.get_or_insert(reason);
@@ -4096,10 +4204,11 @@ fn accept_native_event(
     event: &notify::Result<Event>,
     context: &NativeEventContext,
     sender: &QueueSender<QueuedWatchChange>,
-    shared: &Arc<Mutex<SharedState>>,
-    queued: &Arc<AtomicU32>,
+    shared: &Arc<WatchState>,
+    queued: &Arc<AtomicUsize>,
 ) {
-    let Ok(mut state) = shared.lock() else {
+    let _delivery = shared.delivery();
+    let Ok(mut state) = shared.state.lock() else {
         return;
     };
     if state.invalidation.is_some() {
@@ -4141,9 +4250,6 @@ fn accept_native_event(
                 }
                 match mode {
                     RenameMode::From if state.pending_rename.is_none() => {
-                        if queued.load(Ordering::Acquire) >= context.maximum_queued_changes {
-                            return Err(WatchInvalidationReason::QueueOverflow);
-                        }
                         state.pending_rename = Some(PendingRename {
                             tracker,
                             from: path,
@@ -4192,15 +4298,6 @@ fn accept_native_event(
         }
     };
     for change in changes {
-        #[cfg(target_os = "linux")]
-        if queued
-            .load(Ordering::Acquire)
-            .saturating_add(u32::from(state.pending_rename.is_some()))
-            >= context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            break;
-        }
         match sender.try_send(QueuedWatchChange {
             change,
             allocations: [None, None],
@@ -4335,10 +4432,9 @@ fn relative_namespace_path(
         let Component::Normal(name) = component else {
             return Err(WatchInvalidationReason::UnrepresentablePath);
         };
-        let (encoding, bytes) =
-            crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
-                .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
-        let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+        let (encoding, bytes) = crate::native_name::host_name_bytes(name, profile)
+            .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
+        let logical = LogicalName::new(encoding, bytes)
             .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
         components.push(logical);
     }
@@ -4783,24 +4879,12 @@ mod demand_admission_tests {
         }
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(16, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if matches!(receipt.value, WatchBatch::Changes { ref changes, .. }
-                if changes.iter().any(|change| matches!(change,
-                    WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected)))
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the native child hint was not delivered"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        changes_until_matching(&watch, |changes| {
+            changes.iter().any(|change| {
+                matches!(change, WatchChange::Modified(path) | WatchChange::MetadataChanged(path)
+                if path == &expected)
+            })
+        })?;
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
@@ -4812,32 +4896,48 @@ mod demand_admission_tests {
         watch: &Mutex<NativeWatch>,
         expected: &NamespacePath,
     ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut seen = Vec::new();
-        loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if let WatchBatch::Changes { changes, .. } = receipt.value {
-                seen.extend(changes);
-            }
-            if seen.iter().any(|change| match change {
-                WatchChange::Renamed { from, to } => from == expected || to == expected,
-                WatchChange::Created(path)
-                | WatchChange::Removed(path)
-                | WatchChange::Modified(path)
-                | WatchChange::MetadataChanged(path)
-                | WatchChange::Arrived(path) => path == expected,
-            }) {
-                return Ok(seen);
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{expected:?} never arrived: {seen:?}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        changes_until_matching(watch, |changes| mentions(changes, expected))
+    }
+
+    #[cfg(windows)]
+    fn changes_until_matching(
+        watch: &Mutex<NativeWatch>,
+        mut ready: impl FnMut(&[WatchChange]) -> bool,
+    ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let mut seen = Vec::new();
+                    loop {
+                        let changed = watch
+                            .lock()
+                            .map_err(|_| NativeWatchError::StatePoisoned)?
+                            .changed_with_native_work(&work);
+                        changed.await?;
+                        let receipt = watch
+                            .lock()
+                            .map_err(|_| NativeWatchError::StatePoisoned)?
+                            .poll(64, WorkBudget::UNBOUNDED, &cancellation)?;
+                        match receipt.value {
+                            WatchBatch::Changes { changes, .. } => seen.extend(changes),
+                            WatchBatch::RescanRequired { reason, .. } => {
+                                return Err(
+                                    format!("native watch lost continuity: {reason:?}").into()
+                                );
+                            }
+                        }
+                        if ready(&seen) {
+                            return Ok::<_, Box<dyn std::error::Error>>(seen);
+                        }
+                    }
+                })
+                .await?
+            })
     }
 
     #[cfg(windows)]

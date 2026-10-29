@@ -4,29 +4,20 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
     file: &File,
     offset: u64,
     length: u64,
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     work: &mut W,
 ) -> Result<Vec<HostDataRange>, DemandError> {
     work.check()?;
     if length == 0 {
         return Ok(Vec::new());
     }
-    if maximum_ranges == 0 {
+    if maximum_ranges == Some(0) {
         return Err(DemandError::InvalidRequest);
     }
     let end = offset
         .checked_add(length)
         .ok_or(crate::WorkError::Overflow)?;
-    #[cfg(windows)]
-    let element = std::mem::size_of::<HostDataRange>();
-    #[cfg(unix)]
     let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(0, work)?;
-    #[cfg(windows)]
-    let maximum = (maximum_ranges as usize)
-        .saturating_add(1)
-        .min(u32::MAX as usize / element);
-    #[cfg(windows)]
-    let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(maximum.min(8), work)?;
     let result = (|| {
         #[cfg(unix)]
         fill_unix_ranges(
@@ -40,7 +31,7 @@ pub(crate) fn allocated_data_ranges<W: SourceDemandReadWork>(
         #[cfg(windows)]
         fill_windows_ranges(
             file,
-            (offset, end, length),
+            (offset, end),
             maximum_ranges,
             &mut ranges,
             &mut allocation,
@@ -64,14 +55,15 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
     output: &mut [u8],
     kind: acyclic_native_runtime::NativeOperationKind,
     work: &mut W,
-) -> Result<usize, DemandError> {
+) -> Result<acyclic_native_runtime::NativeControlCompletion, DemandError> {
     work.with_native_read_meter(|meter| {
         acyclic_native_runtime::device_control_in_place(
             file,
             code,
             input,
             output,
-            Some((meter, kind)),
+            kind,
+            Some(meter),
         )
     })
     .map_err(|error| {
@@ -84,7 +76,7 @@ pub(super) fn source_control<W: SourceDemandReadWork>(
 fn fill_unix_ranges<W: SourceDemandReadWork>(
     file: &File,
     (offset, end): (u64, u64),
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     ranges: &mut Vec<HostDataRange>,
     allocation: &mut W::Allocation,
     work: &mut W,
@@ -117,7 +109,7 @@ fn fill_unix_ranges<W: SourceDemandReadWork>(
 #[cfg(unix)]
 fn fill_unix_ranges_with<W: SourceDemandReadWork>(
     (start, end): (u64, u64),
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     ranges: &mut Vec<HostDataRange>,
     allocation: &mut W::Allocation,
     work: &mut W,
@@ -160,14 +152,10 @@ fn fill_unix_ranges_with<W: SourceDemandReadWork>(
                 None => break,
             },
         };
-        if hole <= data || data < offset || ranges.len() == maximum_ranges as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid or excessive sparse ranges",
-            )
-            .into());
+        if hole <= data || data < offset {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid sparse ranges").into());
         }
-        append_unix_range(
+        append_host_range(
             ranges,
             allocation,
             HostDataRange {
@@ -183,22 +171,22 @@ fn fill_unix_ranges_with<W: SourceDemandReadWork>(
     Ok(())
 }
 
-#[cfg(unix)]
-fn append_unix_range<W: SourceDemandReadWork>(
+fn append_host_range<W: SourceDemandReadWork>(
     ranges: &mut Vec<HostDataRange>,
     allocation: &mut W::Allocation,
     range: HostDataRange,
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     work: &mut W,
 ) -> Result<(), DemandError> {
+    if maximum_ranges.is_some_and(|maximum| ranges.len() >= maximum as usize) {
+        return Err(DemandError::InvalidRequest);
+    }
     let element = std::mem::size_of::<HostDataRange>();
     if ranges.len() == ranges.capacity() {
         let wanted = ranges.len() + 1;
-        let grown = ranges
-            .capacity()
-            .saturating_mul(2)
-            .max(4)
-            .min(maximum_ranges as usize)
+        let grown = ranges.capacity().saturating_mul(2).max(4);
+        let grown = maximum_ranges
+            .map_or(grown, |maximum| grown.min(maximum as usize))
             .max(wanted);
         let available = work.remaining()?.peak_allocation_bytes;
         let capacity = if grown
@@ -232,104 +220,89 @@ fn append_unix_range<W: SourceDemandReadWork>(
 #[cfg(windows)]
 fn fill_windows_ranges<W: SourceDemandReadWork>(
     file: &File,
-    (offset, end, length): (u64, u64, u64),
-    maximum_ranges: u32,
+    (offset, end): (u64, u64),
+    maximum_ranges: Option<u32>,
     ranges: &mut Vec<HostDataRange>,
     allocation: &mut W::Allocation,
     work: &mut W,
 ) -> Result<(), DemandError> {
-    let element = std::mem::size_of::<HostDataRange>();
-
-    let maximum = (maximum_ranges as usize)
-        .saturating_add(1)
-        .min(u32::MAX as usize / element);
+    use acyclic_native_runtime::{NativeControlCompletion, NativeOperationKind};
     use windows::Win32::System::Ioctl::{
         FILE_ALLOCATED_RANGE_BUFFER, FSCTL_QUERY_ALLOCATED_RANGES,
     };
-    let query = FILE_ALLOCATED_RANGE_BUFFER {
-        FileOffset: i64::try_from(offset).map_err(|_| DemandError::InvalidRequest)?,
-        Length: i64::try_from(length).map_err(|_| DemandError::InvalidRequest)?,
-    };
-    // SAFETY: the input is one initialized native range record.
-    let input =
-        unsafe { std::slice::from_raw_parts(std::ptr::from_ref(&query).cast::<u8>(), element) };
-    let mut count = maximum.min(8);
-    let returned = loop {
-        ranges.resize(
-            count,
-            HostDataRange {
-                offset: 0,
-                length: 0,
-            },
-        );
-        // SAFETY: repr(C) HostDataRange has the same two-word layout as FILE_ALLOCATED_RANGE_BUFFER; every integer bit pattern is valid.
-        let output = unsafe {
-            std::slice::from_raw_parts_mut(ranges.as_mut_ptr().cast::<u8>(), count * element)
+    // Physical query pages never impose a limit on the file's extent count.
+    let mut page = [HostDataRange {
+        offset: 0,
+        length: 0,
+    }; 1024];
+    let element = std::mem::size_of::<HostDataRange>();
+    i64::try_from(end).map_err(|_| DemandError::InvalidRequest)?;
+    let mut next_offset = offset;
+    while next_offset < end {
+        work.check()?;
+        let query = FILE_ALLOCATED_RANGE_BUFFER {
+            FileOffset: i64::try_from(next_offset).map_err(|_| DemandError::InvalidRequest)?,
+            Length: i64::try_from(end - next_offset).map_err(|_| DemandError::InvalidRequest)?,
         };
-        let read = source_control(
+        // SAFETY: this input is one initialized native range record.
+        let input =
+            unsafe { std::slice::from_raw_parts(std::ptr::from_ref(&query).cast::<u8>(), element) };
+        // SAFETY: repr(C) HostDataRange matches the two native integer words;
+        // every bit pattern is initialized and remains live through completion.
+        let output = unsafe {
+            std::slice::from_raw_parts_mut(
+                page.as_mut_ptr().cast::<u8>(),
+                std::mem::size_of_val(&page),
+            )
+        };
+        let (returned, more) = match source_control(
             file,
             FSCTL_QUERY_ALLOCATED_RANGES,
             input,
             output,
-            acyclic_native_runtime::NativeOperationKind::Read,
+            NativeOperationKind::Read,
             work,
-        );
-        match read {
-            Ok(returned) => break returned,
-            Err(DemandError::Io(error))
-                if matches!(error.raw_os_error(), Some(122 | 234)) && count < maximum =>
-            {
-                let next_count = count.saturating_mul(2).min(maximum);
-                let (replacement, next) = buffer(next_count, work)?;
-                drop(std::mem::replace(ranges, replacement));
-                work.release(std::mem::replace(allocation, next))?;
-                count = next_count;
-            }
-            Err(error) => return Err(error),
-        }
-    };
-    if returned > count * element
-        || !returned.is_multiple_of(element)
-        || returned / element > maximum_ranges as usize
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid or excessive sparse ranges",
-        )
-        .into());
-    }
-    let mut used = 0;
-    let mut prior_end = offset;
-    for index in 0..returned / element {
-        let range = *ranges.get(index).ok_or(DemandError::InvalidRequest)?;
-        // The native ABI uses signed integers; reject their negative bit patterns.
-        i64::try_from(range.offset).map_err(|_| DemandError::InvalidRequest)?;
-        i64::try_from(range.length).map_err(|_| DemandError::InvalidRequest)?;
-        let start = range.offset.max(offset);
-        let range_end = range
-            .offset
-            .checked_add(range.length)
-            .ok_or(crate::WorkError::Overflow)?
-            .min(end);
-        if start < prior_end {
+        )? {
+            NativeControlCompletion::Complete(bytes) => (bytes, false),
+            NativeControlCompletion::MoreData(bytes) => (bytes, true),
+        };
+        if returned > std::mem::size_of_val(&page) || !returned.is_multiple_of(element) {
             return Err(DemandError::InvalidRequest);
         }
-        work.started_io(WorkCounters {
-            items_examined: 1,
-            bytes_copied: element as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
-        if start < range_end {
-            *ranges.get_mut(used).ok_or(DemandError::InvalidRequest)? = HostDataRange {
-                offset: start,
-                length: range_end - start,
-            };
-            used += 1;
+        let mut prior_end = next_offset;
+        for range in &page[..returned / element] {
+            i64::try_from(range.offset).map_err(|_| DemandError::InvalidRequest)?;
+            i64::try_from(range.length).map_err(|_| DemandError::InvalidRequest)?;
+            let range_end = range
+                .offset
+                .checked_add(range.length)
+                .ok_or(crate::WorkError::Overflow)?
+                .min(end);
+            let start = range.offset.max(next_offset);
+            if start < prior_end || start >= range_end {
+                return Err(DemandError::InvalidRequest);
+            }
+            append_host_range(
+                ranges,
+                allocation,
+                HostDataRange {
+                    offset: start,
+                    length: range_end - start,
+                },
+                maximum_ranges,
+                work,
+            )?;
             prior_end = range_end;
         }
+        if !more {
+            break;
+        }
+        if prior_end <= next_offset {
+            // A malformed partial page must never turn into an infinite loop.
+            return Err(DemandError::InvalidRequest);
+        }
+        next_offset = prior_end;
     }
-    ranges.truncate(used);
-
     Ok(())
 }
 
@@ -354,7 +327,7 @@ mod range_capability_tests {
             }, &cancellation);
             let (mut ranges, mut allocation) = buffer::<HostDataRange,_>(0, &mut work).unwrap();
             let mut calls = 0;
-            fill_unix_ranges_with((start,start+length), 1, &mut ranges, &mut allocation, &mut work,
+            fill_unix_ranges_with((start,start+length), Some(1), &mut ranges, &mut allocation, &mut work,
                 |offset, kind, work| {
                     work.started_io(READ)?;
                     calls += 1;
@@ -386,7 +359,7 @@ mod range_capability_tests {
             }, &cancellation);
             let (mut ranges, mut allocation) = buffer::<HostDataRange,_>(0, &mut work).unwrap();
             let mut calls = 0;
-            fill_unix_ranges_with((start,start+length), 4, &mut ranges, &mut allocation, &mut work,
+            fill_unix_ranges_with((start,start+length), Some(4), &mut ranges, &mut allocation, &mut work,
                 |offset, kind, work| {
                     work.started_io(READ)?;
                     calls += 1;
@@ -406,12 +379,60 @@ mod range_capability_tests {
     }
 
     #[test]
+    fn unlimited_sparse_plan_preserves_every_extent_and_original_funding() {
+        let count = 65_537_u64;
+        let budget = WorkBudget {
+            allocation_operations: 64,
+            peak_allocation_bytes: 4 * 1024 * 1024,
+            backend_read_operations: 2 * count,
+            items_examined: 4 * count,
+            bytes_copied: 4 * 1024 * 1024,
+            ..WorkBudget::UNBOUNDED
+        };
+        for maximum in [None, Some(65_536)] {
+            let stop = crate::CancellationToken::new();
+            let mut work = NativeMaterializationWork::new(budget, &stop)
+                .map_err(|(error, _)| error)
+                .unwrap();
+            let baseline = work.live_allocation_bytes();
+            let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(0, &mut work).unwrap();
+            let result = fill_unix_ranges_with(
+                (0, 2 * count),
+                maximum,
+                &mut ranges,
+                &mut allocation,
+                &mut work,
+                |offset, _, work| {
+                    work.started_io(READ)?;
+                    Ok(offset + 1)
+                },
+            );
+            if maximum.is_some() {
+                assert!(matches!(result, Err(DemandError::InvalidRequest)));
+                assert_eq!(ranges.len(), 65_536);
+            } else {
+                result.unwrap();
+                assert_eq!(ranges.len() as u64, count);
+            }
+            for (index, range) in ranges.iter().enumerate() {
+                assert_eq!(range.offset, 2 * index as u64 + 1);
+                assert_eq!(range.length, 1);
+            }
+            assert_eq!(work.receipt().backend_read_operations, 2 * count);
+            drop(ranges);
+            work.release(allocation).unwrap();
+            assert_eq!(work.live_allocation_bytes(), baseline);
+            work.receipt().verify(budget).unwrap();
+        }
+    }
+
+    #[test]
     fn a_real_source_io_failure_never_becomes_a_dense_range() {
         let mut work = ordinary_work();
         let (mut ranges, mut allocation) = buffer::<HostDataRange, _>(0, &mut work).unwrap();
         let result = fill_unix_ranges_with(
             (0, 16),
-            1,
+            Some(1),
             &mut ranges,
             &mut allocation,
             &mut work,

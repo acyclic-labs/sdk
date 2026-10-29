@@ -1,8 +1,5 @@
-use super::compilation::{
-    MAXIMUM_STATE_MEMBERS, MAXIMUM_STATES, MAXIMUM_TEXT_BYTES, MAXIMUM_TRANSITIONS, MAXIMUM_WORK,
-    spend,
-};
-use super::glob::{Nfa, Symbol};
+use super::compilation::spend;
+use super::glob::{ClosureScratch, Nfa, Symbol};
 use super::{
     Action, Capability, Context, Decision, Denial, InvalidPolicy, Policy, Principal, Resource,
 };
@@ -112,11 +109,6 @@ impl<'a> PreparedPath<'a> {
             .and_then(|length| self.bytes.checked_add(length))
             .ok_or(InvalidPolicy("path length overflow"))?;
         let depth = self.depth + 1;
-        if bytes > self.trie.config.limits.maximum_path_bytes as usize
-            || depth > self.trie.config.limits.maximum_path_depth as usize
-        {
-            return Err(InvalidPolicy("path exceeds volume limits"));
-        }
         let mut state = self.state;
         if self.depth != 0 {
             state = self.trie.step(state, '/')?;
@@ -138,9 +130,7 @@ impl<'a> PreparedPath<'a> {
     /// Unsupported profile/encoding pairs and non-Unicode names fail closed.
     pub fn child_name(self, name: &crate::kernel::LogicalName) -> Result<Self, InvalidPolicy> {
         use crate::kernel::NameEncoding;
-        if name.encoding() != super::names::encoding(self.trie.config)
-            || name.as_bytes().len() > self.trie.config.limits.maximum_component_bytes as usize
-        {
+        if name.encoding() != super::names::encoding(self.trie.config) {
             return Err(InvalidPolicy(
                 "name encoding does not match the access view profile",
             ));
@@ -195,9 +185,9 @@ impl std::fmt::Write for PathWriter<'_> {
 }
 
 // Two-level direct Unicode table: two indexed loads per scalar, no searches.
-// The scalar space and the NFA literal limit bound its storage.
+// The Unicode scalar domain bounds the table independently of policy size.
 struct Alphabet {
-    pages: Vec<[u16; 256]>,
+    pages: Vec<[u32; 256]>,
     page_ids: Option<Box<[u16; 4352]>>,
     symbols: Vec<char>,
 }
@@ -205,7 +195,7 @@ struct Alphabet {
 impl Alphabet {
     fn new(symbols: &[char]) -> Result<Self, InvalidPolicy> {
         let other =
-            u16::try_from(symbols.len()).map_err(|_| InvalidPolicy("alphabet exceeds limit"))?;
+            u32::try_from(symbols.len()).map_err(|_| InvalidPolicy("alphabet exceeds limit"))?;
         let mut result = Self {
             pages: vec![[other; 256]],
             page_ids: Some(Box::new([0; 4352])),
@@ -228,7 +218,7 @@ impl Alphabet {
                     .get_mut(usize::from(*page))
                     .and_then(|p| p.get_mut(code & 255))
                 {
-                    *slot = u16::try_from(symbol)
+                    *slot = u32::try_from(symbol)
                         .map_err(|_| InvalidPolicy("alphabet exceeds limit"))?;
                 }
             }
@@ -242,7 +232,7 @@ impl Alphabet {
             .get(usize::from(*self.page_ids.as_ref()?.get(code >> 8)?))?
             .get(code & 255)
             .copied()
-            .map(usize::from)
+            .and_then(|symbol| usize::try_from(symbol).ok())
     }
 }
 
@@ -300,7 +290,7 @@ impl PathTrie {
     /// Heap bytes retained by the compiled view, excluding its inline header.
     #[must_use]
     pub fn logical_owned_bytes(&self) -> u64 {
-        (self.alphabet.pages.capacity() * size_of::<[u16; 256]>()
+        (self.alphabet.pages.capacity() * size_of::<[u32; 256]>()
             + self
                 .alphabet
                 .page_ids
@@ -392,8 +382,8 @@ impl PathTrie {
 
     /// Compile the same decision reducer used by `decide` into terminal states.
     /// `resource.path` is ignored; every other input is pinned for this view.
-    /// Rejects policies whose glob automaton exceeds bounded state, storage or
-    /// compilation work, including short patterns with exponential state growth.
+    /// Admits the states discovered by subset construction. Explicit work and
+    /// storage policies are available through compile_with_work.
     pub fn compile(
         policy: &Policy,
         principal: &Principal,
@@ -401,7 +391,7 @@ impl PathTrie {
         context: Context,
         capability: &Capability,
     ) -> Result<Self, InvalidPolicy> {
-        let mut work = MAXIMUM_WORK;
+        let mut work = usize::MAX;
         Self::compile_with_work(
             policy,
             principal,
@@ -416,7 +406,7 @@ impl PathTrie {
     /// Compile with caller work and preallocation admission. Storage reservations
     /// cover shared policy compilation and principal binding. They must remain
     /// funded until the returned trie is dropped. Failed work is charged
-    /// through `remaining_work`; the global compilation limits still apply.
+    /// through `remaining_work`; no hidden state or work ceiling applies.
     pub fn compile_with_work(
         policy: &Policy,
         principal: &Principal,
@@ -461,7 +451,7 @@ impl PathTrie {
             .map_err(|_| InvalidPolicy("invalid initial policy"))?;
         let policy = &initial;
         let historical = false;
-        let mut available = (*remaining_work).min(MAXIMUM_WORK);
+        let mut available = *remaining_work;
         let before = available;
         let result = (|| {
             let (bytes, validation_work) = super::compilation::preparation(
@@ -798,12 +788,27 @@ fn alphabet(nfa: &Nfa) -> Result<(Vec<char>, char), InvalidPolicy> {
         .collect();
     alphabet.insert('/');
     // One representative for every character not named literally.
-    let other = (1..=0x10ffff)
+    let other = (0..=0x10ffff)
         .filter_map(char::from_u32)
         .find(|ch| !alphabet.contains(ch))
         .ok_or(InvalidPolicy("exhausted glob alphabet"))?;
     let alphabet: Vec<_> = alphabet.into_iter().collect();
     Ok((alphabet, other))
+}
+
+struct StateAdmission<'a> {
+    reserve: &'a mut dyn FnMut(usize) -> Result<(), InvalidPolicy>,
+    symbols: usize,
+    state_bytes: usize,
+}
+impl StateAdmission<'_> {
+    fn state(&mut self, members: usize) -> Result<(), InvalidPolicy> {
+        (self.reserve)(super::compilation::state_storage(
+            members,
+            self.symbols,
+            self.state_bytes,
+        )?)
+    }
 }
 
 fn determinize(
@@ -814,11 +819,11 @@ fn determinize(
     decide: impl Fn(&[usize]) -> [Outcome; 12],
     rules: usize,
     work: &mut usize,
+    admission: &mut StateAdmission<'_>,
 ) -> Result<Vec<State>, InvalidPolicy> {
-    nfa.close(&mut starts, work)?;
-    let mut members = MAXIMUM_STATE_MEMBERS;
-    spend(&mut members, starts.len())?;
-    let mut transitions_left = MAXIMUM_TRANSITIONS;
+    let mut scratch = ClosureScratch::new(nfa.nodes.len());
+    nfa.start(&mut starts, work, &mut scratch)?;
+    admission.state(starts.len())?;
     let mut ids = BTreeMap::from([(starts.clone(), 0)]);
     let mut subsets = vec![starts];
     let mut states = Vec::new();
@@ -834,17 +839,13 @@ fn determinize(
             .ok_or(InvalidPolicy("invalid glob state"))?
             .clone();
         let decisions = decide(&subset);
-        spend(&mut transitions_left, alphabet.len() + 1)?;
         let mut transitions = Vec::with_capacity(alphabet.len() + 1);
         for ch in alphabet.iter().copied().chain(std::iter::once(other)) {
-            let next = nfa.step(&subset, ch, work)?;
+            let next = nfa.step(&subset, ch, work, &mut scratch)?;
             let id = if let Some(id) = ids.get(&next) {
                 *id
             } else {
-                if subsets.len() == MAXIMUM_STATES {
-                    return Err(InvalidPolicy("glob compilation exceeds DFA state limit"));
-                }
-                spend(&mut members, next.len())?;
+                admission.state(next.len())?;
                 let id = subsets.len();
                 ids.insert(next.clone(), id);
                 subsets.push(next);
@@ -898,9 +899,7 @@ impl<'a> CompiledPatterns<'a> {
         let mut starts = Vec::new();
         let mut rules = BTreeMap::new();
         let mut grants = BTreeMap::new();
-        let mut text_left = MAXIMUM_TEXT_BYTES;
-        spend(&mut text_left, resource.volume.len())?;
-        spend(&mut text_left, principal.id.len())?;
+
         let mut valid_until = capability.expires_at.filter(|expiry| *expiry > context.now);
         for rule in policy.layers.iter().flatten() {
             if let Some(expiry) = rule
@@ -911,7 +910,6 @@ impl<'a> CompiledPatterns<'a> {
                 valid_until = Some(valid_until.map_or(expiry, |old| old.min(expiry)));
             }
             if super::decision::rule_matches(rule, principal, resource, context) {
-                spend(&mut text_left, rule.resource.path.len())?;
                 let key = super::names::fold(&rule.resource.path, resource.config);
                 let (start, end) =
                     nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
@@ -921,7 +919,6 @@ impl<'a> CompiledPatterns<'a> {
         }
         for grant in capability.layers.iter().flatten() {
             if grant.resource.matches_view(resource) {
-                spend(&mut text_left, grant.resource.path.len())?;
                 let key = super::names::fold(&grant.resource.path, resource.config);
                 let (start, end) =
                     nfa.pattern(&key, super::names::folds_unicode(resource.config))?;
@@ -930,15 +927,7 @@ impl<'a> CompiledPatterns<'a> {
             }
         }
         let (symbols, other) = alphabet(&nfa)?;
-        let rule_ids: Vec<_> = rules
-            .keys()
-            .map(|id| {
-                text_left = text_left
-                    .checked_sub(id.len())
-                    .ok_or(InvalidPolicy("compiled rule ids exceed text limit"))?;
-                Ok((*id).to_owned())
-            })
-            .collect::<Result<_, InvalidPolicy>>()?;
+        let rule_ids: Vec<_> = rules.keys().map(|id| (*id).to_owned()).collect();
         let rules = rules
             .into_iter()
             .enumerate()
@@ -974,13 +963,17 @@ impl<'a> CompiledPatterns<'a> {
                 .iter()
                 .flatten()
                 .all(|grant| grant.resource.path == "**");
-        reserve(super::compilation::determinization(
+        reserve(super::compilation::determinization_scratch(
             self.nfa.nodes.len(),
             self.symbols.len(),
-            std::mem::size_of::<State>(),
-            if uniform { 1 } else { MAXIMUM_STATES },
         )?)?;
+        let mut admission = StateAdmission {
+            reserve,
+            symbols: self.symbols.len(),
+            state_bytes: size_of::<State>(),
+        };
         let states = if uniform {
+            admission.state(self.nfa.nodes.len())?;
             // Every active pattern accepts every canonical path, including
             // root. One terminal state replaces subset construction.
             spend(available, self.nfa.nodes.len())?;
@@ -1027,6 +1020,7 @@ impl<'a> CompiledPatterns<'a> {
                     + policy.layers.iter().map(Vec::len).sum::<usize>()
                     + capability.layers.iter().map(Vec::len).sum::<usize>(),
                 available,
+                &mut admission,
             )?
         };
         Ok(CompiledStates {

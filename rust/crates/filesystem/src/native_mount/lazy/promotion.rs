@@ -37,7 +37,7 @@ where
     let cancellation = work.cancellation();
     let carrier = &mut adapter::NativeDemandCarrier::Native(work);
     let operation = crate::OperationId::new();
-    for _ in 0..MAXIMUM_PROMOTION_RETRIES {
+    loop {
         carrier.with_work(|work| mount_items(work, 1))?;
         let mut candidate = authored
             .shared_checkout()
@@ -141,7 +141,6 @@ where
             return Ok(());
         }
     }
-    Err(MountSourceError::Stale)
 }
 
 impl<A, O, D, S> LazyMountSource<A, O, D, S>

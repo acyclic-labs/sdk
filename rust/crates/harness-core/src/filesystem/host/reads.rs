@@ -554,6 +554,29 @@ pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: As
     Ok(bytes)
 }
 
+/// Metadata uses the original caller's remaining read allowance, with no
+/// independent ceiling derived from presumed maximum label or path lengths.
+pub(in crate::filesystem) async fn read_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    generation: &acyclic_fs::Generation<A, O>,
+    path: &str,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_stream::OwnedBytes> {
+    let owned;
+    let io = if let Some(io) = io {
+        io
+    } else {
+        owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+        &owned
+    };
+    read_generation(
+        generation,
+        path,
+        io.remaining()?.source_bytes_read,
+        Some(io),
+    )
+    .await
+}
+
 use crate::executor::stock_boundary;
 
 pub(crate) fn file_publication(
@@ -674,16 +697,8 @@ async fn private_read_view<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 fn validate_private_read_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    let name = path.rsplit('/').next().unwrap_or(path);
     crate::executor::with_history_io(io, |work| {
         crate::conversation::validate_content_path(path, work)
     })?;
-    if name.len() > crate::conversation::MAX_LABEL_BYTES {
-        return Err(stock_boundary(
-            io,
-            crate::wire::ErrorCode::Invalid,
-            "file or volume label is invalid",
-        ));
-    }
     Ok(())
 }

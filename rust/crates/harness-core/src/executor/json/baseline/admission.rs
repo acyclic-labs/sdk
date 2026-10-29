@@ -63,7 +63,10 @@ impl Lexical {
             }
         };
         if item {
-            if self.items >= bounds.maximum_items {
+            if bounds
+                .maximum_items
+                .is_some_and(|maximum| self.items >= maximum)
+            {
                 return Err(boundary("JSON exceeds declared structural bound", code));
             }
             if depth > bounds.maximum_depth {

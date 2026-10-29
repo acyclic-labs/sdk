@@ -27,8 +27,8 @@ use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
-    max_steps: 4,
-    history_turns: 8,
+    max_steps: Some(4),
+    history_turns: Some(8),
 };
 
 /// A memory filesystem host with agent `path`'s private volume.
@@ -79,8 +79,12 @@ fn executors_with_targets(
     let selection = Model::new("test".into(), "text".into(), "1".into())?;
     let mut preset = acyclic_harness_core::preset::Preset::graphcoder();
     preset.tools.clear();
+    preset.max_steps = LIMITS
+        .max_steps
+        .map(|steps| std::num::NonZeroUsize::try_from(usize::try_from(steps)?))
+        .transpose()?;
     let base = acyclic_harness_core::conversation::Limits {
-        model_steps: 1,
+        model_steps: std::num::NonZeroUsize::new(1),
         ..Default::default()
     };
     let bindings = acyclic_harness_core::runtime::Bindings {
@@ -1217,11 +1221,11 @@ impl acyclic_harness_core::conversation::ContentPublisher for Writer {
 }
 
 #[tokio::test]
-async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
+async fn spawn_respects_only_an_explicit_child_limit() -> Result {
     let path = AgentPath::root(&id(9));
     let (_, binding) = private(&path).await?;
     let mut state = AgentState::adopted(path.clone(), &adopted(id(9))).expect("adopts");
-    state.open_children.insert(path.child(&id(10))?);
+    state.open_children.insert(path.child(&id(10))?).await?;
     // Each spawn call in order, under `limit`: which ones the tool refused.
     let refused = |state: AgentState, limit: Option<u32>| {
         let volume = binding.volume.clone();
@@ -1266,17 +1270,6 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
         refused(state.clone(), None).await?,
         (vec![false, false, false], 3)
     );
-    // Without one the agent's hard limit still holds: one below it, `b` fits
-    // and `c` is refused to the model rather than dropped by the step.
-    let mut full = state;
-    for n in 0..MAX_OPEN_CHILDREN - 2 {
-        let mut bytes = [0; 16];
-        bytes[..8].copy_from_slice(&(n as u64 + 1_000).to_le_bytes());
-        full.open_children
-            .insert(path.child(&AgentId::from_bytes(bytes))?);
-    }
-    assert_eq!(full.open_children.len(), MAX_OPEN_CHILDREN - 1);
-    assert_eq!(refused(full, None).await?, (vec![false, false, true], 2));
     Ok(())
 }
 

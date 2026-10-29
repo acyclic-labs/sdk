@@ -578,7 +578,7 @@ impl DiscoverySource for ProjectCatalog<'_> {
         directory: &'a str,
         revision: Option<&'a Self::Revision>,
         cursor: Option<Self::Cursor>,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<Self::Revision, Self::Cursor>>> {
         self.directory.page(directory, revision, cursor, maximum)
     }
@@ -588,7 +588,7 @@ impl SkillReader for ProjectCatalog<'_> {
         &'a mut self,
         relative: &'a str,
         cut: &'a Self::Revision,
-        maximum: u32,
+        maximum: u64,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -644,9 +644,9 @@ impl SkillReader for ProjectCatalog<'_> {
                     &path,
                     Some(acyclic_fs::ByteRange {
                         offset: 0,
-                        length: length.min(u64::from(maximum)),
+                        length: length.min(maximum),
                     }),
-                    u64::from(maximum),
+                    maximum,
                     &mut accounting,
                 )
                 .await?;
@@ -670,7 +670,7 @@ impl DiscoverySource for UserCatalogSource<'_> {
         directory: &'a str,
         revision: Option<&'a SourceReference>,
         cursor: Option<Self::Cursor>,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<DiscoveryPage<SourceReference, Self::Cursor>>> {
         Box::pin(async move {
             let reference = revision.copied().unwrap_or_else(|| self.source.reference());
@@ -726,7 +726,7 @@ impl SkillReader for UserCatalogSource<'_> {
         &'a mut self,
         path: &'a str,
         reference: &'a SourceReference,
-        maximum: u32,
+        maximum: u64,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
             'a,
@@ -767,7 +767,7 @@ impl SkillReader for UserCatalogSource<'_> {
                     &parsed,
                     node.version,
                     0,
-                    length.min(u64::from(maximum)),
+                    length.min(maximum),
                     self.work,
                     cancellation,
                 )
@@ -931,9 +931,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
 fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }

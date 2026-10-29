@@ -69,11 +69,9 @@ pub use client::verify_latest_progress;
 #[cfg(not(target_arch = "wasm32"))]
 mod tests;
 
-/// Finite session admission independent of the number of stored streams.
+/// Data-window backpressure, independent of the number of stored streams.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum active follows on this node connection.
-    pub channels: usize,
     /// Maximum unsent data frames, including lossless attention records.
     pub pending_frames: usize,
     /// Maximum unsent encoded data bytes.
@@ -82,7 +80,6 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            channels: 16_384,
             pending_frames: crate::MAX_ITEMS,
             pending_bytes: crate::MAX_COMMAND_BYTES,
         }
@@ -290,7 +287,6 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
     shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
-        || limits.channels == 0
         || limits.pending_frames == 0
         || limits.pending_bytes < crate::MAX_RECORD_BYTES + 128
     {
@@ -483,15 +479,11 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             {
                 return Err(StreamError::InvalidArgument);
             }
-            if hello.credentials.len() > self.limits.channels {
-                return Err(StreamError::Capacity);
-            }
             for (slot, credential) in hello.credentials.iter().enumerate() {
                 self.authority.register(
                     &mut self.slots,
                     u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
                     credential,
-                    self.limits.channels,
                 )?;
             }
             self.deadline = self.authority.deadline(&mut self.slots);
@@ -529,7 +521,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     &mut self.slots,
                     credential.slot,
                     &credential.credential,
-                    self.limits.channels,
                 )?;
                 self.revalidate(Some(credential.slot))
             }

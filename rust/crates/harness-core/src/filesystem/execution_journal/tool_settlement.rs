@@ -106,11 +106,7 @@ where
             _ => false,
         };
         let actual_digest = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::canonical_json_digest(
-                &observation.event,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                work,
-            )
+            crate::executor::json::canonical_json_digest(&observation.event, None, work)
         })?;
         if record.sequence != sequence - 1
             || observation.version != OBSERVATION_VERSION

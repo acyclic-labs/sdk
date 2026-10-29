@@ -166,7 +166,7 @@ pub(crate) fn contains_content_grant_with_work<T: serde::Serialize + ?Sized>(
     }
     let digest = crate::executor::json::canonical_json_digest(
         value,
-        acyclic_stream::MAX_RECORD_BYTES as u64,
+        Some(acyclic_stream::MAX_RECORD_BYTES as u64),
         work,
     )?;
     if let Some(io) = work.as_deref_mut() {

@@ -12,7 +12,7 @@ pub(super) fn clone_page<F: Format>(
             crate::kernel::file_read::reserve_decoded_items(&mut cloned, values.len(), observe)?;
             for value in values {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let value = F::try_clone_value(value, u32::MAX, observe)?;
+                let value = F::try_clone_value(value, observe)?;
                 observe(ReadAllocationStep::Item)?;
                 let copied = usize_to_u64(size_of::<F::Value>());
                 observe(ReadAllocationStep::BeforeCopy(copied))?;
@@ -26,7 +26,7 @@ pub(super) fn clone_page<F: Format>(
             crate::kernel::file_read::reserve_decoded_items(&mut cloned, children.len(), observe)?;
             for child in children {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first = F::try_clone_key(&child.first, u32::MAX, observe)?;
+                let first = F::try_clone_key(&child.first, observe)?;
                 observe(ReadAllocationStep::Item)?;
                 let copied = usize_to_u64(size_of::<Child<F::Key>>());
                 observe(ReadAllocationStep::BeforeCopy(copied))?;
@@ -167,7 +167,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
 
 pub(crate) fn clone_key<F: Format>(
     key: &F::Key,
-    maximum_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
     cached_local_bytes: u64,
@@ -177,13 +176,12 @@ pub(crate) fn clone_key<F: Format>(
         accounting,
         data_custody,
         cached_local_bytes,
-        |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step)),
+        |steps| F::try_clone_key(key, &mut |step| steps(step)),
     )
 }
 
 pub(crate) fn clone_value<F: Format>(
     value: &F::Value,
-    maximum_bytes: u32,
     accounting: &mut KernelAccounting<'_>,
     data_custody: Option<&crate::kernel::ProofDataCustody>,
     cached_local_bytes: u64,
@@ -193,7 +191,7 @@ pub(crate) fn clone_value<F: Format>(
         accounting,
         data_custody,
         cached_local_bytes,
-        |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step)),
+        |steps| F::try_clone_value(value, &mut |step| steps(step)),
     )
 }
 

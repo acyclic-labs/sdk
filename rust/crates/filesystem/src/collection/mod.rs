@@ -5,16 +5,14 @@
     allow(dead_code, reason = "only a local store collects")
 )]
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::kernel::GenerationRoot;
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::performance::WorkCounters;
-use crate::storage::{ObjectId, ObjectStoreError};
-
-const REMEMBERED_COLLECTIONS: usize = 4;
+use crate::storage::ObjectId;
 
 #[derive(Default)]
 /// Shared collection state for a store and its checkouts.
@@ -39,10 +37,6 @@ pub struct Collection {
 #[derive(Default)]
 struct State {
     sweeps: u64,
-    // Keyed by blob digest: objects of different kinds with equal bytes share one blob.
-    swept: HashMap<crate::Digest, u64>,
-    collections: VecDeque<u64>,
-    forgotten: u64,
     admitted: Option<HashSet<crate::Digest>>,
     /// Retired gates not yet drained. A collection dropped mid-drain leaves
     /// them here, and the next one drains them before it marks.
@@ -159,29 +153,62 @@ impl Collection {
         self.holds.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    pub(crate) async fn admit(
+    pub(crate) async fn admit<S: crate::AsyncObjectStore>(
         &self,
-        closure: &[ObjectId],
-        staged: impl Fn(&ObjectId) -> bool,
-        proven_at: u64,
-    ) -> Result<Unswept, ObjectStoreError> {
+        objects: &S,
+        scope: crate::PublicationScope<'_>,
+        staged: impl Fn(&ObjectId) -> bool + acyclic_stream::ProviderPlatform,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Unswept, crate::FsError> {
+        accounting.check()?;
         let hold = self.unswept().await;
-        let mut state = self.state();
-        let refused = proven_at < state.sweeps
-            && (proven_at < state.forgotten
-                || closure.iter().any(|object| {
-                    !staged(object)
-                        && state
-                            .swept
-                            .get(&object.digest)
-                            .is_some_and(|swept| *swept > proven_at)
-                }));
-        if refused {
-            return Err(ObjectStoreError::Rejected(
-                "a collection removed part of the closure after it was proven".to_owned(),
-            ));
+        self.admit_held(hold, objects, scope, staged, accounting)
+            .await
+    }
+
+    /// Admits while retaining the caller's barrier, before any private spill
+    /// lock. Pins, publication and pressure relief share this lock order.
+    pub(crate) async fn admit_held<S: crate::AsyncObjectStore>(
+        &self,
+        hold: Unswept,
+        objects: &S,
+        scope: crate::PublicationScope<'_>,
+        staged: impl Fn(&ObjectId) -> bool + acyclic_stream::ProviderPlatform,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Unswept, crate::FsError> {
+        accounting.check()?;
+        let crate::PublicationScope {
+            objects: closure,
+            proven_at,
+        } = scope;
+        let stale = proven_at < self.state().sweeps;
+        if stale {
+            // Revalidate authoritative immutable bytes under the same barrier
+            // used by the drain and root-pin handoff. No collection history or
+            // age cutoff is needed; only one object is resident at a time.
+            let cancellation = accounting.cancellation();
+            for object in closure {
+                accounting.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                if staged(object) {
+                    continue;
+                }
+                let (read, retained) = crate::kernel::read_object_with_accounting(
+                    objects,
+                    *object,
+                    u64::MAX,
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                drop(read);
+                crate::kernel::release_standalone_read_bytes(retained, accounting)?;
+            }
         }
-        if let Some(admitted) = &mut state.admitted {
+        accounting.check()?;
+        if let Some(admitted) = &mut self.state().admitted {
             admitted.extend(closure.iter().map(|object| object.digest));
         }
         Ok(hold)
@@ -231,15 +258,6 @@ impl Collection {
         self.state().retiring.clear();
         // Before marking: a proof cached under an earlier epoch is never reused.
         self.epochs.begin();
-        let mut state = self.state();
-        let began = state.sweeps;
-        state.collections.push_back(began);
-        if state.collections.len() > REMEMBERED_COLLECTIONS {
-            state.collections.pop_front();
-            let forgotten = state.collections.front().copied().unwrap_or(began);
-            state.swept.retain(|_, swept| *swept > forgotten);
-            state.forgotten = forgotten;
-        }
         Collecting {
             collection: Arc::clone(self),
             _running: running,
@@ -308,11 +326,8 @@ impl Collecting {
         (guard, sweepable)
     }
 
-    pub(crate) fn sweeping(&self, object: crate::Digest) {
-        let mut state = self.collection.state();
-        state.sweeps += 1;
-        let sweep = state.sweeps;
-        state.swept.insert(object, sweep);
+    pub(crate) fn sweeping(&self) {
+        self.collection.state().sweeps += 1;
     }
 }
 

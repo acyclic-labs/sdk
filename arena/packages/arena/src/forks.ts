@@ -33,9 +33,9 @@ export class AcyclicForker implements Forker {
 }
 
 function git(cwd: string, args: string[], allowFail = false): string {
-  const p = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
+  const p = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   if (p.error) throw p.error;
-  if (p.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} failed: ${(p.stderr || p.stdout).trim().slice(0, 300)}`);
+  if (p.status !== 0 && !allowFail) throw new Error(`git ${args.join(" ")} failed: ${(p.stderr || p.stdout).trim()}`);
   return p.stdout;
 }
 

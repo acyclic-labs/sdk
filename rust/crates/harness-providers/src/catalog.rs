@@ -216,7 +216,7 @@ pub fn default_catalog() -> BTreeMap<String, ProviderSpec> {
                             framing_tokens: 0,
                         },
                     ),
-                    max_event_bytes: 1024 * 1024,
+                    max_event_bytes: None,
                     retry: crate::RetrySpec::DEFAULT,
                     timeouts: crate::TimeoutSpec::DEFAULT,
                 },

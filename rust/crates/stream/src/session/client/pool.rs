@@ -208,16 +208,6 @@ impl Pool {
         self.sync_attempts()?;
         match command {
             Command::Credential { slot, credential } => {
-                let total = self
-                    .credentials
-                    .values()
-                    .map(Bytes::len)
-                    .sum::<usize>()
-                    .checked_sub(self.credentials.get(&slot).map_or(0, Bytes::len))
-                    .and_then(|current| current.checked_add(credential.len()))
-                    .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
-                    .ok_or(StreamError::Capacity)?;
-                let _ = total;
                 let encoded = frame(
                     0,
                     0,
@@ -255,10 +245,6 @@ impl Pool {
                 self.admissions.remove(id)?;
                 if attempt_epoch != self.dial_epoch {
                     let _ = ready.send(Err(StreamError::Unavailable));
-                    return Ok(());
-                }
-                if self.routes.len() >= Limits::default().channels {
-                    let _ = ready.send(Err(StreamError::Capacity));
                     return Ok(());
                 }
                 if records.is_closed() || progress.cancelled() {

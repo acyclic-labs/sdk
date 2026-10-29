@@ -22,8 +22,6 @@ pub enum ServiceStartOutcome {
     Failed(String),
 }
 
-/// The bytes a failure report may carry; a longer reason is truncated.
-const MAXIMUM_FAILURE_BYTES: u64 = 4096;
 const READY_FRAME: u8 = b'\n';
 const FAILURE_FRAME: u8 = b'!';
 
@@ -46,10 +44,7 @@ impl ServiceReadiness {
                     Ok(_) if frame[0] == FAILURE_FRAME => {
                         let mut reason = Vec::new();
                         // The failing service closes the channel as it exits.
-                        match (&mut self.0)
-                            .take(MAXIMUM_FAILURE_BYTES)
-                            .read_to_end(&mut reason)
-                        {
+                        match self.0.read_to_end(&mut reason) {
                             Ok(_) => {}
                             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {}
                             Err(error) => break Err(error),
@@ -81,24 +76,19 @@ pub struct ServiceReadySignal(File);
 impl ServiceReadySignal {
     /// Tells a connected starter that the service answers requests, and closes the channel.
     /// A starter that has already exited does not prevent the service from running.
-    pub fn signal(self) -> io::Result<()> {
+    pub fn signal(mut self) -> io::Result<()> {
         self.send(&[READY_FRAME])
     }
 
     /// Tells a connected starter why the service cannot start, and closes the
     /// channel, so the starter reports the cause instead of waiting for a
     /// service that will never answer.
-    pub fn fail(self, reason: &str) -> io::Result<()> {
-        let mut frame = vec![FAILURE_FRAME];
-        frame.extend(
-            reason
-                .bytes()
-                .take(usize::try_from(MAXIMUM_FAILURE_BYTES).unwrap_or(usize::MAX)),
-        );
-        self.send(&frame)
+    pub fn fail(mut self, reason: &str) -> io::Result<()> {
+        self.send(&[FAILURE_FRAME])?;
+        self.send(reason.as_bytes())
     }
 
-    fn send(mut self, frame: &[u8]) -> io::Result<()> {
+    fn send(&mut self, frame: &[u8]) -> io::Result<()> {
         match io::Write::write_all(&mut self.0, frame) {
             Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
             result => result,

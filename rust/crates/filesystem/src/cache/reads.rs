@@ -169,13 +169,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 .bytes
                 .clone(),
             BatchSlot::ExternalFollower(flight) => {
-                let result = wait_for_flight(
-                    &flight,
-                    work.cancellation,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    work.original,
-                )
-                .await?;
+                let result = wait_for_flight(&flight, work).await?;
                 self.record_coalesced()?;
                 if let Some(bytes) = result {
                     bytes

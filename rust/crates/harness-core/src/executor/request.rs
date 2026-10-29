@@ -13,7 +13,7 @@ impl StockExecution<'_> {
         let phase = &mut DispatchPhase::new();
         self.verify_task_context_binding(input.operation_id)?;
         self.validate_turn_input(journal, input).await?;
-        if step >= input.max_steps {
+        if input.max_steps.is_some_and(|maximum| step >= maximum) {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

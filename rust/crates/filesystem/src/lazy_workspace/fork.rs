@@ -99,8 +99,7 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         drop(original);
-        let mut ready = false;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self
                 .store
                 .load_lazy_workspace(child.id(), ctx)
@@ -111,7 +110,6 @@ impl<
                 return Err(LazyWorkspaceError::Concurrent);
             }
             if origin.phase == LazyForkPhase::Committed {
-                ready = true;
                 break;
             }
             let revision = state.revision;
@@ -128,12 +126,13 @@ impl<
                 .compare_and_swap_lazy_workspace(child.id(), revision, next, ctx)
                 .await?
             {
-                ready = true;
                 break;
             }
-        }
-        if !ready {
-            return Err(LazyWorkspaceError::Concurrent);
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
         ctx.charge(WorkCounters {
             bytes_hashed: LazySnapshotRef::hash_bytes(original_generation),
@@ -175,7 +174,7 @@ impl<
             return Err(LazyWorkspaceError::Concurrent);
         }
         self.validate_snapshot(cut, ctx).await?;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             if let Some(state) = self.store.load_lazy_workspace(id, ctx).await? {
                 let origin = self.fork_origin(&state, id, operation)?;
                 return if origin.snapshot == cut {
@@ -212,8 +211,12 @@ impl<
             if swapped? {
                 return Ok(cut);
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
     fn fork_origin(
         &self,

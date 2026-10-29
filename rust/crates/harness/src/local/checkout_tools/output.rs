@@ -6,8 +6,6 @@ use tokio::sync::{Mutex, Notify, oneshot};
 
 mod writer;
 
-/// The native contract's bound on one host control check.
-pub(super) const CONTROL_TIMEOUT_MS: u32 = 1000;
 const OUTPUT_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Waits, from a native capture worker, for one output publication. It

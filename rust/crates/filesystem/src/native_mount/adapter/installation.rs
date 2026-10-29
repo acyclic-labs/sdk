@@ -100,7 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
                     base,
                     checkout,
                     rename,
-                    MAXIMUM_EXACT_INSTALL_CHANGES,
+                    None,
                     &mut crate::kernel::allocation::KernelAccounting::native(
                         &original,
                         cancellation,

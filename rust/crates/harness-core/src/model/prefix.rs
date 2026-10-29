@@ -48,9 +48,7 @@ impl ModelPrefix {
         hasher.update(b"harness:model-prefix:ordered:v1");
         for message in &request.request().messages {
             hasher.update(&crate::executor::json::canonical_json_digest(
-                message,
-                u64::MAX,
-                &mut None,
+                message, None, &mut None,
             )?);
         }
         Ok(Self {
@@ -221,7 +219,10 @@ impl PreparedModelRequest {
                 .total_messages
                 .checked_add(local_messages)
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
-            if total > limits.context_messages {
+            if limits
+                .context_messages
+                .is_some_and(|maximum| total > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "inherited model context exceeds message limit".into(),
                 ));

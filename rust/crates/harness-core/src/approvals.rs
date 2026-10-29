@@ -177,9 +177,9 @@ impl Default for ApprovalPolicy {
 impl ApprovalPolicy {
     /// Validates and pins the complete configuration, including escalation order.
     pub fn bind(&self) -> Result<ApprovalGate> {
-        if self.approvers.is_empty() || self.approvers.len() > 32 {
+        if self.approvers.is_empty() {
             return Err(Error::Invalid(
-                "approval chain must contain 1..32 approvers".into(),
+                "approval chain must contain an approver".into(),
             ));
         }
         let mut principals = std::collections::BTreeSet::new();
@@ -188,9 +188,6 @@ impl ApprovalPolicy {
                 Approver::Rules {
                     principal, rules, ..
                 } => {
-                    if rules.len() > 1024 {
-                        return Err(Error::Invalid("too many approval rules".into()));
-                    }
                     for rule in rules {
                         for selector in &rule.selectors {
                             selector.validate()?;
@@ -208,7 +205,6 @@ impl ApprovalPolicy {
                 Approver::Parent => "parent",
             };
             if principal.is_empty()
-                || principal.len() > 255
                 || principal.starts_with("parent:")
                 || principal.starts_with("model-start:")
                 || principal == "policy:exhausted"

@@ -21,7 +21,7 @@ for (const input of [source, ...Object.keys(options).filter(name => !["package",
   if (within(input, output) || within(output, input)) throw new Error("mutation output overlaps an input");
 }
 mkdirSync(output);
-const baseline = qualify({ ...values, output: join(output, "baseline") });
+const baseline = await qualify({ ...values, output: join(output, "baseline") });
 const file = "src/Acyclic/Actors/V1/ActorsServiceClient.php";
 const mutations = [
   ["path", "'/acyclic.actors.v1.ActorsService/DeployNamespace'", "'/acyclic.actors.v1.ActorsService/WrongActor'", "client RPC path differs"],
@@ -41,7 +41,7 @@ for (const [name, before, after, diagnostic] of mutations) {
   receipt.output_sha256[file] = sha256(readFileSync(join(packageRoot, file)));
   writeFileSync(receiptPath, JSON.stringify(receipt));
   let failure;
-  try { qualify({ ...values, package: packageRoot, output: qualification }); }
+  try { await qualify({ ...values, package: packageRoot, output: qualification }); }
   catch (error) { failure = error.message; }
   const log = join(qualification, "positive.log");
   if (!failure || existsSync(join(qualification, "qualification.json")) || !existsSync(log) || !readFileSync(log, "utf8").includes(diagnostic)) throw new Error(`mutation did not fail as intended: ${name}: ${failure}`);

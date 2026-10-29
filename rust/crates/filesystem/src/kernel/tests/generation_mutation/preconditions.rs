@@ -139,28 +139,6 @@ async fn semantic_capabilities_and_create_identity_reject_before_backend_work()
     ));
     assert_eq!(*sparse_failure.work, WorkCounters::default());
 
-    let mut one_path = config();
-    one_path.limits.maximum_paths_per_batch = 1;
-    let path_failure = apply_generation_mutations(
-        &store,
-        &fixture.generation,
-        vec![Mutation::Rename {
-            source: path(&["a"])?,
-            destination: path(&["renamed"])?,
-            replace: false,
-        }],
-        one_path,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("excessive endpoint count unexpectedly succeeded")?;
-    assert!(matches!(
-        path_failure.error,
-        GenerationMutationError::TooManyPaths
-    ));
-    assert_eq!(*path_failure.work, WorkCounters::default());
     Ok(())
 }
 

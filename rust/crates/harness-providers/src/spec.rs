@@ -78,13 +78,16 @@ pub struct ProviderSpec {
     /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
-    /// Maximum bytes in one SSE event and aggregate retained protocol state.
-    pub max_event_bytes: usize,
+    /// Optional caller policy for one SSE event and aggregate retained protocol state.
+    /// Absent means unbounded; native work still uses its original caller budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub max_event_bytes: Option<usize>,
     /// Bounded redelivery of a request the endpoint refused before generating anything.
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub retry: RetrySpec,
-    /// Deadlines bounding every exchange with the endpoint.
+    /// Optional caller deadlines for exchanges with the endpoint.
     #[serde(default, skip_serializing_if = "TimeoutSpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub timeouts: TimeoutSpec,
@@ -99,24 +102,27 @@ pub struct ProviderSpec {
 pub struct TimeoutSpec {
     /// Longest interval between consuming nonempty body chunks, measured on the monotonic
     /// clock before each read. An expired deadline takes precedence over ready bytes or EOF.
-    pub idle_ms: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub idle_ms: Option<u64>,
     /// Longest exchange, from the send to the end of the body.
-    pub total_ms: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub total_ms: Option<u64>,
 }
 
 impl TimeoutSpec {
-    /// Five minutes of silence, as long as a reasoning model may think without a byte, and one
-    /// hour per exchange.
+    /// No automatic idle or total deadline.
     pub const DEFAULT: Self = Self {
-        idle_ms: 300_000,
-        total_ms: 3_600_000,
+        idle_ms: None,
+        total_ms: None,
     };
     fn is_default(&self) -> bool {
         *self == Self::DEFAULT
     }
     /// Rejects a zero deadline, which would fail every pending exchange.
     pub(crate) fn validate(self) -> acyclic_harness_core::Result<()> {
-        if self.idle_ms == 0 || self.total_ms == 0 {
+        if self.idle_ms == Some(0) || self.total_ms == Some(0) {
             return Err(crate::invalid("provider timeouts must be positive"));
         }
         Ok(())

@@ -20,8 +20,6 @@ use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ReplayLimit};
 use thiserror::Error;
 
-const MAX_EVENT_BYTES: u64 = 4096;
-
 /// Exact next position in one authority hash chain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AccountingCursor {

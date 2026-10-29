@@ -415,7 +415,7 @@ impl TaskContext {
             .observe_staged_once(
                 operation_id,
                 replacement,
-                scope.limits.file_bytes,
+                Some(scope.limits.file_bytes),
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
                     io,

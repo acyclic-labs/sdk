@@ -88,22 +88,29 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
     assert_eq!(PositiveU64::try_from(0), Err(invalid));
 
     let wire = wire::ActorLimits {
-        handler_timeout_millis: 1,
-        memory_bytes: u64::MAX,
-        checkpoint_bytes: 4096,
+        handler_timeout_millis: Some(1),
+        memory_bytes: Some(u64::MAX),
+        checkpoint_bytes: Some(4096),
     };
     let limits = ActorLimits::try_from(wire.clone()).expect("positive wire limits");
-    assert_eq!(limits.handler_timeout_millis(), 1);
-    assert_eq!(limits.memory_bytes(), u64::MAX);
-    assert_eq!(limits.checkpoint_bytes(), 4096);
+    assert_eq!(limits.handler_timeout_millis(), Some(1));
+    assert_eq!(limits.memory_bytes(), Some(u64::MAX));
+    assert_eq!(limits.checkpoint_bytes(), Some(4096));
     assert_eq!(wire::ActorLimits::from(limits), wire);
 
     let invalid_wire = wire::ActorLimits {
-        handler_timeout_millis: 0,
-        memory_bytes: 1,
-        checkpoint_bytes: 1,
+        handler_timeout_millis: Some(0),
+        memory_bytes: Some(1),
+        checkpoint_bytes: Some(1),
     };
     assert_eq!(ActorLimits::try_from(invalid_wire), Err(invalid));
+    let unbounded = wire::ActorLimits {
+        handler_timeout_millis: None,
+        memory_bytes: None,
+        checkpoint_bytes: None,
+    };
+    let limits = ActorLimits::try_from(unbounded.clone()).expect("absent resource policy");
+    assert_eq!(wire::ActorLimits::from(limits), unbounded);
 }
 
 #[test]
@@ -294,9 +301,9 @@ fn wire_ingress_rechecks_request_admission_predicates() {
 
         bindings: vec![binding.clone()],
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1,
-            memory_bytes: 2,
-            checkpoint_bytes: 3,
+            handler_timeout_millis: Some(1),
+            memory_bytes: Some(2),
+            checkpoint_bytes: Some(3),
         }),
         subscriptions: vec![subscription.clone()],
         idempotency_key: "create-1".into(),
@@ -327,24 +334,6 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
     );
 
-    let mut over_limit = create;
-    over_limit
-        .bindings
-        .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
-            state_transaction: false,
-            guest_admission: None,
-            target_account: Vec::new(),
-            actor_namespace: None,
-            worker_service: None,
-            name: format!("binding-{index}"),
-            capability: "read".into(),
-            resource: "bucket/a".into(),
-        }));
-    assert_eq!(
-        DeploymentRequest::try_from(over_limit),
-        Err(DomainError::Contract(crate::ContractError::LimitExceeded))
-    );
-
     let update = wire::UpdateNamespaceRequest {
         entry_source: None,
         secrets: Vec::new(),
@@ -354,9 +343,9 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         code_sha256: vec![1; 32],
         bindings: vec![binding.clone()],
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1,
-            memory_bytes: 2,
-            checkpoint_bytes: 3,
+            handler_timeout_millis: Some(1),
+            memory_bytes: Some(2),
+            checkpoint_bytes: Some(3),
         }),
         expected_configuration_revision: 1,
         idempotency_key: "update-1".into(),

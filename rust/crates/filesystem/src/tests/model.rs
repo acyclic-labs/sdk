@@ -43,23 +43,6 @@ fn default_limits_are_valid() {
         invalid.validate(),
         Err(VolumeConfigError::InsufficientPageFanout)
     );
-    invalid = config;
-    invalid.limits.maximum_component_bytes = invalid.limits.maximum_path_bytes + 1;
-    assert_eq!(
-        invalid.validate(),
-        Err(VolumeConfigError::ComponentExceedsPath)
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_component_limit_matches_host_encoding() {
-    let native = VolumeConfig::native(Lifecycle::Durable);
-    assert_eq!(native.validate(), Ok(native));
-    #[cfg(windows)]
-    assert_eq!(native.limits.maximum_component_bytes, 510);
-    #[cfg(not(windows))]
-    assert_eq!(native.limits.maximum_component_bytes, 255);
 }
 
 /// Pins the exact public strings (host bindings and TypeScript depend on
@@ -92,13 +75,13 @@ fn public_names_are_pinned_and_round_trip() {
             => "directory-successor sequential-range metadata-successor consumer-hint";
         ResidencyRejection: [
             WrongVolume, StaleGeneration, InvalidRequest, DuplicateObject, DuplicateOperation,
-            OperationCapacity, ByteCapacity, CostBudget, LowUsefulness
-        ] => "wrong-volume stale-generation invalid-request duplicate-object duplicate-operation operation-capacity byte-capacity cost-budget low-usefulness";
+            CostBudget, LowUsefulness
+        ] => "wrong-volume stale-generation invalid-request duplicate-object duplicate-operation cost-budget low-usefulness";
         StorageTier: [ProcessMemory, NodeLocal, SharedCache, DurableOrigin]
             => "process-memory node-local shared-cache durable-origin";
         PromotionRejection: [
-            WrongVolume, StaleGeneration, InvalidRequest, InputCapacity, MissingSource,
-            DuplicateObject, DuplicateOperation, ActiveCapacity, NoDestination, LowUsefulness
-        ] => "wrong-volume stale-generation invalid-request input-capacity missing-source duplicate-object duplicate-operation active-capacity no-destination low-usefulness";
+            WrongVolume, StaleGeneration, InvalidRequest, MissingSource,
+            DuplicateObject, DuplicateOperation, NoDestination, LowUsefulness
+        ] => "wrong-volume stale-generation invalid-request missing-source duplicate-object duplicate-operation no-destination low-usefulness";
     }
 }

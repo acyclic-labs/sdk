@@ -30,8 +30,6 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::sync::{OnceLock, Weak};
 
-/// Records a watch may hold undelivered before it reports lost changes.
-pub(super) const INBOX_BYTES: usize = READ_BUFFER_BYTES;
 /// Threads delivering inbox records to watch sinks.
 pub(super) const SERVICE_THREADS: usize = 2;
 /// Records that concern a directory itself rather than one named child.
@@ -75,6 +73,7 @@ struct Routes {
 pub(super) struct Inbox {
     bytes: VecDeque<u8>,
     overflowed: bool,
+    failure: Option<DemandError>,
     scheduled: bool,
 }
 
@@ -560,17 +559,14 @@ impl Hub {
 /// Watches that received records, and whether each needs a service pass.
 type Ready = Vec<(Arc<Shared>, bool)>;
 
-/// Appends one record; a full inbox records loss instead.
+/// Appends one record using the watch's original allocation owner.
 fn deliver(watch: Arc<Shared>, record: &[u8], ready: &mut Ready) {
     let due = {
         let mut inbox = watch.inbox.lock().unwrap_or_else(PoisonError::into_inner);
-        if !inbox.overflowed {
-            if inbox.bytes.len() + record.len() > INBOX_BYTES
-                || inbox.bytes.try_reserve(record.len()).is_err()
-            {
-                inbox.overflowed = true;
-            } else {
-                inbox.bytes.extend(record);
+        if !inbox.overflowed && inbox.failure.is_none() {
+            let mut work = watch.delivery.callback_work();
+            if let Err(error) = inbox.append(record, &watch, &mut work) {
+                inbox.failure = Some(error);
             }
         }
         !std::mem::replace(&mut inbox.scheduled, true)
@@ -588,10 +584,88 @@ fn deliver_overflow(watch: Arc<Shared>, ready: &mut Ready) {
 }
 
 impl Inbox {
+    fn append<W: SourceDemandReadWork>(
+        &mut self,
+        record: &[u8],
+        watch: &Shared,
+        work: &mut W,
+    ) -> Result<(), DemandError> {
+        work.admit(copied(record.len() as u64))?;
+        let needed = self
+            .bytes
+            .len()
+            .checked_add(record.len())
+            .ok_or(WorkError::Overflow)?;
+        let old = self.bytes.capacity();
+        if needed > old {
+            let capacity = old.checked_mul(2).ok_or(WorkError::Overflow)?.max(needed);
+            watch
+                .ownership
+                .claim_retained(capacity as u64, WorkCounters::UNCHARGED, work)?;
+            let mut grown = VecDeque::new();
+            if let Err(error) = grown.try_reserve_exact(capacity) {
+                watch.ownership.discard_retained(capacity as u64, work)?;
+                return Err(DemandError::Allocation(error));
+            }
+            let actual = grown.capacity();
+            // Reconcile allocator rounding before exposing or copying payload.
+            if actual > capacity {
+                if let Err(error) = watch.ownership.claim_retained(
+                    (actual - capacity) as u64,
+                    WorkCounters::UNCHARGED,
+                    work,
+                ) {
+                    drop(grown);
+                    watch.ownership.discard_retained(capacity as u64, work)?;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = work.started_io(copied(self.bytes.len() as u64)) {
+                drop(grown);
+                watch.ownership.discard_retained(actual as u64, work)?;
+                return Err(error);
+            }
+            if watch
+                .retained_variable_bytes
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |bytes| {
+                    bytes.checked_add((actual - old) as u64)
+                })
+                .is_err()
+            {
+                drop(grown);
+                watch.ownership.discard_retained(actual as u64, work)?;
+                return Err(WorkError::Overflow.into());
+            }
+            grown.extend(self.bytes.drain(..));
+            self.bytes = grown;
+            watch.ownership.retire(old as u64)?;
+            if !watch.ownership.has_native_custody() {
+                work.release(actual as u64)?;
+            }
+        }
+        work.started_io(copied(record.len() as u64))?;
+        self.bytes.extend(record);
+        Ok(())
+    }
+
     /// Moves whole records, at most `maximum` bytes, into `buffer`. An inbox
     /// that lost records yields one queue-overflow record once drained.
-    pub(super) fn take(&mut self, buffer: &mut Vec<u8>, maximum: usize) -> io::Result<usize> {
+    pub(super) fn take<W: SourceDemandReadWork>(
+        &mut self,
+        buffer: &mut Vec<u8>,
+        maximum: usize,
+        watch: &Shared,
+        work: &mut W,
+    ) -> Result<usize, DemandError> {
         buffer.clear();
+        if let Some(error) = self.failure.take() {
+            return Err(error);
+        }
+        if !self.bytes.is_empty() || self.overflowed {
+            buffer
+                .try_reserve_exact(maximum)
+                .map_err(DemandError::Allocation)?;
+        }
         while self.bytes.len() >= EVENT_HEADER_BYTES {
             let mut header = [0_u8; EVENT_HEADER_BYTES];
             for (target, byte) in header.iter_mut().zip(self.bytes.iter()) {
@@ -603,24 +677,27 @@ impl Inbox {
             if buffer.len() + length > maximum {
                 if buffer.is_empty() {
                     // inotify reports a buffer too small for the next record.
-                    return Err(io::Error::from_raw_os_error(libc::EINVAL));
+                    return Err(io::Error::from_raw_os_error(libc::EINVAL).into());
                 }
                 break;
             }
-            buffer
-                .try_reserve(length)
-                .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+            work.started_io(copied(length as u64))?;
             buffer.extend(self.bytes.drain(..length));
         }
         if self.bytes.is_empty() {
+            let bytes = self.bytes.capacity() as u64;
             self.bytes = VecDeque::new();
+            watch
+                .retained_variable_bytes
+                .fetch_sub(bytes, Ordering::AcqRel);
+            watch.ownership.retire(bytes)?;
             if self.overflowed && buffer.len() + EVENT_HEADER_BYTES <= maximum {
                 self.overflowed = false;
                 buffer.extend_from_slice(&overflow_record());
             }
         }
         if buffer.is_empty() {
-            return Err(io::Error::from(io::ErrorKind::WouldBlock));
+            return Err(io::Error::from(io::ErrorKind::WouldBlock).into());
         }
         Ok(buffer.len())
     }
@@ -629,6 +706,11 @@ impl Inbox {
     #[cfg(test)]
     pub(super) fn pending(&self) -> (usize, bool) {
         (self.bytes.len(), self.overflowed)
+    }
+
+    #[cfg(test)]
+    pub(super) fn failure(&self) -> Option<&DemandError> {
+        self.failure.as_ref()
     }
 
     /// Whether a service pass is scheduled and has not yet started.
@@ -645,7 +727,8 @@ impl Inbox {
     /// Marks the inbox scheduled; returns whether it holds records and was not
     /// already scheduled.
     pub(super) fn reschedule(&mut self) -> bool {
-        let due = !self.scheduled && (!self.bytes.is_empty() || self.overflowed);
+        let due = !self.scheduled
+            && (!self.bytes.is_empty() || self.overflowed || self.failure.is_some());
         self.scheduled |= due;
         due
     }

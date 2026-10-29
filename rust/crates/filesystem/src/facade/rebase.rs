@@ -34,7 +34,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_changes,
             maximum_conflicts,
         } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_generations == Some(0)
+            || maximum_changes == Some(0)
+            || maximum_conflicts == Some(0)
+        {
             return Err(WorkspaceError::JoinLimit);
         }
         let cancellation = CancellationToken::new();
@@ -198,10 +201,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     /// Reclassifies exact dependencies under the supplied work limits.
     pub async fn rebase_head<W: FsWork>(
         &mut self,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::OwnedOutput<RebaseDecision> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut accounting = budget.accounting(cancellation);
         let result = async {
             accounting.check()?;
@@ -217,7 +222,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
 
     pub(super) async fn rebase_head_with_accounting(
         &mut self,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -227,6 +232,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         accounting.check()?;
         if self.prepared_merge_parent.is_some() {
             return Err(FsError::PreparedMergePending);
@@ -243,7 +250,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             .await?;
         // The captured proof snapshot shares its map and owned names.
         let dependencies = self.dependencies.proof().dependencies.clone();
-        if maximum_conflicts == 0 && candidate_object != self.root.base {
+        if maximum_conflicts == Some(0) && candidate_object != self.root.base {
             return Err(FsError::Rebase(RebaseError::ZeroConflictLimit));
         }
         let certificate = if candidate_object == self.root.base {
@@ -309,10 +316,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     async fn prepare_rebase_adoption(
         &mut self,
         classified: ClassifiedRebase<'_>,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<Decided, FsError> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let ClassifiedRebase {
             object,
             head,
@@ -432,7 +441,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     pub(super) async fn prepare_rebased_head(
         &self,
         candidate_object: ObjectId,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         certificate: Option<&super::rebase_footprint::DisjointChanges>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -443,6 +452,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
         let (future, _) = crate::heap_future::in_heap_admitted(
             &mut frame,
@@ -467,7 +478,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     async fn prepare_rebased_head_inner(
         &self,
         candidate_object: ObjectId,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         certificate: Option<&super::rebase_footprint::DisjointChanges>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -478,6 +489,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let (candidate_root, allocation) = crate::kernel::read_generation_root_with_accounting(
             &self.volume.fs.inner.objects,
             candidate_object,
@@ -566,7 +579,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &self,
         candidate_object: ObjectId,
         dependencies: &'d CheckoutDependencies,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -577,6 +590,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut frame = crate::heap_future::AdmittedFrame::new(accounting);
         let (future, _) = crate::heap_future::in_heap_admitted(
             &mut frame,
@@ -602,7 +617,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &self,
         candidate_object: ObjectId,
         dependencies: &'d CheckoutDependencies,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -613,6 +628,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         ),
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
             &self.volume.fs.inner.objects,
             probe_limits(self.volume.config),
@@ -658,7 +675,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &self,
         candidate_object: ObjectId,
         candidate_root: &GenerationRoot,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
@@ -668,6 +685,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         )>,
         FsError,
     > {
+        let maximum_conflicts = maximum_conflicts.into();
+
         use crate::kernel::{clone_generation_root_with_accounting, retire_allocation};
         if self.root.file_table == self.base_root.file_table {
             return clone_generation_root_with_accounting(candidate_root, accounting).map(Some);
@@ -721,7 +740,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 theirs_generation: checkpoint,
                 theirs: theirs.0,
                 retain_theirs_parent: false,
-                maximum_changes: u32::MAX,
+                maximum_changes: None,
                 maximum_conflicts,
                 resolutions: BTreeMap::new(),
             },
@@ -767,9 +786,9 @@ pub(super) fn probe_limits(config: VolumeConfig) -> ProbeLimits {
     ProbeLimits {
         decode: DecodeLimits::for_volume(config),
         maximum_cached_generations: 2,
-        maximum_cached_records: config.limits.maximum_checkout_dependencies,
-        maximum_extent_spans: config.limits.maximum_directory_page_entries,
-        maximum_content_payload_bytes: config.limits.maximum_read_bytes,
+        maximum_cached_records: ProbeLimits::default().maximum_cached_records,
+        maximum_extent_spans: None,
+        maximum_content_payload_bytes: None,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }
 }

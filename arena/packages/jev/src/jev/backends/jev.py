@@ -34,7 +34,7 @@ Post = Callable[[str, dict, dict], dict]
 def _default_post(url: str, headers: dict, body: dict) -> dict:
     req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=120) as r:
+        with urllib.request.urlopen(req) as r:
             return json.loads(r.read())
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"{url} -> {e.code}: {e.read().decode(errors='replace')[:600]}") from None

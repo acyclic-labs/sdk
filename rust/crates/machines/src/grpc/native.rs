@@ -264,7 +264,7 @@ impl transport::Endpoint for NativeEndpoint {
     }
     fn deadline(
         &self,
-        timeout: Duration,
+        timeout: Option<Duration>,
         expiry: Option<u64>,
     ) -> Result<Self::Deadline, ProviderError> {
         Self::Deadline::new(timeout, expiry)

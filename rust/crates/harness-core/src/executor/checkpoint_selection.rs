@@ -70,7 +70,7 @@ pub async fn canonical_checkpoint_for_operation(
             step: 0,
             include_started: false,
             maximum_step_records: ExecutionRecordQuery::step_bound(limits),
-            maximum: 1,
+            maximum: Some(1),
             select: &|event| matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. }),
         },
         io,

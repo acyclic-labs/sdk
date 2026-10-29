@@ -10,7 +10,6 @@ use crate::kernel::{
 use crate::kernel::{KernelAccounting, KernelOwnedAllocation, Owned};
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
-use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,

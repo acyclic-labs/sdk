@@ -50,19 +50,11 @@ pub(in crate::bindings) enum Unicode {
     reason = "field names match the TypeScript volume-limit keys"
 )]
 pub struct BrowserVolumeLimits {
-    pub(in crate::bindings) maximum_path_bytes: u32,
-    pub(in crate::bindings) maximum_component_bytes: u32,
-    pub(in crate::bindings) maximum_path_depth: u16,
     pub(in crate::bindings) maximum_object_bytes: u64,
     pub(in crate::bindings) maximum_mutations_per_batch: u32,
     pub(in crate::bindings) maximum_paths_per_batch: u32,
-    pub(in crate::bindings) maximum_checkout_dependencies: u32,
     pub(in crate::bindings) maximum_directory_page_entries: u32,
     pub(in crate::bindings) maximum_page_height: u16,
-    pub(in crate::bindings) maximum_read_bytes: u64,
-    pub(in crate::bindings) maximum_files_per_generation: u64,
-    pub(in crate::bindings) maximum_objects_per_generation: u64,
-    pub(in crate::bindings) maximum_generation_bytes: u64,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -124,19 +116,11 @@ pub(in crate::bindings) fn browser_volume_config(
         hard_links: options.hard_links,
         sparse_files: options.sparse_files,
         limits: VolumeLimits {
-            maximum_path_bytes: limits.maximum_path_bytes,
-            maximum_component_bytes: limits.maximum_component_bytes,
-            maximum_path_depth: limits.maximum_path_depth,
             maximum_object_bytes: limits.maximum_object_bytes,
             maximum_mutations_per_batch: limits.maximum_mutations_per_batch,
             maximum_paths_per_batch: limits.maximum_paths_per_batch,
-            maximum_checkout_dependencies: limits.maximum_checkout_dependencies,
             maximum_directory_page_entries: limits.maximum_directory_page_entries,
             maximum_page_height: limits.maximum_page_height,
-            maximum_read_bytes: limits.maximum_read_bytes,
-            maximum_files_per_generation: limits.maximum_files_per_generation,
-            maximum_objects_per_generation: limits.maximum_objects_per_generation,
-            maximum_generation_bytes: limits.maximum_generation_bytes,
         },
     }
     .validate()

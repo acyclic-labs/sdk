@@ -21,9 +21,7 @@ where
             let (access, now) = access::require_list(&view, &path, &self.runtime.clock)?;
             self.disclose(&view, work, async {
                 let cursor = cursor
-                    .map(|bytes| {
-                        native_name(bytes, self.config.profile, self.config.limits, &mut inputs)
-                    })
+                    .map(|bytes| native_name(bytes, self.config.profile, &mut inputs))
                     .transpose()?;
                 let observation = self
                     .checkout
