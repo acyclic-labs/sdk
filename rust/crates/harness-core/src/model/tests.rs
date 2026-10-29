@@ -411,10 +411,11 @@ fn projection_envelopes_enforce_the_render_bound() -> Result<()> {
             }],
         },
     ] {
+        content.validate_limits(Limits::default(), &mut None)?;
         let exact = crate::contract::canonical_json_bytes(&content)?.len() as u64;
         content.validate_limits(
             Limits {
-                render_bytes: exact,
+                render_bytes: Some(exact),
                 ..Limits::default()
             },
             &mut None,
@@ -423,7 +424,7 @@ fn projection_envelopes_enforce_the_render_bound() -> Result<()> {
             content
                 .validate_limits(
                     Limits {
-                        render_bytes: exact - 1,
+                        render_bytes: Some(exact - 1),
                         ..Limits::default()
                     },
                     &mut None
@@ -496,7 +497,7 @@ fn continuation_metadata_is_bounded_and_bound_to_the_prepared_request() -> Resul
         PreparedModelRequest::prepare(
             input.clone(),
             Limits {
-                render_bytes: 16,
+                render_bytes: Some(16),
                 ..Limits::default()
             },
             None

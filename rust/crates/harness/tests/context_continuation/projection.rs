@@ -213,7 +213,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let limits = Limits {
         file_bytes: 262_144,
-        render_bytes: 262_144,
+        render_bytes: Some(262_144),
         context_messages: std::num::NonZeroUsize::new(32),
         attachments: std::num::NonZeroUsize::new(32),
         path_bytes: std::num::NonZeroUsize::new(4_096),

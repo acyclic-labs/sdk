@@ -726,7 +726,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
         );
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(message_limit),
-            render_bytes,
+            render_bytes: Some(render_bytes),
             ..Limits::default()
         };
         // Bind the manifest before installing the inherited prefix, as public
@@ -823,10 +823,14 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
 }
 
 #[tokio::test]
-async fn optional_count_policies_preserve_unbounded_execution_and_finite_authority() -> Result<()> {
+async fn optional_policies_preserve_unbounded_execution_and_finite_authority() -> Result<()> {
     let limits = Limits::default();
     let scope = RuntimeScope::new(Capabilities::default(), limits)?;
     for finite in [
+        Limits {
+            render_bytes: Some(1),
+            ..limits
+        },
         Limits {
             model_steps: std::num::NonZeroUsize::new(1),
             ..limits

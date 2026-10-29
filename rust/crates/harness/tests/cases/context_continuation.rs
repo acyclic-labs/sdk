@@ -201,7 +201,7 @@ async fn fixture() -> Result<Fixture> {
         content.clone(),
         Limits {
             file_bytes: 65_536,
-            render_bytes: 65_536,
+            render_bytes: Some(65_536),
             context_messages: std::num::NonZeroUsize::new(32),
             attachments: std::num::NonZeroUsize::new(32),
             path_bytes: std::num::NonZeroUsize::new(4_096),

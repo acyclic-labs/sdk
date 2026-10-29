@@ -153,7 +153,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let fixture = Fixture::new().await?;
     let manifest = seed(&fixture).await?;
     let limits = Limits {
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         file_bytes: 32_768,
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
@@ -272,7 +272,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
     manifest.selected_skills = vec!["hidden".into(), "inspect".into()];
     manifest.tools.clear();
     let limits = Limits {
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         file_bytes: 32_768,
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
@@ -373,7 +373,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
         &ToolRegistry::default(),
     )?;
     let limits = Limits {
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         file_bytes: 32_768,
         ..Default::default()
     };
@@ -428,7 +428,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
         &tools()?,
     )?;
     let limits = Limits {
-        render_bytes: 32_768,
+        render_bytes: Some(32_768),
         file_bytes: 32_768,
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
@@ -451,7 +451,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
     );
     for bound in [
         Limits {
-            render_bytes: 1,
+            render_bytes: Some(1),
             ..limits
         },
         Limits {
@@ -521,7 +521,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             reader.as_ref(),
             tools()?,
             Limits {
-                render_bytes: 1,
+                render_bytes: Some(1),
                 ..limits
             }
         )

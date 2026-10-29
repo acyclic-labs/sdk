@@ -105,7 +105,7 @@ async fn payload_bounds_corruption_and_missing_writer_fail_closed() -> Result<()
             ..payload_limits()
         },
         Limits {
-            render_bytes: 128,
+            render_bytes: Some(128),
             ..payload_limits()
         },
     ] {
