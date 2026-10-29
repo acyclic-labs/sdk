@@ -54,47 +54,166 @@ fn credential_failure_preserves_admitted_recovery_keys() {
 }
 
 #[tokio::test]
-async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
-    let provider = GrpcProvider::grpc_with_auth(
-        TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
-        BearerAuth::default(),
-    );
-    let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")
-        .unwrap_or_else(|_| unreachable!());
-    let child =
-        MachineId::parse("00000000-0000-0000-0000-000000000002").unwrap_or_else(|_| unreachable!());
-    let recovered = |children| wire::RecoveredAdmission {
-        operation: Some(wire::OperationId {
-            value: operation.as_bytes().to_vec(),
-        }),
-        result: Some(wire::recovered_admission::Result::Fork(
-            wire::ForkAdmission {
-                checkpoint: Some(encode_checkpoint(
-                    CheckpointId::parse("00000000-0000-0000-0000-000000000003")
-                        .unwrap_or_else(|_| unreachable!()),
-                )),
-                children,
-                operation: Some(wire::OperationId {
-                    value: operation.as_bytes().to_vec(),
+async fn snapshot_recovery_uses_retained_results_without_resource_reads()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
+    let checkpoint = CheckpointId::parse("00000000-0000-0000-0000-000000000051")?;
+    let child = MachineId::parse("00000000-0000-0000-0000-000000000052")?;
+    for kind in 0..3 {
+        let (mut service, script, source) = scripted_operation_service(Vec::new(), Vec::new());
+        let key = service.expected_key;
+        let operation = service.recovered.operation.clone();
+        let contract = codecs::wire_contract(&[wire::Capability::LiveFork]);
+        let machine = wire::MachineState {
+            machine: Some(encode_machine(child)),
+            status: wire::MachineStatus::Running as i32,
+            contract: Some(contract.clone()),
+            endpoints: Vec::new(),
+            last_checkpoint: None,
+            created_at_unix_ms: 7,
+            changed_at_unix_ms: 7,
+        };
+        let (admission, result, expected) = match kind {
+            0 => {
+                let state = wire::CheckpointState {
+                    checkpoint: Some(encode_checkpoint(checkpoint)),
+                    source: Some(encode_machine(source)),
+                    contract: Some(contract.clone()),
+                    forkable: true,
+                    created_at_unix_ms: 7,
+                };
+                (
+                    Admission::Checkpoint(wire::CheckpointAdmission {
+                        checkpoint: state.checkpoint.clone(),
+                        source: state.source.clone(),
+                        operation,
+                        contract: Some(contract.clone()),
+                    }),
+                    Outcome::Checkpointed(state),
+                    MutationOutcome::Checkpointed(CheckpointObservation {
+                        id: checkpoint,
+                        source,
+                        contract: decode_contract(Some(&contract))?,
+                        forkable: true,
+                        created_at_unix_ms: 7,
+                    }),
+                )
+            }
+            1 => (
+                Admission::Fork(wire::ForkAdmission {
+                    checkpoint: Some(encode_checkpoint(checkpoint)),
+                    children: vec![encode_machine(child)],
+                    operation,
+                    contract: Some(contract.clone()),
                 }),
-                contract: None,
-            },
-        )),
-    };
-    assert!(
-        decode_recovered(&provider, recovered(Vec::new()), None)
-            .await
-            .is_err()
-    );
-    assert!(
-        decode_recovered(
-            &provider,
-            recovered(vec![encode_machine(child), encode_machine(child)]),
+                Outcome::Forked(wire::ForkedMachines {
+                    machines: vec![machine.clone()],
+                }),
+                MutationOutcome::Forked(vec![decode_machine_observation(machine.clone(), child)?]),
+            ),
+            _ => (
+                Admission::ForkMachine(wire::ForkMachineAdmission {
+                    source: Some(encode_machine(source)),
+                    children: vec![encode_machine(child)],
+                    operation,
+                    contract: Some(contract.clone()),
+                    fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
+                }),
+                Outcome::MachineForked(wire::ForkedLiveMachines {
+                    source: Some(encode_machine(source)),
+                    fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
+                    children: vec![machine.clone()],
+                }),
+                MutationOutcome::MachineForked {
+                    source,
+                    fidelity: ForkFidelity::MemoryAndDisk,
+                    children: vec![decode_machine_observation(machine.clone(), child)?],
+                },
+            ),
+        };
+        service.recovered.result = Some(admission.clone());
+        let mut terminal =
+            operation_state(service.expected_operation, wire::OperationStatus::Succeeded);
+        terminal.outcome = Some(wire::MutationOutcome {
+            result: Some(result.clone()),
+        });
+        let mut replies = vec![
+            Some(result.clone()),
             None,
-        )
-        .await
-        .is_err()
-    );
+            Some(Outcome::Created(machine.clone())),
+        ];
+        for altered in 0..3 {
+            let mut result = result.clone();
+            match &mut result {
+                Outcome::Checkpointed(state) => match altered {
+                    0 => state.source = Some(encode_machine(child)),
+                    1 => {
+                        state
+                            .contract
+                            .as_mut()
+                            .expect("contract")
+                            .network_policy_digest = vec![2; 32]
+                    }
+                    _ => state.checkpoint = None,
+                },
+                Outcome::Forked(states) => match altered {
+                    0 => states.machines[0].machine = Some(encode_machine(source)),
+                    1 => {
+                        states.machines[0]
+                            .contract
+                            .as_mut()
+                            .expect("contract")
+                            .network_policy_digest = vec![2; 32]
+                    }
+                    _ => states.machines.clear(),
+                },
+                Outcome::MachineForked(states) => match altered {
+                    0 => states.source = Some(encode_machine(child)),
+                    1 => states.fidelity = wire::ForkFidelity::DiskOnly as i32,
+                    _ => states.children.clear(),
+                },
+                _ => unreachable!(),
+            }
+            replies.push(Some(result));
+        }
+        // Internal wire vectors. The server deliberately has no resource read
+        // implementation, as resources may be changed or deleted after success.
+        for reply in &replies {
+            let mut state = terminal.clone();
+            state.outcome = reply.clone().map(|result| wire::MutationOutcome {
+                result: Some(result),
+            });
+            script
+                .lock()
+                .expect("script")
+                .watches
+                .push_back(WatchReply::Items(vec![WatchItem::State(state)]));
+        }
+        let (provider, shutdown, server) = serve_operation_service(service).await?;
+        assert_eq!(provider.recover(key).await?, expected);
+        for _ in 1..replies.len() {
+            assert_eq!(
+                provider.recover(key).await,
+                Err(ProviderError::Indeterminate(key))
+            );
+        }
+        assert_eq!(
+            script.lock().expect("script").calls,
+            vec!["watch"; replies.len()]
+        );
+        let _ = shutdown.send(());
+        server.await??;
+        if let Admission::Fork(mut value) = admission {
+            for children in [
+                Vec::new(),
+                vec![encode_machine(child), encode_machine(child)],
+            ] {
+                value.children = children;
+                assert!(settled_fork(value.clone(), terminal.outcome.clone()).is_err());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tokio::test]

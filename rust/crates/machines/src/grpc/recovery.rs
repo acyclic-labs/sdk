@@ -104,8 +104,7 @@ pub(super) async fn wait(
     )
 }
 
-pub(super) async fn decode_recovered(
-    provider: &GrpcProvider,
+pub(super) fn decode_recovered(
     value: wire::RecoveredAdmission,
     outcome: Option<wire::MutationOutcome>,
 ) -> Result<MutationOutcome, ProviderError> {
@@ -129,23 +128,9 @@ pub(super) async fn decode_recovered(
             true,
         )
         .map(MutationOutcome::VolumeAttached),
-        ResultKind::Checkpoint(value) => MachinesProvider::inspect_checkpoint(
-            provider,
-            decode_checkpoint(value.checkpoint.as_ref())?,
-        )
-        .await
-        .map(MutationOutcome::Checkpointed),
-        ResultKind::Fork(value) => Ok(MutationOutcome::Forked(
-            inspect_children(provider, fork_children(&value.children, None)?).await?,
-        )),
-        ResultKind::ForkMachine(value) => {
-            let (source, fidelity, children, _) = decode_fork_machine_admission(&value)?;
-            Ok(MutationOutcome::MachineForked {
-                source,
-                fidelity,
-                children: inspect_children(provider, children).await?,
-            })
-        }
+        ResultKind::Checkpoint(value) => settled_checkpoint(value, outcome),
+        ResultKind::Fork(value) => settled_fork(value, outcome),
+        ResultKind::ForkMachine(value) => settled_live_fork(value, outcome),
         ResultKind::Suspend(value) => {
             decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
         }
@@ -165,22 +150,102 @@ pub(super) async fn decode_recovered(
     }
 }
 
-pub(super) async fn inspect_children(
-    provider: &GrpcProvider,
-    children: Vec<MachineId>,
-) -> Result<Vec<MachineObservation>, ProviderError> {
-    let mut result = Vec::with_capacity(children.len());
-    for child in children {
-        result.push(MachinesProvider::inspect_machine(provider, child).await?);
+pub(super) fn settled_checkpoint(
+    admission: wire::CheckpointAdmission,
+    outcome: Option<wire::MutationOutcome>,
+) -> Result<MutationOutcome, ProviderError> {
+    let Some(wire::mutation_outcome::Result::Checkpointed(value)) =
+        outcome.and_then(|value| value.result)
+    else {
+        return Err(ProviderError::Rejected(
+            "original checkpoint result is missing".into(),
+        ));
+    };
+    let result =
+        decode_checkpoint_observation(&value, decode_checkpoint(admission.checkpoint.as_ref())?)?;
+    if result.source != decode_machine(admission.source.as_ref())?
+        || result.contract != decode_contract(admission.contract.as_ref())?
+    {
+        return Err(ProviderError::Rejected(
+            "checkpoint result was substituted".into(),
+        ));
     }
-    Ok(result)
+    Ok(MutationOutcome::Checkpointed(result))
+}
+
+pub(super) fn settled_fork(
+    admission: wire::ForkAdmission,
+    outcome: Option<wire::MutationOutcome>,
+) -> Result<MutationOutcome, ProviderError> {
+    let Some(wire::mutation_outcome::Result::Forked(value)) =
+        outcome.and_then(|value| value.result)
+    else {
+        return Err(ProviderError::Rejected(
+            "original fork result is missing".into(),
+        ));
+    };
+    decode_checkpoint(admission.checkpoint.as_ref())?;
+    settled_children(
+        value.machines,
+        fork_children(&admission.children, None)?,
+        decode_contract(admission.contract.as_ref())?,
+    )
+    .map(MutationOutcome::Forked)
+}
+
+pub(super) fn settled_live_fork(
+    admission: wire::ForkMachineAdmission,
+    outcome: Option<wire::MutationOutcome>,
+) -> Result<MutationOutcome, ProviderError> {
+    let (source, fidelity, children, contract) = decode_fork_machine_admission(&admission)?;
+    let Some(wire::mutation_outcome::Result::MachineForked(value)) =
+        outcome.and_then(|value| value.result)
+    else {
+        return Err(ProviderError::Rejected(
+            "original live fork result is missing".into(),
+        ));
+    };
+    if decode_machine(value.source.as_ref())? != source || value.fidelity != admission.fidelity {
+        return Err(ProviderError::Rejected(
+            "live fork result was substituted".into(),
+        ));
+    }
+    Ok(MutationOutcome::MachineForked {
+        source,
+        fidelity,
+        children: settled_children(value.children, children, contract)?,
+    })
+}
+
+fn settled_children(
+    values: Vec<wire::MachineState>,
+    expected: Vec<MachineId>,
+    contract: MachineContract,
+) -> Result<Vec<MachineObservation>, ProviderError> {
+    if values.len() != expected.len() {
+        return Err(ProviderError::Rejected(
+            "fork child count was substituted".into(),
+        ));
+    }
+    values
+        .into_iter()
+        .zip(expected)
+        .map(|(value, expected)| {
+            let value = decode_machine_observation(value, expected)?;
+            if value.contract != contract {
+                return Err(ProviderError::Rejected(
+                    "fork child contract was substituted".into(),
+                ));
+            }
+            Ok(value)
+        })
+        .collect()
 }
 
 pub(super) fn decode_fork_machine_admission(
     value: &wire::ForkMachineAdmission,
-) -> Result<(MachineId, ForkFidelity, Vec<MachineId>, OperationId), ProviderError> {
+) -> Result<(MachineId, ForkFidelity, Vec<MachineId>, MachineContract), ProviderError> {
     let source = decode_machine(value.source.as_ref())?;
-    let operation = decode_operation(value.operation.as_ref())?;
     let contract = decode_contract(value.contract.as_ref())?;
     let fidelity = match wire::ForkFidelity::try_from(value.fidelity)
         .map_err(|_| ProviderError::Rejected("fork fidelity is invalid".into()))?
@@ -202,7 +267,7 @@ pub(super) fn decode_fork_machine_admission(
         source,
         fidelity,
         fork_children(&value.children, Some(source))?,
-        operation,
+        contract,
     ))
 }
 

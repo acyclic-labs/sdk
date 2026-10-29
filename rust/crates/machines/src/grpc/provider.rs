@@ -292,17 +292,12 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(value.operation.as_ref())?;
-                let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
-                if decode_machine(value.source.as_ref())? != machine {
-                    return Err(ProviderError::Rejected(
-                        "checkpoint source was substituted".into(),
-                    ));
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                if value.source != Some(encode_machine(machine)) {
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, operation).await?;
-                self.inspect_checkpoint(checkpoint)
-                    .await
-                    .map(MutationOutcome::Checkpointed)
+                let outcome = wait(self, key, operation).await?;
+                settled_checkpoint(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -360,20 +355,16 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint
+                if value.checkpoint != Some(encode_checkpoint(checkpoint))
                     || value.children.len()
                         != usize::try_from(count.get())
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
                 {
-                    return Err(ProviderError::Rejected(
-                        "fork result was substituted".into(),
-                    ));
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                let operation = decode_operation(value.operation.as_ref())?;
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::Forked(
-                    inspect_children(self, fork_children(&value.children, None)?).await?,
-                ))
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                let outcome = wait(self, key, operation).await?;
+                settled_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -405,20 +396,16 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let (source, fidelity, children, operation) = decode_fork_machine_admission(&value)?;
-                if source != machine
-                    || children.len()
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                if value.source != Some(encode_machine(machine))
+                    || value.children.len()
                         != usize::try_from(count.get())
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
                 {
-                    return Err(ProviderError::Rejected(
-                        "fork result was substituted".into(),
-                    ));
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::MachineForked {
-                    source, fidelity, children: inspect_children(self, children).await?,
-                })
+                let outcome = wait(self, key, operation).await?;
+                settled_live_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -594,7 +581,7 @@ machine_mutations! {
             async {
                 let (operation, value) = recovered_admission(self, key).await?;
                 let outcome = wait(self, key, operation).await?;
-                decode_recovered(self, value, outcome).await.map_err(|_| ProviderError::Indeterminate(key))
+                decode_recovered(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
