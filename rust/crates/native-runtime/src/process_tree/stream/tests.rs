@@ -9,6 +9,17 @@ fn child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_STREAM_CAPTURE") else {
         return Ok(());
     };
+    if mode == "wrapper" {
+        let status = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::stream::tests::child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_STREAM_CAPTURE", "exit")
+            .status()?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
     writeln!(std::io::stdout(), "CHILD={}", std::process::id())?;
     std::io::stdout().flush()?;
     std::io::stderr().write_all(&[0, 255, 7])?;
@@ -96,41 +107,46 @@ fn original_buffer(original: (bool, usize, usize), stderr: bool, bytes: &[u8]) -
 
 #[tokio::test]
 async fn native_stream_moves_original_buffers_and_delivers_exit_after_pipes() -> io::Result<()> {
-    let (mut output, mut input, pid, addresses, _) = start("exit", Duration::from_secs(5))?;
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let mut released = false;
-    while let Some(chunk) = output.recv().await {
-        for (is_stderr, bytes, destination) in [
-            (false, chunk.stdout, &mut stdout),
-            (true, chunk.stderr, &mut stderr),
-        ] {
-            if bytes.is_empty() {
-                continue;
+    for mode in ["exit", "wrapper"] {
+        let (mut output, mut input, pid, addresses, _) = start(mode, Duration::from_secs(5))?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut released = false;
+        while let Some(chunk) = output.recv().await {
+            for (is_stderr, bytes, destination) in [
+                (false, chunk.stdout, &mut stdout),
+                (true, chunk.stderr, &mut stderr),
+            ] {
+                if bytes.is_empty() {
+                    continue;
+                }
+                assert!(bytes.len() <= 64 * 1024);
+                let original = addresses.lock().unwrap().pop_front().unwrap();
+                assert!(original_buffer(original, is_stderr, &bytes));
+                // A copying adapter fails the same pointer identity oracle.
+                assert!(!original_buffer(original, is_stderr, &bytes.clone()));
+                destination.extend_from_slice(&bytes);
             }
-            assert!(bytes.len() <= 64 * 1024);
-            let original = addresses.lock().unwrap().pop_front().unwrap();
-            assert!(original_buffer(original, is_stderr, &bytes));
-            // A copying adapter fails the same pointer identity oracle.
-            assert!(!original_buffer(original, is_stderr, &bytes.clone()));
-            destination.extend_from_slice(&bytes);
+            if !released && String::from_utf8_lossy(&stdout).contains("CHILD=") {
+                input.write_all(b"!")?;
+                released = true;
+            }
         }
-        if !released && String::from_utf8_lossy(&stdout).contains(&format!("CHILD={pid}")) {
-            input.write_all(b"!")?;
-            released = true;
-        }
+        assert!(released);
+        let direct = String::from_utf8_lossy(&stdout).contains(&format!("CHILD={pid}\n"));
+        assert_eq!(
+            direct,
+            mode == "exit",
+            "an extra launcher fails the direct-child oracle"
+        );
+        assert_eq!(stderr, [0, 255, 7]);
+        let result = output.finish().await?.result.map_err(io::Error::other)?;
+        assert_eq!(result.status.code(), Some(7));
+        assert!(
+            result.stdout.is_empty() && result.stderr.is_empty(),
+            "no second output collector"
+        );
     }
-    assert!(
-        released,
-        "the executing process is the direct ProcessTree child"
-    );
-    assert_eq!(stderr, [0, 255, 7]);
-    let result = output.finish().await?.result.map_err(io::Error::other)?;
-    assert_eq!(result.status.code(), Some(7));
-    assert!(
-        result.stdout.is_empty() && result.stderr.is_empty(),
-        "no second output collector"
-    );
     Ok(())
 }
 
