@@ -160,3 +160,88 @@ impl HistoryCursor {
         self.records.next().await
     }
 }
+
+/// Finite ordinary and funded reads share the immutable pin, key index and
+/// one inline page. Admission surrounds the actual clone at the caller.
+struct FiniteRead {
+    history: PinnedHistory,
+    window: Option<HistoryWindow>,
+    key: Option<crate::ReadKeySeek>,
+    next: u64,
+    remaining: u32,
+}
+
+impl FiniteRead {
+    fn new(path: &PathState, request: ReadRequest) -> Self {
+        let tail = request.key.as_ref().map_or_else(
+            || {
+                path.tail
+                    .min(request.from.saturating_add(u64::from(request.limit)))
+            },
+            |key| key.before.min(path.tail),
+        );
+        Self {
+            history: PinnedHistory {
+                root: path.history.clone(),
+                tail,
+            },
+            window: request
+                .key
+                .is_none()
+                .then(|| path.prefix_window(request.from, tail))
+                .flatten(),
+            key: request.key,
+            next: request.from,
+            remaining: request.limit,
+        }
+    }
+
+    fn peek<E>(
+        &mut self,
+        mut examine: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<&Record>, E> {
+        if self.remaining == 0 || self.next >= self.history.tail {
+            return Ok(None);
+        }
+        if self
+            .window
+            .as_ref()
+            .is_none_or(|window| window.start == window.end)
+        {
+            let after = if let Some(key) = &self.key {
+                let Some(root) = &self.history.root else {
+                    return Ok(None);
+                };
+                let Some(sequence) =
+                    root.keys()
+                        .seek(&key.key, self.next, self.history.tail, &mut examine)?
+                else {
+                    return Ok(None);
+                };
+                sequence
+            } else {
+                self.next
+            };
+            self.window = self.history.page(
+                after,
+                if self.key.is_some() {
+                    1
+                } else {
+                    self.remaining.min(crate::REPLAY_PAGE)
+                },
+                examine,
+            )?;
+        }
+        Ok(self
+            .window
+            .as_ref()
+            .and_then(|window| window.records.records.get(window.start)))
+    }
+
+    fn take(&mut self) -> Option<Record> {
+        let record = self.window.as_mut()?.next()?;
+        self.next = record.sequence.checked_add(1)?;
+        self.remaining -= 1;
+        Some(record)
+    }
+}

@@ -2,7 +2,7 @@
 
 #[cfg(any(test, loom))]
 use crate::StreamProviderExt as _;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 use std::collections::VecDeque;
 use std::sync::Arc;
 

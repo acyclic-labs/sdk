@@ -228,7 +228,17 @@ pending until the device completes.
 their digests, atomic current-tail selection and retained replay are preserved.
 The corresponding `StreamProviderExt` methods validate the returned family.
 Transparent adapters forward the same future directly: their former one future
-allocation per publication becomes zero. Concrete producers select the request
+allocation per publication becomes zero. Memory and transport producers select the request
 family before boxing, so dispatch adds no allocation or physical storage work.
 Journal-backed providers return the shared core outcome without unwrapping and
 re-wrapping each family. These are source counts, not performance measurements.
+
+Ordinary and native finite memory reads share the immutable history pager and
+inline page state, including exact opaque-key seeks and inherited cuts. Native
+opening retains only its funded future and cursor frames: the former range-sized
+window allocation is removed. History examinations happen at page pulls, outside
+the publication lock; record copying still reserves bytes and examination work
+before the clone. A late refusal retains its original I/O cause and refunds its
+reservations. The eager reader remains a negative control for opening storage
+and first-output work. These source-level allocation counts do not claim a
+backlog-independent total traversal cost.

@@ -274,50 +274,14 @@ impl StreamProvider for MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        if let Some(key) = request.key {
-            let keys = path
-                .history
-                .as_ref()
-                .map_or_else(KeyTree::default, |history| history.keys().clone());
-            let before = key.before.min(path.tail);
-            let history = PinnedHistory {
-                root: path.history.clone(),
-                tail: before,
-            };
-            drop(state);
-            return Ok(stream::try_unfold(
-                (keys, history, key.key, request.from, request.limit),
-                move |(keys, history, key, from, remaining)| async move {
-                    if remaining == 0 {
-                        return Ok(None);
-                    }
-                    let Some(sequence) =
-                        keys.seek(&key, from, before, &mut || Ok::<_, StreamError>(()))?
-                    else {
-                        return Ok(None);
-                    };
-                    let mut window = history
-                        .page(sequence, 1, || Ok::<_, StreamError>(()))?
-                        .ok_or(StreamError::Unavailable)?;
-                    let record = window.next().ok_or(StreamError::Unavailable)?;
-                    let next = record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(StreamError::OutOfRange)?;
-                    Ok(Some((record, (keys, history, key, next, remaining - 1))))
-                },
-            )
-            .boxed());
-        }
-        let end = path
-            .tail
-            .min(request.from.saturating_add(u64::from(request.limit)));
-        let cursor = HistoryCursor::new(path, end, request.from);
+        let cursor = FiniteRead::new(path, request);
         drop(state);
         Ok(stream::try_unfold(cursor, |mut cursor| async move {
-            Ok(cursor.next_record().await?.map(|record| (record, cursor)))
+            if cursor.peek(|| Ok::<_, StreamError>(()))?.is_none() {
+                return Ok(None);
+            }
+            Ok(cursor.take().map(|record| (record, cursor)))
         })
-        .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
         .boxed())
     }
 
@@ -385,59 +349,21 @@ impl StreamProvider for MemoryStream {
             if request.from > path.tail {
                 return Ok(Err(StreamError::OutOfRange));
             }
-            let count = usize::try_from((path.tail - request.from).min(u64::from(request.limit)))
-                .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+            // Only the immutable pin and one inline page survive opening.
+            // History traversal and key selection belong to cursor pulls.
+            meter.admit_examination(1, 0)?;
+            let cursor = FiniteRead::new(path, request);
+            meter.record_examination(1, 0)?;
+            drop(state);
             let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
-            let mut windows = crate::native::vector(count, &meter, &mut allocation)?;
-            let end = path
-                .tail
-                .min(request.from.saturating_add(u64::from(request.limit)));
-            if let Some(key) = &request.key {
-                let before = key.before.min(path.tail);
-                let mut from = request.from;
-                if let Some(history) = &path.history {
-                    while windows.len() < request.limit as usize {
-                        let Some(sequence) =
-                            history
-                                .keys()
-                                .seek(&key.key, from, before, &mut || inspect(&meter, || ()))?
-                        else {
-                            break;
-                        };
-                        let window = PinnedHistory {
-                            root: Some(Arc::clone(history)),
-                            tail: before,
-                        }
-                        .page(sequence, 1, || inspect(&meter, || ()))?
-                        .ok_or(std::io::ErrorKind::InvalidData)?;
-                        from = window.records.records[window.start]
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(std::io::ErrorKind::InvalidData)?;
-                        windows.push(window);
-                    }
-                }
-            } else {
-                admit_windows(path, request.from, end, &*meter, &mut windows)?;
-                windows.reverse();
-            }
             let cursor_meter = Arc::clone(&meter);
-            // A bounded native read never refreshes a history root. Keep only
-            // its already-admitted windows, rather than a live follow cursor.
-            let cursor: VecDeque<HistoryWindow> = windows.into();
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(window) = cursor.front() else {
+                    let Some(record) = cursor.peek(|| meter.examine(1, 0))? else {
                         return Ok(None);
                     };
-                    let length = window
-                        .records
-                        .records
-                        .get(window.start)
-                        .ok_or(std::io::ErrorKind::InvalidData)?
-                        .value
-                        .len();
+                    let length = record.value.len();
                     meter.check()?;
                     let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                         Arc::clone(&meter),
@@ -446,21 +372,7 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let window = cursor.front_mut().ok_or(std::io::ErrorKind::InvalidData)?;
-                    let record = window
-                        .records
-                        .records
-                        .get(window.start)
-                        .cloned()
-                        .ok_or(std::io::ErrorKind::InvalidData)?;
-                    window.start += 1;
-                    record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(std::io::ErrorKind::InvalidData)?;
-                    if window.start == window.end {
-                        cursor.pop_front();
-                    }
+                    let record = cursor.take().ok_or(std::io::ErrorKind::InvalidData)?;
                     #[cfg(test)]
                     let read = crate::test_meter::trace::recordings_reordered()
                         .then(|| bytes.record(length));
@@ -486,7 +398,6 @@ impl StreamProvider for MemoryStream {
             )?;
             allocation.absorb(&mut frame)?;
             let cursor: crate::NativeRecordStream = Box::pin(cursor);
-            drop(state);
             Ok(Ok(crate::NativeStreamOutput::new(cursor, allocation)))
         })
     }
@@ -675,31 +586,4 @@ impl StreamProvider for MemoryStream {
             work.finish(provider.append_inner(request).await)
         })
     }
-}
-
-/// Admit the history windows that cover `from..end`, newest first.
-#[cfg(not(target_arch = "wasm32"))]
-fn admit_windows(
-    path: &PathState,
-    from: u64,
-    end: u64,
-    meter: &dyn NativeReadMeter,
-    windows: &mut Vec<HistoryWindow>,
-) -> std::io::Result<()> {
-    if let Some(window) = path.prefix_window(from, end) {
-        meter.admit_examination(1, 0)?;
-        windows.push(window);
-        return meter.record_examination(1, 0);
-    }
-    let mut history = HistoryWalk::new(path.history.as_ref(), end, from);
-    while history.next.is_some() && history.ceiling > from {
-        meter.admit_examination(1, 0)?;
-        if let Some((History::Batch { records, .. }, ceiling)) = history.next()
-            && let Some(window) = history_window(Arc::clone(records), ceiling, from)
-        {
-            windows.push(window);
-        }
-        meter.record_examination(1, 0)?;
-    }
-    Ok(())
 }
