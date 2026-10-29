@@ -21,7 +21,7 @@ impl FileTool {
         })?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io {
-            io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;
+            io.check_json_byte_bound(&invocation.arguments, Some(scope.limits().file_bytes))?;
         } else {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,

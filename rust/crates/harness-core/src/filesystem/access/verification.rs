@@ -19,7 +19,7 @@ fn roundtrip<T: PreparationRecord + serde::Serialize + std::fmt::Debug + Partial
         (Err(error), Ok(_)) => return Err(Error::Storage(error.to_string())),
     };
     assert_eq!(expected, decoded.0);
-    let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(&decoded.0, Some(io.remaining()?.bytes_encoded), false)?;
     let hold = io.guard_bytes(&encoded)?;
     let encoded = (encoded, hold);
     let repeated = record::<T>(io, &encoded.0, crate::wire::ErrorCode::Storage)?;

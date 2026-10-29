@@ -365,7 +365,7 @@ where
                             )?;
                             let _canonical_hold;
                             let canonical =
-                                io.encode(&parsed.0, super::MAXIMUM_PAYLOAD_BYTES, true)?;
+                                io.encode(&parsed.0, Some(super::MAXIMUM_PAYLOAD_BYTES), true)?;
                             _canonical_hold = io.guard_bytes(&canonical)?;
                             if canonical.as_ref() != bytes {
                                 return Err(canonical_boundary(

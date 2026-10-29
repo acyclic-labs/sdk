@@ -409,7 +409,7 @@ mod tests {
         assert!(
             io.encode(
                 &Cell { value: &value },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
                 false
             )
             .is_err(),
