@@ -1,5 +1,4 @@
 use super::*;
-use crate::StreamProviderExt as _;
 use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
 use std::sync::Mutex;
 

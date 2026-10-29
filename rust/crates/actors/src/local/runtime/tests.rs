@@ -2,7 +2,6 @@ use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
 use crate::local::{PreparedPublish, Subscription};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, LocalStream, MemoryStream,

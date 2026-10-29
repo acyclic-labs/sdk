@@ -80,14 +80,20 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Opens a bounded finite read pinned to one immutable history snapshot.
     /// Opening a missing path returns NotFound; a start beyond that snapshot's
     /// tail returns OutOfRange. Neither refusal is deferred to the first item.
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
+    async fn read(&self, request: ReadRequest) -> std::result::Result<RecordStream, StreamError>;
     /// Replays and remains live without a handoff gap. The history fence is checked
     /// atomically before subscription and on replacement. Ordered progress never
     /// passes an earlier matching record; record-only follows retain indexed wakes.
-    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError>;
+    async fn follow(
+        &self,
+        request: FollowRequest,
+    ) -> std::result::Result<FollowStream, StreamError>;
 
     /// Reads one complete immutable successful envelope.
-    async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
+    async fn read_commit(
+        &self,
+        commit_id: CommitId,
+    ) -> std::result::Result<CommittedEnvelope, StreamError>;
     /// Canonical inspection funded by the original native work owner.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(

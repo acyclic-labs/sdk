@@ -234,57 +234,51 @@ impl StreamProvider for InjectedStream {
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
         match request {
-            crate::WriteRequest::Append(request) => Box::pin(async move {
-                let result: std::result::Result<crate::AppendOutcome, crate::StreamError> =
-                    async move {
-                        let request = crate::journal::Command::Append(request).validated()?;
-                        let crate::journal::Command::Append(request) = request else {
-                            return Err(StreamError::InvalidArgument);
-                        };
-                        let input = wire::AppendRequest {
-                            path: request.path.to_string(),
-                            records: request
-                                .records
-                                .into_iter()
-                                .map(wire_codec::append_record_wire)
-                                .collect(),
-                            if_tail: request.if_tail,
-                            idempotency_key: bytes::Bytes::copy_from_slice(
-                                request.idempotency_key.as_bytes(),
-                            ),
-                        };
-                        wire_codec::append_outcome_from_wire(self.call("append", input).await?)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Append)
-            }),
-            crate::WriteRequest::Fork(request) => Box::pin(async move {
-                let result: std::result::Result<crate::ForkReceipt, crate::StreamError> =
-                    async move {
-                        let input = wire::ForkRequest {
-                            source: request.source.to_string(),
-                            destination: request.destination.to_string(),
-                            at_tail: request.at_tail,
-                            idempotency_key: bytes::Bytes::copy_from_slice(
-                                request.idempotency_key.as_bytes(),
-                            ),
-                            exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
-                        };
-                        let result: wire::ForkReceipt = self.call("fork", input).await?;
-                        wire_codec::fork_receipt_from_wire(result)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Fork)
-            }),
-            crate::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<crate::CommitOutcome, crate::StreamError> =
-                    async move {
-                        let input = wire_codec::commit_to_wire(&request);
-                        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Commit)
-            }),
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let request = crate::journal::Command::Append(request).validated()?;
+                    let crate::journal::Command::Append(request) = request else {
+                        return Err(StreamError::InvalidArgument);
+                    };
+                    let input = wire::AppendRequest {
+                        path: request.path.to_string(),
+                        records: request
+                            .records
+                            .into_iter()
+                            .map(wire_codec::append_record_wire)
+                            .collect(),
+                        if_tail: request.if_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                    };
+                    wire_codec::append_outcome_from_wire(self.call("append", input).await?)
+                },
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let input = wire::ForkRequest {
+                        source: request.source.to_string(),
+                        destination: request.destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                        exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
+                    };
+                    let result: wire::ForkReceipt = self.call("fork", input).await?;
+                    wire_codec::fork_receipt_from_wire(result)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let input = wire_codec::commit_to_wire(&request);
+                    wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
     }
 

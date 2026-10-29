@@ -61,29 +61,23 @@ impl StreamProvider for PausingStream {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::AppendOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { self.inner.append(request).await }.await;
-                result.map(acyclic_stream::WriteOutcome::Append)
-            }),
-            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::ForkReceipt,
-                    acyclic_stream::StreamError,
-                > = async move { self.inner.fork(request).await }.await;
-                result.map(acyclic_stream::WriteOutcome::Fork)
-            }),
-            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::CommitOutcome,
-                    acyclic_stream::StreamError,
-                > = async move {
-                    if request.mutations.iter().any(|mutation| {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { self.inner.append(request).await },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.inner.fork(request).await },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        if request.mutations.iter().any(|mutation| {
             matches!(
                 mutation,
                 acyclic_stream::CommitMutation::Append { path, .. } if path == &self.record_path
@@ -93,11 +87,11 @@ impl StreamProvider for PausingStream {
             self.entered.notify_one();
             self.resume.notified().await;
         }
-                    self.inner.commit(request).await
-                }
-                .await;
-                result.map(acyclic_stream::WriteOutcome::Commit)
-            }),
+                        self.inner.commit(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
         }
     }
 

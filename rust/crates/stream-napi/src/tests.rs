@@ -245,30 +245,27 @@ impl StreamProvider for TcpDropProbe {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::Append(_request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::AppendOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { Err(StreamError::Unsupported) }.await;
-                result.map(acyclic_stream::WriteOutcome::Append)
-            }),
-            acyclic_stream::WriteRequest::Fork(_request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::ForkReceipt,
-                    acyclic_stream::StreamError,
-                > = async move { Err(StreamError::Unsupported) }.await;
-                result.map(acyclic_stream::WriteOutcome::Fork)
-            }),
-            acyclic_stream::WriteRequest::Commit(_request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::CommitOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { Err(StreamError::Unsupported) }.await;
-                result.map(acyclic_stream::WriteOutcome::Commit)
-            }),
+            acyclic_stream::WriteRequest::Append(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Fork,
+                ))
+            }
+            acyclic_stream::WriteRequest::Commit(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
         }
     }
 

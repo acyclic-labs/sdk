@@ -710,30 +710,21 @@ impl StreamProvider for Refusing {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::Append(_) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::AppendOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { self.refuse() }.await;
-                result.map(acyclic_stream::WriteOutcome::Append)
-            }),
-            acyclic_stream::WriteRequest::Fork(_) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::ForkReceipt,
-                    acyclic_stream::StreamError,
-                > = async move { self.refuse() }.await;
-                result.map(acyclic_stream::WriteOutcome::Fork)
-            }),
-            acyclic_stream::WriteRequest::Commit(_) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::CommitOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { self.refuse() }.await;
-                result.map(acyclic_stream::WriteOutcome::Commit)
-            }),
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Append,
+            )),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Commit,
+            )),
         }
     }
 

@@ -55,7 +55,7 @@ impl StreamProvider for Provider {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         self.memory.write(request)
     }

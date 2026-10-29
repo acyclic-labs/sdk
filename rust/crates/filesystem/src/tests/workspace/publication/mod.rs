@@ -87,53 +87,45 @@ impl acyclic_stream::StreamProvider for CutStream {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::AppendOutcome,
-                    acyclic_stream::StreamError,
-                > = async move {
-                    if self.fails_now() {
-                        return Err(acyclic_stream::StreamError::Unavailable);
-                    }
-                    self.inner.append(request).await
-                }
-                .await;
-                result.map(acyclic_stream::WriteOutcome::Append)
-            }),
-            acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::ForkReceipt,
-                    acyclic_stream::StreamError,
-                > = async move {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        if self.fails_now() {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        self.inner.append(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
                     if self.fails_now() {
                         return Err(acyclic_stream::StreamError::Unavailable);
                     }
                     self.inner.fork(request).await
-                }
-                .await;
-                result.map(acyclic_stream::WriteOutcome::Fork)
-            }),
-            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::CommitOutcome,
-                    acyclic_stream::StreamError,
-                > = async move {
-                    let fails = self.fails_now();
-                    if fails && matches!(self.cut(), ForkCut::Before) {
-                        return Err(acyclic_stream::StreamError::Unavailable);
-                    }
-                    let outcome = self.inner.commit(request).await?;
-                    if fails {
-                        return Err(acyclic_stream::StreamError::Unavailable);
-                    }
-                    Ok(outcome)
-                }
-                .await;
-                result.map(acyclic_stream::WriteOutcome::Commit)
-            }),
+                },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        let fails = self.fails_now();
+                        if fails && matches!(self.cut(), ForkCut::Before) {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        let outcome = self.inner.commit(request).await?;
+                        if fails {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        Ok(outcome)
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
         }
     }
 

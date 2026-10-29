@@ -138,7 +138,7 @@ impl PreparedFrame {
         Ok(())
     }
 
-    fn write(&mut self, writer: &mut impl Write) -> Result<(), LocalStreamError> {
+    fn write(&mut self, writer: &mut impl Write) -> std::result::Result<(), LocalStreamError> {
         let Some(work) = &self.work else {
             acyclic_native_runtime::write_file_all(writer, &self.encoded)?;
             return Ok(());

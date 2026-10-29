@@ -175,7 +175,7 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         Box::pin(async move {
             self.target(|| match &request {
@@ -395,33 +395,29 @@ mod tests {
             request: acyclic_stream::WriteRequest,
         ) -> acyclic_stream::BoxProviderFuture<
             '_,
-            Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+            std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
         > {
             match request {
-                acyclic_stream::WriteRequest::Append(request) => Box::pin(async move {
-                    let result: std::result::Result<
-                        acyclic_stream::AppendOutcome,
-                        acyclic_stream::StreamError,
-                    > = async move {
-                        Err(self.write(acyclic_stream::request::append_digest(&request)?))
-                    }
-                    .await;
-                    result.map(acyclic_stream::WriteOutcome::Append)
-                }),
-                acyclic_stream::WriteRequest::Fork(request) => Box::pin(async move {
-                    let result: std::result::Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> = async move {
-            Err(self.write(acyclic_stream::request::fork_digest(&request)?))
-
-                    }.await;
-                    result.map(acyclic_stream::WriteOutcome::Fork)
-                }),
-                acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
-                    let result: std::result::Result<
-                        acyclic_stream::CommitOutcome,
-                        acyclic_stream::StreamError,
-                    > = async move { Err(self.write(super::commit_digest(&request)?)) }.await;
-                    result.map(acyclic_stream::WriteOutcome::Commit)
-                }),
+                acyclic_stream::WriteRequest::Append(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            Err(self.write(acyclic_stream::request::append_digest(&request)?))
+                        },
+                        acyclic_stream::WriteOutcome::Append,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { Err(self.write(acyclic_stream::request::fork_digest(&request)?)) },
+                        acyclic_stream::WriteOutcome::Fork,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Commit(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { Err(self.write(super::commit_digest(&request)?)) },
+                        acyclic_stream::WriteOutcome::Commit,
+                    ))
+                }
             }
         }
 

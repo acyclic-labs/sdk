@@ -118,39 +118,31 @@ impl StreamProvider for ModelStream {
         request: acyclic_stream::WriteRequest,
     ) -> acyclic_stream::BoxProviderFuture<
         '_,
-        Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
     > {
         match request {
-            acyclic_stream::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::CommitOutcome,
-                    acyclic_stream::StreamError,
-                > = async move {
-                    let result = self.inner.commit(request).await;
-                    if matches!(self.change, Change::Fence | Change::Retire)
-                        && matches!(result, Ok(CommitOutcome::Committed(_)))
-                    {
-                        self.completed.store(true, Ordering::SeqCst);
-                    }
-                    result
-                }
-                .await;
-                result.map(acyclic_stream::WriteOutcome::Commit)
-            }),
-            acyclic_stream::WriteRequest::Append(_) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::AppendOutcome,
-                    acyclic_stream::StreamError,
-                > = async move { Err(StreamError::Unsupported) }.await;
-                result.map(acyclic_stream::WriteOutcome::Append)
-            }),
-            acyclic_stream::WriteRequest::Fork(_) => Box::pin(async move {
-                let result: std::result::Result<
-                    acyclic_stream::ForkReceipt,
-                    acyclic_stream::StreamError,
-                > = async move { Err(StreamError::Unsupported) }.await;
-                result.map(acyclic_stream::WriteOutcome::Fork)
-            }),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        let result = self.inner.commit(request).await;
+                        if matches!(self.change, Change::Fence | Change::Retire)
+                            && matches!(result, Ok(CommitOutcome::Committed(_)))
+                        {
+                            self.completed.store(true, Ordering::SeqCst);
+                        }
+                        result
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { Err(StreamError::Unsupported) },
+                acyclic_stream::WriteOutcome::Append,
+            )),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { Err(StreamError::Unsupported) },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
         }
     }
     async fn inspect_idempotency(

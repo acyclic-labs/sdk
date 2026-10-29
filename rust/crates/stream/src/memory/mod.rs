@@ -1,6 +1,5 @@
 //! Single-lock deterministic reference state machine; no durability or availability claim.
 
-use crate::StreamProviderExt as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::collections::VecDeque;
 use std::sync::Arc;

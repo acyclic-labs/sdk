@@ -102,78 +102,72 @@ impl StreamProvider for Remote {
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
         match request {
-            crate::WriteRequest::Append(request) => Box::pin(async move {
-                let result: std::result::Result<crate::AppendOutcome, crate::StreamError> =
-                    async move {
-                        let key = request.idempotency_key;
-                        let body = wire::AppendRequest {
-                            path: request.path.to_string(),
-                            records: request
-                                .records
-                                .into_iter()
-                                .map(crate::wire_codec::append_record_wire)
-                                .collect(),
-                            if_tail: request.if_tail,
-                            idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-                        };
-                        let result = self
-                            .service()
-                            .append(self.request(body).await?)
-                            .await
-                            .map_err(|e| wire_codec::status(&e))?
-                            .into_inner();
-                        let outcome = wire_codec::append_outcome_from_wire(result)?;
-                        self.sessions.revisions().appended(&outcome);
-                        Ok(outcome)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Append)
-            }),
-            crate::WriteRequest::Fork(request) => Box::pin(async move {
-                let result: std::result::Result<crate::ForkReceipt, crate::StreamError> =
-                    async move {
-                        let key = request.idempotency_key;
-                        let body = wire::ForkRequest {
-                            exclude: request
-                                .exclude
-                                .into_iter()
-                                .map(|path| path.to_string())
-                                .collect(),
-                            source: request.source.to_string(),
-                            destination: request.destination.to_string(),
-                            at_tail: request.at_tail,
-                            idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
-                        };
-                        let result = self
-                            .service()
-                            .fork(self.request(body).await?)
-                            .await
-                            .map_err(|e| wire_codec::status(&e))?
-                            .into_inner();
-                        let receipt = wire_codec::fork_receipt_from_wire(result)?;
-                        self.sessions.revisions().observe(&receipt.revision);
-                        Ok(receipt)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Fork)
-            }),
-            crate::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<crate::CommitOutcome, crate::StreamError> =
-                    async move {
-                        let body = wire_codec::commit_to_wire(&request);
-                        let response = self
-                            .service()
-                            .commit(self.request(body).await?)
-                            .await
-                            .map_err(|e| wire_codec::status(&e))?
-                            .into_inner();
-                        let outcome = wire_codec::commit_outcome_from_wire(response)?;
-                        self.sessions.revisions().committed(&outcome);
-                        Ok(outcome)
-                    }
-                    .await;
-                result.map(crate::WriteOutcome::Commit)
-            }),
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let key = request.idempotency_key;
+                    let body = wire::AppendRequest {
+                        path: request.path.to_string(),
+                        records: request
+                            .records
+                            .into_iter()
+                            .map(crate::wire_codec::append_record_wire)
+                            .collect(),
+                        if_tail: request.if_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
+                    };
+                    let result = self
+                        .service()
+                        .append(self.request(body).await?)
+                        .await
+                        .map_err(|e| wire_codec::status(&e))?
+                        .into_inner();
+                    let outcome = wire_codec::append_outcome_from_wire(result)?;
+                    self.sessions.revisions().appended(&outcome);
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let key = request.idempotency_key;
+                    let body = wire::ForkRequest {
+                        exclude: request
+                            .exclude
+                            .into_iter()
+                            .map(|path| path.to_string())
+                            .collect(),
+                        source: request.source.to_string(),
+                        destination: request.destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
+                    };
+                    let result = self
+                        .service()
+                        .fork(self.request(body).await?)
+                        .await
+                        .map_err(|e| wire_codec::status(&e))?
+                        .into_inner();
+                    let receipt = wire_codec::fork_receipt_from_wire(result)?;
+                    self.sessions.revisions().observe(&receipt.revision);
+                    Ok(receipt)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let body = wire_codec::commit_to_wire(&request);
+                    let response = self
+                        .service()
+                        .commit(self.request(body).await?)
+                        .await
+                        .map_err(|e| wire_codec::status(&e))?
+                        .into_inner();
+                    let outcome = wire_codec::commit_outcome_from_wire(response)?;
+                    self.sessions.revisions().committed(&outcome);
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
     }
 

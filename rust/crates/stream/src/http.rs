@@ -378,61 +378,54 @@ impl StreamProvider for HttpStream {
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
         match request {
-            crate::WriteRequest::Append(request) => Box::pin(async move {
-                let result: std::result::Result<crate::AppendOutcome, crate::StreamError> =
-                    async move {
-                        let outcome = parse_append(
-                            &self
-                                .request_json("append", move || http_codec::encode_append(&request))
-                                .await?,
-                        )?;
-                        if let AppendOutcome::Committed(receipt) = &outcome {
-                            self.revisions()?.observe(&receipt.revision);
-                        }
-                        Ok(outcome)
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let outcome = parse_append(
+                        &self
+                            .request_json("append", move || http_codec::encode_append(&request))
+                            .await?,
+                    )?;
+                    if let AppendOutcome::Committed(receipt) = &outcome {
+                        self.revisions()?.observe(&receipt.revision);
                     }
-                    .await;
-                result.map(crate::WriteOutcome::Append)
-            }),
-            crate::WriteRequest::Fork(request) => Box::pin(async move {
-                let result: std::result::Result<crate::ForkReceipt, crate::StreamError> =
-                    async move {
-                        let source = request.source.clone();
-                        let destination = request.destination.clone();
-                        let wire = wire::ForkRequest {
-                            exclude: request.exclude.iter().map(ToString::to_string).collect(),
-                            source: source.to_string(),
-                            destination: destination.to_string(),
-                            at_tail: request.at_tail,
-                            idempotency_key: bytes::Bytes::copy_from_slice(
-                                request.idempotency_key.as_bytes(),
-                            ),
-                        };
-                        let result =
-                            parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
-                        if result.source != source || result.destination != destination {
-                            return Err(StreamError::Unavailable);
-                        }
-                        self.revisions()?.observe(&result.revision);
-                        Ok(result)
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let source = request.source.clone();
+                    let destination = request.destination.clone();
+                    let wire = wire::ForkRequest {
+                        exclude: request.exclude.iter().map(ToString::to_string).collect(),
+                        source: source.to_string(),
+                        destination: destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                    };
+                    let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
+                    if result.source != source || result.destination != destination {
+                        return Err(StreamError::Unavailable);
                     }
-                    .await;
-                result.map(crate::WriteOutcome::Fork)
-            }),
-            crate::WriteRequest::Commit(request) => Box::pin(async move {
-                let result: std::result::Result<crate::CommitOutcome, crate::StreamError> =
-                    async move {
-                        let wire = wire_codec::commit_to_wire(&request);
-                        let response = self.request("commit", wire.encode_to_vec()).await?;
-                        let outcome = Self::commit_response(&response)?;
-                        if let CommitOutcome::Committed(receipt) = &outcome {
-                            self.revisions()?.observe(&receipt.revision);
-                        }
-                        Ok(outcome)
+                    self.revisions()?.observe(&result.revision);
+                    Ok(result)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let wire = wire_codec::commit_to_wire(&request);
+                    let response = self.request("commit", wire.encode_to_vec()).await?;
+                    let outcome = Self::commit_response(&response)?;
+                    if let CommitOutcome::Committed(receipt) = &outcome {
+                        self.revisions()?.observe(&receipt.revision);
                     }
-                    .await;
-                result.map(crate::WriteOutcome::Commit)
-            }),
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
     }
 

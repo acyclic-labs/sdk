@@ -1,6 +1,5 @@
 use super::*;
 use crate::guest::{CodecIdentity, Effect};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{LocalStream, MemoryStream, ReadRequest};
 use bytes::Bytes;
 use futures::TryStreamExt;
