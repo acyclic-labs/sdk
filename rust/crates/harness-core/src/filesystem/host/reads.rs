@@ -209,7 +209,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// # Errors
     /// When `path` is not a regular file, `offset` is past its end, or the
     /// grant or view does not allow listing and reading it.
-    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
     pub(in crate::filesystem) async fn read_private_range(
         &self,
         volume: &VolumeRef,

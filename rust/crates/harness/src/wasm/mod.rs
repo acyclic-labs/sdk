@@ -75,4 +75,6 @@ mod mcp;
 pub struct WasmAgentAuthority {
     issuer: RuntimeAuthority,
     caller: acyclic_auth::contract::CallerContext,
+    #[cfg(feature = "browser")]
+    context: acyclic_auth::operation::Context,
 }

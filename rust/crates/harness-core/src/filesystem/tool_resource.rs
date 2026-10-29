@@ -4,6 +4,20 @@ use super::*;
 pub const TOOL_OUTPUT: &str = "tools";
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
+    /// Routes change follows over this filesystem's original Streams owner.
+    /// Backends without a synchronous policy fence refuse resource follows;
+    /// ordinary session commands remain available.
+    ///
+    /// # Errors
+    /// When `streams` belongs to another backend owner.
+    pub fn change_provider<P: crate::store::JournalProvider + ?Sized>(
+        &self,
+        streams: Arc<P>,
+    ) -> Result<acyclic_fs::session::ChangeProvider<P, A, O>> {
+        acyclic_fs::session::ChangeProvider::new(self.filesystem.clone(), streams)
+            .map_err(|error| Error::Unauthorized(format!("tool output changes: {error}")))
+    }
+
     /// The `fs:/` resource of [`TOOL_OUTPUT`] on `volume`.
     ///
     /// # Errors

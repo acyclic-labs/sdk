@@ -23,6 +23,7 @@ const clientConstructors = [
 const browserConstructors = [
   ["WasmAgentAuthority", "wasmagentauthority_new"],
   ["WasmAgentRegistry", "wasmagentregistry_new"],
+  ["WasmMachinesWorkspace", "wasmmachinesworkspace_open"],
 ] as const;
 type Constructor = readonly [string, string];
 

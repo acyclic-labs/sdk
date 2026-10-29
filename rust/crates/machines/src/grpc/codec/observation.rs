@@ -1,5 +1,14 @@
 use super::*;
 
+impl TryFrom<wire::MachineState> for MachineObservation {
+    type Error = ProviderError;
+
+    fn try_from(value: wire::MachineState) -> Result<Self, Self::Error> {
+        let machine = decode_machine(value.machine.as_ref())?;
+        decode_machine_observation(value, machine)
+    }
+}
+
 pub(in super::super) fn decode_qualification(
     value: wire::ImageQualification,
     expected: Option<&Image>,
