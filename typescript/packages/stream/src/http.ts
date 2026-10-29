@@ -75,7 +75,7 @@ export class HttpStreamProvider implements StreamProvider {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
     if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
-      throw new StreamError("limit_exceeded", "child page limit must be a positive integer");
+      throw new StreamError("invalid_argument", "child page limit must be a positive integer");
     }
     await validateWireRequest({
       kind: "children_page",
