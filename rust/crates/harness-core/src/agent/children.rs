@@ -3,6 +3,7 @@
 //! nodes are staged before the checkpoint publishes their root, so a failed
 //! actor commit can leave only unreachable nodes, never visible membership.
 use super::{AgentId, AgentPath, Error};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ProviderPlatform, ReadRequest, StreamPath,
     StreamProvider,
@@ -50,6 +51,7 @@ impl<P: StreamProvider + ?Sized> Storage for Provider<P> {
                     path: path(digest)?,
                     from: 0,
                     limit: 1,
+                    key: None,
                     at_least: Default::default(),
                 })
                 .await
