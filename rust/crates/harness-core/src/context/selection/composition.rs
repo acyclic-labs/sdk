@@ -178,7 +178,7 @@ fn preflight_context_composition(
                 metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
                 current_input_index,
             },
-            limits.render_bytes,
+            Some(limits.render_bytes),
             work,
         )
     })?;

@@ -71,11 +71,11 @@ fn serialized_json_digest_with_policy<T: Serialize + ?Sized>(
     .as_bytes())
 }
 
-/// Counts compact JSON under its byte limit and optional original ledger.
+/// Counts compact JSON under an optional byte policy and the original ledger.
 #[doc(hidden)]
 pub fn json_byte_length<T: Serialize + ?Sized>(
     value: &T,
-    maximum: u64,
+    maximum: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
     json_byte_length_at_depth(value, maximum, u32::MAX, work)
@@ -84,7 +84,7 @@ pub fn json_byte_length<T: Serialize + ?Sized>(
 #[doc(hidden)]
 pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     value: &T,
-    maximum: u64,
+    maximum: Option<u64>,
     maximum_depth: u32,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<u64> {
@@ -93,7 +93,7 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
             return count_json_bytes_trusted(
                 value,
                 JsonBounds {
-                    maximum_bytes: Some(maximum),
+                    maximum_bytes: maximum,
                     maximum_items: None,
                     maximum_depth,
                 },
@@ -102,14 +102,21 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
             );
         }
         return {
-            struct Budget(u64);
+            struct Counter {
+                bytes: u64,
+                maximum: Option<u64>,
+            }
 
-            impl std::io::Write for Budget {
+            impl std::io::Write for Counter {
                 fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                    self.0 = self
-                        .0
-                        .checked_sub(bytes.len() as u64)
-                        .ok_or_else(|| std::io::Error::other("JSON exceeds declared byte bound"))?;
+                    let next = self
+                        .bytes
+                        .checked_add(bytes.len() as u64)
+                        .ok_or_else(|| std::io::Error::other("JSON byte count overflow"))?;
+                    if self.maximum.is_some_and(|maximum| next > maximum) {
+                        return Err(std::io::Error::other("JSON exceeds declared byte bound"));
+                    }
+                    self.bytes = next;
                     Ok(bytes.len())
                 }
 
@@ -118,10 +125,10 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
                 }
             }
 
-            let mut budget = Budget(maximum);
-            serde_json::to_writer(&mut budget, value)
+            let mut counter = Counter { bytes: 0, maximum };
+            serde_json::to_writer(&mut counter, value)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-            Ok(maximum - budget.0)
+            Ok(counter.bytes)
         };
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -147,7 +154,7 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     let result = count_json_bytes_trusted(
         value,
         JsonBounds {
-            maximum_bytes: Some(maximum),
+            maximum_bytes: maximum,
             maximum_items: None,
             maximum_depth: maximum_depth.min(if native_code.is_some() { 256 } else { u32::MAX }),
         },

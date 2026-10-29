@@ -101,7 +101,7 @@ pub(crate) fn validate_projected_messages(
             metadata: &context.metadata,
             current_input_index: context.current_input_index,
         };
-        crate::executor::json::json_byte_length(&borrowed, limits.render_bytes, work)
+        crate::executor::json::json_byte_length(&borrowed, Some(limits.render_bytes), work)
     })
     .and_then(|bytes| {
         let mut remaining = limits.render_bytes - bytes;

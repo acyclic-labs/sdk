@@ -75,7 +75,7 @@ impl ReasoningBlock {
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> crate::Result<()> {
         super::preparation::history_step(work, self.continuity.len() as u64)?;
-        crate::executor::json::json_byte_length(self, limits.render_bytes, work).map(|_| ())
+        crate::executor::json::json_byte_length(self, Some(limits.render_bytes), work).map(|_| ())
     }
 
     pub(crate) fn payload_bytes(&self) -> crate::Result<u64> {

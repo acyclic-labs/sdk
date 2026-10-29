@@ -132,7 +132,7 @@ impl CanonicalContextCheckpoint {
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
         crate::executor::json::json_byte_length(
             self,
-            limits.file_bytes.min(limits.render_bytes),
+            Some(limits.file_bytes.min(limits.render_bytes)),
             &mut None,
         )
         .map(|_| ())?;
