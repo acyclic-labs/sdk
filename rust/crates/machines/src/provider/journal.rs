@@ -107,6 +107,7 @@ impl Journal {
                     b"enroll",
                     vec![CommitCondition::Absent { path: path.clone() }],
                     vec![append(path, &machine)?],
+                    || {},
                 ).await?;
                 Ok(machine)
             }
@@ -114,12 +115,12 @@ impl Journal {
         }
     }
 
-    pub(crate) async fn begin(
+    pub(crate) async fn begin<C: FnOnce()>(
         &self,
         key: IdempotencyKey,
         digest: [u8; 32],
         physical: Option<&MachineObservation>,
-        validate: impl FnOnce() -> Result<(), ProviderError>,
+        validate: impl FnOnce() -> Result<C, ProviderError>,
     ) -> Result<Admission, ProviderError> {
         let path = self.operation(key)?;
         let head = self.head(path.clone()).await?;
@@ -133,7 +134,7 @@ impl Journal {
                 .map(Admission::Replay)
                 .ok_or(ProviderError::Indeterminate(key));
         }
-        validate()?;
+        let close_admission = validate()?;
         let Some(machine) = physical else {
             return Ok(Admission::Original(None));
         };
@@ -157,6 +158,7 @@ impl Journal {
                     CommitCondition::Absent { path: path.clone() },
                 ],
                 vec![append(machine_path, machine)?, append(path, &value)?],
+                close_admission,
             )
             .await?;
         Ok(Admission::Original(Some(Publication {
@@ -213,6 +215,7 @@ impl Journal {
             b"settle",
             conditions,
             vec![append(machine_path, machine)?, append(operation, &value)?],
+            || {},
         )
         .await
         .map_err(|_| ProviderError::Indeterminate(key))?;
@@ -228,6 +231,7 @@ impl Journal {
         phase: &[u8],
         conditions: Vec<CommitCondition>,
         mutations: Vec<CommitMutation>,
+        on_submit: impl FnOnce(),
     ) -> Result<CommitReceipt, ProviderError> {
         let mut identity = self.root.as_str().as_bytes().to_vec();
         identity.extend_from_slice(&key.as_bytes());
@@ -239,6 +243,10 @@ impl Journal {
             idempotency_key: acyclic_stream::IdempotencyKey::new(Sha256::digest(identity).to_vec())
                 .map_err(storage)?,
         };
+        // All reads, serialization, key admission and lock waits precede this
+        // cut. Closing admission and submitting the original commit cannot be
+        // separated by cancellation or a fallible preparation step.
+        on_submit();
         match self
             .streams
             .commit(request)
@@ -388,6 +396,9 @@ impl Journal {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;
 
 async fn producer_lost(producer: &mut tokio::sync::watch::Receiver<bool>) {
     let published = producer.wait_for(|published| *published).await.is_ok();

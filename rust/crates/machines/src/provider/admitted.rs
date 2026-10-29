@@ -104,37 +104,34 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             MachineState::Suspended => MachineState::Suspending,
             _ => MachineState::Destroying,
         };
+        let physical = (value.state != target).then_some(&pending);
+        let pending_state = pending.state;
+        let state = &mut value.state;
         let admitted = match self
             .journal
-            .begin(
-                key,
-                digest,
-                (value.state != target).then_some(&pending),
-                || {
-                    if matches!(
-                        value.state,
-                        MachineState::Suspending
-                            | MachineState::Waking
-                            | MachineState::Destroying
-                            | MachineState::Indeterminate
-                            | MachineState::Failed
-                    ) {
-                        return Err(ProviderError::Indeterminate(key));
-                    }
-                    if value.state == MachineState::Destroyed && target != MachineState::Destroyed {
-                        return Err(ProviderError::Conflict(
+            .begin(key, digest, physical, move || {
+                if matches!(
+                    *state,
+                    MachineState::Suspending
+                        | MachineState::Waking
+                        | MachineState::Destroying
+                        | MachineState::Indeterminate
+                        | MachineState::Failed
+                ) {
+                    return Err(ProviderError::Indeterminate(key));
+                }
+                if *state == MachineState::Destroyed && target != MachineState::Destroyed {
+                    return Err(ProviderError::Conflict(
                 "Machine incarnation is destroyed; recovery: retain its terminal destroy receipt"
                     .into(),
             ));
+                }
+                Ok(move || {
+                    if *state != target {
+                        *state = pending_state;
                     }
-                    // Validation precedes the original admission commit. Once
-                    // submitted, losing its receipt cannot reopen execution.
-                    if value.state != target {
-                        value.state = pending.state;
-                    }
-                    Ok(())
-                },
-            )
+                })
+            })
             .await?
         {
             Admission::Replay(original) => return Ok(original),
@@ -286,7 +283,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         match self
             .journal
             .begin(request.idempotency_key, digest, None, || {
-                settled(&value, request.idempotency_key)
+                settled(&value, request.idempotency_key).map(|()| || {})
             })
             .await?
         {
@@ -318,7 +315,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         let digest = intent_digest(&(value.id, &Intent::Attach(machine, &volume)))?;
         match self
             .journal
-            .begin(key, digest, None, || settled(&value, key))
+            .begin(key, digest, None, || settled(&value, key).map(|()| || {}))
             .await?
         {
             Admission::Replay(original) => Ok(original),
@@ -370,7 +367,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         let digest = intent_digest(&(value.id, &Intent::Policy(machine, policy)))?;
         match self
             .journal
-            .begin(key, digest, None, || settled(&value, key))
+            .begin(key, digest, None, || settled(&value, key).map(|()| || {}))
             .await?
         {
             Admission::Replay(original) => Ok(original),
