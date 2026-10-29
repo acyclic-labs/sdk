@@ -108,7 +108,11 @@ export const actor = defineActor<Opened, HarnessBindings>({
     let host: EventAgentHost | undefined;
     const ledger = new EventStreamLedger(state.domain("wakes"), env.objects, appended => state.journal(appended),
       async () => { await host?.wake(); }, ledger_limits);
-    host = new EventAgentHost(state.domain("actor"), ledger, name, options, owner, registry, env.access);
+    // The tree's Stream is this Actor's own journal, which runs only this
+    // actor's agent. With no Streams provider bound the host runs no children:
+    // both spawn entrances refuse, rather than create a child that never runs.
+    const childless = { ...options, preset: { ...options.preset, max_children: 0 } };
+    host = new EventAgentHost(state.domain("actor"), ledger, name, childless, owner, registry, env.access);
     await host.create(name);
     return { host, ledger };
   },

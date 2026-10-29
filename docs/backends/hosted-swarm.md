@@ -231,7 +231,10 @@ journal history is paged, never copied into metadata. `fetch` is the one entry,
 terminal gRPC trailers follow the body, and runs an agent call the platform
 routed from a session ActorCall (`/agents/bind`, `/agents/command`, with the
 caller's original command as the body) through the same authenticated call,
-under the credential of the invocation's `hostAccess` admission.
+under the credential of the invocation's `hostAccess` admission. Its tree lives
+in that one actor's journal, so the artifact runs no children: it binds a preset
+with `max_children: 0`, its spawn tool answers `unsupported capability`, and a
+spawn command is refused as `spawn_refused` before anything commits.
 
 ## Required work
 

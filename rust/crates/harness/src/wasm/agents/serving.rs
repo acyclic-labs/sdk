@@ -16,6 +16,8 @@ type Hosted = Server<dyn StreamProvider, Objects>;
 struct Policy {
     policy: Function,
     admitted: Function,
+    /// The preset's open-children bound is not zero.
+    children: bool,
 }
 
 impl hosting::Platform for Policy {
@@ -48,6 +50,9 @@ impl hosting::Platform for Policy {
                 None => Err(StreamError::InvalidResponse),
             }
         })
+    }
+    fn runs_children(&self) -> bool {
+        self.children
     }
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
@@ -92,6 +97,9 @@ impl WasmAgentServer {
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let limits = options.preset.execution_limits(options.limits);
+        // A preset admitting no open children binds a host that runs none:
+        // spawn commands are refused like the preset's spawn tool refuses.
+        let children = options.preset.max_children != Some(0);
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;
@@ -163,7 +171,11 @@ impl WasmAgentServer {
             observation,
             server: RefCell::new(None),
             pending: RefCell::new(None),
-            platform: Arc::new(Policy { policy, admitted }),
+            platform: Arc::new(Policy {
+                policy,
+                admitted,
+                children,
+            }),
             authority: authority.authority(),
             binding,
             lifetime: RefCell::new(Some(tokio::sync::watch::channel(()).0)),

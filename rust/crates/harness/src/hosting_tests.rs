@@ -32,9 +32,9 @@ impl TurnExecutors for Never {
     }
 }
 
-/// Allows every command until denied.
+/// Allows every command until denied; runs children unless childless.
 #[derive(Default)]
-struct Owner(AtomicBool);
+struct Owner(AtomicBool, AtomicBool);
 
 impl Platform for Owner {
     fn policy<'a>(
@@ -50,6 +50,10 @@ impl Platform for Owner {
                 PolicyDecision::Allow
             })
         })
+    }
+
+    fn runs_children(&self) -> bool {
+        !self.1.load(Ordering::SeqCst)
     }
 }
 
@@ -199,16 +203,28 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
+    let spawn = AgentCommand::Spawn {
+        parent: root.clone(),
+        id: IntentId::try_from("s1")?,
+        brief: ModelContent::Text("child".into()),
+    };
+    // A host that runs no children refuses the spawn itself, typed, and
+    // commits nothing: no child is created to wait forever.
+    owner.1.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        call(&client, "agents", &spawn).await?,
+        Err(AgentControlFailure::Refused { code, .. }) if code == "spawn_refused"
+    ));
+    assert!(matches!(
+        call(&client, "agents", &children).await?,
+        Ok(AgentReply::Children { items, next: None }) if items.is_empty()
+    ));
+    owner.1.store(false, Ordering::SeqCst);
     // A spawn is the parent's own step: the reply names the child, and the
     // running host's next step for the parent creates it.
     let runner = {
         let server = server.clone();
         tokio::spawn(async move { server.run(|_, _| {}).await })
-    };
-    let spawn = AgentCommand::Spawn {
-        parent: root.clone(),
-        id: IntentId::try_from("s1")?,
-        brief: ModelContent::Text("child".into()),
     };
     let Ok(AgentReply::Spawned { agent: child, .. }) = call(&client, "agents", &spawn).await?
     else {

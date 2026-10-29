@@ -175,6 +175,11 @@ impl AgentTool {
                     usize::try_from(limit)
                         .map_or(MAX_OPEN_CHILDREN, |limit| limit.min(MAX_OPEN_CHILDREN))
                 });
+                if limit == 0 {
+                    return Ok(super::rejected_input(Error::Unsupported(
+                        "this host runs no children".into(),
+                    )));
+                }
                 if !self.within(&intent, limit).await? {
                     return Ok(rejected(format!(
                         "at most {limit} open children; archive one or wait for one to finish"
