@@ -482,7 +482,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         assert!(root.finish_mount_removals(accounting!()).await.unwrap());
         record = identity.record;
         drop((checkout, root, fs));
-        tokio::time::timeout(std::time::Duration::from_secs(10), released.wait_async())
+        tokio::time::timeout(std::time::Duration::from_secs(10), released.released())
             .await
             .unwrap();
     }
