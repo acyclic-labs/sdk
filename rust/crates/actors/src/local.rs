@@ -26,6 +26,10 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Typed failure at the shared actor publication boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// The original native delivery producer stopped, was cancelled or unwound.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[error(transparent)]
+    Execution(#[from] std::io::Error),
     /// Canonical provider failure, including uncertain acknowledgement.
     #[error(transparent)]
     Stream(#[from] StreamError),
@@ -42,7 +46,7 @@ pub enum Error {
     #[error("actor participant settlement failed: {source}")]
     Settlement {
         /// The already decided provider outcome, never replaced by this error.
-        outcome: Result<CommitOutcome, StreamError>,
+        outcome: Box<Result<CommitOutcome, StreamError>>,
         /// Why local participant settlement failed.
         source: GuestError,
     },
@@ -647,7 +651,10 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         if let Some(composition) = prepared.composition {
             if let Err(source) = composition.settle(outcome.as_ref()).await {
-                return Err(Error::Settlement { outcome, source });
+                return Err(Error::Settlement {
+                    outcome: Box::new(outcome),
+                    source,
+                });
             }
         }
         PreparedPublish::settle(&outcome?)?;

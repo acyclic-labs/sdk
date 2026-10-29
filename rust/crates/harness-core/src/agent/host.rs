@@ -120,7 +120,9 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
             agents: Agents::new(actor_store(&provider)?),
             // Agents of other bindings may share this stream's actor root;
             // this host claims only its own account and namespace.
-            runtime: Runtime::new(published, handler, clock).claiming(&within),
+            runtime: Runtime::new(published, handler, clock)
+                .claiming(&within)
+                .map_err(actor_error)?,
             provider,
             within,
         })

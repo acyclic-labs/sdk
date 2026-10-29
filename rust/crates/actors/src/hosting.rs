@@ -2,7 +2,8 @@
 //!
 //! The platform admits the actor and injects its Store, Handler and clock. It
 //! routes committed input changes and the returned alarm to [`Host::wake`],
-//! retaining its event until that call finishes. No background task is started.
+//! retaining its event until that call finishes. Idle actors own no background
+//! task. Native deliveries run on their fixed shard.
 
 use crate::{
     addressing::ActorReference,
@@ -32,7 +33,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
         limits: RuntimeLimits,
     ) -> Self {
         Self {
-            runtime: Runtime::new(store, handler, Arc::clone(&clock)).with_limits(limits),
+            runtime: Runtime::configured(store, handler, Arc::clone(&clock), limits),
             actor,
             clock,
             events: tokio::sync::Mutex::new(()),
@@ -45,7 +46,7 @@ impl<P: StreamProvider + ?Sized> Host<P> {
     }
 
     /// The original injected store, including its root and provider.
-    pub const fn store(&self) -> &Store<P> {
+    pub fn store(&self) -> &Store<P> {
         self.runtime.store()
     }
 

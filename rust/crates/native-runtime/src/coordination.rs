@@ -205,6 +205,11 @@ pin_project_lite::pin_project! {
 }
 
 impl<T> ActorTask<T> {
+    /// Retains cancellation authority independently of the result observer.
+    pub fn abort_handle(&self) -> Option<crate::AbortHandle> {
+        self.task.as_ref().map(crate::TaskHandle::abort_handle)
+    }
+
     /// Requests cancellation of the original delivery, retaining its observer.
     pub fn abort(&self) {
         if let Some(task) = &self.task {

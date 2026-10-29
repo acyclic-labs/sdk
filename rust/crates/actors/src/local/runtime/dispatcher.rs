@@ -7,7 +7,7 @@ use acyclic_stream::ChildrenPageRequest;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) fn dispatcher_store(&self) -> Result<(Store<P>, ActorReference), Error> {
-        let actor = match &self.claims {
+        let actor = match &self.core.claims {
             None => ActorReference::new(b"runtime", b"dispatch", b"all"),
             Some((account, namespace)) => ActorReference::new(
                 account.as_bytes(),
@@ -18,8 +18,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         .map_err(|_| Error::Invalid("invalid dispatcher identity"))?;
         Ok((
             Store::new(
-                Arc::clone(self.store.provider()),
-                StreamPath::new(format!("{}/_dispatcher", self.store.root()))?,
+                Arc::clone(self.core.store.provider()),
+                StreamPath::new(format!("{}/_dispatcher", self.core.store.root()))?,
             ),
             actor,
         ))
@@ -43,7 +43,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 subscriptions: BTreeMap::from([(
                     "activation".into(),
                     Subscription {
-                        path: self.store.root().clone(),
+                        path: self.core.store.root().clone(),
                         cursor: 0,
                     },
                 )]),
@@ -109,10 +109,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut version = None;
         loop {
             let page = self
+                .core
                 .store
                 .provider()
                 .children_page(ChildrenPageRequest {
-                    parent: Some(self.store.root().clone()),
+                    parent: Some(self.core.store.root().clone()),
                     after: after.clone(),
                     hierarchy_version: version,
                     limit: 256,
@@ -131,7 +132,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Err(error) => return Err(error.into()),
             };
             for child in page.children {
-                if let Ok(actor) = self.store.actor(&child.path)
+                if let Ok(actor) = self.core.store.actor(&child.path)
                     && self.claims(&actor)
                 {
                     self.track(actor)?;

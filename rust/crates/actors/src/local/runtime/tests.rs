@@ -960,10 +960,14 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     Ok(address)
 }
 
-struct ActiveAttempt<'a>(&'a std::sync::atomic::AtomicUsize);
+struct ActiveAttempt<'a>(
+    &'a std::sync::atomic::AtomicUsize,
+    &'a tokio::sync::Semaphore,
+);
 impl Drop for ActiveAttempt<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
+        self.1.add_permits(1);
     }
 }
 
@@ -972,6 +976,20 @@ struct Gated {
     active: std::sync::atomic::AtomicUsize,
     peak: std::sync::atomic::AtomicUsize,
     gate: tokio::sync::Semaphore,
+    started: tokio::sync::Semaphore,
+    finished: tokio::sync::Semaphore,
+}
+impl Gated {
+    fn new() -> Result<Self, crate::domain::DomainError> {
+        Ok(Self {
+            package: Package::new()?,
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            gate: tokio::sync::Semaphore::new(0),
+            started: tokio::sync::Semaphore::new(0),
+            finished: tokio::sync::Semaphore::new(0),
+        })
+    }
 }
 impl Handler for Gated {
     fn manifest(&self) -> &Manifest {
@@ -985,8 +1003,9 @@ impl Handler for Gated {
     ) -> GuestFuture<'a, Transition> {
         async move {
             let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
-            let _attempt = ActiveAttempt(&self.active);
+            let _attempt = ActiveAttempt(&self.active, &self.finished);
             self.peak.fetch_max(active, Ordering::SeqCst);
+            self.started.add_permits(1);
             self.gate
                 .acquire()
                 .await
@@ -1003,18 +1022,13 @@ impl Handler for Gated {
 async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
-    let handler = Arc::new(Gated {
-        package: Package::new()?,
-        active: std::sync::atomic::AtomicUsize::new(0),
-        peak: std::sync::atomic::AtomicUsize::new(0),
-        gate: tokio::sync::Semaphore::new(0),
-    });
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         handler.clone(),
         Arc::new(SystemClock),
     )
-    .with_limits(RuntimeLimits::new(2, 2)?);
+    .with_limits(RuntimeLimits::new(2, 2)?)?;
     let mut actors = Vec::new();
     for index in 0..6 {
         let address = spawn_with(&store, &format!("bounded-{index}"), &[b"emit"]).await?;
@@ -1028,21 +1042,30 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
         }
         let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
         let mut events = events;
+        let entered = handler.started.acquire_many(2);
+        futures::pin_mut!(entered);
         poll_fn(|context| {
             if event_owned {
                 assert!(events.poll_next_unpin(context).is_pending());
             } else {
                 assert!(host.as_mut().poll(context).is_pending());
             }
-            if handler.active.load(Ordering::SeqCst) == 2 {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
+            entered
+                .as_mut()
+                .poll(context)
+                .map(|result| result.map(|permit| permit.forget()))
         })
-        .await;
+        .await?;
         assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
-        assert_eq!(runtime.admission.available_permits(), 0);
+        assert_eq!(
+            runtime
+                .core
+                .admission
+                .as_ref()
+                .ok_or("missing configured admission")?
+                .available_permits(),
+            0
+        );
         for address in &actors {
             assert_eq!(
                 store
@@ -1056,8 +1079,10 @@ async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
         // Drop a real in-flight handler, provider follows and admission waiters.
         // Its claim may be durable; its input and effect must remain untouched.
     }
+    // Cancellation requests are asynchronous across cores. The original
+    // handler drops produce these events; no clock or status recheck is used.
+    handler.finished.acquire_many(2).await?.forget();
     assert_eq!(handler.active.load(Ordering::SeqCst), 0);
-    assert_eq!(runtime.admission.available_permits(), 2);
     handler.gate.add_permits(actors.len());
     for address in &actors {
         runtime.wake(address);
@@ -1092,7 +1117,7 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     let hot = spawn_with(&store, "duplicate-hot", &[b"emit"]).await?;
     let cold = spawn_with(&store, "duplicate-cold", &[b"emit"]).await?;
     let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
-        .with_limits(RuntimeLimits::new(2, 2)?);
+        .with_limits(RuntimeLimits::new(2, 2)?)?;
     runtime.track(hot.clone())?;
     runtime.track(cold.clone())?;
     let slot = runtime.slot(&hot).ok_or("missing hot actor")?;
@@ -1103,7 +1128,12 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
     }
     assert!(futures::poll!(duplicates.next()).is_pending());
     assert_eq!(
-        runtime.admission.available_permits(),
+        runtime
+            .core
+            .admission
+            .as_ref()
+            .ok_or("missing configured admission")?
+            .available_permits(),
         2,
         "queued duplicates cannot occupy active delivery permits"
     );
@@ -1124,7 +1154,15 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
         records(&*provider, "out/duplicate-hot").await?,
         vec![Bytes::from_static(b"r0")]
     );
-    assert_eq!(runtime.admission.available_permits(), 2);
+    assert_eq!(
+        runtime
+            .core
+            .admission
+            .as_ref()
+            .ok_or("missing configured admission")?
+            .available_permits(),
+        2
+    );
     Ok(())
 }
 
@@ -1160,12 +1198,20 @@ async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> Te
     }
     store.submit(create).await?;
     let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
-        .with_limits(RuntimeLimits::new(1, 1)?);
+        .with_limits(RuntimeLimits::new(1, 1)?)?;
     runtime.track(address.clone())?;
-    let claim = runtime.ready.take().ok_or("missing initial placement")?;
+    let claim = runtime
+        .core
+        .ready
+        .take()
+        .ok_or("missing initial placement")?;
     runtime.execute(claim).await.map_err(|(_, error)| error)?;
     for expected in 0..64 {
-        let work = runtime.ready.take().ok_or("rotation work disappeared")?;
+        let work = runtime
+            .core
+            .ready
+            .take()
+            .ok_or("rotation work disappeared")?;
         runtime.execute(work).await.map_err(|(_, error)| error)?;
         let snapshot = runtime.store().load(&address).await?;
         let state = snapshot.state().ok_or("rotation state disappeared")?;
@@ -1191,11 +1237,15 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     )
-    .with_limits(RuntimeLimits::new(1, 2)?);
+    .with_limits(RuntimeLimits::new(1, 2)?)?;
     runtime.track(hot.clone())?;
     runtime.track(cold.clone())?;
-    let work = runtime.ready.take().ok_or("missing initial hot work")?;
-    assert_eq!(work.key(), &hot);
+    let work = runtime
+        .core
+        .ready
+        .take()
+        .ok_or("missing initial hot work")?;
+    assert_eq!(work.key().as_ref(), &hot);
     runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         store
@@ -1205,8 +1255,12 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
             .and_then(|state| state.cursor("inbox")),
         Some(1)
     );
-    let work = runtime.ready.take().ok_or("missing cold work")?;
-    assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
+    let work = runtime.core.ready.take().ok_or("missing cold work")?;
+    assert_eq!(
+        work.key().as_ref(),
+        &cold,
+        "a hot actor must rejoin at the back"
+    );
     runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         records(&*provider, "out/cold").await?,
@@ -1230,58 +1284,54 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
 }
 
 #[tokio::test]
-async fn event_batch_yield_retains_placement_until_completion_or_abort() -> TestResult {
+async fn native_delivery_retains_placement_until_original_task_finishes() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "event-lease", &[b"emit"]).await?;
-    let runtime = Runtime::new(
-        Store::new(Arc::clone(&provider), root()?),
-        Arc::new(Package::new()?),
-        Arc::new(SystemClock),
-    )
-    .with_limits(RuntimeLimits::new(1, 1)?);
+    let handler = Arc::new(Gated::new()?);
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
     runtime.track(address.clone())?;
-    {
-        let delivery = runtime.drain_actor(&address);
-        futures::pin_mut!(delivery);
-        assert!(
-            delivery
-                .as_mut()
-                .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
-                .is_pending()
-        );
-        assert_eq!(
-            runtime.admission.available_permits(),
-            1,
-            "the next actor may enter during the yield"
-        );
-        assert!(
-            !runtime.release(&address),
-            "the unfinished event still owns placement"
-        );
-        assert_eq!(
-            store
-                .load(&address)
-                .await?
-                .state()
-                .and_then(|state| state.cursor("inbox")),
-            Some(0)
-        );
-    }
+    let slot = runtime.slot(&address).ok_or("missing actor slot")?;
+    let ready = runtime
+        .core
+        .ready
+        .take()
+        .ok_or("missing original ready work")?;
+    assert!(Arc::ptr_eq(ready.key(), &slot.actor));
+    let copied = Arc::new(address.clone());
+    assert!(
+        !Arc::ptr_eq(&copied, &slot.actor),
+        "copying identity fails the original-storage oracle"
+    );
+    drop(ready);
+    let task = runtime.spawn_delivery(&slot)?;
+    assert!(
+        !runtime.release(&address),
+        "queued task owns placement before its first poll"
+    );
+    handler.started.acquire().await?.forget();
+    assert!(
+        !runtime.release(&address),
+        "the original handler still owns placement"
+    );
+    task.abort();
+    let error = task.await.expect_err("aborted delivery completed");
+    assert_eq!(
+        error.get_ref().and_then(|error| error.downcast_ref()),
+        Some(&acyclic_native_runtime::ActorFailure::Cancelled)
+    );
     assert!(
         runtime.release(&address),
-        "aborting the event releases its placement guard"
+        "original task completion retires its placement"
     );
+    handler.gate.add_permits(1);
     runtime.track(address.clone())?;
     runtime.drain_actor(&address).await?;
     assert_eq!(
         records(&*provider, "out/event-lease").await?,
         vec![Bytes::from_static(b"r0")]
     );
-    assert!(
-        runtime.release(&address),
-        "a completed event releases its placement guard"
-    );
+    assert!(runtime.release(&address));
     Ok(())
 }
 
@@ -1301,14 +1351,14 @@ async fn a_paused_actor_withdraws_its_due_alarm_until_resume() -> TestResult {
     let address = spawn_with(&store, "sleeper", &[b"set 10"]).await?;
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
-    assert_eq!(runtime.ready.next_deadline(), Some(11));
+    assert_eq!(runtime.core.ready.next_deadline(), Some(11));
     runtime.pause(&address, true).await?;
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
     // Control: scheduling before the paused check keeps Some(11) here, and
     // every timer fire re-queues the paused actor.
     assert_eq!(
-        runtime.ready.next_deadline(),
+        runtime.core.ready.next_deadline(),
         None,
         "paused alarm left the due index"
     );
@@ -1342,7 +1392,7 @@ async fn two_runtimes_claiming_one_cut_cannot_share_an_epoch() -> TestResult {
     let (first, second) = (host()?, host()?);
     let cut = store.load(&address).await?;
     let attempt = |runtime: &Runtime<MemoryStream>| {
-        super::key(&cut, &format!("claim-1-{}", runtime.instance))
+        super::key(&cut, &format!("claim-1-{}", runtime.core.instance))
     };
     store.claim(&cut, 1, attempt(&first)?).await?;
     // A retry of the same attempt replays its own success.
@@ -1462,15 +1512,19 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "cancelled", &[b"emit"]).await?;
+    let handler = Arc::new(Gated::new()?);
     let runtime = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
-        Arc::new(Limited::new(10_000, 1 << 16, true)?),
+        handler.clone(),
         Arc::new(Manual(AtomicU64::new(1))),
     );
     runtime.track(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing actor slot")?;
-    // Poll through claim and state observation, then cancel the stalled handler.
-    assert!(runtime.deliver(&address, &slot).now_or_never().is_none());
+    let task = runtime.spawn_delivery(&slot)?;
+    handler.started.acquire().await?.forget();
+    task.abort();
+    assert!(task.await.is_err());
+    assert!(slot.refresh.load(Ordering::Acquire));
     drop(slot);
     let cut = store.load(&address).await?;
     assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);
@@ -1591,5 +1645,147 @@ async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult 
     let (failures, published) = run_limited(Limited::new(10_000, 4, false)?).await?;
     assert!(refused(&failures, "checkpoint"), "{failures:?}");
     assert!(published.is_empty());
+    Ok(())
+}
+
+/// Both native entry points use canonical actor placement and the same engine.
+#[tokio::test]
+async fn continuous_and_event_delivery_use_the_same_canonical_shard() -> TestResult {
+    struct Affinity {
+        package: Package,
+        polls: std::sync::Mutex<Vec<std::thread::ThreadId>>,
+    }
+    impl Handler for Affinity {
+        fn manifest(&self) -> &Manifest {
+            self.package.manifest()
+        }
+        fn on_record<'a>(
+            &'a self,
+            delivery: Delivery,
+            checkpoint: Option<&'a Checkpoint>,
+            cancellation: crate::guest::CancellationToken,
+        ) -> GuestFuture<'a, Transition> {
+            async move {
+                self.polls.lock().unwrap().push(std::thread::current().id());
+                self.package
+                    .on_record(delivery, checkpoint, cancellation)
+                    .await
+            }
+            .boxed()
+        }
+    }
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "native-affinity", &[b"emit"]).await?;
+    let handler = Arc::new(Affinity {
+        package: Package::new()?,
+        polls: Default::default(),
+    });
+    let expected = acyclic_native_runtime::coordination()?
+        .actor(&address)?
+        .spawn(async { std::thread::current().id() })
+        .await?;
+    let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+    runtime.track(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    assert!(runtime.release(&address));
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("agents/native-affinity")?,
+            records: vec![Bytes::from_static(b"emit").into()],
+            if_tail: Some(1),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let host = crate::hosting::Host::new(
+        Store::new(provider, root()?),
+        address,
+        handler.clone(),
+        Arc::new(SystemClock),
+        RuntimeLimits::default(),
+    );
+    assert_eq!(host.wake().await?, None);
+    assert_eq!(*handler.polls.lock().unwrap(), vec![expected, expected]);
+    // The former caller-polled execution path fails this exact affinity check.
+    assert_ne!(expected, std::thread::current().id());
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_handler_unwind_is_a_typed_delivery_failure() -> TestResult {
+    struct Unwind(Package);
+    impl Handler for Unwind {
+        fn manifest(&self) -> &Manifest {
+            self.0.manifest()
+        }
+        fn on_record<'a>(
+            &'a self,
+            _: Delivery,
+            _: Option<&'a Checkpoint>,
+            _: crate::guest::CancellationToken,
+        ) -> GuestFuture<'a, Transition> {
+            Box::pin(async { panic!("original actor handler unwound") })
+        }
+    }
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "native-unwind", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        store,
+        Arc::new(Unwind(Package::new()?)),
+        Arc::new(SystemClock),
+    );
+    runtime.track(address.clone())?;
+    let failures = runtime.drain().await;
+    let [(_, Error::Execution(error))] = failures.as_slice() else {
+        return Err(format!("original producer failure was lost: {failures:?}").into());
+    };
+    assert_eq!(
+        error.get_ref().and_then(|error| error.downcast_ref()),
+        Some(&acyclic_native_runtime::ActorFailure::Panicked)
+    );
+    assert!(records(&*provider, "out/native-unwind").await?.is_empty());
+    assert!(runtime.release(&address));
+    Ok(())
+}
+
+#[tokio::test]
+async fn accepted_native_work_fences_runtime_reconfiguration() -> TestResult {
+    for change_claims in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let address = spawn_with(&store, "configuration-owner", &[b"emit"]).await?;
+        let handler = Arc::new(Gated::new()?);
+        let runtime = Runtime::new(store, handler.clone(), Arc::new(SystemClock));
+        runtime.track(address.clone())?;
+        let slot = runtime
+            .slot(&address)
+            .ok_or("missing original actor slot")?;
+        let original = Arc::downgrade(&runtime.core);
+        let task = runtime.spawn_delivery(&slot)?;
+        handler.started.acquire().await?.forget();
+        let changed = if change_claims {
+            runtime.claiming(&address)
+        } else {
+            runtime.with_limits(RuntimeLimits::new(1, 1)?)
+        };
+        assert!(matches!(
+            changed,
+            Err(Error::Invalid(
+                "actor delivery still owns runtime configuration"
+            ))
+        ));
+        assert!(
+            original.upgrade().is_some(),
+            "original delivery keeps the whole engine alive"
+        );
+        task.abort();
+        assert!(task.await.is_err());
+        assert!(
+            original.upgrade().is_none(),
+            "original task completion retires engine custody"
+        );
+        assert_eq!(slot.event_deliveries.load(Ordering::Acquire), 0);
+    }
     Ok(())
 }

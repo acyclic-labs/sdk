@@ -13,7 +13,7 @@ readme = "README.md"
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["acyclic-stream/model-checking"]
-test-support = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
+test-support = ["acyclic-native-runtime/test-support"]
 
 [dependencies]
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
@@ -40,7 +40,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
-acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
 reqwest.workspace = true
 rustls.workspace = true

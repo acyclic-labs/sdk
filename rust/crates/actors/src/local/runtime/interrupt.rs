@@ -13,6 +13,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     ) -> Result<(), Error> {
         for (id, subscription) in state.subscriptions() {
             if !self
+                .core
                 .handler
                 .manifest()
                 .interrupts
@@ -67,11 +68,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     match follow.poll_next_unpin(context) {
                         Poll::Ready(Some(Ok(record))) => {
                             remaining -= 1;
-                            if self.handler.manifest().interrupts.iter().any(|filter| {
-                                &filter.subscription == id
-                                    && !filter.value_prefix.is_empty()
-                                    && record.value.starts_with(&filter.value_prefix)
-                            }) {
+                            if self
+                                .core
+                                .handler
+                                .manifest()
+                                .interrupts
+                                .iter()
+                                .any(|filter| {
+                                    &filter.subscription == id
+                                        && !filter.value_prefix.is_empty()
+                                        && record.value.starts_with(&filter.value_prefix)
+                                })
+                            {
                                 cancellation.cancel();
                                 cancelled = true;
                                 // No unpolled provider future may obstruct the

@@ -2,9 +2,11 @@
 use super::*;
 
 /// Runtime scheduling bounds, independent of a package's resource policy.
+/// Default admission is unbounded; an explicit bound represents host capacity.
+/// The work chunk only yields and never limits total input or actor count.
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeLimits {
-    pub(super) active: usize,
+    pub(super) active: Option<usize>,
     pub(super) work: usize,
 }
 
@@ -17,14 +19,17 @@ impl RuntimeLimits {
                 "runtime bounds must be positive and representable",
             ));
         }
-        Ok(Self { active, work })
+        Ok(Self {
+            active: Some(active),
+            work,
+        })
     }
 }
 
 impl Default for RuntimeLimits {
     fn default() -> Self {
         Self {
-            active: 64,
+            active: None,
             work: 64,
         }
     }

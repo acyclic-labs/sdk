@@ -68,7 +68,10 @@ fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, ()> {
 }
 
 struct Slot {
-    registration: Registration<ActorReference>,
+    actor: Arc<ActorReference>,
+    #[cfg(not(target_arch = "wasm32"))]
+    executor: acyclic_native_runtime::ActorExecutor,
+    registration: Registration<Arc<ActorReference>>,
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
@@ -78,6 +81,17 @@ struct Slot {
 /// An event retains its placement through cooperative batch boundaries.
 /// Admission and the actor lock can pass to another actor meanwhile.
 struct EventDelivery(Arc<Slot>);
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CancelDelivery(Option<acyclic_native_runtime::AbortHandle>);
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CancelDelivery {
+    fn drop(&mut self) {
+        if let Some(abort) = &self.0 {
+            abort.abort();
+        }
+    }
+}
 impl Drop for EventDelivery {
     fn drop(&mut self) {
         self.0.event_deliveries.fetch_sub(1, Ordering::AcqRel);
@@ -116,7 +130,7 @@ struct Inner {
 enum Event {
     Created(Record),
     Dispatched(Result<Snapshot, Error>),
-    Work(Work<ActorReference>),
+    Work(Work<Arc<ActorReference>>),
     Done(Result<(), (ActorReference, Error)>),
     Rearm(Option<u64>),
     Due,
@@ -127,72 +141,96 @@ enum Event {
 /// store's root and that it claims, including actors created by other
 /// parties' commits.
 pub struct Runtime<P: StreamProvider + ?Sized> {
+    core: Arc<Core<P>>,
+}
+
+struct Core<P: StreamProvider + ?Sized> {
     store: Store<P>,
     /// The one account and namespace whose actors this runtime claims, when
     /// several hosts share the root; `None` claims every actor.
     claims: Option<(AccountId, NamespaceId)>,
     handler: Arc<dyn Handler>,
     clock: Arc<dyn Clock>,
-    ready: ReadySet<ActorReference>,
-    actors: [SyncMutex<HashMap<ActorReference, Arc<Slot>>>; 64],
+    ready: ReadySet<Arc<ActorReference>>,
+    actors: [SyncMutex<HashMap<Arc<ActorReference>, Arc<Slot>>>; 64],
     shards: RandomState,
     /// Identity of this runtime's placement attempts: two hosts claiming the
     /// same cut never share an idempotency key, so only one claim commits.
     instance: uuid::Uuid,
     limits: RuntimeLimits,
-    admission: tokio::sync::Semaphore,
+    admission: Option<tokio::sync::Semaphore>,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// One runtime per state root and handler package.
     pub fn new(store: Store<P>, handler: Arc<dyn Handler>, clock: Arc<dyn Clock>) -> Self {
+        Self::configured(store, handler, clock, RuntimeLimits::default())
+    }
+
+    pub(crate) fn configured(
+        store: Store<P>,
+        handler: Arc<dyn Handler>,
+        clock: Arc<dyn Clock>,
+        limits: RuntimeLimits,
+    ) -> Self {
         Self {
-            store,
-            claims: None,
-            handler,
-            clock,
-            ready: ReadySet::default(),
-            actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
-            shards: RandomState::new(),
-            instance: uuid::Uuid::new_v4(),
-            limits: RuntimeLimits::default(),
-            admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
+            core: Arc::new(Core {
+                store,
+                claims: None,
+                handler,
+                clock,
+                ready: ReadySet::default(),
+                actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
+                shards: RandomState::new(),
+                instance: uuid::Uuid::new_v4(),
+                limits,
+                admission: limits.active.map(tokio::sync::Semaphore::new),
+            }),
         }
     }
 
     /// Configure admission before sharing or running this host. Event-owned
     /// deliveries and continuous dispatch use the same admission bound.
-    #[must_use]
-    pub fn with_limits(mut self, limits: RuntimeLimits) -> Self {
-        self.admission = tokio::sync::Semaphore::new(limits.active);
-        self.limits = limits;
-        self
+    /// Refuses replacement while accepted work retains this configuration.
+    pub fn with_limits(mut self, limits: RuntimeLimits) -> Result<Self, Error> {
+        let core = Arc::get_mut(&mut self.core).ok_or(Error::Invalid(
+            "actor delivery still owns runtime configuration",
+        ))?;
+        core.admission = limits.active.map(tokio::sync::Semaphore::new);
+        core.limits = limits;
+        Ok(self)
     }
 
     /// Claim only the actors of `within`'s account and namespace: discovery
     /// skips every other actor and [`Self::track`] refuses it, so hosts that
-    /// share one state root never claim each other's actors.
-    #[must_use]
-    pub fn claiming(mut self, within: &ActorReference) -> Self {
-        self.claims = Some((within.account().clone(), within.namespace().clone()));
-        self
+    /// share one state root never claim each other's actors. Refuses replacement
+    /// while accepted work retains this configuration.
+    pub fn claiming(mut self, within: &ActorReference) -> Result<Self, Error> {
+        let core = Arc::get_mut(&mut self.core).ok_or(Error::Invalid(
+            "actor delivery still owns runtime configuration",
+        ))?;
+        core.claims = Some((within.account().clone(), within.namespace().clone()));
+        Ok(self)
     }
 
     /// Whether this runtime claims `actor`.
     pub fn claims(&self, actor: &ActorReference) -> bool {
-        self.claims.as_ref().is_none_or(|(account, namespace)| {
-            actor.account() == account && actor.namespace() == namespace
-        })
+        self.core
+            .claims
+            .as_ref()
+            .is_none_or(|(account, namespace)| {
+                actor.account() == account && actor.namespace() == namespace
+            })
     }
 
     /// The shared store.
-    pub const fn store(&self) -> &Store<P> {
-        &self.store
+    pub fn store(&self) -> &Store<P> {
+        &self.core.store
     }
 
     /// Exact resident registration and ready counts.
     pub fn counts(&self) -> (usize, usize) {
-        self.ready.counts()
+        self.core.ready.counts()
     }
 
     /// Start tracking an actor. Idempotent; the first delivery claims a new
@@ -209,11 +247,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             slot.waker.wake_by_ref();
             return Ok(());
         }
-        let registration = self.ready.register(actor.clone())?;
+        let actor = Arc::new(actor);
+        #[cfg(not(target_arch = "wasm32"))]
+        let executor = acyclic_native_runtime::coordination()?.actor(&actor)?;
+        let registration = self.core.ready.register(Arc::clone(&actor))?;
         let waker = registration.waker();
         actors.insert(
-            actor,
+            Arc::clone(&actor),
             Arc::new(Slot {
+                actor,
+                #[cfg(not(target_arch = "wasm32"))]
+                executor,
                 registration,
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
@@ -261,7 +305,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub async fn pause(&self, actor: &ActorReference, paused: bool) -> Result<(), Error> {
         let _refresh = RefreshOnDrop(self.slot(actor), true);
         loop {
-            let snapshot = self.store.load(actor).await?;
+            let snapshot = self.core.store.load(actor).await?;
             let state = snapshot
                 .state()
                 .ok_or(Error::Invalid("actor state was never created"))?;
@@ -270,6 +314,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             }
             let operation = if paused { "pause" } else { "resume" };
             match self
+                .core
                 .store
                 .set_paused(&snapshot, state.epoch(), paused, key(&snapshot, operation)?)
                 .await
@@ -290,19 +335,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Run every currently ready or due actor to quiescence, then return the
     /// failures. Deterministic hosts and tests drive the runtime with this.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
-        let now = self.clock.now_unix_ms();
-        while self.ready.wake_due(now, self.limits.work) == self.limits.work {
+        let now = self.core.clock.now_unix_ms();
+        while self.core.ready.wake_due(now, self.core.limits.work) == self.core.limits.work {
             limits::yield_now().await;
         }
         let mut failures = Vec::new();
         let mut steps = 0;
         loop {
-            let Some(work) = self.ready.take() else { break };
+            let Some(work) = self.core.ready.take() else {
+                break;
+            };
             if let Err(failure) = self.execute(work).await {
                 failures.push(failure);
             }
             steps += 1;
-            if steps == self.limits.work {
+            if steps == self.core.limits.work {
                 limits::yield_now().await;
                 steps = 0;
             }
@@ -331,7 +378,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .map_err(|_| Error::Invalid("event delivery count overflow"))?;
             EventDelivery(Arc::clone(slot))
         };
-        while !self.deliver(actor, &delivery.0).await? {
+        while !self.deliver(&delivery.0).await? {
             // Drop both the actor lock and admission before queueing another
             // batch. Finite event delivery still drains its committed input.
             limits::yield_now().await;
@@ -346,7 +393,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub async fn drain_event(&self, actor: &ActorReference) -> Result<Option<u64>, Error> {
         self.track(actor.clone())?;
         self.drain_actor(actor).await?;
-        let snapshot = self.store.load(actor).await?;
+        let snapshot = self.core.store.load(actor).await?;
         let alarm = snapshot
             .state()
             .filter(|state| !state.paused())
@@ -362,8 +409,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// alarms from one timer. Per-actor failures go to `report`; the input
     /// stays queued.
     pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
-        let root = self.store.root().clone();
-        let provider = self.store.provider();
+        let root = self.core.store.root().clone();
+        let provider = self.core.store.provider();
         // Streams has no empty create: open the log with one non-address record
         // at sequence 0. Any existing log (an earlier opening or a creation)
         // refuses it, which is equally fine.
@@ -411,14 +458,14 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut next_class = 0;
         let mut steps = 0;
         loop {
-            if steps == self.limits.work {
+            if steps == self.core.limits.work {
                 limits::yield_now().await;
                 steps = 0;
             }
             let event = poll_fn(|context: &mut Context<'_>| {
                 // Alarm changes must wake us even when active admission is
                 // full and the ready queue cannot currently be consumed.
-                self.ready.listen(context);
+                self.core.ready.listen(context);
                 for _ in 0..4 {
                     let class = next_class;
                     next_class = (next_class + 1) % 4;
@@ -450,8 +497,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         2 => {
-                            if running.len() < self.limits.active
-                                && let Poll::Ready(work) = self.ready.poll_ready(context)
+                            if self
+                                .core
+                                .limits
+                                .active
+                                .is_none_or(|limit| running.len() < limit)
+                                && let Poll::Ready(work) = self.core.ready.poll_ready(context)
                             {
                                 return Poll::Ready(Event::Work(work));
                             }
@@ -459,7 +510,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         _ => {
                             // Read the deadline after installing the waiter: an earlier
                             // alarm installed concurrently wakes us to rearm.
-                            let next = self.ready.next_deadline();
+                            let next = self.core.ready.next_deadline();
                             if next != timer.as_ref().map(|(deadline, _)| *deadline) {
                                 return Poll::Ready(Event::Rearm(next));
                             }
@@ -501,12 +552,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Event::Done(Err((actor, error))) => report(&actor, &error),
                 Event::Done(Ok(())) => {}
                 Event::Rearm(next) => {
-                    timer = next.map(|deadline| (deadline, self.clock.sleep_until(deadline)));
+                    timer = next.map(|deadline| (deadline, self.core.clock.sleep_until(deadline)));
                 }
                 Event::Due => {
                     timer = None;
-                    self.ready
-                        .wake_due(self.clock.now_unix_ms(), self.limits.work);
+                    self.core
+                        .ready
+                        .wake_due(self.core.clock.now_unix_ms(), self.core.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
             }
@@ -534,35 +586,82 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .cloned()
     }
 
-    fn shard(&self, actor: &ActorReference) -> &SyncMutex<HashMap<ActorReference, Arc<Slot>>> {
-        &self.actors[(self.shards.hash_one(actor) as usize) % self.actors.len()]
+    fn shard(&self, actor: &ActorReference) -> &SyncMutex<HashMap<Arc<ActorReference>, Arc<Slot>>> {
+        &self.core.actors[(self.core.shards.hash_one(actor) as usize) % self.core.actors.len()]
     }
 
-    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
-        let actor = work.key().clone();
-        let Some(slot) = self.slot(&actor) else {
+    async fn execute(
+        &self,
+        work: Work<Arc<ActorReference>>,
+    ) -> Result<(), (ActorReference, Error)> {
+        let actor = work.key();
+        let Some(slot) = self.slot(actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot).await;
+        let result = self.deliver(&slot).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
-            self.release(&actor);
+            self.release(actor);
         }
+        let result = result
+            .map(|_| ())
+            .map_err(|error| (actor.as_ref().clone(), error));
         drop(work);
-        result.map(|_| ()).map_err(|error| (actor, error))
+        result
+    }
+
+    /// The same delivery engine serves native shards and single-threaded guests.
+    async fn deliver(&self, slot: &Arc<Slot>) -> Result<bool, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let task = self.spawn_delivery(slot)?;
+            let cancellation = CancelDelivery(task.abort_handle());
+            let result = task.await?;
+            drop(cancellation);
+            result
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.deliver_here(slot).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn spawn_delivery(
+        &self,
+        slot: &Arc<Slot>,
+    ) -> Result<acyclic_native_runtime::ActorTask<Result<bool, Error>>, Error> {
+        let runtime = Self {
+            core: Arc::clone(&self.core),
+        };
+        // The queued task owns placement before its first poll, including
+        // cancellation while waiting for its shard or admission.
+        slot.event_deliveries
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                count.checked_add(1)
+            })
+            .map_err(|_| Error::Invalid("event delivery count overflow"))?;
+        let delivery = EventDelivery(Arc::clone(slot));
+        Ok(slot.executor.spawn(async move {
+            let _placement = delivery;
+            runtime.deliver_here(&_placement.0).await
+        }))
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
-    async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
-        self.handler.manifest().validate_interrupts()?;
+    async fn deliver_here(&self, slot: &Arc<Slot>) -> Result<bool, Error> {
+        let actor = slot.actor.as_ref();
+        self.core.handler.manifest().validate_interrupts()?;
         // Duplicate events for one actor wait outside global admission. Only
         // an actor that can make progress may occupy an active delivery slot.
         let inner = slot.inner.lock().await;
-        let _admission = self
-            .admission
-            .acquire()
-            .await
-            .map_err(|_| Error::Invalid("runtime admission is closed"))?;
+        let _admission = match &self.core.admission {
+            Some(admission) => Some(
+                admission
+                    .acquire()
+                    .await
+                    .map_err(|_| Error::Invalid("runtime admission is closed"))?,
+            ),
+            None => None,
+        };
         let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
         let result = self.deliver_retained(actor, slot, inner).await;
         // Cancellation can interrupt a committed publication before its receipt
@@ -586,13 +685,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // mutex ticket. Cancel it before loading state through that same
             // provider; the committed cursor is the source of truth below.
             inner.follows.clear();
-            if steps == self.limits.work {
+            if steps == self.core.limits.work {
                 slot.waker.wake_by_ref();
                 return Ok(false);
             }
             steps += 1;
             if let Some((snapshot, publication)) = inner.pending.take() {
-                match self.store.submit_retained(publication).await {
+                match self.core.store.submit_retained(publication).await {
                     Ok(observed) => {
                         inner.observed = Some(Arc::new(
                             observed.ok_or(Error::Invalid("actor receipt has no state"))?,
@@ -622,7 +721,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             let snapshot = match &inner.observed {
                 Some(observed) => Arc::clone(observed),
                 None => {
-                    let observed = Arc::new(self.store.load(actor).await?);
+                    let observed = Arc::new(self.core.store.load(actor).await?);
                     inner.observed = Some(Arc::clone(&observed));
                     observed
                 }
@@ -642,11 +741,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     .checked_add(1)
                     .ok_or(Error::Invalid("epoch overflow"))?;
                 match self
+                    .core
                     .store
                     .claim(
                         &snapshot,
                         epoch,
-                        key(&snapshot, &format!("claim-{epoch}-{}", self.instance))?,
+                        key(&snapshot, &format!("claim-{epoch}-{}", self.core.instance))?,
                     )
                     .await
                 {
@@ -670,7 +770,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(true);
             }
             slot.registration.update_alarm(state.alarm())?;
-            let now = self.clock.now_unix_ms();
+            let now = self.core.clock.now_unix_ms();
             let (trigger, record) = match state.alarm().pending() {
                 Some(deadline) if deadline <= now => (
                     Trigger::Alarm {
@@ -697,19 +797,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
-            let admitted = Arc::new(self.store.load(actor).await?);
+            let admitted = Arc::new(self.core.store.load(actor).await?);
             if admitted.tail != snapshot.tail || admitted.anchor != snapshot.anchor {
                 inner.observed = Some(admitted);
                 continue;
             }
             let epoch = inner.epoch;
-            let limits = &self.handler.manifest().limits;
+            let limits = &self.core.handler.manifest().limits;
             let cancellation = crate::guest::CancellationToken::new();
             self.interrupt_follows(&mut inner, state, &trigger).await?;
             // A handler past its manifest timeout (wall time, not the actor
             // clock) is abandoned with its input unconsumed; the actor lock is
             // released for the next attempt.
-            let handled = self.handler.on_record(
+            let handled = self.core.handler.on_record(
                 Delivery {
                     actor: actor.clone(),
                     epoch,
@@ -756,7 +856,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             {
                 return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
             }
-            let publication = self.store.prepare_publish(
+            let publication = self.core.store.prepare_publish(
                 &snapshot,
                 epoch,
                 &trigger,
@@ -764,7 +864,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 transition,
                 key(&snapshot, "publish")?,
             )?;
-            match self.store.submit_retained(publication).await {
+            match self.core.store.submit_retained(publication).await {
                 Ok(observed) => {
                     inner.observed = Some(Arc::new(
                         observed.ok_or(Error::Invalid("actor receipt has no state"))?,
@@ -799,7 +899,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         previous: &Snapshot,
     ) -> Result<(), Error> {
         inner.observed = None;
-        let observed = Arc::new(self.store.load(actor).await?);
+        let observed = Arc::new(self.core.store.load(actor).await?);
         let moved = observed.tail != previous.tail || observed.anchor != previous.anchor;
         inner.observed = Some(observed);
         if !moved {
@@ -819,6 +919,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         cursor: u64,
     ) -> Result<bool, Error> {
         match self
+            .core
             .store
             .provider()
             .follow(acyclic_stream::FollowRequest::new(path.clone(), cursor))
@@ -851,6 +952,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
         for (id, subscription) in later.chain(earlier) {
             let records = self
+                .core
                 .store
                 .provider()
                 .read(acyclic_stream::ReadRequest {
