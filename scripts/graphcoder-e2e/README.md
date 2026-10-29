@@ -1,9 +1,9 @@
 # Shipping acceptance cases
 
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
-Windows MSVC executables must be cross-built on bb2; run Windows suites serially.
+Windows MSVC executables must be cross-built; run Windows suites serially.
 ConPTY preparation has no local PowerShell compiler entry point: cross-build
-`scripts/graphcoder-conpty.cs` on bb2 and supply its executable as
+`scripts/graphcoder-conpty.cs` and supply its executable as
 `E2E_CONPTY_HOST` before running a Windows PTY case.
 The Windows process host is the shared native-runtime `acyclic-process-host`
 binary. `scripts/windows-test.sh` cross-builds and exports it with the selected
@@ -21,7 +21,10 @@ The runner passes that same root as `ACYCLIC_TEST_FIXTURE_ROOT`; installed Pi
 fixtures create their service state below it and bind provider imports to the
 installed modules before moving provider files outside the repository.
 POSIX cleanup requires Python 3 and macOS `ps`; exit waits use Linux pidfds or
-macOS kqueue notifications. Separate service process groups stay owned. Shipping GraphCoder processes retain their own recovery
+macOS kqueue notifications. Separate service process groups stay owned.
+Every real-terminal run, including `scripts/test-graphcoder-pty.mjs` and
+`scripts/test-graphcoder-resume.mjs`, starts through `Processes.startTerminal`:
+ConPTY inside the Windows Job, or `owned-process.py --pty` on Linux and macOS. Shipping GraphCoder processes retain their own recovery
 oracle so an external-test cleanup boundary cannot hide orphan-fencing failures.
 Install `scripts/graphcoder-pty` with its frozen Bun lockfile and lifecycle scripts disabled.
 The terminal package is required for PTY cases and the complete helper suite;

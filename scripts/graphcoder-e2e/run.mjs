@@ -3,7 +3,7 @@
 // Build graphcoder and harness-mock-model ahead of time, then run:
 //   node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL [case-id...]
 // Install scripts/graphcoder-pty's pinned @xterm/headless before timing.
-// On Windows, cross-build the ConPTY transport on bb2 and set E2E_CONPTY_HOST
+// On Windows, cross-build the ConPTY transport and set E2E_CONPTY_HOST
 // to its EXE. Use serial.mjs for the full matrix. E2E_SCRATCH_ROOT selects
 // all temporary directories and is mandatory on Windows.
 // E2E_OUTPUT selects the matrix/capture directory; roots are retained on failure.
