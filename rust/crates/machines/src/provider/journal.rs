@@ -3,6 +3,7 @@ use super::*;
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt,
     CommitRequest, PathHead, ReadRequest, StreamError, StreamPath, StreamProvider,
+    StreamProviderExt as _,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -68,6 +69,7 @@ impl Journal {
                 tail: 0,
                 last: None,
                 durable: 0,
+                retained_through: None,
                 origin: None,
             }),
             value => value.map_err(storage),
@@ -277,6 +279,7 @@ impl Journal {
                 from,
                 limit,
                 at_least: Default::default(),
+                key: None,
             })
             .await
             .map_err(storage)?;
