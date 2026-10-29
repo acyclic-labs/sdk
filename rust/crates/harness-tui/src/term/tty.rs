@@ -140,30 +140,34 @@ impl InputWait {
     }
 
     #[cfg(not(target_vendor = "apple"))]
-    pub(crate) fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<()> {
+    pub(crate) fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<()> {
         use rustix::event::{PollFd, PollFlags, Timespec, poll};
-        let timeout = Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        let timeout = deadline
+            .map(|deadline| {
+                Timespec::try_from(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| io::ErrorKind::InvalidInput)
+            })
+            .transpose()?;
         let mut descriptors = [
             PollFd::new(&self.changes, PollFlags::IN),
             PollFd::new(&self.file, PollFlags::IN),
         ];
         // Restored input must wait for resume even if canonical input is ready.
         let count = if active { 2 } else { 1 };
-        match poll(&mut descriptors[..count], Some(&timeout)) {
+        match poll(&mut descriptors[..count], timeout.as_ref()) {
             Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
 
     #[cfg(target_vendor = "apple")]
-    pub(crate) fn wait(&mut self, active: bool, deadline: Instant) -> io::Result<()> {
+    pub(crate) fn wait(&mut self, active: bool, deadline: Option<Instant>) -> io::Result<()> {
         use std::os::fd::AsFd;
         self.readiness.wait(
             self.file.as_fd(),
             self.changes.as_fd(),
             active,
-            deadline.saturating_duration_since(Instant::now()),
+            deadline.map(|deadline| deadline.saturating_duration_since(Instant::now())),
         )
     }
 }
