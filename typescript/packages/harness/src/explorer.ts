@@ -68,8 +68,15 @@ export class AgentExplorer {
   readonly #core: WasmExplorer;
   readonly #options: ExplorerOptions;
   readonly #db: IDBDatabase | undefined;
-  #cancelFrame: (() => void) | undefined;
+  #frame: number | undefined;
+  #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  readonly #render = () => {
+    this.#frame = undefined;
+    this.#fallbackFrame = undefined;
+    this.#options.render(this.#core.frame() as ExplorerRow[], this);
+    this.#arm();
+  };
   readonly #online = () => { this.#core.networkChanged(true); this.schedule(); };
   readonly #offline = () => { this.#core.networkChanged(false); this.schedule(); };
   readonly #hidden = () => { if (document.visibilityState === "hidden") this.save(); };
@@ -104,18 +111,11 @@ export class AgentExplorer {
 
   /** Renders on the next animation frame; repeated calls coalesce. */
   schedule(): void {
-    if (this.#cancelFrame !== undefined) return;
-    const render = () => {
-      this.#cancelFrame = undefined;
-      this.#options.render(this.#core.frame() as ExplorerRow[], this);
-      this.#arm();
-    };
+    if (this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
     if (typeof globalThis.requestAnimationFrame === "function") {
-      const frame = globalThis.requestAnimationFrame(render);
-      this.#cancelFrame = () => globalThis.cancelAnimationFrame(frame);
+      this.#frame = globalThis.requestAnimationFrame(this.#render);
     } else {
-      const timer = setTimeout(render, 16);
-      this.#cancelFrame = () => clearTimeout(timer);
+      this.#fallbackFrame = setTimeout(this.#render, 16);
     }
   }
 
@@ -154,8 +154,10 @@ export class AgentExplorer {
     globalThis.removeEventListener?.("offline", this.#offline);
     globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
     if (this.#timer !== undefined) clearTimeout(this.#timer);
-    this.#cancelFrame?.();
-    this.#cancelFrame = undefined;
+    if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
+    if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
+    this.#frame = undefined;
+    this.#fallbackFrame = undefined;
     this.#core.free();
   }
 }
