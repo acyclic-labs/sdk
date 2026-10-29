@@ -90,7 +90,7 @@ struct ContextDirectoryQuery {
 #[tsify(large_number_types_as_bigints)]
 struct ContextReadQuery {
     source: PinnedContextPath,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 #[derive(Serialize, Tsify)]
@@ -158,12 +158,12 @@ impl BrowserReader {
             .map_err(platform_error)
     }
 
-    fn bytes(value: JsValue, maximum_bytes: u64) -> Result<Vec<u8>> {
+    fn bytes(value: JsValue, maximum_bytes: Option<u64>) -> Result<Vec<u8>> {
         let bytes: Uint8Array = value
             .dyn_into()
             .map_err(|_| Error::Storage("context reader requires Uint8Array".into()))?;
         let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
-            if length > maximum_bytes {
+            if maximum_bytes.is_some_and(|maximum| length > maximum) {
                 return Err(JsValue::from_str("context reader exceeded byte bound"));
             }
             Ok(())
@@ -257,10 +257,13 @@ impl ContentResidencyVerifier for BrowserReader {
                     path: path.into(),
                     generation: generation.clone(),
                 },
-                maximum_bytes,
+                maximum_bytes: Some(maximum_bytes),
             };
-            Self::bytes(self.invoke(&self.prefix, &query).await?, maximum_bytes)
-                .map(acyclic_stream::OwnedBytes::from)
+            Self::bytes(
+                self.invoke(&self.prefix, &query).await?,
+                Some(maximum_bytes),
+            )
+            .map(acyclic_stream::OwnedBytes::from)
         })
     }
 
@@ -270,7 +273,7 @@ impl ContentResidencyVerifier for BrowserReader {
         prefix: &'a str,
         path: &'a str,
         generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -289,9 +292,7 @@ impl ContentResidencyVerifier for BrowserReader {
 
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            let maximum_bytes = self
-                .maximum_bytes
-                .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum));
+            let maximum_bytes = maximum_bytes.into_iter().chain(self.maximum_bytes).min();
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;
