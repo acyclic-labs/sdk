@@ -216,6 +216,10 @@ fn handoff<P: PublicationOwner, G: crate::OwnedAuthorityGuard>(
                     Ok(())
                 });
             let failed = result.is_err();
+            let abort_cause = match &result {
+                Err(crate::FsError::Publication(PublicationError::GroupAborted(cause))) => *cause,
+                _ => GroupAbort::PhaseEnded,
+            };
             {
                 let mut prepared = leader
                     .prepared
@@ -232,7 +236,7 @@ fn handoff<P: PublicationOwner, G: crate::OwnedAuthorityGuard>(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if failed || !state.complete() {
-                    state.abort();
+                    state.abort_with(abort_cause);
                 }
             }
             dispatch_group.signal.notify_waiters();

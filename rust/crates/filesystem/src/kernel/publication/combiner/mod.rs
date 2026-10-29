@@ -404,19 +404,21 @@ impl Ticket {
             tokio::pin!(notified);
             notified.as_mut().enable();
             accounting.check()?;
-            let phase = self
-                .group
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .phase;
+            let (phase, abort_cause) = {
+                let state = self
+                    .group
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (state.phase, state.abort_cause)
+            };
             match phase {
                 Phase::Complete => {
                     self.settled = true;
                     return Ok(());
                 }
                 Phase::Aborted => {
-                    return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
+                    return Err(PublicationError::GroupAborted(abort_cause).into());
                 }
                 _ => wait_for_notification(notified.as_mut(), cancelled.as_mut()).await?,
             }

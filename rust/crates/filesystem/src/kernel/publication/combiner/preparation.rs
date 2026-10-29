@@ -145,7 +145,7 @@ impl<P: PublicationOwner> Job<P> {
                 prepared.publication_pin = generation.pin;
                 Ok(Some((generation.root, predecessor)))
             }
-            Ok(_) => Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into()),
+            Ok(_) => Err(PublicationError::GroupAborted(state.abort_cause).into()),
             Err(error) => Err(error),
         });
         let failed = matches!(prepared.prefix_result, Some(Err(_)));
@@ -410,7 +410,7 @@ impl Ticket {
             completed.restore(accounting)?;
         }
         let result = prepared.prefix_result.take().ok_or_else(|| {
-            crate::FsError::Publication(PublicationError::GroupAborted(GroupAbort::PhaseEnded))
+                crate::FsError::Publication(PublicationError::GroupAborted(state.abort_cause))
         })?;
         Ok(Some(result))
     }
