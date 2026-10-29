@@ -5,7 +5,10 @@ use crate::{CancellationToken, WorkBudget};
 use std::os::windows::io::AsHandle;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-struct Quiet;
+#[derive(Default)]
+struct Quiet {
+    _retirement: Option<std::sync::mpsc::Sender<()>>,
+}
 impl HostChangeSink for Quiet {
     fn logical_owned_bytes(&self) -> u64 {
         0
@@ -37,7 +40,7 @@ fn driver(
     dir: &cap_std::fs::Dir,
     work: &mut impl SourceDemandReadWork,
 ) -> Result<NativeSourceWatch, DemandError> {
-    let delivery = Arc::new(Delivery::new(Arc::new(Quiet), work)?);
+    let delivery = Arc::new(Delivery::new(Arc::new(Quiet::default()), work)?);
     NativeSourceWatch::open_watch(dir.as_handle(), delivery, false, Some(true), false, work)
 }
 fn assert_retired(shared: &Shared) {
@@ -249,7 +252,7 @@ mod original {
         };
         let birth = birth(budget, &CancellationToken::new());
         let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
-        let delivery = Arc::new(Delivery::new(Arc::new(Quiet), &mut work)?);
+        let delivery = Arc::new(Delivery::new(Arc::new(Quiet::default()), &mut work)?);
         let lifetime = Arc::downgrade(&delivery);
         assert!(matches!(
             NativeSourceWatch::open_watch(
@@ -394,7 +397,21 @@ mod original {
         let (_root, held) = held()?;
         let birth = birth(budget, &cancellation);
         let mut work = crate::NativeMaterializationWork::from_meter(birth.clone());
-        let watch = driver(&held, &mut work)?;
+        let (retired, retirement) = std::sync::mpsc::channel();
+        let delivery = Arc::new(Delivery::new(
+            Arc::new(Quiet {
+                _retirement: Some(retired),
+            }),
+            &mut work,
+        )?);
+        let watch = NativeSourceWatch::open_watch(
+            held.as_handle(),
+            delivery,
+            false,
+            Some(true),
+            false,
+            &mut work,
+        )?;
         let completion = Arc::clone(&watch.shared);
         let owner = Arc::downgrade(&completion);
         let reads = completion.lock_reads();
@@ -466,9 +483,10 @@ mod original {
             assert!(work.live_allocation_bytes() > 0);
         });
         drop(completion);
-        while owner.upgrade().is_some() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert!(matches!(
+            retirement.recv_timeout(deadline.saturating_duration_since(Instant::now())),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        ));
         assert!(owner.upgrade().is_none());
         Ok(())
     }
