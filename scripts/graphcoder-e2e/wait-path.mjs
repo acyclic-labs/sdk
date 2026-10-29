@@ -69,6 +69,8 @@ export function waitForFileValue(path, read, { timeoutMs, signal } = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const [path, seconds] = process.argv.slice(2);
-  if (!path || !seconds || !(Number(seconds) > 0)) throw new Error('wait-path PATH DEADLINE_SECONDS');
-  await waitForFile(path, { timeoutMs: Number(seconds) * 1000 });
+  if (!path || (seconds !== undefined && (!Number.isFinite(Number(seconds)) || !(Number(seconds) > 0)))) {
+    throw new Error('wait-path PATH [DEADLINE_SECONDS]');
+  }
+  await waitForFile(path, { timeoutMs: seconds === undefined ? undefined : Number(seconds) * 1000 });
 }
