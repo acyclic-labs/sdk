@@ -4,13 +4,13 @@
   "model": {"steps":[{"text":["**CANCELLED_E2E_HISTORY**"],"hold":true}]},
   "inputs": [
     {"mode":"pty","actions":[
-      {"when":{"contains":["graphcoder"],"cursor":true},"prompt":"retain this interrupted answer"},
+      {"when":{"contains":["GraphCoder"],"cursor":true},"prompt":"retain this interrupted answer"},
       {"when":{"contains":["CANCELLED_E2E_HISTORY"],"bold":"CANCELLED_E2E_HISTORY"},"send":"\u0003"},
-      {"when":{"contains":["interaction cancelled","Enter sends"]},"send":"\u0004"}
-    ],"exit":2,"settled_contains":["CANCELLED_E2E_HISTORY","Enter sends"]},
+      {"when":{"contains":["interaction cancelled","○"]},"send":"\u0004"}
+    ],"exit":2,"settled_contains":["CANCELLED_E2E_HISTORY","○"]},
     {"mode":"pty","resume":true,"actions":[
-      {"when":{"contains":["graphcoder","CANCELLED_E2E_HISTORY","Enter sends"],"cursor":true},"send":"\u0004"}
-    ],"exit":2,"settled_contains":["CANCELLED_E2E_HISTORY","Enter sends"]}
+      {"when":{"contains":["GraphCoder","CANCELLED_E2E_HISTORY","○"],"cursor":true},"send":"\u0004"}
+    ],"exit":2,"settled_contains":["CANCELLED_E2E_HISTORY","○"]}
   ],
   "assert":{"requests":1}
 }

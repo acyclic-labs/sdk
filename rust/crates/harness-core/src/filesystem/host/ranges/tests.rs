@@ -244,6 +244,62 @@ async fn large_publication_range_accounts_authentication_and_reads_only_the_sele
     Ok(())
 }
 
+#[tokio::test]
+async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
+    let body: Vec<u8> = (0..2 * 1024 * 1024).map(|index| index as u8).collect();
+    let (host, file) = ordinary(&body).await?;
+    let volume = file.volume();
+    let read = grant(volume, VolumeOperation::Read)?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let budget = || acyclic_fs::WorkBudget {
+        source_bytes_read: 64 * 1024,
+        bytes_copied: 64 * 1024,
+        ..acyclic_fs::WorkBudget::UNBOUNDED
+    };
+    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let offset = body.len() - 10;
+    let (bytes, length) = host
+        .read_private_range(volume, &read, "ordinary", offset as u64, 64, Some(&io))
+        .await?;
+    assert_eq!(
+        (bytes.as_ref(), length),
+        (&body[offset..], body.len() as u64)
+    );
+    assert!(work.receipt().source_bytes_read < 64 * 1024);
+    // Negative control: reading the same file by path under the same
+    // allowance loads all of it, and fails.
+    let work = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    assert!(
+        host.read_private_path(
+            volume,
+            &read,
+            "ordinary",
+            None,
+            u64::MAX,
+            crate::conversation::ContentAccess {
+                ceiling: None,
+                io: Some(&io),
+            },
+        )
+        .await
+        .is_err()
+    );
+    let (bytes, _) = host
+        .read_private_range(volume, &read, "ordinary", body.len() as u64, 64, None)
+        .await?;
+    assert!(bytes.is_empty());
+    assert!(
+        host.read_private_range(volume, &read, "ordinary", body.len() as u64 + 1, 64, None)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]
     // A discovered ordinary file supports every interval without upload

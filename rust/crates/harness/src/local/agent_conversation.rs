@@ -4,18 +4,27 @@
 //! remote alike; observation is one [`super::Observer`] of its status, its
 //! settled conversation entries and its tool output. Frontends render its
 //! events; it holds no frontend state.
+//!
+//! [`Conversation::compact`], [`Conversation::rewind`] and
+//! [`Conversation::clear_all`] select the model context of later turns. Each
+//! settles like a turn, as one conversation entry, a checkpoint, which the
+//! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
+//! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, ConversationEntry, Delivered, IntentId, Phase, Reply, StatusRecord, TurnInput,
+        AgentPath, ContextAction, ConversationEntry, Delivered, IntentId, Phase, Reply,
+        StatusRecord, TurnInput,
     },
     conversation::FileRef,
     executor::TurnOutput,
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
-use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
+use acyclic_harness_client::{
+    AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -34,6 +43,44 @@ fn intent(id: &str) -> Result<IntentId> {
 
 fn unexpected() -> Error {
     Error::Conflict("the endpoint answered another command".into())
+}
+
+/// Where a sent message stands. Only a refusal is settled: an unknown
+/// outcome may have committed, so it is resent exactly, never reported.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// Committed at this inbox sequence.
+    Accepted(u64),
+    /// Definitively not committed, for this reason.
+    Refused(String),
+    /// Neither known to have committed nor refused: resending the same id
+    /// and prompt answers it, and never commits it twice.
+    Unknown,
+}
+
+/// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
+/// closed conversation, is a refusal; any other failure after the request
+/// left may have committed it.
+fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
+    // A command that never left, such as one over the command limit,
+    // committed nothing: it is refused.
+    let exchange = match exchange {
+        Ok(exchange) => exchange,
+        Err(unsent) => return Ok(Sent::Refused(unsent.to_string())),
+    };
+    match exchange {
+        Ok(AgentReply::Delivered {
+            delivery: Delivered::Committed { inbox },
+        }) => Ok(Sent::Accepted(inbox)),
+        Ok(AgentReply::Delivered {
+            delivery: Delivered::Closed,
+        }) => Ok(Sent::Refused("conversation is archived".into())),
+        Ok(_) => Err(unexpected()),
+        Err(AgentExchangeError::Control(refused @ AgentControlFailure::Refused { .. })) => {
+            Ok(Sent::Refused(refused.to_string()))
+        }
+        Err(_) => Ok(Sent::Unknown),
+    }
 }
 
 /// One agent tree's root conversation, driven by its connection's principal.
@@ -61,6 +108,12 @@ impl Conversation {
         self.connection.root()
     }
 
+    /// The root agent's id in operation form: the task its failures name.
+    #[must_use]
+    pub fn task(&self) -> crate::OperationId {
+        crate::OperationId::from_bytes(self.agent().id().to_bytes())
+    }
+
     async fn delivered(&self, command: &AgentCommand) -> Result<Delivered> {
         match self.connection.execute(command).await? {
             AgentReply::Delivered { delivery } => Ok(delivery),
@@ -68,23 +121,93 @@ impl Conversation {
         }
     }
 
-    /// Send `prompt` as message `id`; returns its inbox sequence. The same id
-    /// and prompt replay exactly.
+    /// The inbox sequence `command` committed at, which its settled entry
+    /// carries.
+    async fn committed(&self, command: &AgentCommand) -> Result<u64> {
+        match self.delivered(command).await? {
+            Delivered::Committed { inbox } => Ok(inbox),
+            Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
+        }
+    }
+
+    /// Compact the conversation as request `id`: one model request
+    /// summarizes the current context, guided by `instructions`, and later
+    /// turns start from that summary. Returns its inbox sequence; the
+    /// checkpoint settles as the entry at it. The same id replays exactly.
     ///
     /// # Errors
     /// Session, host or decoding failures.
-    pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
-        let command = AgentCommand::Prompt {
+    pub async fn compact(&self, id: &str, instructions: Option<&str>) -> Result<u64> {
+        self.committed(&AgentCommand::Compact {
             agent: self.agent().clone(),
             id: intent(id)?,
+            instructions: instructions.map(|text| ModelContent::Text(text.to_owned())),
+        })
+        .await
+    }
+
+    /// Rewind the conversation as request `id` to its latest checkpoint:
+    /// every turn settled after it leaves later turns' context. Returns its
+    /// inbox sequence, like [`Self::compact`].
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn rewind(&self, id: &str) -> Result<u64> {
+        self.committed(&AgentCommand::Rewind {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+        })
+        .await
+    }
+
+    /// Retire the conversation as request `id`: later turns, and a reopened
+    /// transcript, start after it with no history. Returns its inbox
+    /// sequence, like [`Self::compact`].
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn clear_all(&self, id: &str) -> Result<u64> {
+        self.committed(&AgentCommand::ClearAll {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+        })
+        .await
+    }
+
+    /// Send `prompt` as message `id`: accepted at its inbox sequence,
+    /// refused, or of unknown outcome. The same id and prompt replay exactly.
+    ///
+    /// # Errors
+    /// When the prompt cannot be prepared, or the endpoint answers another
+    /// command.
+    pub async fn deliver(&self, id: &str, prompt: &str) -> Result<Sent> {
+        // An id that names no intent never leaves either.
+        let intent = match IntentId::try_from(id) {
+            Ok(intent) => intent,
+            Err(error) => return Ok(Sent::Refused(error.to_string())),
+        };
+        let command = AgentCommand::Prompt {
+            agent: self.agent().clone(),
+            id: intent,
             body: ModelContent::Text(prompt.to_owned()),
         };
-        match self.delivered(&command).await? {
-            Delivered::Committed { inbox } => {
-                tracing::debug!(id, inbox, "message committed");
-                Ok(inbox)
-            }
-            Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
+        let sent = sent(self.connection.exchange(&command).await)?;
+        tracing::debug!(id, ?sent, "message sent");
+        Ok(sent)
+    }
+
+    /// [`Self::deliver`] for a caller that treats every outcome but
+    /// acceptance as a failure; returns its inbox sequence.
+    ///
+    /// # Errors
+    /// A refusal with its reason, an unknown outcome, or as [`Self::deliver`].
+    pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
+        match self.deliver(id, prompt).await? {
+            Sent::Accepted(inbox) => Ok(inbox),
+            Sent::Refused(reason) => Err(Error::Storage(reason)),
+            Sent::Unknown => Err(Error::Storage(
+                "the message's commit outcome is unknown; resend it".into(),
+            )),
         }
     }
 
@@ -129,8 +252,8 @@ impl Conversation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The binding of `request`, which `agent` waits on.
-    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
+    /// The approval `request` that `agent` waits on, if it is still pending.
+    async fn pending_approval(&self, request: &IntentId) -> Result<Option<Interaction>> {
         let AgentReply::Approvals { items, .. } = self
             .connection
             .execute(&AgentCommand::Approvals {
@@ -141,21 +264,38 @@ impl Conversation {
         else {
             return Err(unexpected());
         };
-        items
+        Ok(items
             .into_iter()
             .find(|pending| &pending.id == request)
-            .and_then(|pending| match pending.request {
-                Interaction::Approval {
-                    operation_id,
-                    action_digest,
-                    ..
-                } => Some(ApprovalBinding {
-                    operation_id,
-                    action_digest,
-                }),
-                _ => None,
-            })
-            .ok_or_else(|| Error::Conflict("no such approval is pending".into()))
+            .map(|pending| pending.request)
+            .filter(|request| matches!(request, Interaction::Approval { .. })))
+    }
+
+    /// The explanation approval `request` shows its approver, or `None` once
+    /// it is no longer pending.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn approval_prompt(&self, request: &IntentId) -> Result<Option<String>> {
+        Ok(match self.pending_approval(request).await? {
+            Some(Interaction::Approval { prompt, .. }) => Some(prompt),
+            _ => None,
+        })
+    }
+
+    /// The binding of `request`, which `agent` waits on.
+    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
+        match self.pending_approval(request).await? {
+            Some(Interaction::Approval {
+                operation_id,
+                action_digest,
+                ..
+            }) => Ok(ApprovalBinding {
+                operation_id,
+                action_digest,
+            }),
+            _ => Err(Error::Conflict("no such approval is pending".into())),
+        }
     }
 
     /// Reads all of `target` on `agent`, at most `maximum` bytes.
@@ -167,14 +307,8 @@ impl Conversation {
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         loop {
-            let reply = connection
-                .execute(&AgentCommand::Read {
-                    agent: agent.clone(),
-                    target: target.clone(),
-                    offset: bytes.len() as u64,
-                })
-                .await?;
-            let (range, length) = reply.content().map_err(failed)?;
+            let (range, length) =
+                Self::read_at(connection, agent, target.clone(), bytes.len() as u64).await?;
             if length > maximum {
                 return Err(Error::Invalid("read file exceeds its limit".into()));
             }
@@ -184,6 +318,24 @@ impl Conversation {
                 return Ok(bytes);
             }
         }
+    }
+
+    /// One bounded range of `target` on `agent` from `offset`, and the
+    /// target's whole length.
+    pub(super) async fn read_at(
+        connection: &Connection,
+        agent: &AgentPath,
+        target: ReadTarget,
+        offset: u64,
+    ) -> Result<(Vec<u8>, u64)> {
+        let reply = connection
+            .execute(&AgentCommand::Read {
+                agent: agent.clone(),
+                target,
+                offset,
+            })
+            .await?;
+        reply.content().map_err(failed)
     }
 
     /// The text of a staged prompt or turn output.
@@ -284,6 +436,13 @@ impl Conversation {
     }
 }
 
+/// The selection a settled `entry` made when it is a checkpoint (a
+/// compaction, rewind or clear); `None` for a turn.
+#[must_use]
+pub const fn checkpoint(entry: &ConversationEntry) -> Option<&ContextAction> {
+    entry.checkpoint()
+}
+
 /// Whether `status` ends the wait for a turn without its output: the agent
 /// finished.
 #[must_use]
@@ -295,5 +454,60 @@ fn finished(phase: &Phase) -> Option<String> {
     match phase {
         Phase::Done { outcome } => Some(format!("conversation ended: {outcome:?}")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_harness_client::CommandError;
+    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
+
+    #[test]
+    fn only_a_host_refusal_settles_a_send() -> Result<()> {
+        let refused = AgentExchangeError::Control(AgentControlFailure::Refused {
+            code: "agent_turn_error".into(),
+            reason: "Unknown command: /gone".into(),
+        });
+        assert_eq!(
+            sent(Ok(Err(refused)))?,
+            Sent::Refused("Unknown command: /gone".into())
+        );
+        // A command that never left, such as one over the command limit.
+        assert_eq!(
+            sent(Err(CommandError::Capacity))?,
+            Sent::Refused(CommandError::Capacity.to_string())
+        );
+        assert_eq!(
+            sent(Ok(Ok(AgentReply::Delivered {
+                delivery: Delivered::Committed { inbox: 4 },
+            })))?,
+            Sent::Accepted(4)
+        );
+        // Negative controls: an unknown commit outcome, a session that
+        // failed after the request left, and a reply that failed to decode
+        // may each have committed it.
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: IdempotencyKey::new(b"message".to_vec()).map_err(failed)?,
+        };
+        let unknown = AgentControlFailure::Unknown(Box::new(request));
+        assert_eq!(
+            sent(Ok(Err(AgentExchangeError::Control(unknown))))?,
+            Sent::Unknown
+        );
+        assert_eq!(
+            sent(Ok(Err(AgentExchangeError::Session(
+                StreamError::Unavailable
+            ))))?,
+            Sent::Unknown
+        );
+        assert_eq!(
+            sent(Ok(Err(AgentExchangeError::Command(CommandError::Invalid))))?,
+            Sent::Unknown
+        );
+        Ok(())
     }
 }

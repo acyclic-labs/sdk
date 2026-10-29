@@ -2,10 +2,14 @@
 //!
 //! A native host (Claude Code, Codex, Pi) runs its own loop, tools and
 //! sandbox; its plugin only forwards coordination calls here. This owner
-//! claims each child's next input under a physical [`HostProcessLease`], runs
-//! the native child under the parent's inherited policy, records the native
-//! resume reference, answer and whole event log from its event stream, and
-//! settles the claim.
+//! launches each child's next input, which the accepting or settling exchange
+//! itself carries, under a physical [`HostProcessLease`], runs the native
+//! child under the parent's inherited policy, keeps its answer and whole
+//! event log from its event stream, and settles the claim.
+//!
+//! Each running child registers its readiness once per armed wait with the
+//! shared process-event hub; the hub wakes that child's key alone, and a pass
+//! pumps only the children whose keys woke. A quiet child is never probed.
 //! Waits resolve through the harness's shared committed reply.
 use super::*;
 use crate::Outcome;
@@ -14,7 +18,10 @@ use crate::executor::TurnOutput;
 use crate::local::host_files;
 use crate::local::host_owner::{Control, HostAction, SessionAction, TurnClaim};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future as _;
+use std::sync::{Mutex, PoisonError};
+use std::task::{Context, Poll, Waker};
 
 mod tools;
 pub use tools::serve;
@@ -33,7 +40,78 @@ struct Running {
     failure: Option<String>,
     events: acyclic_native_runtime::lines::LineBuffer,
     answer: String,
-    session: Option<String>,
+    /// The settlement once decided. A retry after an unknown outcome resends
+    /// exactly it, under the same claim.
+    settlement: Option<Outcome<TurnOutput>>,
+    /// This child's key on the ready queue, registered once per lifetime.
+    wake: Waker,
+    /// The armed readiness wait, held until it fires or the child settles.
+    armed: Option<acyclic_native_runtime::ProcessReadiness>,
+}
+
+/// One child's accepted context and newest accepted prompt.
+struct Accepted {
+    receipt: Receipt,
+    /// The newest prompt accepted, as its committed `id` and `inbox`: what
+    /// an idle child's wait answers with.
+    prompt: Option<(IntentId, u64)>,
+}
+
+/// The keys of children whose readiness fired, and the server's waker.
+#[derive(Default)]
+struct Ready(Mutex<Queue>);
+
+#[derive(Default)]
+struct Queue {
+    keys: BTreeSet<String>,
+    waker: Option<Waker>,
+}
+
+impl Ready {
+    fn queue(&self) -> std::sync::MutexGuard<'_, Queue> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn push(&self, key: &str) {
+        let waker = {
+            let mut queue = self.queue();
+            queue.keys.insert(key.to_owned());
+            queue.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn take(&self) -> BTreeSet<String> {
+        std::mem::take(&mut self.queue().keys)
+    }
+
+    fn poll(&self, context: &Context<'_>) -> Poll<()> {
+        let mut queue = self.queue();
+        if queue.keys.is_empty() {
+            queue.waker = Some(context.waker().clone());
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    }
+}
+
+/// One child's registration: the hub firing its wait queues its key alone.
+struct ChildWake {
+    key: String,
+    ready: Arc<Ready>,
+}
+
+impl std::task::Wake for ChildWake {
+    fn wake(self: Arc<Self>) {
+        self.ready.push(&self.key);
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        self.ready.push(&self.key);
+    }
 }
 
 /// Exclusive owner of one native parent's children, by parent-local name.
@@ -43,9 +121,8 @@ pub struct NativeChildren {
     parent: AgentPath,
     flags: Vec<String>,
     children: BTreeMap<String, Running>,
-    /// The newest prompt accepted per reference, as its committed `id` and
-    /// `inbox`: what an idle child's wait answers with.
-    prompts: BTreeMap<String, (IntentId, u64)>,
+    accepted: BTreeMap<String, Accepted>,
+    ready: Arc<Ready>,
     _ownership: FileLock,
     _root: acyclic_fs::HeldRoot,
 }
@@ -94,16 +171,7 @@ impl NativeChildren {
             FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        let mut children = Self {
-            host: host.into(),
-            cwd,
-            parent,
-            flags,
-            children: BTreeMap::new(),
-            prompts: BTreeMap::new(),
-            _ownership: ownership,
-            _root: root,
-        };
+        let mut children = Self::with(host, cwd, parent, flags, ownership, root);
         let open = host_files::request(
             &children.cwd,
             HostAction::Sessions {
@@ -114,21 +182,61 @@ impl NativeChildren {
             serde_json::from_value(open.get("references").cloned().unwrap_or_default())
                 .map_err(storage)?;
         for reference in references {
-            children.request(&reference, SessionAction::Recover)?;
-            children.start(&reference)?;
+            // Settles the orphaned claim, then carries the next input.
+            let mut recovered = children.request(&reference, SessionAction::Recover, true)?;
+            children.launch(&reference, &mut recovered)?;
         }
         Ok(children)
     }
 
-    fn request(&self, reference: &str, action: SessionAction) -> Result<Value> {
+    fn with(
+        host: &str,
+        cwd: PathBuf,
+        parent: AgentPath,
+        flags: Vec<String>,
+        ownership: FileLock,
+        root: acyclic_fs::HeldRoot,
+    ) -> Self {
+        Self {
+            host: host.into(),
+            cwd,
+            parent,
+            flags,
+            children: BTreeMap::new(),
+            accepted: BTreeMap::new(),
+            ready: Arc::default(),
+            _ownership: ownership,
+            _root: root,
+        }
+    }
+
+    /// One exchange about `reference`; with `next`, its reply also carries
+    /// the child's next claimed input when its physical fence is free.
+    fn request(&self, reference: &str, action: SessionAction, next: bool) -> Result<Value> {
         host_files::request(
             &self.cwd,
             HostAction::Session {
                 parent: self.parent.clone(),
                 reference: reference.into(),
                 action,
+                next,
             },
         )
+    }
+
+    /// Records the task a reply names: the first reply fixes it, and any
+    /// later one naming another task is refused. Its view may differ: an
+    /// idle child's view is released and remounted by a later exchange.
+    fn record(&mut self, reference: &str, reply: &Value) -> Result<&mut Accepted> {
+        let accepted = match self.accepted.entry(reference.into()) {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(Accepted {
+                receipt: Receipt::accepted(reply)?,
+                prompt: None,
+            }),
+        };
+        accepted.receipt.confirm(reply)?;
+        Ok(accepted)
     }
 
     /// Whether any child process is running.
@@ -137,13 +245,11 @@ impl NativeChildren {
         !self.children.is_empty()
     }
 
-    /// One wait per running child that fires when its pipes have data or
-    /// room, or it exits, all served by the shared process-event hub.
-    pub fn readiness(&mut self) -> Result<Vec<acyclic_native_runtime::ProcessReadiness>> {
-        self.children
-            .values_mut()
-            .map(|running| running.process.readiness())
-            .collect()
+    /// Completes once some child's readiness fired: its pipes have data or
+    /// room, or it exited. Served by the shared process-event hub.
+    fn woken(&self) -> impl std::future::Future<Output = ()> + 'static {
+        let ready = Arc::clone(&self.ready);
+        std::future::poll_fn(move |context| ready.poll(context))
     }
 
     /// Spawns `reference` with its first prompt, or names the existing child.
@@ -161,60 +267,77 @@ impl NativeChildren {
         if self.children.contains_key(reference) {
             return Err(Error::Conflict("native session is still running".into()));
         }
-        self.request(
+        let resumed = self.request(
             reference,
             SessionAction::Control {
                 control: Control::Resume,
             },
+            false,
         )?;
+        self.record(reference, &resumed)?;
         self.send(reference, prompt)
     }
 
-    /// Records the prompt a Spawn or Send accepted, then runs its input. A
-    /// replay names its original, earlier prompt and never displaces a newer
-    /// one.
+    /// Records the prompt a Spawn or Send accepted, then launches the input
+    /// the same exchange claimed. A replay names its original, earlier prompt
+    /// and never displaces a newer one.
     fn accept(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
-        let accepted = self.request(reference, action)?;
+        // A running child's fence is held: claim only for an idle one.
+        let idle = !self.children.contains_key(reference);
+        let mut accepted = self.request(reference, action, idle)?;
         let inbox = accepted
             .get("inbox")
             .and_then(Value::as_u64)
             .ok_or_else(|| invalid("accepted prompt has no inbox"))?;
-        if self
-            .prompts
-            .get(reference)
+        let id: IntentId = serde_json::from_value(
+            accepted
+                .get("id")
+                .cloned()
+                .ok_or_else(|| invalid("accepted prompt has no id"))?,
+        )
+        .map_err(storage)?;
+        let record = self.record(reference, &accepted)?;
+        if record
+            .prompt
+            .as_ref()
             .is_none_or(|(_, latest)| *latest < inbox)
         {
-            let id = serde_json::from_value(
-                accepted
-                    .get("id")
-                    .cloned()
-                    .ok_or_else(|| invalid("accepted prompt has no id"))?,
-            )
-            .map_err(storage)?;
-            self.prompts.insert(reference.into(), (id, inbox));
+            record.prompt = Some((id, inbox));
         }
-        self.start(reference)?;
+        self.launch(reference, &mut accepted)?;
         Ok(accepted)
     }
 
-    /// Claims and launches the child's next input, unless one already runs.
-    fn start(&mut self, reference: &str) -> Result<()> {
-        if self.children.contains_key(reference) {
-            return Ok(());
-        }
-        let Some((lease, turn)) =
-            HostProcessLease::claim_child(&self.cwd, &self.parent, reference)?
-        else {
+    /// Launches the claimed input `reply` carries as `next`, removing it from
+    /// the reply; a reply carrying none launches nothing.
+    fn launch(&mut self, reference: &str, reply: &mut Value) -> Result<()> {
+        let turn = reply
+            .as_object_mut()
+            .and_then(|reply| reply.remove("next"))
+            .filter(Value::is_object);
+        self.record(reference, reply)?;
+        let Some(turn) = turn else {
             return Ok(());
         };
+        if self.children.contains_key(reference) {
+            return Err(Error::Conflict(
+                "native session carried a second claim while running".into(),
+            ));
+        }
+        let receipt = &self
+            .accepted
+            .get(reference)
+            .ok_or_else(|| invalid("native child receipt absent"))?
+            .receipt;
+        // The view this exchange mounted the child at.
+        let view = receipt.confirm(&turn)?;
+        let lease = HostProcessLease::admit(&self.cwd, receipt, &turn)?;
         let field = |name: &str| {
             turn.get(name)
                 .cloned()
                 .ok_or_else(|| invalid(format!("child {name} absent")))
         };
-        let task: AgentPath = serde_json::from_value(field("task")?).map_err(storage)?;
         let claim: TurnClaim = serde_json::from_value(field("claim")?).map_err(storage)?;
-        let cwd: PathBuf = serde_json::from_value(field("cwd")?).map_err(storage)?;
         let prompt = field("prompt")?
             .as_str()
             .ok_or_else(|| invalid("native prompt absent"))?
@@ -229,13 +352,17 @@ impl NativeChildren {
         let mut command = launch::child(
             &self.host,
             &self.flags,
-            &cwd,
+            &view,
             resume.and_then(Value::as_str),
         )?;
         command
-            .env("ACYCLIC_WORKSPACE", &cwd)
-            .env("ACYCLIC_TASK", task.to_string());
+            .env("ACYCLIC_WORKSPACE", &view)
+            .env("ACYCLIC_TASK", receipt.task().to_string());
         let process = lease.funded_process()?;
+        let wake = Waker::from(Arc::new(ChildWake {
+            key: reference.into(),
+            ready: Arc::clone(&self.ready),
+        }));
         // Install the stable owner before spawn can acquire any physical work.
         // Even a partial spawn or stdin failure stays here until it is reaped.
         let running = self.children.entry(reference.into()).or_insert(Running {
@@ -244,117 +371,102 @@ impl NativeChildren {
             failure: None,
             events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
             answer: String::new(),
-            session: None,
+            settlement: None,
+            wake,
+            armed: None,
         });
-        let turn = running.claim.operation;
+        let claim = running.claim.operation;
         if let Err(error) = running
             .process
-            .spawn(&mut command, turn)
+            .spawn(&mut command, claim)
             .and_then(|()| running.process.queue_stdin(prompt))
         {
             running.failure = Some(error.to_string());
         }
+        // The first pass delivers stdin, or settles the failure.
+        self.ready.push(reference);
         Ok(())
     }
 
-    /// Reads one bounded pass of the child's native event stream, saving its
-    /// resume reference and keeping its latest answer.
-    fn output(&self, reference: &str, running: &mut Running) -> Result<()> {
-        running.process.drain_stderr()?;
-        let mut chunk = [0u8; 8192];
-        // Bound each pass so a busy child cannot starve cancellation or peers.
-        for _ in 0..16 {
-            let Some(count) = running.process.read_stdout(&mut chunk)? else {
-                break;
-            };
-            if count == 0 {
-                return Ok(());
-            }
-            let bytes = chunk
-                .get(..count)
-                .ok_or_else(|| invalid("native output count invalid"))?;
-            for line in running.events.push(bytes) {
-                let Ok(line) = line else {
-                    // A dropped answer must replace an earlier preview. Keep
-                    // draining through the same bounded framer and process
-                    // owner; later complete answers remain usable.
-                    running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
-                    // The saved log marks where the event was dropped.
-                    running.process.record_event(EVENT_OMITTED)?;
-                    continue;
-                };
-                let Ok(event) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                // The whole event stream joins the conversation at settlement.
-                running.process.record_event(line.as_bytes())?;
-                let id = event
-                    .get("thread_id")
-                    .or_else(|| event.get("session_id"))
-                    .or_else(|| {
-                        (event.get("type").and_then(Value::as_str) == Some("session"))
-                            .then(|| event.get("id"))
-                            .flatten()
-                    });
-                if let Some(id) = id.and_then(Value::as_str)
-                    && running.session.as_deref() != Some(id)
-                {
-                    self.request(reference, SessionAction::SaveSession { id: id.into() })?;
-                    running.session = Some(id.into());
-                }
-                if let Some(answer) = answer(&event) {
-                    running.answer = answer;
-                }
-            }
+    /// Arms one readiness wait for a running child, under its registered key.
+    fn arm(&self, reference: &str, running: &mut Running) -> Result<()> {
+        let mut wait = running.process.readiness()?;
+        let mut context = Context::from_waker(&running.wake);
+        if std::pin::Pin::new(&mut wait).poll(&mut context).is_ready() {
+            self.ready.push(reference);
+        } else {
+            running.armed = Some(wait);
         }
         Ok(())
     }
 
-    /// Advances every running child by one bounded pass. Returns whether any
-    /// output flowed; a child whose turn settled has its next input started.
-    pub fn pump(&mut self) -> Result<bool> {
-        let mut progressed = false;
-        for reference in self.children.keys().cloned().collect::<Vec<_>>() {
+    /// Advances only the children whose readiness fired, by one bounded pass
+    /// each. A child whose turn settled launches the next input its
+    /// settlement carried; one whose pass left output unread is queued again.
+    pub fn pump(&mut self) -> Result<()> {
+        let mut ready = self.ready.take().into_iter();
+        while let Some(reference) = ready.next() {
             let Some(mut running) = self.children.remove(&reference) else {
                 continue;
             };
-            let refreshed = self.refresh(&reference, &mut running);
-            progressed |= running.process.take_output_progress();
-            match refreshed {
-                Ok(true) => self.start(&reference)?,
-                Ok(false) => {
-                    self.children.insert(reference, running);
+            running.armed = None;
+            let result = match self.refresh(&reference, &mut running) {
+                Ok(Some(mut settled)) => self.launch(&reference, &mut settled),
+                Ok(None) => {
+                    let armed = if running.process.take_output_progress() {
+                        self.ready.push(&reference);
+                        Ok(())
+                    } else {
+                        self.arm(&reference, &mut running)
+                    };
+                    self.children.insert(reference.clone(), running);
+                    armed
                 }
                 Err(error) => {
-                    self.children.insert(reference, running);
-                    return Err(error);
+                    self.children.insert(reference.clone(), running);
+                    Err(error)
                 }
+            };
+            if let Err(error) = result {
+                // The failed child and every child not yet pumped stay ready.
+                self.ready.push(&reference);
+                for reference in ready {
+                    self.ready.push(&reference);
+                }
+                return Err(error);
             }
         }
-        Ok(progressed)
+        Ok(())
     }
 
-    /// Whether the process exited and its turn settled.
-    fn refresh(&self, reference: &str, running: &mut Running) -> Result<bool> {
+    /// The settlement reply, carrying the next input, once the process exited
+    /// and its turn settled.
+    fn refresh(&self, reference: &str, running: &mut Running) -> Result<Option<Value>> {
+        if running.settlement.is_some() {
+            // A settlement whose exchange had no known outcome is resent.
+            return self
+                .complete(reference, running, Outcome::Cancelled, true)
+                .map(Some);
+        }
         let mut exited = match &running.failure {
             Some(failure) => Err(failure.clone()),
             None => running
                 .process
                 .pump_stdin()
-                .and_then(|_| self.output(reference, running))
+                .and_then(|_| output(running))
                 .and_then(|()| running.process.try_wait())
                 .map_err(|error| error.to_string()),
         };
         if matches!(&exited, Ok(Some(_))) {
             running.process.terminate_descendants()?;
             match running.process.pump_stdin() {
-                Ok(false) => return Ok(false),
+                Ok(false) => return Ok(None),
                 Ok(true) => {}
                 Err(error) => exited = Err(error.to_string()),
             }
             // Exit is the capture boundary. A detached process can retain a
             // pipe writer after containment stops; EOF cannot own settlement.
-            if let Err(error) = self.output(reference, running) {
+            if let Err(error) = output(running) {
                 exited = Err(error.to_string());
             }
         }
@@ -369,34 +481,45 @@ impl NativeChildren {
             Ok(Some(status)) => Outcome::Failed {
                 message: format!("native host exited {status}"),
             },
-            Ok(None) => return Ok(false),
+            Ok(None) => return Ok(None),
         };
-        self.complete(reference, running, outcome).map(|_| true)
+        self.complete(reference, running, outcome, true).map(Some)
     }
 
+    /// Settles the running claim. The first settlement decided is kept, so
+    /// every retry presents the identical claim and outcome.
     fn complete(
         &self,
         reference: &str,
         running: &mut Running,
         outcome: Outcome<TurnOutput>,
+        next: bool,
     ) -> Result<Value> {
         running.process.release()?;
-        let outcome = match (running.process.require_stdin_complete(), outcome) {
-            (_, Outcome::Cancelled) => Outcome::Cancelled,
-            (_, Outcome::Failed { message }) => Outcome::Failed {
-                message: running.process.failure_message(&message),
-            },
-            (Ok(()), outcome) => outcome,
-            (Err(error), _) => Outcome::Failed {
-                message: running.process.failure_message(&error.to_string()),
-            },
+        let settlement = match &running.settlement {
+            Some(settlement) => settlement.clone(),
+            None => {
+                let settlement = match (running.process.require_stdin_complete(), outcome) {
+                    (_, Outcome::Cancelled) => Outcome::Cancelled,
+                    (_, Outcome::Failed { message }) => Outcome::Failed {
+                        message: running.process.failure_message(&message),
+                    },
+                    (Ok(()), outcome) => outcome,
+                    (Err(error), _) => Outcome::Failed {
+                        message: running.process.failure_message(&error.to_string()),
+                    },
+                };
+                running.settlement = Some(settlement.clone());
+                settlement
+            }
         };
         self.request(
             reference,
             SessionAction::Complete {
                 claim: running.claim.clone(),
-                outcome,
+                outcome: settlement,
             },
+            next,
         )
     }
 
@@ -413,19 +536,32 @@ impl NativeChildren {
         self.stop(reference, Control::Archive)
     }
 
+    /// The control's own reply, or the settlement's when a turn was running:
+    /// no separate observation follows.
     fn stop(&mut self, reference: &str, control: Control) -> Result<Value> {
-        self.request(reference, SessionAction::Control { control })?;
+        let mut reply = self.request(reference, SessionAction::Control { control }, false)?;
+        self.record(reference, &reply)?;
         if let Some(mut running) = self.children.remove(reference) {
-            let result = running.process.terminate_descendants().and_then(|()| {
-                let _ = self.output(reference, &mut running);
-                self.complete(reference, &mut running, Outcome::Cancelled)
-            });
-            if let Err(error) = result {
-                self.children.insert(reference.into(), running);
-                return Err(error);
+            running.armed = None;
+            let result = if running.settlement.is_some() {
+                self.complete(reference, &mut running, Outcome::Cancelled, false)
+            } else {
+                running.process.terminate_descendants().and_then(|()| {
+                    let _ = output(&mut running);
+                    self.complete(reference, &mut running, Outcome::Cancelled, false)
+                })
+            };
+            match result {
+                Ok(settled) => reply = settled,
+                Err(error) => {
+                    self.children.insert(reference.into(), running);
+                    self.ready.push(reference);
+                    return Err(error);
+                }
             }
+            self.record(reference, &reply)?;
         }
-        self.request(reference, SessionAction::Observe)
+        Ok(reply)
     }
 
     /// `None` while the child has a running input. This owner is the only
@@ -438,14 +574,18 @@ impl NativeChildren {
         if self.children.contains_key(reference) {
             return Ok(None);
         }
-        let action = match self.prompts.get(reference) {
+        let action = match self
+            .accepted
+            .get(reference)
+            .and_then(|accepted| accepted.prompt.as_ref())
+        {
             Some((id, inbox)) => SessionAction::Reply {
                 id: id.clone(),
                 inbox: *inbox,
             },
             None => SessionAction::Observe,
         };
-        self.request(reference, action).map(Some)
+        self.request(reference, action, false).map(Some)
     }
 
     /// Interrupts every running child; the owner's host is going away.
@@ -458,6 +598,46 @@ impl NativeChildren {
         }
         failure.map_or(Ok(()), Err)
     }
+}
+
+/// Reads one bounded pass of the child's native event stream into its
+/// custodied event log, keeping its latest answer. The settlement derives the
+/// native resume reference from that log, so a running turn sends nothing.
+fn output(running: &mut Running) -> Result<()> {
+    running.process.drain_stderr()?;
+    let mut chunk = [0u8; 8192];
+    // Bound each pass so a busy child cannot starve cancellation or peers.
+    for _ in 0..16 {
+        let Some(count) = running.process.read_stdout(&mut chunk)? else {
+            break;
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        let bytes = chunk
+            .get(..count)
+            .ok_or_else(|| invalid("native output count invalid"))?;
+        for line in running.events.push(bytes) {
+            let Ok(line) = line else {
+                // A dropped answer must replace an earlier preview. Keep
+                // draining through the same bounded framer and process
+                // owner; later complete answers remain usable.
+                running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
+                // The saved log marks where the event was dropped.
+                running.process.record_event(EVENT_OMITTED)?;
+                continue;
+            };
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            // The whole event stream joins the conversation at settlement.
+            running.process.record_event(line.as_bytes())?;
+            if let Some(answer) = answer(&event) {
+                running.answer = answer;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The answer a native event carries: a Codex agent message, a Claude Code
@@ -500,6 +680,34 @@ mod framing {
     use super::*;
 
     #[test]
+    fn a_receipt_follows_its_child_to_a_remounted_view() {
+        let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
+        let Ok(child) = parent.child(&crate::agent::AgentId::from_bytes([2; 16])) else {
+            panic!("a child path nests under its root");
+        };
+        let reply = |task: &AgentPath, cwd: &str| serde_json::json!({"task": task, "cwd": cwd});
+        let Ok(receipt) = Receipt::accepted(&reply(&child, "/w/.views/a")) else {
+            panic!("the first reply names the child");
+        };
+        // An idle child's view was released; the next exchange mounted it
+        // elsewhere, and its turn runs there.
+        assert_eq!(
+            receipt.confirm(&reply(&child, "/w/.views/b")).ok(),
+            Some(PathBuf::from("/w/.views/b"))
+        );
+        // Negative control: a reply naming another task is still refused.
+        assert!(matches!(
+            receipt.confirm(&reply(&parent, "/w/.views/b")),
+            Err(Error::Conflict(_))
+        ));
+        assert!(
+            receipt
+                .confirm(&serde_json::json!({"task": child}))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
         let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
         let mut omitted = 0;
@@ -522,5 +730,27 @@ mod framing {
     #[test]
     fn native_answers_are_bounded_on_character_boundaries() {
         assert!(bounded(&"😀".repeat(4096)).len() <= ANSWER_LIMIT);
+    }
+
+    /// The ready queue holds only children whose registration fired, and a
+    /// fired key wakes the server once; a quiet key is never queued.
+    #[test]
+    fn only_fired_registrations_reach_the_ready_queue() {
+        let ready = Arc::new(Ready::default());
+        let wakes = (0..1000)
+            .map(|index| {
+                Waker::from(Arc::new(ChildWake {
+                    key: format!("child-{index}"),
+                    ready: Arc::clone(&ready),
+                }))
+            })
+            .collect::<Vec<_>>();
+        let server = Waker::noop();
+        assert!(ready.poll(&Context::from_waker(server)).is_pending());
+        wakes[7].wake_by_ref();
+        wakes[7].wake_by_ref();
+        assert!(ready.poll(&Context::from_waker(server)).is_ready());
+        assert_eq!(ready.take(), BTreeSet::from(["child-7".to_owned()]));
+        assert!(ready.take().is_empty(), "999 quiet children were queued");
     }
 }

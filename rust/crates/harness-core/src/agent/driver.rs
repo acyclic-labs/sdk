@@ -7,13 +7,15 @@
 //! cursor): one [`ConversationEntry`] naming the turn's input and its staged output.
 
 use super::{
-    AgentOutcome, AgentRecord, AgentState, ApprovalRequested, Error, InboxRecord, IntentId, Out,
-    Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
+    AgentOutcome, AgentRecord, AgentState, ApprovalRequested, ContextAction, Error, InboxRecord,
+    IntentId, Out, Progress, Queued, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait,
 };
 use crate::{
     OperationId,
     conversation::FileRef,
-    executor::{ExecutionJournal, ExecutionProgress, Executor, TurnInput as ExecutorInput},
+    executor::{
+        ExecutionJournal, ExecutionProgress, Executor, TurnInput as ExecutorInput, TurnOutput,
+    },
     model::{FileProjectionPolicy, ModelContent, ModelContentPart},
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
@@ -34,6 +36,9 @@ pub struct OpenTurn {
     /// The agent's prior conversation and this input, as the one selection the
     /// journal admits; `None` for a turn without history.
     pub selected: Option<crate::projection::SelectedModelContext>,
+    /// The staged output of the latest checkpoint in the agent's context,
+    /// whose summary `selected` begins with; `None` without one.
+    pub checkpoint: Option<FileRef>,
     /// Owner of the turn's approval files; `None` when the host runs no approvals.
     pub approvals: Option<Arc<crate::approvals::AgentApprovals>>,
     /// Effects recorded by the turn's agent tools, lowered when it settles;
@@ -105,6 +110,13 @@ pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
         turn: OperationId,
         bytes: &'a [u8],
     ) -> BoxFuture<'a, crate::Result<FileRef>>;
+
+    /// The answer `turn` streamed before it was cancelled, which its
+    /// cancelled entry keeps; empty where the host streams none.
+    fn partial(&self, turn: OperationId) -> BoxFuture<'_, crate::Result<String>> {
+        let _ = turn;
+        Box::pin(async { Ok(String::new()) })
+    }
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -131,7 +143,34 @@ impl<H: TurnHost + ?Sized> TurnHost for Arc<H> {
     }
 }
 
-/// One conversation record: a settled turn.
+/// The model request a compaction checkpoint sends over the current context;
+/// its answer replaces that context in every later turn.
+pub const COMPACT_INSTRUCTION: &str = "Summarize this conversation for continued work. Preserve facts, decisions, constraints, unresolved work and references; the summary replaces the conversation in later context. Answer with the summary alone.";
+
+/// How a turn settled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    /// The executor finished the turn; its output is complete.
+    #[default]
+    Completed,
+    /// A cancel or archive stopped the turn; its output holds the answer
+    /// streamed so far. A cancelled checkpoint selects nothing.
+    Cancelled,
+}
+
+impl TurnOutcome {
+    /// Whether the turn finished.
+    #[must_use]
+    pub const fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
+}
+
+/// One conversation record: a settled turn, or a checkpoint (its input is
+/// [`TurnInput::Context`] and its output holds the summary later turns start
+/// from).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
@@ -142,9 +181,24 @@ pub struct ConversationEntry {
     pub inbox: u64,
     /// Input that started the turn.
     pub input: TurnInput,
-    /// The executor's complete output, staged on the agent's private volume.
+    /// The executor's output, staged on the agent's private volume:
+    /// complete, or as far as a cancelled turn streamed it.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
     pub output: FileRef,
+    /// How the turn settled; absent when it completed.
+    #[serde(default, skip_serializing_if = "TurnOutcome::is_completed")]
+    pub outcome: TurnOutcome,
+}
+
+impl ConversationEntry {
+    /// The selection this entry makes for later turns: a completed checkpoint's.
+    #[must_use]
+    pub const fn checkpoint(&self) -> Option<&ContextAction> {
+        match self.outcome {
+            TurnOutcome::Completed => self.input.context(),
+            TurnOutcome::Cancelled => None,
+        }
+    }
 }
 
 impl AgentRecord for ConversationEntry {}
@@ -181,24 +235,62 @@ fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::Record("turn input does not encode"))
 }
 
-/// The input of the turn a step continues (kept in the checkpoint), or new input.
-fn starting(agent: &AgentState, input: Option<Queued>) -> Result<Queued, Error> {
+/// The driver's checkpoint of a turn in progress: the input that started it
+/// and how many of its effect segments already committed. A turn commits its
+/// recorded effects whenever a later call waits on them (see
+/// [`super::TurnEffects::holds`]) and continues in the next segment.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Checkpoint {
+    inbox: u64,
+    input: TurnInput,
+    #[serde(default)]
+    segment: u32,
+}
+
+/// The input of the turn a step continues (kept in the checkpoint) and its
+/// effect segment, or new input in its first segment.
+fn starting(agent: &AgentState, input: Option<Queued>) -> Result<(Queued, u32), Error> {
     match (&agent.turn, input) {
         (
-            Some(Progress {
-                checkpoint: bytes, ..
-            }),
+            Some(_),
             None
             | Some(Queued {
                 input: TurnInput::Approval { .. },
                 ..
             }),
-        ) => serde_json::from_slice(bytes)
-            .map_err(|_| Error::Record("turn checkpoint is not a turn input")),
-        (None, Some(input)) => Ok(input),
+        ) => {
+            let Checkpoint {
+                inbox,
+                input,
+                segment,
+            } = checkpoint(agent)?.ok_or(Error::Record("resume without a turn in progress"))?;
+            Ok((Queued { inbox, input }, segment))
+        }
+        (None, Some(input)) => Ok((input, 0)),
         (Some(_), Some(_)) => Err(Error::Record("new input while a turn is in progress")),
         (None, None) => Err(Error::Record("resume without a turn in progress")),
     }
+}
+
+fn checkpoint(agent: &AgentState) -> Result<Option<Checkpoint>, Error> {
+    agent
+        .turn
+        .as_ref()
+        .map(|Progress { checkpoint, .. }| {
+            serde_json::from_slice(checkpoint)
+                .map_err(|_| Error::Record("turn checkpoint is not a turn input"))
+        })
+        .transpose()
+}
+
+/// The effect segment `agent`'s next turn step records into: its turn in
+/// progress keeps its segment, a new turn starts at zero.
+///
+/// # Errors
+/// When the turn's checkpoint is malformed.
+pub fn turn_segment(agent: &AgentState) -> Result<u32, Error> {
+    Ok(checkpoint(agent)?.map_or(0, |checkpoint| checkpoint.segment))
 }
 
 /// Model-visible content of a turn input: a message or event file as a file
@@ -225,6 +317,18 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
         TurnInput::Brief { brief: file }
         | TurnInput::Message { body: file, .. }
         | TurnInput::Hook { event: file, .. } => ModelContent::Part(body(file)),
+        TurnInput::Context {
+            action: ContextAction::Compact { instructions },
+            ..
+        } => match instructions {
+            Some(file) => ModelContent::Parts(vec![
+                ModelContentPart::Text {
+                    text: format!("{COMPACT_INSTRUCTION} Follow this guidance:"),
+                },
+                body(file),
+            ]),
+            None => ModelContent::Text(COMPACT_INSTRUCTION.to_owned()),
+        },
         other => {
             let text = String::from_utf8(encode(other)?)
                 .map_err(|_| Error::Record("turn input is not text"))?;
@@ -269,6 +373,61 @@ fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> usize {
         .len()
 }
 
+/// Stages `text` as `turn`'s whole output.
+async fn stage_text(open: &OpenTurn, turn: OperationId, text: String) -> Result<FileRef, Error> {
+    let output = TurnOutput {
+        text,
+        attachments: Vec::new(),
+        metadata: serde_json::Value::Null,
+        steps: 0,
+    };
+    let bytes =
+        crate::contract::canonical_json_bytes(&output).map_err(|error| host_error(error.into()))?;
+    open.outputs.stage(turn, &bytes).await.map_err(host_error)
+}
+
+/// Settles a rewind or clear, which runs no model request: its checkpoint
+/// carries the latest checkpoint's summary forward (a rewind) or an empty
+/// one (a clear, or a rewind with no checkpoint to restore).
+async fn settle_selection(
+    open: &OpenTurn,
+    turn: OperationId,
+    inbox: u64,
+    input: TurnInput,
+) -> Result<TurnStep, Error> {
+    let restored = match input.context() {
+        Some(ContextAction::Rewind) => open.checkpoint.clone(),
+        _ => None,
+    };
+    let output = match restored {
+        Some(output) => output,
+        None => stage_text(open, turn, String::new()).await?,
+    };
+    let entry = ConversationEntry {
+        inbox,
+        input,
+        output,
+        outcome: TurnOutcome::Completed,
+    };
+    Ok(TurnStep {
+        reserved_children: 0,
+        checkpoint: None,
+        outs: settled(&entry)?,
+        wait: Wait::Input,
+        drops: None,
+    })
+}
+
+/// A settled entry's appends: the entry, indexed as the agent's latest
+/// checkpoint when it is one.
+fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
+    let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if entry.checkpoint().is_some() {
+        outs.push(Out::Checkpoint);
+    }
+    Ok(outs)
+}
+
 /// Every settled turn commits its already-recorded actions, including a turn
 /// whose later model call fails. Pending or uncertain turns retain their journal.
 async fn settle_effects(
@@ -293,7 +452,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
         cancellation: acyclic_actors::guest::CancellationToken,
     ) -> TurnFuture<'a> {
         Box::pin(async move {
-            let Queued { inbox, input } = starting(agent, input)?;
+            let (Queued { inbox, input }, segment) = starting(agent, input)?;
             let turn = turn_id(agent, &input)?;
             let content = model_input(&input)?;
             let stop = cancellation;
@@ -302,6 +461,12 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .open(agent, turn, &content, stop.clone())
                 .await
                 .map_err(host_error)?;
+            if matches!(
+                input.context(),
+                Some(ContextAction::Rewind | ContextAction::Clear)
+            ) {
+                return settle_selection(&open, turn, inbox, input).await;
+            }
             let progress = open
                 .executor
                 .execute_progress(
@@ -315,12 +480,20 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 )
                 .await;
             if stop.is_cancelled() && !matches!(progress, Ok(ExecutionProgress::Ready(_))) {
-                // A pending cancel or archive drops this turn when admitted;
-                // until then the agent takes no further step of it.
+                // A cancel or archive stops this turn: it settles durably as
+                // a cancelled entry holding its prompt and the answer it
+                // streamed so far, with no further model request.
+                let partial = open.outputs.partial(turn).await.map_err(host_error)?;
+                let entry = ConversationEntry {
+                    inbox,
+                    input,
+                    output: stage_text(&open, turn, partial).await?,
+                    outcome: TurnOutcome::Cancelled,
+                };
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
-                    outs: Vec::new(),
+                    outs: vec![Out::Conversation(entry.encode()?)],
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -355,37 +528,91 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     )
                     .await
                     .map_err(host_error)?;
-                    // An active goal continues the agent through its own inbox.
+                    // An active goal continues the agent through its own inbox;
+                    // a checkpoint is no step of it.
+                    let checkpoint = input.context().is_some();
                     let goal = match &open.goal {
-                        Some(goal) => super::goal::settle(agent, &input, turn, &**goal).await?,
-                        None => None,
+                        Some(goal) if !checkpoint => {
+                            super::goal::settle(agent, &input, turn, &**goal).await?
+                        }
+                        _ => None,
                     };
                     let entry = ConversationEntry {
                         inbox,
                         input,
-                        output: output.clone(),
+                        output,
+                        outcome: TurnOutcome::Completed,
                     };
-                    // A child reports when its work is done and no goal continues it;
-                    // a root waits for input.
-                    let wait =
-                        if goal.is_none() && agent.parent.is_some() && agent.queued.is_empty() {
-                            Wait::Done(AgentOutcome::Succeeded {
-                                result: Some(Box::new(output)),
-                            })
-                        } else {
-                            Wait::Input
-                        };
                     // The tools' recorded effects commit with the turn's settlement.
-                    let mut outs = Vec::new();
-                    outs.push(Out::Conversation(entry.encode()?));
+                    let mut outs = settled(&entry)?;
                     outs.extend(goal);
+                    // Every agent waits for input once its turn settles: a child
+                    // stays open to its parent's messages until archived, and a
+                    // parent observes its answer through `wait`.
                     TurnStep {
                         reserved_children: 0,
                         checkpoint: None,
                         outs,
-                        wait,
+                        wait: Wait::Input,
                         drops: None,
                     }
+                }
+                ExecutionProgress::Pending(_)
+                    if open
+                        .approvals
+                        .as_ref()
+                        .is_some_and(|approvals| approvals.yielded()) =>
+                {
+                    // The next call waits on this turn's recorded effects: they
+                    // commit now, and the turn continues at once in its next
+                    // segment, where the call reaches what they created.
+                    let outs = match &open.effects {
+                        Some(effects) => {
+                            super::effect_outs(agent, effects.recorded().await.map_err(host_error)?)
+                        }
+                        None => Vec::new(),
+                    };
+                    let segment = segment
+                        .checked_add(1)
+                        .ok_or(Error::Record("turn effect segments exhausted"))?;
+                    return Ok(TurnStep {
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input,
+                            segment,
+                        })?),
+                        reserved_children: 0,
+                        outs,
+                        wait: Wait::Continue,
+                        drops: None,
+                    });
+                }
+                ExecutionProgress::Pending(_)
+                    if let Some((children, any)) = open
+                        .approvals
+                        .as_ref()
+                        .and_then(|approvals| approvals.awaited()) =>
+                {
+                    // A `wait` call dispatches once its children settle: the
+                    // turn commits that wait, holding no delivery, and their
+                    // settlement resumes it in this same segment.
+                    let reserved_children = match &open.effects {
+                        Some(effects) => {
+                            reserved(agent, effects.recorded().await.map_err(host_error)?)
+                        }
+                        None => 0,
+                    };
+                    return Ok(TurnStep {
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input,
+                            segment,
+                        })?),
+                        reserved_children,
+                        outs: Vec::new(),
+                        wait: Wait::Children { children, any },
+                        drops: None,
+                    });
                 }
                 ExecutionProgress::Pending(approval) => {
                     // The approval owner names the request the turn waits on;
@@ -414,7 +641,11 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         None => 0,
                     };
                     return Ok(TurnStep {
-                        checkpoint: Some(encode(&Queued { inbox, input })?),
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input,
+                            segment,
+                        })?),
                         reserved_children,
                         outs,
                         wait: Wait::Approval(id),

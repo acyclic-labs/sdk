@@ -118,7 +118,8 @@
         "pty-approval-deny",
         "pty-approval-form-approve",
         "pty-approval-form-deny",
-        "pty-approval-policy-deny"
+        "pty-approval-policy-deny",
+        "pty-approval-clear-confirm"
       ]
     },
     "A12": {
@@ -171,6 +172,7 @@
       "owner": "sessions (#1452)",
       "cases": [
         "jsonl-input",
+        "jsonl-ended-replay",
         "jsonl-malformed",
         "text-responses",
         "provider-error"

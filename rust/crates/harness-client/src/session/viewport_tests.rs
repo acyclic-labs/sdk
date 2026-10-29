@@ -297,3 +297,25 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
         }
     }
 }
+
+#[test]
+fn replacement_reopens_a_requested_stream_whose_follow_ended() {
+    let tree = Tree::new(1);
+    let (mut session, _scheduler) = client();
+    let (streams, _) = tree.visible(0);
+    let path = streams[0].0.clone();
+    session.replace_streams(streams.clone()).unwrap();
+    let live = session.revision();
+    // A live follow keeps its cursor: the same request opens nothing.
+    session.replace_streams(streams.clone()).unwrap();
+    assert_eq!(session.revision(), live + 1);
+    assert!(session.is_following(&path));
+    // A follow that ended (its stream did not exist yet) keeps only its
+    // final view. Negative control: the former replacement skipped any path
+    // with a retained view, so this stream was never followed again.
+    session.follows.remove(&path);
+    assert!(!session.is_following(&path));
+    session.replace_streams(streams).unwrap();
+    assert!(session.is_following(&path));
+    assert_eq!(session.revision(), live + 3);
+}

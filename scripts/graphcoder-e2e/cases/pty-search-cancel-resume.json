@@ -7,13 +7,13 @@
   ]},
   "inputs": [
     {"mode": "pty", "actions": [
-      {"when": {"contains": ["graphcoder"], "cursor": true}, "prompt": "cancel this configured search"},
-      {"after_request": {"path": "search", "step": 1}, "when": {"contains": ["graphcoder"]}, "send": "\u001b"},
-      {"when": {"contains": ["interaction cancelled", "STOPPED", "Enter sends"]}, "send": "\u0004"}
-    ], "exit": 2, "settled_contains": ["cancel this configured search", "cancelled", "Enter sends"]},
+      {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "cancel this configured search"},
+      {"after_request": {"path": "search", "step": 1}, "when": {"contains": ["GraphCoder"]}, "send": "\u001b"},
+      {"when": {"contains": ["interaction cancelled", "STOPPED", "○"]}, "send": "\u0004"}
+    ], "exit": 2, "settled_contains": ["cancel this configured search", "cancelled", "○"]},
     {"mode": "pty", "resume": true, "actions": [
-      {"when": {"contains": ["graphcoder", "cancel this configured search", "interaction cancelled", "STOPPED", "Enter sends"], "cursor": true}, "send": "\u0004"}
-    ], "exit": 2, "settled_contains": ["cancel this configured search", "interaction cancelled", "STOPPED", "Enter sends"]}
+      {"when": {"contains": ["GraphCoder", "cancel this configured search", "interaction cancelled", "STOPPED", "○"], "cursor": true}, "send": "\u0004"}
+    ], "exit": 2, "settled_contains": ["cancel this configured search", "interaction cancelled", "STOPPED", "○"]}
   ],
   "assert": {"requests": 1, "http": [{"path": "search", "body": {"query": "held fixture query", "numResults": 5}}]},
   "settings": {".codex/search.json": "{\"provider\":\"exa\",\"api_keys\":{\"exa\":\"fixture-unused\"},\"endpoint\":\"{{url}}/search\"}"}

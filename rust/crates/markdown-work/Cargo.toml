@@ -1,0 +1,14 @@
+[package]
+name = "acyclic-markdown-work"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Development-only work instrumentation for the incremental Markdown parser"
+
+[features]
+enabled = []
+
+[lints]
+workspace = true

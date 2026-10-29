@@ -7,6 +7,7 @@ use crate::{
 
 #[cfg(any(test, feature = "native-execution"))]
 mod checkout;
+mod commands;
 #[cfg(any(test, feature = "native-execution"))]
 mod environment;
 mod guidance;
@@ -256,9 +257,12 @@ impl LocalHarness {
     pub(super) async fn prompt_attachments(
         &self,
         key: &[u8],
-        text: &str,
+        text: Option<&str>,
     ) -> Result<Option<FileRef>> {
-        if crate::client::file_mention_paths(text)?.is_empty() {
+        // A new prompt without mentions stages nothing and observes nothing.
+        if let Some(text) = text
+            && crate::client::file_mention_paths(text)?.is_empty()
+        {
             return Ok(None);
         }
         // The manifest's own encoding bounds it: it lists files already
@@ -269,6 +273,10 @@ impl LocalHarness {
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));
         }
+        // A replay whose first delivery staged no manifest attaches none.
+        let Some(text) = text else {
+            return Ok(None);
+        };
         let reader = self.client_reader()?;
         let base = format!("inputs/mentions/{}", blake3::hash(key));
         let items = self

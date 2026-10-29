@@ -11,13 +11,14 @@ description = "Renderer-independent prompt editor and ratatui input widget"
 [features]
 model-checking = ["dep:loom"]
 default = []
-tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:serde"]
+tui = ["dep:ratatui", "dep:crossterm", "dep:vte", "dep:rustix", "dep:nix", "dep:signal-hook", "dep:acyclic-native-runtime", "dep:serde_json", "dep:image", "dep:shell-words", "dep:tempfile", "dep:arrayvec", "dep:caseless", "dep:serde", "dep:acyclic-markdown"]
 
 [build-dependencies]
 serde_json.workspace = true
 
 [dependencies]
 loom = { version = "0.7.2", optional = true }
+acyclic-markdown = { version = "=0.2.0", path = "../markdown", optional = true }
 serde = { workspace = true, optional = true }
 vte = { version = "0.15", optional = true }
 caseless = { version = "0.2.2", optional = true }

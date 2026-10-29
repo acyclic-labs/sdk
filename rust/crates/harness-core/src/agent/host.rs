@@ -126,6 +126,15 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         })
     }
 
+    /// Admit at most `limits` deliveries at once; configure before running.
+    /// Admission is backpressure: a delivery beyond it waits for a slot, and
+    /// no agent holds one while it waits for another (see [`super::Wait`]).
+    #[must_use]
+    pub fn with_limits(mut self, limits: acyclic_actors::local::RuntimeLimits) -> Self {
+        self.runtime = self.runtime.with_limits(limits);
+        self
+    }
+
     /// The shared runtime, for deterministic hosts that `drain` it.
     pub const fn runtime(&self) -> &Runtime<P> {
         &self.runtime

@@ -222,6 +222,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
                 parent: None,
                 forked_at: 0,
                 conversation_tail: 0,
+                checkpoint: None,
                 volumes: vec![VolumeBinding {
                     name: PRIVATE_VOLUME.into(),
                     volume,

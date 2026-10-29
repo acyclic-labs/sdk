@@ -27,8 +27,9 @@ pub use acyclic_harness_core::filesystem::{
 
 use crate::{
     agent::{
-        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId, Message, Sender,
-        SpawnOutcome, SpawnRequest, StatusRecord, requested_child,
+        AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,
+        InboxRecord, IntentId, Message, Sender, SpawnOutcome, SpawnRequest, StatusRecord,
+        requested_child,
     },
     model::ModelContent,
 };
@@ -66,17 +67,37 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async { Ok(()) })
     }
 
+    /// The text a prompt's leading `/name` selects: a prompt command's or
+    /// skill's body with its arguments substituted, which the message stages
+    /// in place of `text` so the model reads exactly it. `None` keeps `text`.
+    /// A platform with no project of its own to read expands none.
+    fn prompt_command<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
+        let _ = text;
+        Box::pin(async { Ok(None) })
+    }
+
     /// The attachment manifest of the files a prompt's `@` mentions in
     /// `text` name (see [`Message::attachments`]), staged once for the
-    /// message `key` identifies, so a resend replays it exactly. A platform
-    /// with no project of its own to read attaches none.
+    /// message `key` identifies, so a resend replays it exactly. With `None`,
+    /// a replay's, only the manifest already staged for `key` answers: the
+    /// project's current files are never read. A platform with no project of
+    /// its own to read attaches none.
     fn attachments<'a>(
         &'a self,
         key: &'a [u8],
-        text: &'a str,
+        text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, crate::Result<Option<crate::conversation::FileRef>>> {
         let _ = (key, text);
         Box::pin(async { Ok(None) })
+    }
+
+    /// The approver principal the verified `principal` decides approvals as:
+    /// by default its own identity.
+    fn approver(&self, principal: &Principal) -> String {
+        principal.id.clone()
     }
 }
 
@@ -314,7 +335,32 @@ where
         self.bound.tool_resource(&self.root).await
     }
 
-    async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {
+    /// Delivers one context request to `agent`; its checkpoint settles in
+    /// the agent's conversation like a turn.
+    async fn context(
+        &self,
+        agent: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        action: ContextAction,
+    ) -> Result<AgentReply, Error> {
+        let record = InboxRecord::Context(ContextRequest {
+            by: by.clone(),
+            id: id.clone(),
+            action,
+        });
+        Ok(AgentReply::Delivered {
+            delivery: self.bound.agents().send(agent, by, &record).await?,
+        })
+    }
+
+    /// Runs `command` from `by`, who decides approvals as `approver`.
+    async fn dispatch(
+        &self,
+        command: &AgentCommand,
+        by: &Sender,
+        approver: &str,
+    ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
             AgentCommand::Bind {} => Ok(AgentBinding::reply(
@@ -360,19 +406,36 @@ where
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
                 let text = text(body)?;
-                let body = self
-                    .bound
-                    .stage_text(agent, "message", by, id, text)
-                    .await?;
                 // The message's own identity, as the inbox keys it: its
                 // recipient, sender and intent.
                 let key = crate::contract::canonical_json_bytes(&(agent, by, id))
                     .map_err(|_| Error::Record("message identity does not encode"))?;
-                let attachments = self
-                    .platform
-                    .attachments(&key, text)
-                    .await
-                    .map_err(|error| Error::Turn(Box::new(error)))?;
+                let turn = |error| Error::Turn(Box::new(error));
+                // A replay is answered from what its first delivery pinned:
+                // its staged body, and the manifest staged before it. Only a
+                // new delivery reads the project's commands, skills and files.
+                let (body, attachments) =
+                    match self.bound.staged_text(agent, "message", by, id).await? {
+                        Some(body) => (
+                            body,
+                            self.platform.attachments(&key, None).await.map_err(turn)?,
+                        ),
+                        None => {
+                            let expanded =
+                                self.platform.prompt_command(text).await.map_err(turn)?;
+                            let text = expanded.as_deref().unwrap_or(text);
+                            let attachments = self
+                                .platform
+                                .attachments(&key, Some(text))
+                                .await
+                                .map_err(turn)?;
+                            let body = self
+                                .bound
+                                .stage_text(agent, "message", by, id, text)
+                                .await?;
+                            (body, attachments)
+                        }
+                    };
                 let record = InboxRecord::Message(Message {
                     from: by.clone(),
                     id: id.clone(),
@@ -395,6 +458,31 @@ where
                 Ok(AgentReply::Delivered {
                     delivery: agents.send(agent, by, &record).await?,
                 })
+            }
+            AgentCommand::Compact {
+                agent,
+                id,
+                instructions,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let instructions = match instructions.as_ref().map(text).transpose()? {
+                    Some(guidance) if !guidance.trim().is_empty() => Some(Box::new(
+                        self.bound
+                            .stage_text(agent, "compact", by, id, guidance)
+                            .await?,
+                    )),
+                    _ => None,
+                };
+                self.context(agent, by, id, ContextAction::Compact { instructions })
+                    .await
+            }
+            AgentCommand::Rewind { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Rewind)
+                    .await
+            }
+            AgentCommand::ClearAll { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Clear)
+                    .await
             }
             AgentCommand::Children { agent, page } => {
                 let agent = self.within_tree(agent)?;
@@ -484,13 +572,13 @@ where
                 reason,
             } => {
                 let agent = self.within_tree(agent)?;
-                let Sender::User { principal } = by else {
+                let Sender::User { .. } = by else {
                     return Err(Error::Record("a decision needs a human principal"));
                 };
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
-                        .decide(agent, id, binding, principal, *approved, reason.clone())
+                        .decide(agent, id, binding, approver, *approved, reason.clone())
                         .await?,
                 })
             }
@@ -604,7 +692,8 @@ where
             let by = Sender::User {
                 principal: principal.id.clone(),
             };
-            let result = server.dispatch(call.command(), &by).await;
+            let approver = server.platform.approver(&principal);
+            let result = server.dispatch(call.command(), &by, &approver).await;
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })
     }

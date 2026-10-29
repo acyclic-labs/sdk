@@ -112,6 +112,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
                     parent: parent.clone(),
                     reference: "endpoint-boundary".into(),
                     action,
+                    next: false,
                 },
             )
         };
@@ -182,6 +183,34 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             host: "pi".into(), event: "NativeSession".into(),
             input: serde_json::json!({"task":parent}),
         })?["id"], "fixture");
+        // Requests of one process wait concurrently, each its own keyed
+        // waiter, sharing one watch per awaited status key.
+        std::thread::scope(|scope| {
+            let readers = (0..8)
+                .map(|reader| {
+                    let (cwd, parent) = (&cwd, &parent);
+                    scope.spawn(move || {
+                        let action = if reader % 2 == 0 {
+                            HostAction::Sessions { parent: parent.clone() }
+                        } else {
+                            HostAction::Locate { cwd: cwd.clone() }
+                        };
+                        request(cwd, action).map(|_| ())
+                    })
+                })
+                .collect::<Vec<_>>();
+            readers.into_iter().try_for_each(|reader| {
+                reader
+                    .join()
+                    .map_err(|_| Error::Conflict("concurrent request panicked".into()))?
+                    .or_else(|error| match error {
+                        // Locating the root may be refused; it must still
+                        // be answered, never left waiting.
+                        Error::Conflict(_) | Error::Invalid(_) | Error::NotFound(_) => Ok(()),
+                        error => Err(error),
+                    })
+            })
+        })?;
         let agents = request(&cwd, HostAction::Agents { task: parent.clone() })?;
         assert_eq!(agents["agents"][0]["reference"], "endpoint-boundary");
         assert_eq!(request(&cwd, HostAction::Open {
@@ -249,6 +278,20 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     })
     .await
     .map_err(storage)??;
+    // Every registration retired, and with the last of each key its watch.
+    let directory = std::fs::canonicalize(checkout.path())
+        .map_err(storage)?
+        .join(DIRECTORY);
+    let bridge = lock(&REGISTRY)
+        .bridges
+        .get(&directory)
+        .cloned()
+        .ok_or_else(|| Error::Conflict("client bridge absent".into()))?;
+    assert!(lock(&bridge.shared.waiters).keys.is_empty());
+    assert!(
+        lock(&bridge.watching).watched.is_empty(),
+        "a key nothing awaits must not stay watched"
+    );
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
     owner.abort();
@@ -292,5 +335,67 @@ fn endpoint_projection_cannot_follow_a_workspace_symlink() -> Result<()> {
         std::fs::read_dir(outside.path()).map_err(storage)?.count(),
         0
     );
+    Ok(())
+}
+
+#[test]
+fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
+    use notify::event::{AccessKind, CreateKind, Flag, RemoveKind};
+    let root = tempfile::tempdir().map_err(storage)?;
+    let requests = std::fs::canonicalize(root.path()).map_err(storage)?;
+    let notices = Notices::new(requests.clone());
+    // Requests published before the owner ran are found by one startup scan.
+    assert!(notices.take().rescan);
+    let named = |kind, leaf: &str| Ok(notify::Event::new(kind).add_path(requests.join(leaf)));
+    notices.note(&named(
+        notify::EventKind::Create(CreateKind::File),
+        "a.json",
+    ));
+    notices.note(&named(
+        notify::EventKind::Remove(RemoveKind::File),
+        "b.json",
+    ));
+    notices.note(&named(
+        notify::EventKind::Access(AccessKind::Read),
+        "c.json",
+    ));
+    let touched = notices.take();
+    assert!(!touched.rescan, "named notifications never rescan");
+    assert_eq!(
+        touched.names,
+        BTreeSet::from(["a.json".into(), "b.json".into()])
+    );
+    // Negative controls: an overflow, an error or a foreign path cannot name
+    // every changed request, so each forces exactly one rescan.
+    for event in [
+        Ok(notify::Event::new(notify::EventKind::Other).set_flag(Flag::Rescan)),
+        Err(notify::Error::generic("queue overflow")),
+        Ok(notify::Event::new(notify::EventKind::Any).add_path(root.path().join("..").join("x"))),
+        Ok(notify::Event::new(notify::EventKind::Any)),
+    ] {
+        notices.note(&event);
+        assert!(notices.take().rescan);
+    }
+    // A named pass touches only its names; only a rescan lists the directory.
+    let mut served = Served::default();
+    let session = uuid::Uuid::new_v4();
+    served.touch(
+        &requests,
+        session,
+        Touched {
+            names: BTreeSet::from(["absent.json".into()]),
+            rescan: false,
+        },
+    )?;
+    assert_eq!(served.rescans, 0);
+    served.touch(
+        &requests,
+        session,
+        Touched {
+            names: BTreeSet::new(),
+            rescan: true,
+        },
+    )?;
+    assert_eq!(served.rescans, 1);
     Ok(())
 }

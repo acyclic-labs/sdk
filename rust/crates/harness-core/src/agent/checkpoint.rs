@@ -4,8 +4,8 @@
 //! The parts that scale with the agent's limits are raw protobuf fields
 //! rather than JSON: each open child is its 16-byte id (its path, like the
 //! agent's parent, is derived from the agent's path), the children still to
-//! archive are a bitmap over them, and the turn driver's checkpoint is raw
-//! bytes. The rest of the state is JSON.
+//! archive and the children awaited are bitmaps over them, and the turn
+//! driver's checkpoint is raw bytes. The rest of the state is JSON.
 //!
 //! Every part of every agent record is bounded at admission: paths by
 //! [`super::MAX_DEPTH`], file and volume references by the conversation
@@ -63,6 +63,9 @@ struct Encoded {
     /// Inbox sequence of the input that started the turn.
     #[prost(uint64, optional, tag = "6")]
     turn_inbox: Option<u64>,
+    /// Bit `i` set: the turn waits for open child `i` to settle.
+    #[prost(bytes = "vec", tag = "7")]
+    awaiting: Vec<u8>,
 }
 
 /// Artifact state as checkpoint bytes, refused above [`MAX_CHECKPOINT_BYTES`].
@@ -84,12 +87,14 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
     let mut rest = state.clone();
     let open_children = std::mem::take(&mut rest.open_children);
     let archive_pending = std::mem::take(&mut rest.archive_pending);
+    let awaiting = std::mem::take(&mut rest.awaiting);
     let turn = rest.turn.take();
     if rest.parent.take() != state.path.parent() {
         return Err(Error::Record("agent parent is not its path's parent"));
     }
     let mut ids = Vec::with_capacity(open_children.len());
     let mut bitmap = vec![0; open_children.len().div_ceil(8)];
+    let mut awaited = vec![0; open_children.len().div_ceil(8)];
     for (index, child) in open_children.iter().enumerate() {
         if child.parent().as_ref() != Some(&state.path) {
             return Err(Error::Record("an open child is not a direct child"));
@@ -98,15 +103,27 @@ pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
         if archive_pending.contains(child) {
             bitmap[index / 8] |= 1 << (index % 8);
         }
+        if awaiting.contains(child) {
+            awaited[index / 8] |= 1 << (index % 8);
+        }
     }
     if !archive_pending.is_subset(&open_children) {
         return Err(Error::Record("a child to archive is not open"));
+    }
+    if !awaiting.is_subset(&open_children) {
+        return Err(Error::Record("an awaited child is not open"));
     }
     Ok(Encoded {
         state: serde_json::to_vec(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
         archive_pending: bitmap,
+        // Empty unless a turn waits: no bytes in every other checkpoint.
+        awaiting: if awaiting.is_empty() {
+            Vec::new()
+        } else {
+            awaited
+        },
         turn_inbox: turn.as_ref().map(|turn| turn.inbox),
         turn: turn.map(|turn| turn.checkpoint),
     }
@@ -120,22 +137,34 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let mut state: AgentState = serde_json::from_slice(&encoded.state).map_err(|_| malformed())?;
     if !state.open_children.is_empty()
         || !state.archive_pending.is_empty()
+        || !state.awaiting.is_empty()
         || state.turn.is_some()
         || state.parent.is_some()
     {
         return Err(malformed());
     }
     state.parent = state.path.parent();
-    if encoded.archive_pending.len() != encoded.open_children.len().div_ceil(8) {
+    let bitmap = encoded.open_children.len().div_ceil(8);
+    if encoded.archive_pending.len() != bitmap
+        || !(encoded.awaiting.is_empty() || encoded.awaiting.len() == bitmap)
+    {
         return Err(malformed());
     }
     let mut open_children = BTreeSet::new();
     let mut archive_pending = BTreeSet::new();
+    let mut awaiting = BTreeSet::new();
     for (index, id) in encoded.open_children.iter().enumerate() {
         let id: [u8; 16] = id.as_slice().try_into().map_err(|_| malformed())?;
         let child = state.path.child(&AgentId::from_bytes(id))?;
         if encoded.archive_pending[index / 8] & (1 << (index % 8)) != 0 {
             archive_pending.insert(child.clone());
+        }
+        if encoded
+            .awaiting
+            .get(index / 8)
+            .is_some_and(|bits| bits & (1 << (index % 8)) != 0)
+        {
+            awaiting.insert(child.clone());
         }
         if !open_children.insert(child) {
             return Err(malformed());
@@ -143,6 +172,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     }
     state.open_children = open_children;
     state.archive_pending = archive_pending;
+    state.awaiting = awaiting;
     state.turn = match (encoded.turn, encoded.turn_inbox) {
         (Some(checkpoint), Some(inbox)) => Some(super::Progress { inbox, checkpoint }),
         (None, None) => None,
@@ -268,6 +298,7 @@ mod tests {
             parent: Some(agent(MAX_DEPTH - 1)),
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
+            checkpoint: Some(u64::MAX),
             volumes: (0..MAX_VOLUMES)
                 .map(|_| VolumeBinding {
                     name: widest(MAX_INTENT_BYTES),
@@ -294,6 +325,10 @@ mod tests {
                 id: intent(),
                 event: Box::new(file()),
             }),
+            InboxRecord::Awaited,
+            InboxRecord::ChildSettled(crate::agent::ChildSettled {
+                child: deepest.clone(),
+            }),
         ];
         for outcome in outcomes().into_iter().chain([AgentOutcome::Failed {
             message: widest_text(MAX_MESSAGE_BYTES),
@@ -315,6 +350,19 @@ mod tests {
                 id: intent(),
                 brief: widest_text(MAX_MESSAGE_BYTES),
             }));
+            for action in [
+                crate::agent::ContextAction::Compact {
+                    instructions: Some(Box::new(file())),
+                },
+                crate::agent::ContextAction::Rewind,
+                crate::agent::ContextAction::Clear,
+            ] {
+                records.push(InboxRecord::Context(crate::agent::ContextRequest {
+                    by: from.clone(),
+                    id: intent(),
+                    action,
+                }));
+            }
             for control in [InboxRecord::Cancel, InboxRecord::Archive] {
                 records.push(control(Control {
                     by: from.clone(),
@@ -372,6 +420,7 @@ mod tests {
             StatusRecord {
                 phase: Phase::Done { outcome },
                 cursor: u64::MAX,
+                conversation: u64::MAX,
             }
             .encode()
             .expect("a status fits");
@@ -381,13 +430,14 @@ mod tests {
                 inbox: u64::MAX,
                 input,
                 output: file(),
+                outcome: crate::agent::TurnOutcome::Cancelled,
             }
             .encode()
             .expect("a conversation entry fits");
         }
         // The widest settled checkpoint: deepest agent that can have children,
         // every child open and to archive, the widest adoption, settled with
-        // the widest outcome, counters at their widest.
+        // the widest outcome, counters at their widest, every child awaited.
         let adopted = adoption();
         for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
             let path = agent(depth);
@@ -407,9 +457,12 @@ mod tests {
                     policy: adopted.policy.clone(),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    checkpoint: Some(u64::MAX),
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),
+                    awaiting: open_children.clone(),
+                    awaited: true,
                     open_children: open_children.clone(),
                     queued: Default::default(),
                     overflow: None,
@@ -529,14 +582,14 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { phase, cursor: u64::MAX };
+                let record = StatusRecord { phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file() };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
@@ -550,6 +603,7 @@ mod tests {
             let record = StatusRecord {
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
+                conversation: 0,
             };
             assert!(
                 record.check().is_err(),
@@ -561,6 +615,7 @@ mod tests {
                 host: widest(MAX_INTENT_BYTES),
             },
             cursor: u64::MAX,
+            conversation: u64::MAX,
         };
         assert_record_bound(&record);
     }

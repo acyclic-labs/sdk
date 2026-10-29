@@ -43,6 +43,9 @@ pub struct LocalHarnessConfig {
     /// Test-owned state root, retained by every store opened in it.
     pub(super) test_state: Option<acyclic_native_runtime::OwnershipAnchor>,
     pub(super) model: Option<(Model, Arc<dyn ModelProvider>)>,
+    /// Resolves the model selection, approver models and search at open.
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) models: Option<(Arc<ModelResolver>, Option<String>)>,
     pub(super) context_manifest: Option<crate::conversation::FileRef>,
     pub(super) tools: Vec<Tool>,
     /// Standard tools enabled, by name.
@@ -95,6 +98,62 @@ impl LocalHarnessConfig {
         Self::configuration(workspace.into(), Some(model))
     }
 
+    /// Selects a checkout whose model resolves at open through `models`: `selection`, else the
+    /// preset's, else the native settings' configured model, else the resolver's default. Approver
+    /// models resolve through `models` too; the settings' search provider backs the preset's
+    /// web tools.
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    #[must_use]
+    pub fn resolving(
+        workspace: impl Into<PathBuf>,
+        models: Arc<ModelResolver>,
+        selection: Option<String>,
+    ) -> Self {
+        let mut config = Self::configuration(workspace.into(), None);
+        config.models = Some((models, selection));
+        config
+    }
+
+    /// The one resolution of a [`Self::resolving`] composition under its native `settings`;
+    /// `injected` settings keep search off the environment's native sources.
+    #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+    pub(super) fn resolve(
+        mut self,
+        settings: &crate::native_settings::SettingsConfig,
+        injected: bool,
+    ) -> Result<Self> {
+        let Some((models, selection)) = self.models.take() else {
+            return Ok(self);
+        };
+        let selection = match selection {
+            Some(selection) => selection,
+            None => settings
+                .configured_model()?
+                .unwrap_or_else(|| models.default.clone()),
+        };
+        self.model = Some(models.resolve(&selection)?);
+        for model in self.approval_policy.models() {
+            self.approval_models
+                .insert(model.into(), models.resolve(model)?);
+        }
+        #[cfg(feature = "search-http")]
+        {
+            let search = crate::search::SearchConfig::from_file(&settings.search_config_path())?;
+            let search = if injected {
+                search.without_native_sources()
+            } else {
+                search
+            };
+            // The preset alone selects web tools; this only binds their provider.
+            if let Some(provider) = search.provider()? {
+                self.search_provider = Some(provider);
+            }
+        }
+        #[cfg(not(feature = "search-http"))]
+        let _ = injected;
+        Ok(self)
+    }
+
     /// Opens workspace coordination without a model, tools, settings or agent execution.
     /// The trusted harness owner must start this outside the native host sandbox.
     #[cfg(feature = "native-execution")]
@@ -117,6 +176,8 @@ impl LocalHarnessConfig {
             hermetic: false,
             test_state: None,
             model,
+            #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+            models: None,
             context_manifest: None,
             tools: Vec::new(),
             default_tools: crate::tools::default_names(),
@@ -288,10 +349,14 @@ impl LocalHarnessConfig {
         self
     }
     /// Applies `preset`'s prompt, tool selection, limits and approval policy. Its model is
-    /// resolved by the caller's provider registry and bound with [`Self::new`].
+    /// the fallback selection of a [`Self::resolving`] composition; [`Self::new`] binds its own.
     /// Web tools need the `search-http` feature.
     #[must_use]
     pub fn preset(mut self, preset: &crate::preset::Preset) -> Self {
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        if let Some((_, selection @ None)) = &mut self.models {
+            selection.clone_from(&preset.model);
+        }
         self.default_tools.clone_from(&preset.tools);
         self.prompt.clone_from(&preset.prompt);
         self.max_children = preset.max_children;
@@ -450,4 +515,103 @@ impl LocalHarnessConfig {
 #[cfg(test)]
 std::thread_local! {
     pub(super) static TEMPORARY_STATES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A model selection's bound provider.
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+type ModelBinding = (Model, Arc<dyn ModelProvider>);
+
+/// Resolves model selections to providers once: every composition resolving through one
+/// resolver reuses the provider of a selection it already resolved; an unseen selection,
+/// or a new resolver over a changed catalog, resolves anew.
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+pub struct ModelResolver {
+    default: String,
+    resolve: Box<dyn Fn(&str) -> Result<ModelBinding> + Send + Sync>,
+    resolved: std::sync::Mutex<std::collections::BTreeMap<String, ModelBinding>>,
+}
+
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+impl ModelResolver {
+    /// Resolves through `resolve`, selecting `default` when nothing else selects a model.
+    pub fn new(
+        default: impl Into<String>,
+        resolve: impl Fn(&str) -> Result<ModelBinding> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            default: default.into(),
+            resolve: Box::new(resolve),
+            resolved: Default::default(),
+        }
+    }
+
+    fn resolve(&self, selection: &str) -> Result<ModelBinding> {
+        let mut resolved = self
+            .resolved
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(model) = resolved.get(selection) {
+            return Ok(model.clone());
+        }
+        let model = (self.resolve)(selection)?;
+        resolved.insert(selection.into(), model.clone());
+        Ok(model)
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod resolver_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // 1k compositions over one resolver construct each selection's provider
+    // once; a changed selection, here a changed settings model, resolves anew.
+    #[test]
+    fn shared_resolver_reuses_providers_and_resolves_changed_models_anew() -> Result<()> {
+        let constructed = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&constructed);
+        let models = Arc::new(ModelResolver::new("first", move |selection| {
+            counter.fetch_add(1, Ordering::Relaxed);
+            let provider: Arc<dyn ModelProvider> =
+                Arc::new(crate::test_support::ScriptedModelProvider::new(Vec::new()));
+            Ok((
+                Model::new(
+                    "test".into(),
+                    selection.into(),
+                    "1".into(),
+                    serde_json::Value::Null,
+                )?,
+                provider,
+            ))
+        }));
+        let workspace = tempfile::tempdir().map_err(storage)?;
+        let codex = tempfile::tempdir().map_err(storage)?;
+        let settings = || {
+            crate::native_settings::SettingsConfig::new(workspace.path(), workspace.path())
+                .codex_home(codex.path())
+        };
+        let selected = |config: LocalHarnessConfig| {
+            config
+                .model
+                .map(|(model, _)| model.name)
+                .ok_or_else(|| Error::Invalid("model unresolved".into()))
+        };
+        for _ in 0..1000 {
+            let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
+            assert_eq!(selected(config.resolve(&settings(), true)?)?, "first");
+        }
+        assert_eq!(constructed.load(Ordering::Relaxed), 1);
+        std::fs::write(codex.path().join("config.toml"), "model = \"second\"\n")
+            .map_err(storage)?;
+        let config = LocalHarnessConfig::resolving(workspace.path(), Arc::clone(&models), None);
+        assert!(selected(config.resolve(&settings(), true)?)?.ends_with("second"));
+        let explicit = LocalHarnessConfig::resolving(
+            workspace.path(),
+            Arc::clone(&models),
+            Some("first".into()),
+        );
+        assert_eq!(selected(explicit.resolve(&settings(), true)?)?, "first");
+        assert_eq!(constructed.load(Ordering::Relaxed), 2);
+        Ok(())
+    }
 }

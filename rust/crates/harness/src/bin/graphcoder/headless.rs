@@ -1,19 +1,26 @@
 //! Headless conversations: one `-p` prompt, or JSONL requests on stdin.
-//! Every prompt settles through the conversation's committed reply; the
-//! frontend keeps only its outstanding prompts.
+//! Every prompt settles through the conversation's committed reply, read
+//! after subscribing and again at each committed status, which every
+//! conversation entry commits with; the frontend keeps only its outstanding
+//! prompts.
 use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply};
 use acyclic_harness::local::{
     Event,
-    agent_conversation::{Conversation, ended},
+    agent_conversation::{Conversation, Sent, ended},
 };
+use acyclic_native_runtime::lines::AsyncLines;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, sync::Arc};
-use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 type Failure = Box<dyn std::error::Error>;
 
-fn stdin_lines() -> tokio::io::Lines<BufReader<tokio::io::Stdin>> {
-    BufReader::new(tokio::io::stdin()).lines()
+/// Stdin's lines, read off the coordination runtime's blocking slot: an open
+/// stdin's read may never return.
+fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
+    Ok(AsyncLines::new(
+        acyclic_native_runtime::stdin()?,
+        usize::MAX,
+    ))
 }
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the
@@ -27,11 +34,12 @@ pub async fn prompt(
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(operation, prompt).await?;
-    let mut answers = stdin_lines();
-    // An exact replay of a settled prompt is answered at once.
-    let mut reply = conversation.reply(operation, inbox).await?;
+    // Stdin is read only once an approval asks for an answer.
+    let mut answers = None;
+    // Subscribed first, so a reply committed after this read wakes a status.
+    let mut status = None;
     loop {
-        match reply {
+        match conversation.reply(operation, inbox).await? {
             Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
             Reply::Dropped => {
                 eprintln!("graphcoder: {}", conversation.dropped().await?);
@@ -39,34 +47,27 @@ pub async fn prompt(
             }
             Reply::Pending => {}
         }
-        match events.next().await? {
-            Event::Turn(entry) if entry.inbox == inbox => {
-                return print(conversation, &entry, output).await;
-            }
-            Event::Turn(_) | Event::Output => {}
-            Event::Failed(error) => {
-                eprintln!("graphcoder: agent turn failed: {error}");
+        if let Some(status) = status.take() {
+            if let Some(reason) = ended(&status) {
+                eprintln!("graphcoder: {reason}");
                 return Ok(1);
             }
-            Event::Status(status) => {
-                if status.cursor > inbox {
-                    reply = conversation.reply(operation, inbox).await?;
-                    if !matches!(reply, Reply::Pending) {
-                        continue;
-                    }
-                }
-                if let Some(reason) = ended(&status) {
-                    eprintln!("graphcoder: {reason}");
-                    return Ok(1);
-                }
-                if let Phase::WaitingApproval { id } = status.phase {
-                    eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
-                    let answer = answers.next_line().await?.unwrap_or_default();
-                    let approved = matches!(answer.trim(), "y" | "Y" | "yes");
-                    conversation.decide(&id, approved).await?;
-                }
+            if let Phase::WaitingApproval { id } = status.phase {
+                eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
+                let answers = match &mut answers {
+                    Some(answers) => answers,
+                    None => answers.insert(stdin_lines()?),
+                };
+                let answer = answers.next_line().await?.unwrap_or_default();
+                let approved = matches!(answer.trim(), "y" | "Y" | "yes");
+                conversation.decide(&id, approved).await?;
             }
         }
+        status = loop {
+            if let Event::Status(next) = events.next().await? {
+                break Some(next);
+            }
+        };
     }
 }
 
@@ -112,27 +113,109 @@ fn emit(output: &mut impl Write, line: &Value) -> std::io::Result<()> {
     output.flush()
 }
 
+/// The JSONL stream's outstanding prompts.
+#[derive(Default)]
+struct Outstanding {
+    /// Accepted prompts by inbox sequence: message id and display id.
+    pending: BTreeMap<u64, (String, String)>,
+    /// Prompts whose send outcome is unknown (message id, display id and
+    /// text), resent exactly at the next event until accepted or refused.
+    uncertain: Vec<(String, String, String)>,
+    /// The reason the agent ended, once a status said so.
+    finished: Option<String>,
+}
+
+impl Outstanding {
+    /// Sends `prompt` as `message`. Only a refusal is settled at once; an
+    /// unknown outcome may have committed, so it stays outstanding under
+    /// the same message id.
+    async fn send(
+        &mut self,
+        conversation: &Conversation,
+        output: &mut impl Write,
+        message: String,
+        id: String,
+        prompt: String,
+    ) -> Result<(), Failure> {
+        let inbox = match conversation.deliver(&message, &prompt).await? {
+            Sent::Accepted(inbox) => inbox,
+            // A refused prompt, such as an unknown `/name`, is its own
+            // record; the stream goes on.
+            Sent::Refused(reason) => {
+                emit(output, &json!({"id": id, "error": reason}))?;
+                return Ok(());
+            }
+            Sent::Unknown => {
+                self.uncertain.push((message, id, prompt));
+                return Ok(());
+            }
+        };
+        // An exact replay of a settled prompt is answered at once, whether
+        // or not the agent has since ended.
+        let reply = conversation.reply(&message, inbox).await?;
+        match (
+            settled(conversation, &id, inbox, reply).await?,
+            &self.finished,
+        ) {
+            (Some(line), _) => emit(output, &line)?,
+            (None, Some(reason)) => {
+                emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
+            }
+            (None, None) => {
+                self.pending.insert(inbox, (message, id));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resends every prompt of unknown outcome; an exact resend commits
+    /// nothing twice and answers from its committed record.
+    async fn resend(
+        &mut self,
+        conversation: &Conversation,
+        output: &mut impl Write,
+    ) -> Result<(), Failure> {
+        for (message, id, prompt) in std::mem::take(&mut self.uncertain) {
+            self.send(conversation, output, message, id, prompt).await?;
+        }
+        Ok(())
+    }
+}
+
 /// One JSONL request per stdin line: `{"prompt": text, "id"?: id}`,
 /// `{"approve": request, "approved": bool}` or `{"cancel": true}`. A prompt is
 /// message `operation:id`, so rerunning the operation replays it. Each settled
 /// prompt prints `{"id", "inbox", "text"}` (or `"error"`), each approval
-/// request `{"approval": request}`. Exits once stdin closes and every prompt
-/// settled.
+/// request `{"approval": request}`. An ended agent is terminal: it admits
+/// no further input, so every prompt it leaves unanswered, outstanding when
+/// it ends or sent later, is answered with its reason; an exact replay of a
+/// prompt it answered still prints its saved answer. A prompt whose send
+/// outcome is unknown is resent exactly at the next event. Exits,
+/// successfully, once stdin closes and every prompt settled, whether
+/// answered or failed; a prompt still of unknown outcome then fails the
+/// run, and rerunning the operation replays it.
 pub async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,
     output: &mut impl Write,
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
-    let mut lines = stdin_lines();
+    let mut lines = stdin_lines()?;
     let mut open = true;
     let mut sent = 0_u64;
-    // Outstanding prompts by inbox sequence: message id and display id.
-    let mut pending = BTreeMap::<u64, (String, String)>::new();
+    let mut outstanding = Outstanding::default();
     let mut announced = None;
     loop {
-        if !open && pending.is_empty() {
-            return Ok(0);
+        if !open && outstanding.pending.is_empty() {
+            outstanding.resend(conversation, output).await?;
+            if !outstanding.uncertain.is_empty() {
+                let ids = outstanding.uncertain.iter().map(|(_, id, _)| id.as_str());
+                let ids = ids.collect::<Vec<_>>().join(", ");
+                return Err(format!("commit outcome unknown for prompts {ids}").into());
+            }
+            if outstanding.pending.is_empty() {
+                return Ok(0);
+            }
         }
         tokio::select! {
             line = lines.next_line(), if open => {
@@ -145,6 +228,7 @@ pub async fn jsonl(
                 }
                 let request: Value = serde_json::from_str(&line)
                     .map_err(|error| format!("invalid JSONL request: {error}"))?;
+                outstanding.resend(conversation, output).await?;
                 if let Some(prompt) = request.get("prompt").and_then(Value::as_str) {
                     sent += 1;
                     let id = request
@@ -152,15 +236,9 @@ pub async fn jsonl(
                         .and_then(Value::as_str)
                         .map_or_else(|| format!("jsonl-{sent}"), str::to_owned);
                     let message = format!("{operation}:{id}");
-                    let inbox = conversation.send(&message, prompt).await?;
-                    // An exact replay of a settled prompt is answered at once.
-                    let reply = conversation.reply(&message, inbox).await?;
-                    match settled(conversation, &id, inbox, reply).await? {
-                        Some(line) => emit(output, &line)?,
-                        None => {
-                            pending.insert(inbox, (message, id));
-                        }
-                    }
+                    outstanding
+                        .send(conversation, output, message, id, prompt.to_owned())
+                        .await?;
                 } else if let Some(request_id) = request.get("approve").and_then(Value::as_str) {
                     let approved = request.get("approved").and_then(Value::as_bool).unwrap_or(false);
                     conversation
@@ -173,23 +251,14 @@ pub async fn jsonl(
                 }
             }
             event = events.next() => match event? {
-                Event::Turn(entry) => {
-                    if let Some((_, id)) = pending.remove(&entry.inbox) {
-                        emit(output, &answer(conversation, &id, &entry).await?)?;
-                    }
-                }
-                Event::Failed(error) => {
-                    let error = format!("agent turn failed: {error}");
-                    for (inbox, (_, id)) in std::mem::take(&mut pending) {
-                        emit(output, &json!({"id": id, "inbox": inbox, "error": error}))?;
-                    }
-                }
-                Event::Output => {}
+                // Each entry commits with a status, which settles it below.
+                Event::Turn(_) | Event::Output => {}
                 Event::Status(status) => {
                     let ended = ended(&status);
                     // Prompts the agent consumed settle from its committed reply.
+                    let pending = &mut outstanding.pending;
                     let later = pending.split_off(&status.cursor);
-                    for (inbox, (message, id)) in std::mem::replace(&mut pending, later) {
+                    for (inbox, (message, id)) in std::mem::replace(pending, later) {
                         let reply = conversation.reply(&message, inbox).await?;
                         let line = match (&ended, reply) {
                             (Some(reason), Reply::Pending | Reply::Dropped) => {
@@ -204,11 +273,14 @@ pub async fn jsonl(
                             }
                         }
                     }
+                    // An ended agent answers every outstanding prompt with
+                    // its reason; each is a record, so the stream goes on
+                    // until stdin closes.
                     if let Some(reason) = ended {
-                        for (inbox, (_, id)) in std::mem::take(&mut pending) {
+                        for (inbox, (_, id)) in std::mem::take(pending) {
                             emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
                         }
-                        return Ok(1);
+                        outstanding.finished = Some(reason);
                     }
                     if let Phase::WaitingApproval { id } = &status.phase
                         && announced.as_ref() != Some(id)
@@ -216,6 +288,9 @@ pub async fn jsonl(
                         emit(output, &json!({"approval": id.as_str()}))?;
                         announced = Some(id.clone());
                     }
+                    // A status is the stream's event for a prompt of
+                    // unknown outcome: resend it, answered once committed.
+                    outstanding.resend(conversation, output).await?;
                 }
             },
         }

@@ -3,26 +3,16 @@
 //! harness serves its own tree to an in-process session; a remote endpoint
 //! serves one over gRPC. Every frontend drives either through the same
 //! [`super::agent_conversation::Conversation`].
-use super::{AgentFailure, LocalHarness, storage};
+use super::{LocalHarness, storage};
 use crate::{Error, Result, agent::AgentPath};
-use acyclic_actors::addressing::ActorReference;
-use acyclic_harness_client::{AgentCommand, AgentControls, AgentReply, PreparedCommand};
+use acyclic_harness_client::{
+    AgentCommand, AgentControls, AgentExchangeError, AgentReply, CommandError, PreparedCommand,
+};
 use acyclic_stream::session::Client;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 
 /// The connection's one credential slot: it drives and observes the root.
 pub(super) const CREDENTIAL: u32 = 0;
-
-/// Failed deliveries the in-process host reports for one actor, and the
-/// harness hosting it: an in-process connection keeps its host running, so
-/// its prompts' turns run for as long as any clone of it lives.
-#[derive(Clone)]
-pub(super) struct Failures {
-    pub(super) sender: broadcast::Sender<AgentFailure>,
-    pub(super) actor: ActorReference,
-    pub(super) _host: Arc<LocalHarness>,
-}
 
 /// A session bound to one served agent tree.
 #[derive(Clone)]
@@ -31,7 +21,9 @@ pub struct Connection {
     pub(super) root: AgentPath,
     /// The `fs:/` resource announcing the root's tool output.
     pub(super) tools: String,
-    pub(super) failures: Option<Failures>,
+    /// The in-process harness serving the tree: a connection keeps it
+    /// running, so its prompts' turns run for as long as any clone lives.
+    _host: Option<Arc<LocalHarness>>,
 }
 
 fn exchange(error: impl std::fmt::Display) -> Error {
@@ -45,6 +37,14 @@ impl Connection {
     /// The session's failure or the host's refusal.
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
         execute(&self.controls, command).await
+    }
+
+    /// Executes `command` once, keeping its exchange failure typed.
+    ///
+    /// # Errors
+    /// Only when `command` cannot be prepared, before anything is sent.
+    pub(super) async fn exchange(&self, command: &AgentCommand) -> Exchange {
+        exchanged(&self.controls, command).await
     }
 
     /// The root this connection drives.
@@ -105,7 +105,7 @@ impl Connection {
     async fn bind(
         session: Client,
         credential: Vec<u8>,
-        failures: Option<Failures>,
+        host: Option<Arc<LocalHarness>>,
     ) -> Result<Self> {
         session
             .register_credential(CREDENTIAL, credential.into())
@@ -121,16 +121,28 @@ impl Connection {
             controls,
             root,
             tools,
-            failures,
+            _host: host,
         })
     }
 }
 
 async fn execute(controls: &AgentControls, command: &AgentCommand) -> Result<AgentReply> {
-    let prepared = controls
-        .prepare(PreparedCommand::new(command).map_err(exchange)?)
-        .map_err(exchange)?;
-    controls.execute(&prepared).await.map_err(exchange)
+    exchanged(controls, command)
+        .await
+        .map_err(exchange)?
+        .map_err(exchange)
+}
+
+/// A command's exchange with its failure still typed. `Err` is a command
+/// that never left: preparing it failed, so it committed nothing. `Ok` holds
+/// what the sent request returned: a reply, a decoded refusal, an unknown
+/// commit outcome or a session failure.
+pub(super) type Exchange =
+    std::result::Result<std::result::Result<AgentReply, AgentExchangeError>, CommandError>;
+
+async fn exchanged(controls: &AgentControls, command: &AgentCommand) -> Exchange {
+    let prepared = controls.prepare(PreparedCommand::new(command)?)?;
+    Ok(controls.execute(&prepared).await)
 }
 
 impl LocalHarness {
@@ -165,11 +177,6 @@ impl LocalHarness {
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             None,
         );
-        let failures = Failures {
-            sender: hosted.failures().clone(),
-            actor: hosted.agents().actor(server.root()).map_err(storage)?,
-            _host: Arc::clone(self),
-        };
-        Connection::bind(session, observation.credential, Some(failures)).await
+        Connection::bind(session, observation.credential, Some(Arc::clone(self))).await
     }
 }

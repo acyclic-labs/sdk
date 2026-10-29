@@ -30,7 +30,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -48,7 +48,7 @@
           "when": {
             "contains": [
               "declined",
-              "Enter sends"
+              "○"
             ],
             "task_failure": "declined"
           },

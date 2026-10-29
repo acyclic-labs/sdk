@@ -34,6 +34,6 @@ where
         id: InteractionId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<InteractionOutcome>> {
-        self.approvals(io)?.outcome(id).await
+        self.approvals(io)?.dispatch(id).await
     }
 }

@@ -102,6 +102,52 @@ impl LocalHarness {
         };
         Ok(discovery)
     }
+    /// Each of `paths` present in the selected checkout view, at one
+    /// snapshot under the checkout context's read authority: its index and
+    /// bytes, at most `maximum` of each.
+    pub(super) async fn checkout_files(
+        &self,
+        workspace: &LocalWorkspace,
+        paths: &[String],
+        maximum: u64,
+    ) -> Result<Vec<(usize, Vec<u8>)>> {
+        let (selected, pending) = workspace.selected_view().await?;
+        if let Some((operation, _)) = pending {
+            return Err(Error::Indeterminate(OperationId::from_bytes(
+                operation.into_bytes(),
+            )));
+        }
+        let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        let cut = view.snapshot(&mut accounting).await?;
+        let mut found = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            match view
+                .read_at_snapshot(cut, &format!("/{path}"), None, maximum, &mut accounting)
+                .await
+            {
+                Ok((chunk, _)) => found.push((index, chunk.bytes.as_ref().to_vec())),
+                Err(acyclic_fs::LazyWorkspaceError::NotFound) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        // The bytes disclose only what the authority still admits.
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        Ok(found)
+    }
 }
 
 impl LocalHarness {

@@ -1,13 +1,22 @@
-//! The agent tools of the native agent model: `spawn`, `send` and `archive`.
+//! The agent tools of the native agent model: `spawn`, `send`, `archive` and
+//! `wait`.
 //!
-//! A call records exactly one effect through the turn's [`TurnEffects`] and
-//! returns at once; the effect reaches the stream only in the step commit that
-//! settles the turn, together with its conversation record. Spawning names a
-//! child the parent may message or archive from its next turn on.
+//! `spawn`, `send` and `archive` each record exactly one effect through the
+//! turn's [`TurnEffects`] and return at once. The effect commits in the step
+//! that settles the turn, or earlier: before any later call of the same turn
+//! dispatches, the turn commits what its earlier calls recorded (see
+//! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
+//! reachable by name, from the next call on. `wait` records nothing and holds
+//! nothing: until the named children settle, its call does not dispatch (see
+//! [`awaited`]) and the turn commits [`crate::agent::Wait::Children`], which
+//! each child's settlement wakes; dispatched, it reads each child's status
+//! once (see [`crate::agent::settled`]) and returns each one's last answer.
 
 use crate::{
     Error, Result,
-    agent::{AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnEffect, TurnEffects},
+    agent::{
+        AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnChildren, TurnEffect, TurnEffects,
+    },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
     tool::{
@@ -24,7 +33,7 @@ use std::{collections::BTreeSet, sync::Arc};
 /// Revision of the agent tools, selected for the model over other revisions.
 pub const REVISION: &str = "agent-1";
 /// Names of the agent tools; every agent turn is granted them.
-pub const AGENT_TOOLS: [&str; 3] = ["spawn", "send", "archive"];
+pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
 /// Spawn one child agent.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -40,7 +49,8 @@ pub struct SpawnAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
-    /// Recipient agent path, as returned by spawn.
+    /// Recipient: a child's name or agent path, as spawn returned them, or
+    /// the parent's agent path.
     pub agent: String,
     /// Message text.
     pub message: String,
@@ -50,8 +60,29 @@ pub struct SendAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveAgentInput {
-    /// Child agent path, as returned by spawn.
+    /// Child name or agent path, as spawn returned them.
     pub agent: String,
+}
+
+/// Wait for children to settle.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitAgentInput {
+    /// Child names or agent paths, as spawn returned them.
+    pub agents: Vec<String>,
+    /// `all` (the default) waits for every child, `any` for the first.
+    pub mode: Option<WaitMode>,
+}
+
+/// Which children a wait returns on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitMode {
+    /// Every named child settled.
+    #[default]
+    All,
+    /// The first named child settled.
+    Any,
 }
 
 /// What one turn's agent tools act for.
@@ -60,6 +91,8 @@ struct Turn {
     parent: Option<AgentPath>,
     children: BTreeSet<AgentPath>,
     effects: Arc<dyn TurnEffects>,
+    /// What `wait` observes; `None` when the host observes no children.
+    observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
     /// Open children allowed at once, this turn's spawns included.
@@ -86,11 +119,20 @@ fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> std::result::Result
 /// lower after earlier ones.
 fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> String {
     let step = context.map_or(0, |context| context.model_turn.1);
-    format!("{step:010}-{}", hex(&invocation.operation_id.into_bytes()))
+    crate::agent::call_key(step, invocation.operation_id)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+/// Prefix of every tool spawn's intent; the rest is the child's name.
+const SPAWN: &str = "spawn:";
+
+/// The child `parent`'s `spawn` tool names `name`: the one derivation every
+/// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
+///
+/// # Errors
+/// When `name` is not a valid spawn name or the child would exceed the depth.
+pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
+    let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
+    TurnEffect::child(parent, &intent).map_err(agent)
 }
 
 impl AgentTool {
@@ -100,8 +142,11 @@ impl AgentTool {
         context: Option<ToolContext>,
     ) -> Result<ToolResult> {
         let turn = &*self.turn;
+        if self.name == "wait" {
+            return self.wait(invocation.arguments).await;
+        }
         let key = call_key(&invocation, context.as_ref());
-        let operation = hex(&invocation.operation_id.into_bytes());
+        let operation = crate::agent::operation_key(invocation.operation_id);
         let _spawning = match self.name {
             "spawn" => Some(turn.spawning.lock().await),
             _ => None,
@@ -116,7 +161,7 @@ impl AgentTool {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = IntentId::try_from(format!(
-                    "spawn:{}",
+                    "{SPAWN}{}",
                     input.name.as_deref().unwrap_or(&operation)
                 )) else {
                     return Ok(rejected(
@@ -145,7 +190,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(to) = self.recipient(input.agent, true) else {
+                let Some(to) = self.recipient(&input.agent, true) else {
                     return Ok(rejected("send reaches only the parent or an open child"));
                 };
                 if input.message.len() as u64 > turn.maximum_bytes {
@@ -174,7 +219,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(target) = self.recipient(input.agent, false) else {
+                let Some(target) = self.recipient(&input.agent, false) else {
                     return Ok(rejected("archive reaches only an open child"));
                 };
                 TurnEffect::Archive {
@@ -190,10 +235,11 @@ impl AgentTool {
             Err(error) => return Err(error),
         };
         let value = match recorded {
-            TurnEffect::Spawn { intent, .. } => {
-                json!({"agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str()})
-            }
-            TurnEffect::Send { to, .. } => json!({"sent": to.as_str()}),
+            TurnEffect::Spawn { intent, .. } => json!({
+                "agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str(),
+                "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
+            }),
+            TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
         };
         Ok(ToolResult { value })
@@ -215,12 +261,122 @@ impl AgentTool {
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    fn recipient(&self, agent: String, parent: bool) -> Option<AgentPath> {
-        let agent = AgentPath::try_from(agent).ok()?;
+    fn recipient(&self, agent: &str, parent: bool) -> Option<AgentPath> {
         let turn = &*self.turn;
-        (turn.children.contains(&agent) || (parent && turn.parent.as_ref() == Some(&agent)))
-            .then_some(agent)
+        if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
+            return Some(to.clone());
+        }
+        named_child(&turn.agent, agent).filter(|child| turn.children.contains(child))
     }
+
+    /// Reads the named children once; see [`WaitAgentInput`]. Its call
+    /// dispatches only once they settled (see [`awaited`]), so a child still
+    /// running here started again since, and is reported running.
+    async fn wait(&self, arguments: Value) -> Result<ToolResult> {
+        let Some(observer) = &self.turn.observer else {
+            return Ok(rejected("this host observes no children"));
+        };
+        let (children, _) = match waited(&self.turn.agent, arguments) {
+            Ok(waited) => waited,
+            Err(rejected) => return Ok(rejected),
+        };
+        let mut settled = Vec::with_capacity(children.len());
+        let mut running = Vec::new();
+        for (name, child) in &children {
+            let phase = match observer.settled(child).await {
+                Ok(Some(phase)) => phase,
+                Ok(None) => {
+                    running.push(name.as_str());
+                    continue;
+                }
+                Err(Error::NotFound(_)) => {
+                    return Ok(rejected(format!("{name} names no child of this agent")));
+                }
+                Err(error) => return Err(error),
+            };
+            settled.push(json!({
+                "name": name,
+                "agent": child.as_str(),
+                "phase": serde_json::to_value(&phase)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                "answer": observer.answer(child).await?,
+            }));
+        }
+        Ok(ToolResult {
+            value: json!({"settled": settled, "running": running}),
+        })
+    }
+}
+
+/// The child of `agent` that `reference` names: a spawn name, or the agent
+/// path of one of its children, open or settled.
+fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
+    if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
+        return (path.parent().as_ref() == Some(agent)).then_some(path);
+    }
+    spawned_child(agent, reference).ok()
+}
+
+/// The distinct children a `wait` of `agent` names, each with the reference
+/// naming it, and whether it waits for any rather than all; the model's
+/// error when the input names none or names a non-child.
+fn waited(
+    agent: &AgentPath,
+    arguments: Value,
+) -> std::result::Result<(Vec<(String, AgentPath)>, bool), ToolResult> {
+    let input: WaitAgentInput = decode(arguments)?;
+    let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
+    for reference in input.agents {
+        let Some(child) = named_child(agent, &reference) else {
+            return Err(rejected(format!(
+                "{reference} names no child of this agent"
+            )));
+        };
+        if !children.iter().any(|(_, known)| *known == child) {
+            children.push((reference, child));
+        }
+    }
+    if children.is_empty() {
+        return Err(rejected("wait names no child"));
+    }
+    Ok((children, input.mode.unwrap_or_default() == WaitMode::Any))
+}
+
+/// What a call of `tool` with `arguments` waits for before it dispatches: for
+/// a `wait` whose children have not settled (every one, or with `any` the
+/// first), those still unsettled and whether any one suffices. Each child's
+/// status is read once; nothing waits here. The turn then commits
+/// [`crate::agent::Wait::Children`], holding no delivery, and its call
+/// dispatches when the children's settlement resumes it.
+///
+/// # Errors
+/// Stream failures reading a child's status.
+pub(crate) async fn awaited(
+    children: &dyn TurnChildren,
+    tool: &str,
+    arguments: &Value,
+) -> Result<Option<(BTreeSet<AgentPath>, bool)>> {
+    if tool != "wait" {
+        return Ok(None);
+    }
+    // A malformed wait dispatches to receive its error.
+    let Ok((named, any)) = waited(children.agent(), arguments.clone()) else {
+        return Ok(None);
+    };
+    let mut unsettled = BTreeSet::new();
+    for (_, child) in named {
+        match children.settled(&child).await {
+            Ok(Some(_)) if any => return Ok(None),
+            Ok(Some(_)) => {}
+            // A wait naming no child dispatches to receive its error.
+            Err(Error::NotFound(_)) => return Ok(None),
+            Ok(None) => {
+                unsettled.insert(child);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((!unsettled.is_empty()).then_some((unsettled, any)))
 }
 
 fn agent(error: crate::agent::Error) -> Error {
@@ -253,12 +409,55 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
         name: name.into(),
         revision: REVISION.into(),
         description: description.into(),
-        input_schema: schema::input::<T>()?,
+        input_schema: model_schema(schema::input::<T>()?),
         projection_schema: json_projection_schema(output.clone()),
         output_schema: output,
     };
     definition.validate(&mut None)?;
     Ok(definition)
+}
+
+/// `schema` as the model reads it, with nothing every request would repeat
+/// for no meaning: the root's draft URI (2020-12 is the compiler's default),
+/// its type title, and its description (the tool's own description says it),
+/// and each all-constant `oneOf` as the `enum` of its values, whose meaning
+/// the field's description states. Every agent tool request carries this, so
+/// it is the context a turn's mandatory content pays for each tool.
+fn model_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(root) = schema.as_object_mut() {
+        for key in ["$schema", "title", "description"] {
+            root.remove(key);
+        }
+    }
+    enumerate(&mut schema);
+    schema
+}
+
+fn enumerate(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            let values = object.get("oneOf").and_then(|variants| {
+                variants
+                    .as_array()?
+                    .iter()
+                    .map(|variant| {
+                        variant
+                            .get("const")
+                            .filter(|value| value.is_string())
+                            .cloned()
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            if let Some(values) = values {
+                object.remove("oneOf");
+                object.insert("type".into(), json!("string"));
+                object.insert("enum".into(), serde_json::Value::Array(values));
+            }
+            object.values_mut().for_each(enumerate);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(enumerate),
+        _ => {}
+    }
 }
 
 /// The model definitions of the agent tools among `names`, exactly as
@@ -282,21 +481,28 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a child agent on a fork of your volumes and conversation; returns its agent path",
+                "Spawn a named child agent on a fork of your volumes and conversation; returns its name and agent path. It starts before your next tool call runs and stays open to your messages until you archive it",
             )?,
         ),
         (
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Send a message to your parent or an open child, delivered when this turn ends",
+                "Send a message to your parent or an open child (by name or path); it is queued for the recipient before your next tool call runs",
             )?,
         ),
         (
             "archive",
             definition::<ArchiveAgentInput>(
                 "archive",
-                "Archive an open child and its descendants when this turn ends",
+                "Archive an open child (by name or path) and its descendants; wait on it to see it archived",
+            )?,
+        ),
+        (
+            "wait",
+            definition::<WaitAgentInput>(
+                "wait",
+                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Your turn pauses without running until they do. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
             )?,
         ),
     ] {
@@ -308,7 +514,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 }
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
-/// `effects` and its private `writer`, and selects them for the model over any
+/// `effects`, the `observer` its `wait` reads, and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool.
 /// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open
@@ -316,7 +522,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
-    effects: Arc<dyn TurnEffects>,
+    (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
     (names, max_children): (&[String], Option<u32>),
@@ -326,6 +532,7 @@ pub fn bind_agent_tools(
         parent: agent.parent.clone(),
         children: agent.open_children.clone(),
         effects,
+        observer,
         writer,
         maximum_bytes,
         max_children,
@@ -345,4 +552,35 @@ pub fn bind_agent_tools(
         registry.select_model_version(name, REVISION)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_schemas_carry_only_meaning() -> Result<()> {
+        let names = AGENT_TOOLS.map(String::from);
+        for definition in definitions(&names)? {
+            let root = definition.input_schema.as_object();
+            for key in ["$schema", "title", "description"] {
+                assert!(root.is_some_and(|root| !root.contains_key(key)), "{key}");
+            }
+        }
+        let wait = &definitions(&["wait".into()])?[0].input_schema;
+        assert_eq!(wait["$defs"]["WaitMode"]["enum"], json!(["all", "any"]));
+        let check = |value| {
+            crate::executor::check_json_schema_value(wait, &value, "tool", &mut None)
+                .map(|checked| checked.is_ok())
+        };
+        assert!(check(json!({"agents": ["a"], "mode": "any"}))?);
+        assert!(check(json!({"agents": ["a"]}))?);
+        // Negative control: the enum still rejects what the type rejects.
+        assert!(!check(json!({"agents": ["a"], "mode": "some"}))?);
+        assert!(
+            serde_json::from_value::<WaitAgentInput>(json!({"agents": [], "mode": "some"}))
+                .is_err()
+        );
+        Ok(())
+    }
 }

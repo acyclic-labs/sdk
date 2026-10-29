@@ -380,6 +380,12 @@ impl<D: Present> FrameTerminal<D> {
         })
     }
 
+    /// Rings the terminal bell with the next frame. The bell changes no cell
+    /// or cursor, so it rides that frame's one write.
+    pub fn bell(&mut self) {
+        self.terminal.backend_mut().output.frame.push(0x07);
+    }
+
     /// Render at the current terminal size and present the frame at once.
     /// A size change repaints the whole screen exactly as ratatui's autoresize.
     pub fn draw(&mut self, size: Size, render: impl FnOnce(&mut Frame<'_>)) -> io::Result<()> {

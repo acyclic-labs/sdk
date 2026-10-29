@@ -7,21 +7,48 @@
       ".claude/skills/b/SKILL.md": "---\nname: repeated\ndescription: Second declaration\n---\nSECOND BODY\n"
     }
   },
-  "model": { "steps": [] },
+  "model": {
+    "steps": []
+  },
   "inputs": [
     {
       "mode": "headless",
       "text": "hello",
       "exit": 1,
-      "outcome": { "completion": "failed", "error": "conflict: discovered skill names are repeated" }
+      "outcome": {
+        "completion": "failed",
+        "error": "conflict: discovered skill names are repeated"
+      }
     },
     {
       "mode": "jsonl",
       "operation": "00000000-0000-0000-0000-000000000002",
       "text": "hello again",
       "exit": 0,
-      "outcome": { "completion": "failed", "error": "conflict: discovered skill names are repeated" }
+      "outcome": {
+        "completion": "failed",
+        "error": "conflict: discovered skill names are repeated"
+      }
+    },
+    {
+      "mode": "jsonl",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000003",
+        "--input-format",
+        "jsonl"
+      ],
+      "stdin": "{\"prompt\":\"first\",\"id\":\"first\"}\n{\"prompt\":\"/nope\",\"id\":\"typo\"}\n{\"prompt\":\"later\",\"id\":\"later\"}\n",
+      "exit": 0,
+      "stdout_contains": [
+        "\"id\":\"first\"",
+        "\"id\":\"typo\"",
+        "\"id\":\"later\"",
+        "discovered skill names are repeated"
+      ]
     }
   ],
-  "assert": { "requests": 0 }
+  "assert": {
+    "requests": 0
+  }
 }

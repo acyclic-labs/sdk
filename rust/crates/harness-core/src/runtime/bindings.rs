@@ -70,6 +70,7 @@ impl AgentHarness {
             scope,
             output_content: private,
             journal: None,
+            agent: None,
         })
     }
 }

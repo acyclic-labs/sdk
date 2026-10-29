@@ -9,8 +9,8 @@ use super::checkpoint::{self, MAX_CHECKPOINT_BYTES, TAIL_SLACK};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase,
-    StatusRecord, VolumeBinding,
+    AgentOutcome, AgentPath, ChildDone, ChildSettled, Error, ForkAdopted, InboxRecord, IntentId,
+    Phase, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -81,12 +81,25 @@ pub struct AgentState {
     /// Inherited conversation tail at adoption: this agent's own entries are
     /// `[conversation_base, conversation_tail)`, in increasing inbox order.
     pub conversation_base: u64,
+    /// Conversation sequence of the latest context checkpoint (compaction,
+    /// rewind or clear), committed with that entry: the one entry a turn's
+    /// context starts from, however far behind the tail it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u64>,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
     pub phase: Phase,
     /// Children that have not reported `ChildDone`.
     pub open_children: BTreeSet<AgentPath>,
+    /// Open children the turn in progress waits for in
+    /// [`Phase::WaitingChildren`]; empty in every other phase.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub awaiting: BTreeSet<AgentPath>,
+    /// The parent's turn waits for this agent to settle: the next step that
+    /// publishes it idle or done answers with one `ChildSettled`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaited: bool,
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
     /// Inputs waiting for the turn, in inbox order.
@@ -128,10 +141,13 @@ impl AgentState {
             policy: adopted.policy.clone(),
             conversation_tail: adopted.conversation_tail,
             conversation_base: adopted.conversation_tail,
+            checkpoint: adopted.checkpoint,
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
             open_children: BTreeSet::new(),
+            awaiting: BTreeSet::new(),
+            awaited: false,
             archive_pending: BTreeSet::new(),
             queued: VecDeque::new(),
             overflow: None,
@@ -255,6 +271,9 @@ impl AgentState {
 pub enum Out {
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
+    /// The conversation entry just before this is the agent's latest context
+    /// checkpoint, indexed in its state with the append.
+    Checkpoint,
     /// Send an inbox record to another agent.
     Send {
         /// Recipient.
@@ -292,6 +311,16 @@ pub enum Wait {
     /// claiming or settling the turn's input. Like an approval response, the
     /// hook is taken ahead of the input queued behind the turn.
     Host(String),
+    /// Wait, holding no delivery, until these children settle: every one of
+    /// them, or with `any` the first. Each open child is asked once, in this
+    /// step's commit, and answers when it settles; a child already done
+    /// settled, so the turn continues at once.
+    Children {
+        /// The awaited children.
+        children: BTreeSet<AgentPath>,
+        /// Whether the first to settle resumes the turn.
+        any: bool,
+    },
     /// Wait until this Unix millisecond deadline.
     Until(u64),
     /// The turn finished; wait for more input.
@@ -397,9 +426,8 @@ pub async fn step<T: TurnDriver + ?Sized>(
     );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state
-        .as_ref()
-        .map_or(Phase::Idle, |state| state.phase.clone());
+    let previous = state.as_ref().map_or(Phase::Idle, published);
+    let inbox_wake = !alarm_wake;
     let mut state = match (state, wake) {
         (
             None,
@@ -479,12 +507,38 @@ pub async fn step<T: TurnDriver + ?Sized>(
         .count() as u64;
     // A settled Idle -> Idle turn still advances observation: publish its
     // consumed inbox cursor atomically with every conversation append, so a
-    // client can associate that output with its delivered input.
-    let status = (state.phase != previous || appended > 0).then(|| StatusRecord {
-        phase: state.phase.clone(),
-        cursor,
-    });
+    // client can associate that output with its delivered input. Every inbox
+    // record an idle agent consumes publishes its cursor too, so `Idle` at a
+    // cursor proves every record before it settled (see [`super::settled`]).
+    let phase = published(&state);
+    // An awaited child answers its parent once it settles, in the commit
+    // that publishes it so: the parent's wait wakes on exactly that record.
+    if state.awaited && matches!(phase, Phase::Idle | Phase::Done { .. }) {
+        state.awaited = false;
+        if let Some(parent) = &state.parent {
+            outs.push(Out::Send {
+                to: parent.clone(),
+                record: InboxRecord::ChildSettled(ChildSettled {
+                    child: state.path.clone(),
+                }),
+            });
+        }
+    }
+    let mut sequence = state.conversation_tail;
+    for out in &outs {
+        match out {
+            Out::Conversation(_) => sequence += 1,
+            Out::Checkpoint => state.checkpoint = sequence.checked_sub(1),
+            Out::Send { .. } | Out::Archive { .. } | Out::Spawn { .. } => {}
+        }
+    }
     state.conversation_tail += appended;
+    let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
+        .then_some(StatusRecord {
+            phase,
+            cursor,
+            conversation: state.conversation_tail,
+        });
     state.status_tail += u64::from(status.is_some());
     Ok(Step {
         state,
@@ -494,12 +548,24 @@ pub async fn step<T: TurnDriver + ?Sized>(
     })
 }
 
+/// The phase a status publishes: an idle agent still holding input runs it
+/// next, so it publishes `Running`; `Idle` always means nothing is pending.
+fn published(state: &AgentState) -> Phase {
+    if state.phase == Phase::Idle && (!state.queued.is_empty() || state.overflow.is_some()) {
+        Phase::Running
+    } else {
+        state.phase.clone()
+    }
+}
+
 fn control(state: &AgentState) -> Control {
     Control {
         mode: match &state.phase {
             Phase::Idle => Mode::Idle,
             Phase::Running => Mode::Running,
-            Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
+            Phase::WaitingApproval { .. }
+            | Phase::WaitingHost { .. }
+            | Phase::WaitingChildren { .. } => Mode::Approval,
             Phase::WaitingAlarm { deadline_unix_ms } => Mode::Alarm(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
@@ -523,6 +589,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     }
     if !admitted.control.turn {
         state.turn = None;
+        state.awaiting.clear();
     }
     if admitted.control.mode == Mode::Idle {
         state.phase = Phase::Idle;
@@ -539,6 +606,12 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
             state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
         }
         state.archive_pending.remove(&done.child);
+    }
+    match &record {
+        InboxRecord::Awaited => state.awaited = true,
+        InboxRecord::ChildDone(ChildDone { child, .. })
+        | InboxRecord::ChildSettled(ChildSettled { child }) => settle_awaited(&mut state, child),
+        _ => {}
     }
     if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
         // The response the waiting turn needs is taken now, out of order;
@@ -559,6 +632,21 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     Ok(state)
 }
 
+/// An awaited `child` settled: the turn waiting in
+/// [`Phase::WaitingChildren`] resumes once its last awaited child (with `any`,
+/// its first) has. Each child is awaited once, so this is one set removal.
+fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
+    if !state.awaiting.remove(child) {
+        return;
+    }
+    if let Phase::WaitingChildren { any } = state.phase
+        && (any || state.awaiting.is_empty())
+    {
+        state.awaiting.clear();
+        state.phase = Phase::Running;
+    }
+}
+
 /// Whether a driver's effect fits the record that carries it.
 fn admissible(out: &Out) -> bool {
     match out {
@@ -569,7 +657,7 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } => true,
+        Out::Archive { .. } | Out::Checkpoint => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }
@@ -608,7 +696,22 @@ async fn run<T: TurnDriver + ?Sized>(
         (Some(turn), _) => Some(turn.inbox),
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
-    let mut turn = driver.step(state, cursor, input, cancellation).await?;
+    // A turn that fails for good settles as a committed failure, which
+    // every observer reads like any other outcome; only an uncertain
+    // failure retries the step.
+    let mut turn = match driver.step(state, cursor, input, cancellation).await {
+        Ok(turn) => turn,
+        Err(error) if error.uncertain() => return Err(error),
+        Err(error) => TurnStep {
+            checkpoint: None,
+            reserved_children: 0,
+            outs: Vec::new(),
+            wait: Wait::Done(AgentOutcome::Failed {
+                message: error.to_string(),
+            }),
+            drops: None,
+        },
+    };
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.
@@ -633,6 +736,7 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
         wait => wait,
     };
+    let mut awaiting = BTreeSet::new();
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
         Wait::Approval(id) => (
@@ -645,6 +749,29 @@ async fn run<T: TurnDriver + ?Sized>(
             Some(Phase::WaitingHost { host }),
             None,
         ),
+        Wait::Children { children, any } => {
+            // Only an open child can still settle; one already done has, so
+            // a wait it satisfies continues at once and asks no child.
+            let open: BTreeSet<AgentPath> = children
+                .intersection(&state.open_children)
+                .cloned()
+                .collect();
+            let waits = !open.is_empty() && (!any || open.len() == children.len());
+            if waits {
+                outs.extend(open.iter().map(|child| Out::Send {
+                    to: child.clone(),
+                    record: InboxRecord::Awaited,
+                }));
+                awaiting = open;
+                (
+                    kernel::Wait::Approval,
+                    Some(Phase::WaitingChildren { any }),
+                    None,
+                )
+            } else {
+                (kernel::Wait::Continue, None, None)
+            }
+        }
         Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
@@ -659,6 +786,11 @@ async fn run<T: TurnDriver + ?Sized>(
         None => 0,
     };
     state.reported = next.reported;
+    state.awaiting = if next.mode == Mode::Approval {
+        awaiting
+    } else {
+        BTreeSet::new()
+    };
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,

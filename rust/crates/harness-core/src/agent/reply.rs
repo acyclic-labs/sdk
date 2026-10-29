@@ -89,7 +89,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
 }
 
 /// Committed conversation entry `sequence`.
-async fn entry<P: crate::store::JournalProvider + ?Sized>(
+pub(super) async fn entry<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     conversation: &StreamPath,
     sequence: u64,

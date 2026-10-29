@@ -7,6 +7,8 @@ pub struct TaskContext {
     pub(super) scope: RuntimeScope,
     pub(super) output_content: ContentBindings,
     pub(super) journal: Option<Arc<dyn crate::executor::ExecutionJournal>>,
+    /// The agent whose turn this is, with the volumes it binds.
+    pub(super) agent: Option<(crate::agent::AgentPath, Vec<crate::agent::VolumeBinding>)>,
 }
 
 impl TaskContext {
@@ -46,6 +48,26 @@ impl TaskContext {
     #[must_use]
     pub const fn scope(&self) -> &RuntimeScope {
         &self.scope
+    }
+
+    /// This context as agent `path`'s turn over `volumes`, so a host's tools
+    /// can name the agent's own children.
+    #[must_use]
+    pub fn for_agent(
+        mut self,
+        path: crate::agent::AgentPath,
+        volumes: Vec<crate::agent::VolumeBinding>,
+    ) -> Self {
+        self.agent = Some((path, volumes));
+        self
+    }
+
+    /// The agent whose turn this is and the volumes it binds, if any.
+    #[must_use]
+    pub fn agent(&self) -> Option<(&crate::agent::AgentPath, &[crate::agent::VolumeBinding])> {
+        self.agent
+            .as_ref()
+            .map(|(path, volumes)| (path, volumes.as_slice()))
     }
 
     /// Narrows this context's grants and limits for one bound execution.

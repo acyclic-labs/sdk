@@ -8,7 +8,7 @@
 //! reaches another agent before that commit.
 
 use super::{AgentId, AgentPath, AgentState, InboxRecord, IntentId, Message, Out, Sender};
-use crate::conversation::FileRef;
+use crate::{OperationId, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -59,8 +59,37 @@ pub trait TurnEffects: acyclic_stream::ProviderPlatform {
         effect: &'a TurnEffect,
     ) -> BoxProviderFuture<'a, crate::Result<TurnEffect>>;
 
-    /// Every effect the turn recorded, ordered by call key.
+    /// Every effect the turn recorded since its last commit, ordered by call key.
     fn recorded(&self) -> BoxProviderFuture<'_, crate::Result<Vec<TurnEffect>>>;
+
+    /// Whether a call other than `operation` recorded an effect that has not
+    /// committed yet. Such effects commit before `operation` dispatches, so
+    /// the call reaches every child, message and archive they make.
+    fn holds(&self, operation: OperationId) -> BoxProviderFuture<'_, crate::Result<bool>>;
+}
+
+/// Path-safe key of the agent tool call `operation` at model step `step`:
+/// effects of later steps order after earlier ones.
+#[must_use]
+pub fn call_key(step: u32, operation: OperationId) -> String {
+    format!("{step:010}-{}", operation_key(operation))
+}
+
+/// Whether `call` is the key [`call_key`] gives `operation`.
+#[must_use]
+pub fn is_call_of(call: &str, operation: OperationId) -> bool {
+    call.rsplit_once('-')
+        .is_some_and(|(_, key)| key == operation_key(operation))
+}
+
+/// Lower-case hex of `operation`, as agent tool keys and intents name it.
+#[must_use]
+pub fn operation_key(operation: OperationId) -> String {
+    operation
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The step effects of `recorded`, in order. A child spawned twice in one turn

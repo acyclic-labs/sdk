@@ -190,6 +190,9 @@ where
                     clock: Arc::new(SystemClock),
                     approval_policy: self.preset.approval_policy.clone(),
                 },
+                // No lazy checkout keeps fork cuts beside these volumes, so a
+                // spawn forks each source's head.
+                None,
                 |turns| turns.with_prompt(self.preset.prompt.as_deref()),
             )
             .map_err(super::failed)?;

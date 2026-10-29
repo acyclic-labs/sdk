@@ -33,7 +33,15 @@ impl StockExecutor {
             task_context: None,
             compaction: None,
             reconciliation_only: false,
+            live_reply: None,
         }
+    }
+
+    /// Stages each model dispatch's text while it streams; see [`LiveReply`].
+    #[must_use]
+    pub fn with_live_reply(mut self, reply: LiveReply) -> Self {
+        self.live_reply = Some(reply);
+        self
     }
 
     /// Sets the caller's output token budget for each model request.

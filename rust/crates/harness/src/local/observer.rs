@@ -2,21 +2,19 @@
 //! its settled turns and its newest tool call's output, on one
 //! [`AgentClient`] over the connection's session and credential.
 use super::{
-    AgentFailure, Connection,
+    Connection,
     agent_conversation::Conversation,
     storage,
-    tool_output::{CHUNK_BYTES, OutputTail},
+    tool_output::{OutputTail, read_newest},
 };
 use crate::{
     Result,
     agent::{AgentPath, ConversationEntry, StatusRecord},
 };
-use acyclic_actors::addressing::ActorReference;
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentSelection, ReadTarget, WireSessionError,
 };
 use acyclic_stream::{StreamError, StreamPath, wire};
-use tokio::sync::broadcast;
 
 /// What an observer sees, in commit order per stream.
 pub enum Event {
@@ -27,9 +25,6 @@ pub enum Event {
     Turn(ConversationEntry),
     /// New tool output was announced; [`Observer::absorb`] reads it.
     Output,
-    /// The runtime failed the agent's delivery; it stays queued for a retry
-    /// that may fail the same way.
-    Failed(String),
 }
 
 /// A live, read-only observation of one agent. Revoking the scope it derives
@@ -42,12 +37,8 @@ pub struct Observer {
     status: StreamPath,
     /// The `fs:/` resource of the agent's `tools/`.
     resource: String,
-    /// Next conversation sequence, where a missing conversation reopens.
+    /// Next conversation sequence, where a refused conversation reopens.
     next_turn: u64,
-    /// The conversation stream does not exist yet: the step that creates it
-    /// also appends a status, so it reopens after the next status.
-    missing: bool,
-    failures: Option<(broadcast::Receiver<AgentFailure>, ActorReference)>,
     tail: OutputTail,
 }
 
@@ -88,11 +79,6 @@ impl Observer {
             status: agent.status().map_err(storage)?,
             resource: connection.tools.clone(),
             next_turn: from,
-            missing: false,
-            failures: connection
-                .failures
-                .as_ref()
-                .map(|failures| (failures.sender.subscribe(), failures.actor.clone())),
             tail: OutputTail::default(),
             connection: connection.clone(),
             agent,
@@ -105,75 +91,82 @@ impl Observer {
     /// Fails when a follow is refused or ends, including on revocation.
     pub async fn next(&mut self) -> Result<Event> {
         loop {
-            let next = {
-                let Self {
-                    client, failures, ..
-                } = &mut *self;
-                let failure = async {
-                    match failures.as_mut() {
-                        Some((failures, _)) => failures.recv().await,
-                        None => futures::future::pending().await,
-                    }
-                };
-                tokio::select! {
-                    event = client.next() => Ok(event),
-                    failure = failure => Err(failure),
-                }
-            };
-            let event = match next {
-                Ok(event) => event,
-                Err(Ok(failure))
-                    if self
-                        .failures
-                        .as_ref()
-                        .is_some_and(|(_, actor)| failure.actor == *actor) =>
-                {
-                    return Ok(Event::Failed(failure.error));
-                }
-                Err(Ok(_) | Err(broadcast::error::RecvError::Lagged(_))) => continue,
-                Err(Err(broadcast::error::RecvError::Closed)) => {
-                    self.failures = None;
-                    continue;
-                }
-            };
-            match event {
+            match self.client.next().await {
                 Ok(AgentEvent::Status { status, .. }) => {
-                    if self.missing {
-                        self.missing = false;
-                        self.client
-                            .set_view(
-                                AgentSelection {
-                                    agent: self.agent.clone(),
-                                    conversation_from: self.next_turn,
-                                    status_from: 0,
-                                },
-                                std::iter::empty(),
-                            )
-                            .map_err(storage)?;
-                    }
+                    // The status committed with a conversation's first entry
+                    // says it exists: follow it once it does.
+                    self.follow_announced(status.conversation)?;
                     tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
+                    // An idle or finished agent runs no turn: an interrupted
+                    // one's output is done too.
+                    if matches!(
+                        status.phase,
+                        crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
+                    ) {
+                        self.reset_output()?;
+                    }
                     return Ok(Event::Status(status));
                 }
                 Ok(AgentEvent::Conversation {
                     sequence, entry, ..
                 }) => {
+                    tracing::debug!(sequence, "conversation entry");
                     self.next_turn = sequence + 1;
                     // The turn's output is complete; the next turn starts
                     // its own display.
-                    let end = self
-                        .client
-                        .resource_view(&self.resource)
-                        .map_err(storage)?
-                        .next_sequence();
-                    self.tail.reset(end);
+                    self.reset_output()?;
                     return Ok(Event::Turn(entry));
                 }
                 Ok(AgentEvent::Resource { .. }) => return Ok(Event::Output),
                 Ok(AgentEvent::Progress) => {}
-                Err(error) if self.conversation_missing(&error) => self.missing = true,
-                Err(error) => return Err(storage(error)),
+                Err(error) if self.conversation_missing(&error) => {
+                    // Refused before its first entry: the status committed
+                    // with that entry reopens it, and one read before this
+                    // refusal already did.
+                    let announced = self
+                        .client
+                        .current_status()
+                        .map_err(storage)?
+                        .map_or(0, |status| status.conversation);
+                    self.follow_announced(announced)?;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "observer follow failed");
+                    return Err(storage(error));
+                }
             }
         }
+    }
+
+    /// Follows the conversation again from the next unseen turn when a
+    /// committed status announced entries past it and it is not followed.
+    fn follow_announced(&mut self, conversation: u64) -> Result<()> {
+        if conversation <= self.next_turn || self.client.session().is_following(&self.conversation)
+        {
+            return Ok(());
+        }
+        tracing::debug!(from = self.next_turn, "conversation reopen");
+        self.client
+            .set_view(
+                AgentSelection {
+                    agent: self.agent.clone(),
+                    conversation_from: self.next_turn,
+                    status_from: 0,
+                },
+                std::iter::empty(),
+            )
+            .map_err(storage)
+    }
+
+    /// Ends the displayed output: records announced so far are never shown.
+    fn reset_output(&mut self) -> Result<()> {
+        let end = self
+            .client
+            .resource_view(&self.resource)
+            .map_err(storage)?
+            .next_sequence();
+        self.tail.reset(end);
+        Ok(())
     }
 
     /// Whether `error` only reports that the conversation stream does not
@@ -216,25 +209,42 @@ impl Observer {
         else {
             return Ok(());
         };
-        let mut bytes = Vec::with_capacity(plan.reads.len());
-        for (path, _) in &plan.reads {
-            bytes.push(
-                Conversation::read(
-                    &self.connection,
-                    &self.agent,
-                    ReadTarget::ToolOutput { path: path.clone() },
-                    CHUNK_BYTES as u64,
-                )
-                .await?,
-            );
-        }
-        self.tail.apply(plan, bytes);
+        // Only the displayed tail is read, in bounded ranges, however large
+        // the announced files are.
+        let (connection, agent) = (&self.connection, &self.agent);
+        let (bytes, cut) = read_newest(&plan.reads, |path, offset| {
+            Conversation::read_at(connection, agent, ReadTarget::ToolOutput { path }, offset)
+        })
+        .await?;
+        self.tail.apply(plan, bytes, cut);
         Ok(())
+    }
+
+    /// The next conversation sequence not yet observed: every entry before
+    /// it was returned as [`Event::Turn`].
+    #[must_use]
+    pub const fn seen(&self) -> u64 {
+        self.next_turn
     }
 
     /// The newest call's output, its last 16 KiB at most.
     #[must_use]
     pub fn output(&self) -> &str {
-        self.tail.text()
+        if self.tail.reply() {
+            ""
+        } else {
+            self.tail.text()
+        }
+    }
+
+    /// The running turn's answer text while it streams, its last 16 KiB at
+    /// most; empty once a tool call runs or the turn settles.
+    #[must_use]
+    pub fn reply(&self) -> &str {
+        if self.tail.reply() {
+            self.tail.text()
+        } else {
+            ""
+        }
     }
 }

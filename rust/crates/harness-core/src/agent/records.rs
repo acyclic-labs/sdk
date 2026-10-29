@@ -110,6 +110,9 @@ pub struct ForkAdopted {
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.
     pub conversation_tail: u64,
+    /// Sequence of the inherited conversation's latest context checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u64>,
     /// Volumes the agent owns.
     pub volumes: Vec<VolumeBinding>,
     /// Task brief, if any.
@@ -167,6 +170,17 @@ pub struct ChildDone {
     pub outcome: AgentOutcome,
 }
 
+/// A child awaited by its parent settled: it is idle having consumed every
+/// record before the one that asked, or done.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct ChildSettled {
+    /// The child.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentPath,
+}
+
 /// A response file now exists for an approval request of this agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -221,6 +235,39 @@ pub struct Hook {
     pub event: Box<FileRef>,
 }
 
+/// How a context request selects the agent's later model context. Each one
+/// settles as a conversation entry, a checkpoint: every later turn's context
+/// is the latest checkpoint's summary, then the turns settled after it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContextAction {
+    /// One model request summarizes the current context; its answer is the
+    /// checkpoint's summary.
+    Compact {
+        /// Caller guidance for the summary, staged like a message body.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef | null"))]
+        instructions: Option<Box<FileRef>>,
+    },
+    /// Restores the latest checkpoint, dropping every turn settled after it;
+    /// with none, the conversation's start.
+    Rewind,
+    /// Retires the conversation: later turns start with no history.
+    Clear,
+}
+
+/// Compact, rewind or clear the agent's model context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextRequest {
+    /// Requester.
+    pub by: Sender,
+    /// Stable intent identity.
+    pub id: IntentId,
+    /// The selection it makes.
+    pub action: ContextAction,
+}
+
 /// The only input to an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -231,6 +278,11 @@ pub enum InboxRecord {
     Message(Message),
     /// A child finished.
     ChildDone(ChildDone),
+    /// The parent's turn waits for this agent to settle: once it is idle or
+    /// done it answers with one [`ChildSettled`].
+    Awaited,
+    /// A child this agent's turn waits for settled.
+    ChildSettled(ChildSettled),
     /// An approval response exists.
     Approval(Approval),
     /// A child delegates an approval.
@@ -243,6 +295,8 @@ pub enum InboxRecord {
     Hook(Hook),
     /// Spawn a child on an authorized caller's request.
     Spawn(SpawnRequest),
+    /// Compact, rewind or clear the model context.
+    Context(ContextRequest),
 }
 
 /// Current phase of an agent, appended to its status stream on change and on
@@ -267,6 +321,13 @@ pub enum Phase {
         /// Host name.
         host: String,
     },
+    /// A turn's `wait` waits for its children to settle, holding no delivery:
+    /// each child's [`ChildSettled`] or [`ChildDone`] wakes it.
+    WaitingChildren {
+        /// Whether the first awaited child to settle resumes the turn, rather
+        /// than the last.
+        any: bool,
+    },
     /// Waiting for a deadline.
     WaitingAlarm {
         /// Unix milliseconds.
@@ -279,6 +340,22 @@ pub enum Phase {
     },
 }
 
+impl Phase {
+    /// Whether a turn is open: running, or waiting on an approval, its host,
+    /// its children or a deadline. Idle and done agents hold none.
+    #[must_use]
+    pub const fn in_turn(&self) -> bool {
+        match self {
+            Self::Idle | Self::Done { .. } => false,
+            Self::Running
+            | Self::WaitingApproval { .. }
+            | Self::WaitingHost { .. }
+            | Self::WaitingChildren { .. }
+            | Self::WaitingAlarm { .. } => true,
+        }
+    }
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -289,6 +366,10 @@ pub struct StatusRecord {
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.
     pub cursor: u64,
+    /// The agent's conversation length after that transition, committed
+    /// with it: the conversation stream exists once this is above zero.
+    #[serde(default)]
+    pub conversation: u64,
 }
 
 impl StatusRecord {
@@ -394,7 +475,8 @@ impl AgentRecord for InboxRecord {
             Self::ChildDone(done) => check_outcome(&done.outcome),
             Self::Message(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
-            | Self::Archive(Control { by: from, .. }) => check_sender(from),
+            | Self::Archive(Control { by: from, .. })
+            | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
             Self::Spawn(spawn) => {
                 if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {
@@ -402,7 +484,10 @@ impl AgentRecord for InboxRecord {
                 }
                 check_sender(&spawn.by)
             }
-            Self::Approval(_) | Self::ApprovalRequested(_) => Ok(()),
+            Self::Approval(_)
+            | Self::ApprovalRequested(_)
+            | Self::Awaited
+            | Self::ChildSettled(_) => Ok(()),
         }
     }
 }
@@ -423,6 +508,7 @@ impl AgentRecord for StatusRecord {
             Phase::Idle
             | Phase::Running
             | Phase::WaitingApproval { .. }
+            | Phase::WaitingChildren { .. }
             | Phase::WaitingAlarm { .. } => Ok(()),
         }
     }

@@ -5,7 +5,7 @@ use super::super::LocalAgents;
 use super::{ScriptedModelProvider, text, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
-    agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord, TurnInput},
+    agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
@@ -42,8 +42,13 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
     }
 }
 
-/// The root's conversation once its first turn has settled.
+/// The root's conversation once it has settled every input sent before
+/// this call: idle past that inbox tail. Its adoption's own `Idle` status
+/// precedes those inputs, so it never counts.
 async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+    let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
+        .await
+        .map_err(agent)?;
     let mut statuses = acyclic_stream::records_only(
         agents
             .provider()
@@ -58,7 +63,7 @@ async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>>
         while let Some(record) = statuses.try_next().await.map_err(agent)? {
             let status = StatusRecord::decode(&record.value).map_err(agent)?;
             match status.phase {
-                crate::agent::Phase::Idle if status.cursor > 0 => {
+                crate::agent::Phase::Idle if status.cursor >= inbox => {
                     return records(&**agents.provider(), root.conversation().map_err(agent)?)
                         .await;
                 }
@@ -189,18 +194,13 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let mut failures = harness
-        .agent_failures()
-        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    let entries = tokio::select! {
-        result = settled(&agents, &root) => result,
-        failure = failures.recv() => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
-    };
-    let entries = entries.inspect_err(|_| {
+    // A turn that fails for good commits its agent's failure, which
+    // settlement reports.
+    let entries = settled(&agents, &root).await.inspect_err(|_| {
         let _ = waits.report(&mut std::io::stderr());
     })?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
@@ -489,18 +489,18 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         }),
     );
     let harness = open(pending.clone()).await?;
-    harness.agents().await?;
-    let mut failures = harness
-        .agent_failures()
-        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
     conversation(&harness)
         .await?
         .send("hooked", "hello")
         .await?;
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        // A turn that fails for good commits its agent's failure, so the
+        // agent settling before dispatch is that failure.
         tokio::select! {
             request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
-            failure = failures.recv() => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
+            settled = settled(&agents, &root) => Err(Error::Conflict(format!("hooked turn ended before model dispatch: {:?}", settled.map(|entries| entries.len())))),
         }
     })
     .await
@@ -631,12 +631,18 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let client = conversation(&harness).await?;
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", prompt).await?;
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     let inbox = client.send("mention", prompt).await?;
     let entries = settled(&agents, &root).await?;
     // Later publications on the private volume leave a replay unchanged.
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -696,11 +702,14 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     // manifest, so it still matches the delivered message exactly.
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
-        .prompt_attachments(b"fresh", "inspect @mention.txt")
+        .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
     let fresh = listed(&harness, &fresh).await?;
@@ -708,6 +717,68 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
         b"CHANGED\n"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is_gone() -> Result<()>
+{
+    let (_directory, harness, _provider) = checkout_with(&[
+        (
+            ".claude/commands/marker.md".into(),
+            b"MARKER $ARGUMENTS with @note.txt
+"
+            .to_vec(),
+        ),
+        (
+            "note.txt".into(),
+            b"NOTE
+"
+            .to_vec(),
+        ),
+    ])
+    .await?;
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let inbox = client.send("marker", "/marker now").await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    // The command, the skill catalog and the mentioned file are all gone.
+    std::fs::remove_dir_all(checkout.join(".claude")).map_err(agent)?;
+    std::fs::remove_file(checkout.join("note.txt")).map_err(agent)?;
+    // Negative control: a new delivery reads the project as it is now.
+    assert!(client.send("fresh", "/marker now").await.is_err());
+    // The replay is the first delivery, answered from its committed record.
+    assert_eq!(client.send("marker", "/marker now").await?, inbox);
+    let Reply::Answered {
+        entry: replayed, ..
+    } = client.reply("marker", inbox).await?
+    else {
+        return Err(Error::Conflict("the replay lost its saved answer".into()));
+    };
+    assert_eq!(replayed, entry);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_oversized_prompt_is_refused_and_the_conversation_goes_on() -> Result<()> {
+    use crate::local::agent_conversation::Sent;
+    let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    let client = conversation(&harness).await?;
+    let oversized = "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES);
+    // Over the command limit, the prompt never leaves: it is refused, not
+    // an error that ends the caller's stream.
+    assert!(matches!(
+        client.deliver("oversized", &oversized).await?,
+        Sent::Refused(_)
+    ));
+    // Negative control: the next prompt on the same conversation commits.
+    assert!(matches!(
+        client.deliver("next", "hello").await?,
+        Sent::Accepted(_)
+    ));
     Ok(())
 }
 

@@ -336,22 +336,8 @@ impl ToolExecutor for CheckoutTools {
     ) -> BoxProviderFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             self.authorize(None, context.as_ref(), &invocation, None)?;
-            let original = context
-                .as_ref()
-                .ok_or_else(|| Error::Unauthorized("checkout task is absent".into()))?;
-            serialized(&self.state, async |state| {
-                let view = state
-                    .active
-                    .as_ref()
-                    .unwrap_or_else(|| self.workspace.view());
-                self.require_command_access(
-                    view.workspace(),
-                    original.effective_scope().grants(),
-                    invocation.name == "fs",
-                )
-                .await
-            })
-            .await?;
+            // Command access is checked once, under the command's own guard:
+            // an earlier read-only check would only queue behind a writer.
             let request = if invocation.name == crate::tools::shell::PLATFORM.name {
                 serde_json::to_vec(&invocation).map_err(storage)?
             } else {

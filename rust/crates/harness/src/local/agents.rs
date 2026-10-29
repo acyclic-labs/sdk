@@ -38,7 +38,6 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 /// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
     server: Arc<LocalServer>,
-    failures: tokio::sync::broadcast::Sender<AgentFailure>,
     run: tokio::task::JoinHandle<()>,
 }
 
@@ -57,20 +56,6 @@ impl Hosted {
     pub(super) const fn server(&self) -> &Arc<LocalServer> {
         &self.server
     }
-
-    pub(super) const fn failures(&self) -> &tokio::sync::broadcast::Sender<AgentFailure> {
-        &self.failures
-    }
-}
-
-/// One failed agent delivery. It stays queued and is retried; a waiting
-/// client reports it rather than waiting for an output that may never come.
-#[derive(Clone, Debug)]
-pub struct AgentFailure {
-    /// The actor whose delivery failed; see [`AgentHost::actor`].
-    pub actor: ActorReference,
-    /// The failure, as the runtime reported it.
-    pub error: String,
 }
 
 impl Drop for Hosted {
@@ -93,10 +78,23 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async { Ok(PolicyDecision::Allow) })
     }
 
+    fn prompt_command<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            self.0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?
+                .resolve_prompt_command(text)
+                .await
+        })
+    }
+
     fn attachments<'a>(
         &'a self,
         key: &'a [u8],
-        text: &'a str,
+        text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
         Box::pin(async move {
             self.0
@@ -105,6 +103,12 @@ impl crate::hosting::Platform for LocalUser {
                 .prompt_attachments(key, text)
                 .await
         })
+    }
+
+    /// The local user is the tree's one human: it answers as the default
+    /// human approver, the one a tool hook's escalation asks.
+    fn approver(&self, _: &Principal) -> String {
+        crate::approvals::HUMAN_APPROVER.to_owned()
     }
 }
 
@@ -146,20 +150,23 @@ impl TurnContext for LocalContext {
             let context = local
                 .harness
                 .agent_context(&authority.grants, authority.content.clone())?
-                .with_execution_journal(Arc::clone(&authority.journal));
+                .with_execution_journal(Arc::clone(&authority.journal))
+                .for_agent(agent.path.clone(), agent.volumes.clone());
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?
                 .with_tool_authority(context.scope().clone(), authority.approval.clone())?
-                .with_task_context(&context, turn)?;
+                .with_task_context(&context, turn)?
+                .with_live_reply(crate::executor::LiveReply::new(
+                    Arc::clone(writer),
+                    format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
+                ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]
             let executor = executor
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
-            #[cfg(not(any(test, feature = "hooks")))]
-            let _ = agent;
             Ok(executor)
         })
     }
@@ -306,6 +313,16 @@ impl LocalHarness {
                 .with_goals(self.goal_continuations)
                 .with_prompt(self.preset.prompt.as_deref())
         };
+        // A checkout's spawned children fork its retained lazy cut, so each
+        // child's project is a related fork the parent can diff and merge.
+        // Only native execution has checkouts; a configured volume has none.
+        #[cfg(any(test, feature = "native-execution"))]
+        let cuts = self.workspace().map(|workspace| {
+            Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(workspace)))
+                as Arc<dyn crate::filesystem::ForkCuts>
+        });
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let cuts: Option<Arc<dyn crate::filesystem::ForkCuts>> = None;
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
                 &super::Custody {
@@ -320,10 +337,18 @@ impl LocalHarness {
                 Arc::clone(&self.files),
                 within,
                 turns,
+                cuts,
                 configure,
             )
         } else {
-            Bound::local_host(authority, Arc::clone(&self.files), within, turns, configure)
+            Bound::local_host(
+                authority,
+                Arc::clone(&self.files),
+                within,
+                turns,
+                cuts,
+                configure,
+            )
         }
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser(Arc::downgrade(self)));
@@ -378,31 +403,19 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let (failures, _) = tokio::sync::broadcast::channel(64);
-        let report = failures.clone();
         let runner = Arc::clone(&server);
+        // A delivery that fails here retries only an uncertain commit: a
+        // turn that fails for good commits its agent's failure, which every
+        // observer reads from the agent's status.
         let run = tokio::spawn(async move {
             let error = runner
                 .run(|actor, error| {
-                    tracing::warn!(?actor, %error, "agent turn failed");
-                    let _ = report.send(AgentFailure {
-                        actor: actor.clone(),
-                        error: error.to_string(),
-                    });
+                    tracing::warn!(?actor, %error, "agent delivery failed");
                 })
                 .await;
             tracing::error!(%error, "agent runtime stopped");
         });
-        Ok(Hosted {
-            server,
-            failures,
-            run,
-        })
-    }
-
-    /// Failed agent deliveries from now on, once the agents are hosted.
-    pub fn agent_failures(&self) -> Option<tokio::sync::broadcast::Receiver<AgentFailure>> {
-        self.agents.get().map(|hosted| hosted.failures.subscribe())
+        Ok(Hosted { server, run })
     }
 }
 

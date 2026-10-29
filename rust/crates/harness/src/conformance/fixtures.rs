@@ -38,6 +38,7 @@ pub fn adopted() -> ForkAdopted {
         parent: None,
         forked_at: 0,
         conversation_tail: 0,
+        checkpoint: None,
         volumes: Vec::new(),
         brief: None,
         policy: None,

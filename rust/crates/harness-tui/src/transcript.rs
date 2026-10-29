@@ -3,7 +3,7 @@
 use crate::{Editor, Layout};
 use ratatui::{
     style::{Modifier, Style},
-    text::Line,
+    text::{Line, Span},
 };
 use std::collections::VecDeque;
 use unicode_segmentation::UnicodeSegmentation;
@@ -78,13 +78,14 @@ impl TranscriptRows {
         &self.lines
     }
 
-    /// Replace the transient prompt suffix without rewrapping settled text.
-    /// Display budgets do not change the caller's pending operation identities.
-    pub fn pending<'a>(&mut self, prompts: impl DoubleEndedIterator<Item = &'a str>) {
+    /// Replace the transient suffix, each block a prompt (`true`) or an
+    /// answer, without rewrapping settled text. Display budgets do not change
+    /// the caller's pending operation identities.
+    pub fn pending<'a>(&mut self, blocks: impl DoubleEndedIterator<Item = (bool, &'a str)>) {
         self.clear_pending();
         let mut rows = VecDeque::new();
-        for text in prompts.rev().take(MAX_BLOCKS) {
-            let wrapped = wrap(true, &bounded_text(text), self.width.max(1));
+        for (prompt, text) in blocks.rev().take(MAX_BLOCKS) {
+            let wrapped = wrap(prompt, &bounded_text(text), self.width.max(1));
             for row in wrapped.into_iter().rev() {
                 if rows.len() == MAX_ROWS {
                     break;
@@ -108,7 +109,13 @@ impl TranscriptRows {
         }
         self.lines[..before.min(self.lines.len())]
             .iter()
-            .rposition(|line| line.spans.iter().any(|span| span.content.contains(query)))
+            .rposition(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+                    .contains(query)
+            })
     }
 
     /// Retained display rows, including transient prompts.
@@ -167,15 +174,27 @@ fn bounded_text(text: &str) -> String {
     format!("{OMITTED}\n{}", &text[start..])
 }
 
+/// A prompt is shown bold as typed; an answer is rendered markdown.
 fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     let marked = width > 2;
-    let layout = Layout::new(&Editor::new(text), if marked { width - 2 } else { width });
-    let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
-    let style = if prompt {
-        Style::default().add_modifier(Modifier::BOLD)
+    let columns = if marked { width - 2 } else { width };
+    let (text, styles) = if prompt {
+        (
+            text.to_owned(),
+            vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
+        )
     } else {
-        Style::default()
+        crate::markdown::render(text, columns)
     };
+    let style_at = |offset: usize| {
+        let at = styles.partition_point(|(range, _)| range.end <= offset);
+        styles
+            .get(at)
+            .filter(|(range, _)| range.start <= offset)
+            .map_or_else(Style::default, |(_, style)| *style)
+    };
+    let layout = Layout::new(&Editor::new(&text), columns);
+    let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
     if first > 0 {
         // The marker must itself fit even in a one-column text area.
@@ -190,15 +209,30 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
         {
             continue;
         }
-        let mut text = String::from(if !marked {
+        let marker = if !marked {
             ""
         } else if prompt && index == 0 {
             "› "
         } else {
             "  "
-        });
-        text.extend(row.cells.iter().map(|cell| cell.symbol.as_str()));
-        rows.push(Line::styled(text, style));
+        };
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if !marker.is_empty() {
+            spans.push(Span::styled(marker, style_at(row.start)));
+        }
+        // The marker span stays its own, borrowed; text cells of one style join.
+        let text = spans.len();
+        for cell in &row.cells {
+            let style = style_at(cell.source.start);
+            let joinable = spans.len() > text;
+            match spans.last_mut() {
+                Some(span) if joinable && span.style == style => {
+                    span.content.to_mut().push_str(&cell.symbol);
+                }
+                _ => spans.push(Span::styled(cell.symbol.clone(), style)),
+            }
+        }
+        rows.push(Line::from(spans));
     }
     rows.push(Line::default());
     rows
@@ -217,8 +251,9 @@ mod tests {
         transcript.push(false, "answer");
         assert_eq!(transcript.rows(20)[0].spans[0].content.as_ptr(), allocation);
         assert_eq!(transcript.find("prompt", transcript.len()), Some(0));
-        transcript.pending(["pending"].into_iter());
-        transcript.pending(["replacement"].into_iter());
+        transcript.pending([(true, "pending")].into_iter());
+        transcript.pending([(false, "**replacement**")].into_iter());
+        assert_eq!(transcript.find("**", transcript.len()), None);
         assert_eq!(transcript.find("pending", transcript.len()), None);
         assert_eq!(transcript.rows(20)[0].spans[0].content.as_ptr(), allocation);
     }

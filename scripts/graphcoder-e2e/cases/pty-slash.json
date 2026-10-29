@@ -23,17 +23,25 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
-          "prompt": "/marker extra"
+          "prompt": "/marke"
+        },
+        {
+          "when": {
+            "contains": [
+              "Unknown command: /marke"
+            ]
+          },
+          "prompt": "r extra"
         },
         {
           "when": {
             "contains": [
               "SLASH_RENDERED",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

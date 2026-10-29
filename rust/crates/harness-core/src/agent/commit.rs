@@ -57,6 +57,9 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             return Err(Error::Record("ForkAdopted is written by spawn"));
         }
         InboxRecord::Archive(_) => return Err(Error::Record("archive has its own commit")),
+        InboxRecord::Awaited | InboxRecord::ChildSettled(_) => {
+            return Err(Error::Record("only an agent step awaits a child"));
+        }
         InboxRecord::Message(_) => "message",
         InboxRecord::ChildDone(_) => "child-done",
         InboxRecord::Approval(_) => "approval",
@@ -64,6 +67,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
         InboxRecord::Cancel(_) => "cancel",
         InboxRecord::Hook(_) => "hook",
         InboxRecord::Spawn(_) => "spawn",
+        InboxRecord::Context(_) => "context",
     };
     let intent = intent_of(record);
     Ok(CommitRequest {
@@ -103,8 +107,11 @@ fn intent_of(record: &InboxRecord) -> String {
             format!("{}:{}", request.child, request.id.as_str())
         }
         InboxRecord::ChildDone(done) => done.child.as_str().to_owned(),
+        InboxRecord::ChildSettled(settled) => settled.child.as_str().to_owned(),
+        InboxRecord::Awaited => String::new(),
         InboxRecord::Hook(hook) => hook.id.as_str().to_owned(),
         InboxRecord::Spawn(spawn) => spawn.id.as_str().to_owned(),
+        InboxRecord::Context(request) => request.id.as_str().to_owned(),
         InboxRecord::ForkAdopted(adopted) => adopted.agent.as_str().to_owned(),
     }
 }
@@ -172,6 +179,7 @@ pub fn spawn(
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;
+    let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
         request: CommitRequest {
@@ -192,7 +200,7 @@ pub fn spawn(
                     at_tail,
                     records: vec![record.into()],
                 },
-                first_status(&child, at_tail)?,
+                first_status(&child, at_tail, conversation)?,
             ],
             idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
         },
@@ -201,14 +209,20 @@ pub fn spawn(
 }
 
 /// An agent's first status rides with its membership (its subtree's creation),
-/// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence.
-fn first_status(agent: &AgentPath, forked_at: u64) -> Result<CommitMutation, Error> {
+/// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence,
+/// with the `conversation` it inherits.
+fn first_status(
+    agent: &AgentPath,
+    forked_at: u64,
+    conversation: u64,
+) -> Result<CommitMutation, Error> {
     Ok(CommitMutation::Append {
         path: agent.status()?,
         records: vec![
             StatusRecord {
                 phase: Phase::Idle,
                 cursor: forked_at,
+                conversation,
             }
             .append_record()?,
         ],
@@ -238,7 +252,7 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
                     path: inbox,
                     records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
                 },
-                first_status(&child, 0)?,
+                first_status(&child, 0, 0)?,
             ],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },

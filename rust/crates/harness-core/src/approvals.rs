@@ -127,11 +127,15 @@ pub enum RuleVerdict {
     Ask,
 }
 
+/// The principal of the default human approver: the one a policy without
+/// its own names, and the one a tool hook's escalation asks.
+pub const HUMAN_APPROVER: &str = "human";
+
 impl Default for ApprovalPolicy {
     fn default() -> Self {
         Self {
             approvers: vec![Approver::Human {
-                principal: "human".into(),
+                principal: HUMAN_APPROVER.into(),
             }],
         }
     }

@@ -576,6 +576,25 @@ impl Error {
             )
     }
 
+    /// Whether work that failed this way may yet succeed unchanged: its
+    /// store was unreachable or left the outcome undecided (every failure
+    /// whose wire class is storage, unavailable, indeterminate or cancelled,
+    /// whatever variant carries it). Retrying the same step reconciles it; a
+    /// failed task is the one storage-coded failure that is settled. The one
+    /// classifier every wrapper of a harness error asks.
+    #[must_use]
+    pub fn uncertain(&self) -> bool {
+        use crate::wire::ErrorCode;
+        !matches!(self, Self::TaskFailed { .. })
+            && matches!(
+                self.code(),
+                ErrorCode::Storage
+                    | ErrorCode::Unavailable
+                    | ErrorCode::Indeterminate
+                    | ErrorCode::Cancelled
+            )
+    }
+
     /// A definitive malformed tool request, distinct from native accounting failures.
     pub(crate) fn tool_rejected(reason: &'static str) -> Self {
         Self::ToolRejected {

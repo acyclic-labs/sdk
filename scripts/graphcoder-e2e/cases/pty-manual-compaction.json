@@ -40,7 +40,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -50,7 +50,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_FIRST",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "prompt": "/compact preserve the fact"
@@ -59,7 +59,7 @@
           "when": {
             "contains": [
               "Compacted conversation",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "prompt": "after compact",
@@ -72,7 +72,7 @@
           "when": {
             "contains": [
               "MANUAL_E2E_DONE",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

@@ -3,8 +3,9 @@
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
 //! The model context of a turn is the host's system prompt, then the agent's
-//! own conversation stream: the last settled turns as user/assistant messages,
-//! then the turn's input. The host binds exactly that selection into the turn's journal,
+//! own conversation stream from its latest checkpoint: that checkpoint's
+//! summary, the turns settled after it as user/assistant messages, then the
+//! turn's input. The host binds exactly that selection into the turn's journal,
 //! so the executor can dispatch no other history.
 
 use super::{
@@ -55,6 +56,8 @@ pub struct TurnAuthority {
     pub effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// The same finalized journal returned in `OpenTurn`, retained by tools.
     pub journal: Arc<dyn crate::executor::ExecutionJournal>,
+    /// What the turn's `wait` observes of the agent's children.
+    pub children: Option<Arc<dyn crate::agent::TurnChildren>>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -652,8 +655,27 @@ where
         agent: &AgentState,
     ) -> Result<Vec<ConversationEntry>> {
         let tail = agent.conversation_tail;
-        let from = tail.saturating_sub(u64::from(self.limits.history_turns));
-        if from == tail {
+        // Nothing before the latest checkpoint is context: read from it, or
+        // the bounded window when it is further back, plus that one entry
+        // read by its indexed sequence.
+        let window = tail.saturating_sub(u64::from(self.limits.history_turns));
+        let from = agent.checkpoint.map_or(window, |at| at.max(window));
+        let mut entries = match agent.checkpoint.filter(|at| *at < from) {
+            Some(at) => self.entries(agent, at, 1).await?,
+            None => Vec::new(),
+        };
+        entries.extend(self.entries(agent, from, tail - from).await?);
+        Ok(entries)
+    }
+
+    /// `count` conversation entries of `agent` from sequence `from`.
+    async fn entries(
+        &self,
+        agent: &AgentState,
+        from: u64,
+        count: u64,
+    ) -> Result<Vec<ConversationEntry>> {
+        if count == 0 {
             return Ok(Vec::new());
         }
         let path = agent.path.conversation().map_err(agent_error)?;
@@ -663,7 +685,7 @@ where
                 key: None,
                 path,
                 from,
-                limit: u32::try_from(tail - from).unwrap_or(u32::MAX),
+                limit: u32::try_from(count).unwrap_or(u32::MAX),
                 at_least: Default::default(),
             })
             .await
@@ -710,6 +732,8 @@ fn prompt_id(prompt: &str) -> uuid::Uuid {
 /// before either a child's result or a follow-up can be observed.
 struct TurnContext<'a> {
     prompt: Option<&'a str>,
+    /// The latest checkpoint: its turn and its staged summary.
+    checkpoint: Option<(OperationId, FileRef)>,
     settled: Vec<(OperationId, ModelContent, FileRef)>,
     turn: OperationId,
     input: &'a ModelContent,
@@ -717,16 +741,35 @@ struct TurnContext<'a> {
 }
 
 impl<'a> TurnContext<'a> {
-    /// The context of `agent`'s `turn` over its settled `history`.
+    /// The context of `agent`'s `turn` over its settled `history`: from its
+    /// latest checkpoint on, which replaces every entry before it.
     fn new(
         agent: &'a AgentState,
         prompt: Option<&'a str>,
-        history: Vec<ConversationEntry>,
+        mut history: Vec<ConversationEntry>,
         turn: OperationId,
         input: &'a ModelContent,
     ) -> Result<Self> {
+        let checkpoint = match history
+            .iter()
+            .rposition(|entry| entry.checkpoint().is_some())
+        {
+            Some(at) => {
+                let after = history.split_off(at + 1);
+                let entry = std::mem::replace(&mut history, after)
+                    .pop()
+                    .ok_or_else(|| Error::Invalid("checkpoint entry is absent".into()))?;
+                Some((
+                    crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    entry.output,
+                ))
+            }
+            None => None,
+        };
+        // A cancelled checkpoint selects nothing and is no turn.
         let settled = history
             .into_iter()
+            .filter(|entry| entry.input.context().is_none())
             .map(|entry| {
                 Ok((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
@@ -737,6 +780,7 @@ impl<'a> TurnContext<'a> {
             .collect::<Result<_>>()?;
         Ok(Self {
             prompt,
+            checkpoint,
             settled,
             turn,
             input,
@@ -751,16 +795,23 @@ impl<'a> TurnContext<'a> {
     /// on an ancestor's private volume, a child's result on the child's), and
     /// the approval policy.
     fn files(&self) -> impl Iterator<Item = &FileRef> {
-        self.settled
+        self.checkpoint
             .iter()
-            .flat_map(|(_, input, output)| input.file_refs().chain(std::iter::once(output)))
+            .map(|(_, summary)| summary)
+            .chain(
+                self.settled.iter().flat_map(|(_, input, output)| {
+                    input.file_refs().chain(std::iter::once(output))
+                }),
+            )
             .chain(self.input.file_refs())
             .chain(self.policy)
     }
 
-    /// The selection: one user and one assistant message per settled turn,
-    /// assistant text read from its staged output through `reader`, which
-    /// holds [`Self::files`]. Without a prompt or history there is none.
+    /// The selection: the checkpoint's summary as one assistant message
+    /// (none when it is empty), then one user and one assistant message per
+    /// settled turn, assistant text read from its staged output through
+    /// `reader`, which holds [`Self::files`]. Without a prompt or history
+    /// there is none.
     async fn select(
         self,
         agent: &AgentState,
@@ -769,11 +820,17 @@ impl<'a> TurnContext<'a> {
     ) -> Result<Option<SelectedModelContext>> {
         let Self {
             prompt,
+            checkpoint,
             settled,
             turn,
             ..
         } = self;
-        if settled.is_empty() && prompt.is_none() {
+        let summary = match checkpoint {
+            Some((checkpoint, output)) => Some((checkpoint, staged_text(reader, &output).await?))
+                .filter(|(_, summary)| !summary.is_empty()),
+            None => None,
+        };
+        if settled.is_empty() && summary.is_none() && prompt.is_none() {
             return Ok(None);
         }
         let mut messages = Vec::with_capacity(2 * settled.len() + 2);
@@ -785,12 +842,15 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(prompt_id(prompt));
         }
+        if let Some((checkpoint, summary)) = summary {
+            messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(summary),
+            });
+            message_ids.push(message_id(checkpoint, ModelRole::Assistant));
+        }
         for (settled, content, output) in settled {
-            let bytes = reader
-                .read(&output, output.descriptor().byte_length(), None, None)?
-                .await?;
-            let output: TurnOutput = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+            let text = staged_text(reader, &output).await?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: crate::agent::expand_attachments(content, reader).await?,
@@ -798,7 +858,7 @@ impl<'a> TurnContext<'a> {
             message_ids.push(message_id(settled, ModelRole::User));
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text(output.text),
+                content: ModelContent::Text(text),
             });
             message_ids.push(message_id(settled, ModelRole::Assistant));
         }
@@ -816,6 +876,17 @@ impl<'a> TurnContext<'a> {
             messages,
         }))
     }
+}
+
+/// The assistant text of a staged turn output, read through `reader` at its
+/// pinned length.
+async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) -> Result<String> {
+    let bytes = reader
+        .read(output, output.descriptor().byte_length(), None, None)?
+        .await?;
+    serde_json::from_slice::<TurnOutput>(&bytes)
+        .map(|output| output.text)
+        .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
@@ -841,6 +912,10 @@ where
             // The turn's grant is derived from its context, before the turn
             // can observe anything: every file the context can reach.
             let context = TurnContext::new(agent, self.prompt.as_deref(), history, turn, input)?;
+            let checkpoint = context
+                .checkpoint
+                .as_ref()
+                .map(|(_, output)| output.clone());
             let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = self.journal(admitted, &external)?;
             // Every file the context reaches is readable under the turn's
@@ -855,13 +930,23 @@ where
             // under the grant above at the manifest's pinned length.
             let input =
                 &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
-            let effects = Some(Arc::new(FilesystemTurnEffects::new(
+            let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
+            let effects = Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
                 agent.path.clone(),
-                turn,
+                (turn, segment),
                 self.limits.maximum_bytes,
-            )) as Arc<dyn crate::agent::TurnEffects>);
+            )) as Arc<dyn crate::agent::TurnEffects>;
+            let children = Arc::new(FilesystemTurnChildren {
+                stream: Arc::clone(&self.stream),
+                host: Arc::clone(&self.host),
+                issuer: self.issuer.clone(),
+                admission: self.admission.clone(),
+                agent: agent.path.clone(),
+                volumes: agent.volumes.clone(),
+                maximum_bytes: self.limits.maximum_bytes,
+            }) as Arc<dyn crate::agent::TurnChildren>;
             let goal = match self.goals {
                 Some(policy) => FilesystemTurnGoal::bind(
                     &self.host,
@@ -876,7 +961,14 @@ where
             };
             let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
             let outputs = Arc::clone(&files);
-            let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
+            // Each call dispatches only once the effects of the turn's earlier
+            // calls committed, so it reaches what they created, and a `wait`
+            // only once its children settled.
+            let approvals = Arc::new(
+                AgentApprovals::new(files, Arc::new(policy))
+                    .yielding(Arc::clone(&effects))
+                    .awaiting(Arc::clone(&children)),
+            );
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
@@ -894,8 +986,9 @@ where
                 grants: bindings.grants,
                 content: bindings.content,
                 approval: Arc::new(resolved.bind()?),
-                effects: effects.clone(),
+                effects: Some(Arc::clone(&effects)),
                 journal: Arc::clone(&journal),
+                children: Some(children),
             };
             Ok(OpenTurn {
                 executor: self
@@ -906,12 +999,83 @@ where
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected,
+                checkpoint,
                 approvals: Some(approvals),
-                effects,
+                effects: Some(effects),
                 goal,
                 outputs,
                 input: Some(input.clone()),
             })
+        })
+    }
+}
+
+/// What one agent turn's `wait` observes: each child's status and, once it
+/// settled, its last answer, read under a grant of exactly that output.
+struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    stream: Arc<P>,
+    host: Arc<FilesystemHost<A, O>>,
+    issuer: AuthorityRoot,
+    admission: TurnAdmission,
+    agent: AgentPath,
+    volumes: Vec<VolumeBinding>,
+    maximum_bytes: u64,
+}
+
+impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
+where
+    P: crate::store::JournalProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn agent(&self) -> &AgentPath {
+        &self.agent
+    }
+
+    fn settled<'a>(
+        &'a self,
+        child: &'a AgentPath,
+    ) -> BoxFuture<'a, Result<Option<crate::agent::Phase>>> {
+        Box::pin(async move {
+            match crate::agent::settled(&*self.stream, child).await {
+                Ok(settled) => Ok(settled),
+                Err(crate::agent::Error::NoSuchAgent) => {
+                    Err(Error::NotFound(child.as_str().to_owned()))
+                }
+                Err(error) => Err(agent_error(error)),
+            }
+        })
+    }
+
+    fn answer<'a>(&'a self, child: &'a AgentPath) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            let Some(entry) = crate::agent::answer(&*self.stream, child)
+                .await
+                .map_err(agent_error)?
+            else {
+                return Ok(None);
+            };
+            let external = [entry.output];
+            let authority = agent_authority(
+                &self.issuer,
+                &self.admission,
+                &self.agent,
+                &self.volumes,
+                &external,
+            )?;
+            let reader = FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &authority.verifier,
+                &authority.scope,
+                self.maximum_bytes,
+                None,
+            )?;
+            let bytes = reader
+                .read(&external[0], self.maximum_bytes, None, None)?
+                .await?;
+            let output: TurnOutput = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+            Ok(Some(output.text))
         })
     }
 }

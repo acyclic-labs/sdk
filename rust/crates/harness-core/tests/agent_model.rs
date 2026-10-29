@@ -8,6 +8,8 @@ use acyclic_stream::{
 use futures::TryStreamExt;
 use std::{collections::VecDeque, sync::Mutex};
 
+#[path = "agent_model/awaiting.rs"]
+mod awaiting;
 #[path = "agent_model/driver.rs"]
 mod driver;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
@@ -45,6 +47,7 @@ fn adopted(agent: AgentId) -> ForkAdopted {
         parent: None,
         forked_at: 0,
         conversation_tail: 0,
+        checkpoint: None,
         volumes: Vec::new(),
         brief: None,
         policy: None,
@@ -232,6 +235,7 @@ async fn seeded() -> Result<Seeded> {
                     StatusRecord {
                         phase: Phase::Running,
                         cursor: 1,
+                        conversation: 2,
                     }
                     .encode()?
                     .into(),
@@ -292,6 +296,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
         status: Some(StatusRecord {
             phase: Phase::Idle,
             cursor: 1,
+            conversation: 3,
         }),
         state,
         alarm: Alarm::Clear,
@@ -334,6 +339,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     let first = StatusRecord {
         phase: Phase::Idle,
         cursor: 1,
+        conversation: 2,
     };
     assert_eq!(
         values(&provider, child.status()?).await?,
@@ -437,6 +443,62 @@ fn child_of(parent: &AgentPath, byte: u8) -> Result<(AgentPath, AgentState)> {
     adoption.parent = Some(parent.clone());
     let state = AgentState::adopted(path.clone(), &adoption);
     Ok((path, state))
+}
+
+#[tokio::test]
+async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> Result {
+    let parent = AgentPath::root(&id(1));
+    let (path, mut state) = child_of(&parent, 2)?;
+    state.conversation_tail = 100;
+    let entry = |text: &str| Out::Conversation(text.as_bytes().to_vec());
+    let driver = script(vec![
+        TurnStep {
+            reserved_children: 0,
+            checkpoint: None,
+            outs: vec![entry("before"), entry("summary"), Out::Checkpoint],
+            wait: Wait::Input,
+            drops: None,
+        },
+        TurnStep {
+            reserved_children: 0,
+            checkpoint: None,
+            outs: vec![entry("later")],
+            wait: Wait::Input,
+            drops: None,
+        },
+    ]);
+    let wake = |sequence| Wake::Inbox {
+        sequence,
+        record: InboxRecord::Approval(Approval { id: intent("q1") }),
+    };
+    let cancel = acyclic_actors::guest::CancellationToken::new;
+    let first = step(&driver, &path, Some(state), 2, wake(1), cancel()).await?;
+    // The summary is the second append after tail 100.
+    assert_eq!(first.state.checkpoint, Some(101));
+    assert_eq!(first.state.conversation_tail, 102);
+    let later = step(&driver, &path, Some(first.state), 3, wake(2), cancel()).await?;
+    // Later turns keep the index, however many there are.
+    assert_eq!(later.state.checkpoint, Some(101));
+    let spawned = spawning(later.state.clone(), "s1");
+    let request = lower(&spawned, 3, delivery_key(&spawned.state, "s1")?)?;
+    let adopted = request
+        .mutations
+        .iter()
+        .find_map(|mutation| match mutation {
+            CommitMutation::Fork { records, .. } => records.first(),
+            _ => None,
+        })
+        .map(|record| InboxRecord::decode(&record.value))
+        .transpose()?;
+    let Some(InboxRecord::ForkAdopted(adopted)) = adopted else {
+        panic!("spawn carries no adoption");
+    };
+    assert_eq!(adopted.checkpoint, Some(101));
+    assert_eq!(
+        AgentState::adopted(path.child(&id(9))?, &adopted).checkpoint,
+        Some(101)
+    );
+    Ok(())
 }
 
 #[tokio::test]

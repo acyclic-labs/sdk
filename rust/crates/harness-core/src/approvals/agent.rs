@@ -12,11 +12,17 @@ use super::{
 };
 use crate::{
     Error, InteractionId, Result,
-    agent::AgentId,
+    agent::{AgentId, AgentPath},
     conversation::Limits,
-    interaction::{ApprovalDecisionFile, Interaction, InteractionOutcome},
+    interaction::{ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome},
 };
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 /// Requests are immutable, so every decision binds their first and only version.
 const VERSION: u64 = 1;
@@ -92,6 +98,15 @@ pub struct AgentApprovals {
     policy: Arc<AgentApprovalPolicy>,
     /// The request the turn waits on, and whether its stage is the parent's.
     pending: Mutex<Option<(String, bool)>>,
+    /// The turn's agent effects, committed before any later call dispatches.
+    effects: Option<Arc<dyn crate::agent::TurnEffects>>,
+    /// Whether the call the turn last stopped at waits on those effects.
+    yielded: AtomicBool,
+    /// The turn's children, which a `wait` call dispatches only once settled.
+    children: Option<Arc<dyn crate::agent::TurnChildren>>,
+    /// The children the call the turn last stopped at waits for, and whether
+    /// any one suffices.
+    awaiting: Mutex<Option<(BTreeSet<AgentPath>, bool)>>,
 }
 
 impl AgentApprovals {
@@ -102,7 +117,90 @@ impl AgentApprovals {
             files,
             policy,
             pending: Mutex::new(None),
+            effects: None,
+            yielded: AtomicBool::new(false),
+            children: None,
+            awaiting: Mutex::new(None),
         }
+    }
+
+    /// Holds each `wait` call of the turn until the children it names settle
+    /// (see [`crate::tools::awaited`]); the turn commits that wait
+    /// instead of holding its delivery.
+    #[must_use]
+    pub fn awaiting(mut self, children: Arc<dyn crate::agent::TurnChildren>) -> Self {
+        self.children = Some(children);
+        self
+    }
+
+    /// The children the turn stopped waiting for, and whether any one
+    /// suffices: its driver commits [`crate::agent::Wait::Children`].
+    #[must_use]
+    pub fn awaited(&self) -> Option<(BTreeSet<AgentPath>, bool)> {
+        self.awaiting
+            .lock()
+            .ok()
+            .and_then(|awaiting| awaiting.clone())
+    }
+
+    /// Holds each call of the turn until `effects` recorded by its earlier
+    /// calls commit (see [`Self::dispatch`]).
+    #[must_use]
+    pub fn yielding(mut self, effects: Arc<dyn crate::agent::TurnEffects>) -> Self {
+        self.effects = Some(effects);
+        self
+    }
+
+    /// Whether the turn stopped at a call waiting on its own recorded effects,
+    /// not on an approval: its driver commits them and continues the turn.
+    #[must_use]
+    pub fn yielded(&self) -> bool {
+        self.yielded.load(Ordering::Acquire)
+    }
+
+    /// The outcome call `id` dispatches on: none yet while an earlier call of
+    /// the turn holds agent effects that have not committed, so the call
+    /// reaches every child, message and archive they make; else
+    /// [`Self::outcome`].
+    pub async fn dispatch(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+        if self.effects.is_none() && self.children.is_none() {
+            return self.outcome(id).await;
+        }
+        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+        let Ok(Interaction::Approval {
+            operation_id,
+            subject,
+            ..
+        }) = serde_json::from_slice::<Interaction>(&bytes)
+        else {
+            return Err(Error::Conflict(
+                "approval request is not an approval".into(),
+            ));
+        };
+        if let Some(effects) = &self.effects {
+            let held = effects.holds(operation_id).await?;
+            self.yielded.store(held, Ordering::Release);
+            if held {
+                self.wait(None)?;
+                return Ok(None);
+            }
+        }
+        if let (
+            Some(children),
+            ApprovalSubject::Tool {
+                tool, arguments, ..
+            },
+        ) = (&self.children, &subject)
+            && let Some(awaited) = crate::tools::awaited(&**children, tool, arguments).await?
+        {
+            self.wait(None)?;
+            *self
+                .awaiting
+                .lock()
+                .map_err(|_| Error::Storage("approvals lock".into()))? = Some(awaited);
+            return Ok(None);
+        }
+        self.outcome(id).await
     }
 
     /// The request the turn now waits on, and whether the parent decides it.

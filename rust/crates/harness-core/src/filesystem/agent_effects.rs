@@ -1,6 +1,8 @@
 //! [`TurnEffects`] as internal files on the agent's private volume: one file
-//! `effects/v2/<turn>/<call>.json` per agent tool call, in the internal interaction
-//! area, so no file tool can forge an effect past the call's approval.
+//! `effects/v3/<turn>/<segment>/<call>.json` per agent tool call, in the
+//! internal interaction area, so no file tool can forge an effect past the
+//! call's approval. Each segment's effects commit together, so a segment's
+//! directory lists exactly the effects not yet committed.
 
 use super::agent_internal::AgentInternalFiles;
 use crate::{
@@ -25,14 +27,14 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
         files: Arc<AgentInternalFiles<A, O>>,
         stream: Arc<P>,
         agent: AgentPath,
-        turn: OperationId,
+        (turn, segment): (OperationId, u32),
         maximum_bytes: u64,
     ) -> Self {
         Self {
             files,
             stream,
             agent,
-            directory: format!("effects/v2/{turn}"),
+            directory: format!("effects/v3/{turn}/{segment}"),
             maximum_bytes,
         }
     }
@@ -103,6 +105,16 @@ where
             Ok(recorded)
         })
     }
+
+    fn holds(&self, operation: OperationId) -> BoxProviderFuture<'_, Result<bool>> {
+        Box::pin(async move {
+            Ok(self.files.list(&self.directory).await?.iter().any(|name| {
+                !name
+                    .strip_suffix(".json")
+                    .is_some_and(|call| crate::agent::is_call_of(call, operation))
+            }))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -159,7 +171,7 @@ mod tests {
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
             agent,
-            OperationId::from_bytes([5; 16]),
+            (OperationId::from_bytes([5; 16]), 0),
             4096,
         );
         let effect = |name: &str| -> Result<TurnEffect> {
@@ -175,6 +187,22 @@ mod tests {
         assert_eq!(effects.record("0000000001-a", &first).await?, first);
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
         assert_eq!(effects.recorded().await?, vec![first, later]);
+        // Effects of other calls hold a call until they commit; its own never do.
+        let own = OperationId::from_bytes([9; 16]);
+        assert!(effects.holds(own).await?);
+        let alone = FilesystemTurnEffects::new(
+            files.clone(),
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
+            (OperationId::from_bytes([5; 16]), 1),
+            4096,
+        );
+        assert!(!alone.holds(own).await?);
+        alone
+            .record(&crate::agent::call_key(3, own), &effect("own")?)
+            .await?;
+        assert!(!alone.holds(own).await?);
+        assert!(alone.holds(OperationId::from_bytes([8; 16])).await?);
         assert_eq!(
             files.list(&effects.directory).await?,
             ["0000000001-a.json", "0000000002-b.json"]

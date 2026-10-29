@@ -12,7 +12,9 @@ mod commit;
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
-pub use effects::{TurnEffect, TurnEffects, outs as effect_outs};
+pub use effects::{
+    TurnEffect, TurnEffects, call_key, is_call_of, operation_key, outs as effect_outs,
+};
 mod goal;
 pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;
@@ -24,6 +26,8 @@ mod lower;
 mod machine;
 mod records;
 mod reply;
+mod settled;
+pub use settled::{TurnChildren, answer, settled};
 mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -34,8 +38,8 @@ pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
 pub use driver::{
-    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutputs, approval_intent,
-    expand_attachments, model_input, turn_id,
+    COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
+    TurnOutputs, approval_intent, expand_attachments, model_input, turn_id, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
@@ -49,10 +53,10 @@ pub use machine::{
     step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
-    ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest, StatusRecord,
-    VolumeBinding,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
+    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
+    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender,
+    SpawnRequest, StatusRecord, VolumeBinding,
 };
 pub use reply::{Reply, reply};
 
@@ -89,6 +93,29 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the failed work may yet succeed unchanged: a commit whose
+    /// outcome is unknown, or a store that left its outcome undecided however
+    /// that failure is wrapped. Only these retry; every other turn failure
+    /// settles the agent as failed.
+    #[must_use]
+    pub fn uncertain(&self) -> bool {
+        match self {
+            Self::Unknown(_) => true,
+            Self::Stream(error) => error.uncertain(),
+            Self::Turn(error) => error.uncertain(),
+            Self::Actor(error) => match &**error {
+                acyclic_actors::local::Error::Unknown { .. } => true,
+                acyclic_actors::local::Error::Stream(error) => error.uncertain(),
+                _ => false,
+            },
+            Self::Path(_)
+            | Self::Record(_)
+            | Self::NoSuchAgent
+            | Self::SpawnRefused(_)
+            | Self::Conflict(_) => false,
+        }
+    }
+
     /// Stable public classification shared by native and WASM client adapters.
     /// The error value itself retains its typed cause and uncertain request.
     #[must_use]
@@ -117,5 +144,38 @@ impl Error {
             Self::Unknown(request) => Some(request),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod uncertain_tests {
+    use super::Error;
+    use acyclic_stream::StreamError;
+
+    #[test]
+    fn store_uncertainty_survives_every_wrapper() {
+        for undecided in [StreamError::Unavailable, StreamError::DeadlineElapsed] {
+            assert!(Error::Stream(undecided.clone()).uncertain());
+            assert!(Error::Turn(Box::new(crate::Error::from(undecided.clone()))).uncertain());
+            assert!(
+                Error::Actor(Box::new(acyclic_actors::local::Error::Stream(
+                    undecided.clone()
+                )))
+                .uncertain()
+            );
+        }
+        for decided in [StreamError::NotFound, StreamError::InvalidArgument] {
+            assert!(!Error::Stream(decided.clone()).uncertain());
+            assert!(
+                !Error::Actor(Box::new(acyclic_actors::local::Error::Stream(
+                    decided.clone()
+                )))
+                .uncertain()
+            );
+        }
+        // A harness failure is classified by its wire class, whichever
+        // variant carries it: a storage failure's outcome is undecided.
+        assert!(Error::Turn(Box::new(crate::Error::Storage("unavailable".into()))).uncertain());
+        assert!(!Error::Turn(Box::new(crate::Error::Invalid("definitive".into()))).uncertain());
     }
 }

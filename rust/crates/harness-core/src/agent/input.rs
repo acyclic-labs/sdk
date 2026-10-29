@@ -1,7 +1,9 @@
 //! A turn's input: what it runs, the inbox sequence that carried it, and
 //! which input a waiting turn takes ahead of the window.
 
-use super::{AgentPath, ChildDone, InboxRecord, IntentId, Phase, Sender};
+use super::{
+    AgentOutcome, AgentPath, ChildDone, ContextAction, InboxRecord, IntentId, Phase, Sender,
+};
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +65,27 @@ pub enum TurnInput {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         event: Box<FileRef>,
     },
+    /// A context request; its entry is a checkpoint.
+    Context {
+        /// Requester.
+        from: Sender,
+        /// Request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// The selection it makes.
+        action: ContextAction,
+    },
+}
+
+impl TurnInput {
+    /// The selection a checkpoint entry's input makes; `None` for a turn.
+    #[must_use]
+    pub const fn context(&self) -> Option<&ContextAction> {
+        match self {
+            Self::Context { action, .. } => Some(action),
+            _ => None,
+        }
+    }
 }
 
 /// One input held for the turn, at the inbox sequence of the record that
@@ -97,6 +120,13 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             body: message.body,
             attachments: message.attachments,
         }),
+        // An archived child settles an archive its parent (or an ancestor's
+        // cascade) asked for; it reports nothing the parent did not already
+        // decide, so it starts no turn. A `wait` observes it on the child's status.
+        InboxRecord::ChildDone(ChildDone {
+            outcome: AgentOutcome::Archived,
+            ..
+        }) => None,
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
         InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {
@@ -108,7 +138,16 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             id: hook.id,
             event: hook.event,
         }),
+        InboxRecord::Context(request) => Some(TurnInput::Context {
+            from: request.by,
+            id: request.id,
+            action: request.action,
+        }),
+        // Awaiting is control between a parent's turn and its child; neither
+        // record is turn input (see [`super::machine`]).
         InboxRecord::ForkAdopted(_)
+        | InboxRecord::Awaited
+        | InboxRecord::ChildSettled(_)
         | InboxRecord::Cancel(_)
         | InboxRecord::Archive(_)
         | InboxRecord::Spawn(_) => None,

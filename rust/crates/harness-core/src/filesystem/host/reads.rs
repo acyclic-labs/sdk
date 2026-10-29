@@ -200,6 +200,76 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok((reference.0, bytes.0, publication))
     }
 
+    /// Reads at most `maximum` bytes from `offset` of the private file at
+    /// `path` in the volume's head, and the file's length, loading only those
+    /// bytes. The grant, the compiled view and its currency are checked as for
+    /// [`Self::read_private_path_indexed`]; the head generation authenticates
+    /// the file's bytes, so no descriptor is resolved from them.
+    ///
+    /// # Errors
+    /// When `path` is not a regular file, `offset` is past its end, or the
+    /// grant or view does not allow listing and reading it.
+    #[cfg(any(test, all(feature = "filesystem-local", not(target_arch = "wasm32"))))]
+    pub(in crate::filesystem) async fn read_private_range(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        offset: u64,
+        maximum: u64,
+        io: Option<&PreparationIo>,
+    ) -> Result<(acyclic_stream::OwnedBytes, u64)> {
+        self.require_private_directory(volume, grant, path, io)?;
+        validate_private_read_path(path, io)?;
+        let unmeasured;
+        let io = if let Some(io) = io {
+            io
+        } else {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        };
+        let workspace_ref = bounded_io::content_workspace(&self.provider, volume, Some(io))?;
+        let workspace = self.open(&workspace_ref, Some(io)).await?;
+        let generation = io.sdk(workspace.head(io, io.cancellation()).await)?;
+        let view = private_read_view(&workspace, grant, generation.id(), None, io).await?;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
+        super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        bounded_io::retain(&generation, Some(io)).await?;
+        let requested = format!("/{path}");
+        let stat = io.sdk(generation.stat(&requested, io, io.cancellation()).await)?;
+        let length = match (stat.kind, stat.logical_bytes) {
+            (acyclic_fs::kernel::FileKind::Regular, Some(length)) => length,
+            _ => {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Invalid,
+                    "private path is not a regular file",
+                ));
+            }
+        };
+        let remaining = length.checked_sub(offset).ok_or_else(|| {
+            stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Invalid,
+                "read offset is past the file's end",
+            )
+        })?;
+        let chunk = io.sdk(
+            generation
+                .read_range(
+                    &requested,
+                    offset,
+                    remaining.min(maximum),
+                    io,
+                    io.cancellation(),
+                )
+                .await,
+        )?;
+        super::super::access::require_current(&workspace, &view.0, io).await?;
+        grant.recheck(Some(io))?;
+        Ok((chunk.bytes, length))
+    }
+
     /// Reads a finite private prefix at an explicitly pinned generation.
     pub async fn read_private_prefix(
         &self,

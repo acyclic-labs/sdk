@@ -25,7 +25,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -35,7 +35,7 @@
           "when": {
             "contains": [
               "IMAGE_E2E_REPLY",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

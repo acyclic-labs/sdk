@@ -157,6 +157,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: Arc<Host<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
+    spawns: Arc<FilesystemSpawnVolumes<P, O>>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -171,6 +172,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             volumes: self.volumes.clone(),
             clock: self.clock.clone(),
             handler: self.handler.clone(),
+            spawns: self.spawns.clone(),
         }
     }
 }
@@ -224,6 +226,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
+        cuts: Option<Arc<dyn super::ForkCuts>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -234,7 +237,7 @@ where
             },
             volumes,
             within,
-            turns,
+            (turns, cuts),
             configure,
         )
     }
@@ -264,6 +267,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
+        cuts: Option<Arc<dyn super::ForkCuts>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -271,7 +275,7 @@ where
             TurnAdmission::LocalRoot,
             volumes,
             within,
-            turns,
+            (turns, cuts),
             configure,
         )
     }
@@ -288,7 +292,14 @@ where
             within,
         } = placement;
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
-        Self::on(issuer, admission, volumes, within, turns, |turner| turner)
+        Self::on(
+            issuer,
+            admission,
+            volumes,
+            within,
+            (turns, None),
+            |turner| turner,
+        )
     }
 
     fn on(
@@ -296,7 +307,7 @@ where
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
         within: ActorReference,
-        turns: Turns,
+        (turns, cuts): (Turns, Option<Arc<dyn super::ForkCuts>>),
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
@@ -313,12 +324,18 @@ where
             turns.approval_policy,
         )));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
-        let spawns = Arc::new(FilesystemSpawnVolumes::new(
+        // A host keeping state beside its volumes (a lazy checkout) chooses
+        // each spawn's fork cut, so a child's project is a related fork.
+        let spawns = FilesystemSpawnVolumes::new(
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             maximum_bytes,
-        ));
+        );
+        let spawns = Arc::new(match cuts {
+            Some(cuts) => spawns.with_fork_cuts(cuts),
+            None => spawns,
+        });
         let handler = Arc::new(
             AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
                 .map_err(|_| Error::Record("agent handler manifest"))?
@@ -329,7 +346,7 @@ where
             within.clone(),
             handler.clone(),
             turns.clock.clone(),
-            Some(spawns),
+            Some(spawns.clone()),
         )?);
         Ok(Self {
             issuer,
@@ -341,6 +358,7 @@ where
             volumes,
             clock: turns.clock,
             handler,
+            spawns,
         })
     }
 
@@ -351,18 +369,13 @@ where
         mut self,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
-        let spawns = Arc::new(FilesystemSpawnVolumes::new(
-            self.volumes.clone(),
-            self.issuer.clone(),
-            self.admission.clone(),
-            self.maximum_bytes,
-        ));
+        // The guest composes the same spawns as this binding's own handler.
         self.agents = Arc::new(AgentHost::hosting(
             self.agents.provider().clone(),
             self.within.clone(),
             handler.clone(),
             self.clock.clone(),
-            Some(spawns),
+            Some(self.spawns.clone()),
         )?);
         self.handler = handler;
         Ok(self)
@@ -525,8 +538,8 @@ where
     }
 
     /// Reads at most `maximum` bytes from `offset` of `path` below `agent`'s
-    /// tool output, through `agent`'s own authorized reader. Returns the
-    /// bytes and the chunk's length.
+    /// tool output, under `agent`'s own grant, loading only those bytes.
+    /// Returns the bytes and the file's length.
     ///
     /// # Errors
     /// As [`Self::read_file`].
@@ -548,33 +561,27 @@ where
             &[],
         )
         .map_err(turn)?;
-        let reader = super::FilesystemContentVerifier::new(
-            Arc::clone(&self.volumes),
+        let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            self.maximum_bytes,
-            None,
-        )
-        .map_err(turn)?;
-        let (_, bytes, _) = crate::conversation::ContentResidencyVerifier::read_private_path(
-            &*reader,
             &authority.private.volume,
             super::TOOL_OUTPUT,
-            path,
-            None,
-            self.maximum_bytes,
-            ContentAccess::default(),
+            &mut None,
         )
-        .map_err(turn)?
-        .await
         .map_err(turn)?;
-        let length = bytes.len() as u64;
-        let start = usize::try_from(offset)
-            .ok()
-            .filter(|start| *start <= bytes.len())
-            .ok_or(Error::Record("read offset is past the file's end"))?;
-        let end = start.saturating_add(usize::try_from(maximum).unwrap_or(usize::MAX));
-        Ok((bytes[start..end.min(bytes.len())].to_vec(), length))
+        let (bytes, length) = self
+            .volumes
+            .read_private_range(
+                &authority.private.volume,
+                &grant,
+                path,
+                offset,
+                maximum,
+                None,
+            )
+            .await
+            .map_err(turn)?;
+        Ok((bytes.to_vec(), length))
     }
 
     /// The approval `agent` waits on, with the exact action it shows. An
@@ -670,6 +677,35 @@ where
         intent: &IntentId,
         text: &str,
     ) -> Result<FileRef, Error> {
+        self.staged_input(agent, kind, by, intent, Some(text))
+            .await?
+            .ok_or(Error::Record("a staged input is missing its file"))
+    }
+
+    /// The text [`Self::stage_text`] already staged for this input, if any:
+    /// a replay answers from it, never from the sender's current text.
+    ///
+    /// # Errors
+    /// As [`Self::stage_text`].
+    pub async fn staged_text(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+    ) -> Result<Option<FileRef>, Error> {
+        self.staged_input(agent, kind, by, intent, None).await
+    }
+
+    /// Stages `text` once, or with `None` only observes what was staged.
+    async fn staged_input(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        text: Option<&str>,
+    ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
@@ -694,6 +730,14 @@ where
             None,
         )
         .map_err(turn)?;
+        let Some(text) = text else {
+            let (staged, _) = publisher
+                .observe_staged_once(operation, self.maximum_bytes, ContentAccess::default())
+                .map_err(turn)?
+                .await
+                .map_err(turn)?;
+            return Ok(staged);
+        };
         let path = format!("inputs/{operation}.txt");
         let staged = publisher
             .stage_once(
@@ -707,7 +751,7 @@ where
             .map_err(turn)?
             .await
             .map_err(turn)?;
-        Ok(staged.0)
+        Ok(Some(staged.0))
     }
 
     /// Verifies original scope identity, audience, lifetime and attenuation
@@ -797,6 +841,7 @@ where
                 parent: None,
                 forked_at: 0,
                 conversation_tail: 0,
+                checkpoint: None,
                 volumes,
                 brief,
                 policy,

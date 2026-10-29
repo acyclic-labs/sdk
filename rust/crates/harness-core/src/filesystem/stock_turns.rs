@@ -208,7 +208,7 @@ impl TurnExecutors for StockExecutors {
                 crate::tools::bind_agent_tools(
                     &mut tools,
                     agent,
-                    Arc::clone(effects),
+                    (Arc::clone(effects), authority.children.clone()),
                     Arc::clone(writer),
                     self.limits.file_bytes,
                     (&self.agent_tools, self.max_children),
