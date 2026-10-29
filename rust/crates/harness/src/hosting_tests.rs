@@ -93,7 +93,7 @@ fn invocation(namespace: &str, command: &AgentCommand) -> Result<Bytes> {
         actor_id: "root".into(),
         method: "POST".into(),
         url: "https://agents.invalid/command".into(),
-        body: PreparedCommand::new(command)?.as_bytes().to_vec(),
+        body: PreparedCommand::new(command)?.command().to_vec(),
         namespace: Some(namespace.into()),
         account_id: b"account".to_vec(),
         ..Default::default()

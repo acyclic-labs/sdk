@@ -3,7 +3,6 @@
 use crate::conformance::{Backend, Result};
 use acyclic_harness_client::{
     AgentBinding, AgentCommand, AgentControlFailure, AgentReply, PreparedCommand,
-    decode_agent_reply,
 };
 use acyclic_harness_core::{
     agent::{
@@ -21,7 +20,6 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
-use prost::Message as _;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -88,11 +86,9 @@ pub async fn call(
     let prepared = PreparedCommand::new(command)?;
     let binding = AgentBinding::new(endpoint.binding())?;
     let invocation = binding.prepare(&prepared)?;
-    let reply = endpoint
-        .exchange(Bytes::copy_from_slice(invocation.as_bytes()))
-        .await?;
-    let reply = acyclic_actors::wire::InvokeActorResponse::decode(reply)?;
-    Ok(decode_agent_reply(&reply.body, command)?)
+    invocation
+        .send(|invocation| endpoint.exchange(invocation))
+        .await
 }
 
 async fn records(

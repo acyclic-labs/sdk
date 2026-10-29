@@ -550,24 +550,30 @@ impl PreparedCommand {
         Ok(command)
     }
 
-    /// The last frame sent: the whole command, or the head of its parts.
-    #[must_use]
-    pub fn as_bytes(&self) -> &[u8] {
-        self.staged
-            .as_ref()
-            .map_or(self.command.as_slice(), |staged| staged.head.as_slice())
-    }
-
-    /// The frames sent before [`Self::as_bytes`]: the staged parts, in order.
-    #[must_use]
-    pub fn parts(&self) -> &[Vec<u8>] {
-        self.staged.as_ref().map_or(&[], |staged| &staged.parts)
-    }
-
     /// The whole command's exact encoding, as the host runs it.
     #[must_use]
-    pub fn command_bytes(&self) -> &[u8] {
+    pub fn command(&self) -> &[u8] {
         &self.command
+    }
+
+    /// The whole command, decoded.
+    ///
+    /// # Errors
+    /// Never for a prepared command; its encoding was admitted on creation.
+    pub fn decoded(&self) -> Result<AgentCommand, CommandError> {
+        Self::decode_whole(&self.command)
+    }
+
+    /// The frames that carry the command, in the order they are sent: its
+    /// staged parts, then their head; or, within one frame, the command.
+    pub(crate) fn frames(&self) -> impl Iterator<Item = &[u8]> {
+        let (parts, last) = self
+            .staged
+            .as_ref()
+            .map_or((&[][..], self.command.as_slice()), |staged| {
+                (staged.parts.as_slice(), staged.head.as_slice())
+            });
+        parts.iter().map(Vec::as_slice).chain(std::iter::once(last))
     }
 }
 
@@ -591,7 +597,8 @@ mod tests {
         .as_bytes()
         .to_vec();
         let prepared = PreparedCommand::from_bytes(original.clone())?;
-        assert_eq!(prepared.as_bytes(), original);
+        assert_eq!(prepared.command(), original);
+        assert!(prepared.frames().eq([original.as_slice()]));
         assert!(matches!(
             PreparedCommand::from_bytes(br#"{"kind":"cancel"}"#.to_vec()),
             Err(CommandError::Invalid)
@@ -624,8 +631,10 @@ mod tests {
             body: ModelContent::Text(text.clone()),
         };
         let prepared = PreparedCommand::new(&command)?;
+        let frames = prepared.frames().collect::<Vec<_>>();
+        let (head, parts) = frames.split_last().ok_or("no frame")?;
         let mut assembled = String::new();
-        for (index, part) in prepared.parts().iter().enumerate() {
+        for (index, part) in parts.iter().enumerate() {
             assert!(part.len() <= MAX_COMMAND_BYTES);
             let AgentCommand::Stage { part, text, .. } = PreparedCommand::decode(part)? else {
                 return Err("expected a staged part".into());
@@ -633,19 +642,19 @@ mod tests {
             assert_eq!(part as usize, index);
             assembled.push_str(&text);
         }
-        assert_eq!(assembled.as_bytes(), prepared.command_bytes());
+        assert_eq!(assembled.as_bytes(), prepared.command());
         let AgentCommand::Staged {
             command: kind,
             digest,
             parts,
             bytes,
             ..
-        } = PreparedCommand::decode(prepared.as_bytes())?
+        } = PreparedCommand::decode(head)?
         else {
             return Err("expected a staged head".into());
         };
         assert_eq!(kind, "prompt");
-        assert_eq!(parts as usize, prepared.parts().len());
+        assert_eq!(parts as usize, frames.len() - 1);
         assert_eq!(bytes as usize, assembled.len());
         assert_eq!(digest, blake3::hash(assembled.as_bytes()).to_hex().as_str());
         let AgentCommand::Prompt { body, .. } =
@@ -653,7 +662,10 @@ mod tests {
         else {
             return Err("expected the prompt".into());
         };
-        assert_eq!(body, ModelContent::Text(text));
+        assert_eq!(body, ModelContent::Text(text.clone()));
+        assert!(
+            matches!(prepared.decoded()?, AgentCommand::Prompt { body, .. } if body == ModelContent::Text(text))
+        );
         // Negative controls: one frame stays bounded, and a command that fits
         // one frame is sent as itself.
         assert!(matches!(
@@ -661,8 +673,7 @@ mod tests {
             Err(CommandError::Capacity)
         ));
         let small = PreparedCommand::new(&AgentCommand::Settlement { agent })?;
-        assert!(small.parts().is_empty());
-        assert_eq!(small.as_bytes(), small.command_bytes());
+        assert!(small.frames().eq([small.command()]));
         Ok(())
     }
 
@@ -676,8 +687,7 @@ mod tests {
             body: ModelContent::Text("exact input".into()),
         };
         let prepared = PreparedCommand::new(&command)?;
-        let AgentCommand::Prompt { id, body, .. } = PreparedCommand::decode(prepared.as_bytes())?
-        else {
+        let AgentCommand::Prompt { id, body, .. } = prepared.decoded()? else {
             return Err("expected prompt command".into());
         };
         assert_eq!(id.as_str(), "prompt-1");

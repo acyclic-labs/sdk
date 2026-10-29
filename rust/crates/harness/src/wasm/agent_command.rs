@@ -204,9 +204,14 @@ pub struct WasmAgentInvocation {
 
 #[wasm_bindgen]
 impl WasmAgentInvocation {
-    /// Original canonical Actors request, including the original command intent.
-    pub fn bytes(&self) -> Vec<u8> {
-        self.invocation.as_bytes().to_vec()
+    /// Original canonical Actors request, including the original command
+    /// intent. A command staged in parts has no one request; only
+    /// [`Self::execute`] sends it.
+    pub fn bytes(&self) -> Result<Vec<u8>, JsValue> {
+        match self.invocation.invocations() {
+            [invocation] => Ok(invocation.to_vec()),
+            _ => Err(command_error(CommandError::Capacity)),
+        }
     }
 
     /// Execute once; no automatic intent replacement or invocation replay.
@@ -253,15 +258,16 @@ impl WasmAgentCommand {
         Ok(Self { command })
     }
 
-    /// An owned copy; callers cannot mutate the request retained in WASM.
+    /// An owned copy of the whole command's encoding; callers cannot mutate
+    /// the request retained in WASM.
     pub fn bytes(&self) -> Vec<u8> {
-        self.command.as_bytes().to_vec()
+        self.command.command().to_vec()
     }
 
     /// Decode through the canonical Rust schema with exact integer values.
     #[wasm_bindgen(unchecked_return_type = "AgentCommand")]
     pub fn value(&self) -> Result<JsValue, JsValue> {
-        let value = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
+        let value = self.command.decoded().map_err(command_error)?;
         super::json::to_js_client_admitted(&value)
     }
 
@@ -276,7 +282,7 @@ impl WasmAgentCommand {
                 Ok(())
             }
         })?;
-        let command = PreparedCommand::decode(self.command.as_bytes()).map_err(command_error)?;
+        let command = self.command.decoded().map_err(command_error)?;
         match decode_agent_reply(&bytes, &command).map_err(command_error)? {
             Ok(reply) => super::json::to_js_client_admitted(&reply),
             Err(AgentControlFailure::Unknown(request)) => Err(super::agent_client::actor_error(

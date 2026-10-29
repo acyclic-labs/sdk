@@ -4,7 +4,7 @@ use crate::filesystem::TurnLimits;
 use crate::hosting::{self, Bound, Placement, RootRequest, Server, Serving, Turns};
 use acyclic_actors::{domain::ActorLimits, wire};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
-use acyclic_harness_client::{AgentBinding, AgentCommand, PreparedCommand, decode_agent_reply};
+use acyclic_harness_client::{AgentBinding, AgentCommand, PreparedCommand};
 use acyclic_stream::{BoxProviderFuture, session::Client};
 use bytes::Bytes;
 use prost::Message as _;
@@ -293,17 +293,10 @@ impl WasmAgentServer {
         let prepared = PreparedCommand::new(&command).map_err(boundary_error)?;
         let binding = AgentBinding::new(&self.binding).map_err(boundary_error)?;
         let invocation = binding.prepare(&prepared).map_err(boundary_error)?;
-        let credential = snapshot(&credential)?;
+        let client = self.client(Bytes::from(snapshot(&credential)?))?;
         let reply = self
-            .invoke(
-                Bytes::copy_from_slice(invocation.as_bytes()),
-                Bytes::from(credential),
-            )
+            .owned(async { invocation.execute(&client, 0).await.map_err(boundary_error) })
             .await?;
-        let reply = wire::InvokeActorResponse::decode(reply.as_slice()).map_err(boundary_error)?;
-        let reply = decode_agent_reply(&reply.body, &command)
-            .map_err(boundary_error)?
-            .map_err(boundary_error)?;
         to_js(&reply)
     }
 
@@ -467,24 +460,29 @@ impl WasmAgentServer {
         }
     }
 
-    async fn invoke(
-        &self,
-        invocation: Bytes,
-        credential: Bytes,
-    ) -> std::result::Result<Vec<u8>, JsValue> {
-        let server = self.served()?;
+    /// An in-process session on the served host, holding `credential` in
+    /// slot 0.
+    fn client(&self, credential: Bytes) -> std::result::Result<Client, JsValue> {
         let client = Client::in_process_with_products(
             self.bound.agents().provider().clone(),
             self.authority.clone(),
             None,
-            server,
+            self.served()?,
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
             Some(self.lifetime()?),
         );
         client
             .register_credential(0, credential)
             .map_err(stream_error)?;
-        client
+        Ok(client)
+    }
+
+    async fn invoke(
+        &self,
+        invocation: Bytes,
+        credential: Bytes,
+    ) -> std::result::Result<Vec<u8>, JsValue> {
+        self.client(credential)?
             .actor_call(
                 &invocation,
                 0,

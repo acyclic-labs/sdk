@@ -111,7 +111,8 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
         let invocation = controls
             .prepare(command)
             .map_err(|cause| failure("control_fixture", cause))?;
-        if invocation.as_bytes().as_ref() != vector.invocation.as_slice() {
+        if !matches!(invocation.invocations(), [only] if only.as_ref() == vector.invocation.as_slice())
+        {
             return Err(failure(
                 "control_fixture",
                 "vector differs from the public host binding",
