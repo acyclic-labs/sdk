@@ -1,8 +1,10 @@
+import { grpcDeadlines } from "@acyclic-labs/actors/deadline";
 import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { rootCertificates } from "node:tls";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { pageSize } from "./wasm-runtime.js";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 
 export const MAX_OUTPUT_READ_BYTES = 65_536;
@@ -19,28 +21,27 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
-  const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({
-    sessionManager: session, baseUrl: endpoint.href, defaultTimeoutMs: 30000,
+  const transport = grpcDeadlines(createGrpcTransport({
+    sessionManager: session, baseUrl: endpoint.href,
     acceptCompression: [], interceptors: [authenticate],
-    readMaxBytes: maximum, writeMaxBytes: maximum,
-  });
+    ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }),
+  }), () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
   const machines = createClient(wire.MachinesService, transport);
   return {
     machines: {
       ...machines,
       async *exec(request: MessageInitShape<typeof wire.ExecRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ExecRequestSchema, request);
-        const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
-        if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
-        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
+        if (query.argv.length < 1 || !query.argv[0] || query.argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
+        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffff_ffff) throw new RangeError("timeoutMs must be a positive uint32");
         const controller = new AbortController();
         const signal = callOptions?.signal;
         const abort = () => controller.abort(signal?.reason);
@@ -65,7 +66,7 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
       async readOutput(request: MessageInitShape<typeof wire.ReadOutputRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ReadOutputRequestSchema, request);
         if (query.offset < 0n || query.offset > MAX_OFFSET) throw new RangeError("offset must be uint64");
-        if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > MAX_OUTPUT_READ_BYTES) throw new RangeError("limit must be 1..65536");
+        query.limit = pageSize(query.limit, MAX_OUTPUT_READ_BYTES);
         const result = await machines.readOutput(query, callOptions);
         checkMachine(query.machine, result.machine);
         if (result.offset < query.offset || result.data.byteLength > query.limit || result.offset + BigInt(result.data.byteLength) > MAX_OFFSET) throw new ConnectError("invalid console output range", Code.DataLoss);

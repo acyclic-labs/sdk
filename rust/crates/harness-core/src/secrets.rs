@@ -8,9 +8,6 @@ use acyclic_stream::{BoxProviderFuture, ProviderPlatform};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-/// Longest secret name.
-pub const MAX_SECRET_NAME_BYTES: usize = 256;
-
 /// The name of a secret, never its value: ASCII letters, digits, `.`, `_`
 /// and `-`, not starting with `.`.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -21,11 +18,10 @@ impl SecretRef {
     /// Validates `name`.
     ///
     /// # Errors
-    /// [`crate::Error::Invalid`] for an empty, overlong or ill-formed name.
+    /// [`crate::Error::Invalid`] for an empty or ill-formed name.
     pub fn new(name: impl Into<String>) -> crate::Result<Self> {
         let name = name.into();
         let valid = !name.is_empty()
-            && name.len() <= MAX_SECRET_NAME_BYTES
             && !name.starts_with('.')
             && name
                 .bytes()
@@ -182,7 +178,6 @@ mod tests {
             assert!(SecretRef::new(name).is_err(), "{name:?}");
         }
         assert!(SecretRef::new("openai.api_key-1").is_ok());
-        assert!(SecretRef::new("x".repeat(MAX_SECRET_NAME_BYTES + 1)).is_err());
     }
 
     #[test]

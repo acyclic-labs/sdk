@@ -1,9 +1,5 @@
 // Generated from acyclic_actors::guest. Do not edit.
 export const GUEST_ABI_VERSION = 1 as const;
-export const WEB_SOCKET_TAG_COUNT = 10 as const;
-export const WEB_SOCKET_TAG_CHARACTERS = 256 as const;
-export const WEB_SOCKET_ATTACHMENT_BYTES = 2048 as const;
-export const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS = 2048 as const;
 export type AlarmInfo = {
 /**
  * Zero for first delivery, increasing on each retry.
@@ -200,11 +196,11 @@ payload: Uint8Array, } | { "type": "socketAccept",
  */
 subprotocol: string | null,
 /**
- * Opaque checkpointed attachment (contract maximum 2 KiB).
+ * Opaque checkpointed attachment.
  */
 attachment: Uint8Array,
 /**
- * Checkpointed broadcast tags (at most ten, each at most 256 characters).
+ * Checkpointed broadcast tags.
  */
 tags: Array<string>, } | { "type": "socketReject",
 /**

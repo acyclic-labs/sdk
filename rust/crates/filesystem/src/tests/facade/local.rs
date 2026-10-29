@@ -30,11 +30,10 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
             .await?;
         generation_id = checkout.value.generation_id();
     }
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while !root_released.is_released() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
+    tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        root_released.wait_async(),
+    )
     .await?;
     for relative in ["stream/stream.lock", "objects/owner.lock"] {
         drop(acyclic_native_runtime::StoreClaim::acquire(

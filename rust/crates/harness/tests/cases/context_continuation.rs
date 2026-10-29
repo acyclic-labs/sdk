@@ -202,9 +202,9 @@ async fn fixture() -> Result<Fixture> {
         Limits {
             file_bytes: 65_536,
             render_bytes: 65_536,
-            context_messages: 32,
-            attachments: 32,
-            path_bytes: 4_096,
+            context_messages: std::num::NonZeroUsize::new(32),
+            attachments: std::num::NonZeroUsize::new(32),
+            path_bytes: std::num::NonZeroUsize::new(4_096),
             ..Limits::default()
         },
     )?
@@ -324,7 +324,11 @@ fn assert_fresh_stage_requests(provider: &ScriptedModelProvider, limits: Limits)
         assert!(
             matches!(systems.first().map(|message| &message.content), Some(ModelContent::Text(text)) if text.starts_with(expected))
         );
-        assert!(request.messages.len() <= limits.context_messages);
+        assert!(
+            limits
+                .context_messages
+                .is_none_or(|maximum| request.messages.len() <= maximum.get())
+        );
     }
     assert!(requests.len() > responses.len());
     requests.len()

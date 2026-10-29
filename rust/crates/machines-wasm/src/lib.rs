@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::{MAX_BEARER_TOKEN_BYTES, MAX_PAGE_SIZE, SimulatedMachines};
+use acyclic_machines::SimulatedMachines;
 use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use uuid::Uuid;
@@ -142,33 +142,35 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
 #[wasm_bindgen(js_name = validateTransportOptions)]
 pub fn validate_transport_options(
     #[wasm_bindgen(unchecked_param_type = "string")] token: &JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
     let token = token.as_string().ok_or_else(|| {
         js_error(
             "invalid-token",
-            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
+            "token must be a non-empty bearer token without CR, LF, or NUL",
         )
     })?;
     if token.chars().all(is_js_whitespace)
-        || token.len() > MAX_BEARER_TOKEN_BYTES
         || token
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0'))
     {
         return Err(js_error(
             "invalid-token",
-            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
+            "token must be a non-empty bearer token without CR, LF, or NUL",
         ));
     }
     validate_maximum_response_bytes(maximum_response_bytes)
 }
 
-/// Validates the response bound without requiring a credential before renewal.
+/// Validates an optional response policy without requiring a credential before renewal.
 #[wasm_bindgen(js_name = validateMaximumResponseBytes)]
 pub fn validate_maximum_response_bytes(
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
+    if maximum_response_bytes.is_undefined() {
+        return Ok(());
+    }
     let maximum = maximum_response_bytes.as_f64().ok_or_else(|| {
         js_error(
             "invalid-maximum",
@@ -201,22 +203,23 @@ fn is_js_whitespace(character: char) -> bool {
     )
 }
 
-/// Validates the canonical Machines page-size policy before any provider is
-/// called, including custom TypeScript providers.
-#[wasm_bindgen(js_name = validatePageSize)]
-pub fn validate_page_size(
+/// Normalize a positive JavaScript page hint through the shared Machines core.
+#[wasm_bindgen(js_name = pageSize)]
+pub fn page_size(
     #[wasm_bindgen(unchecked_param_type = "number")] value: &JsValue,
-) -> Result<(), JsValue> {
+    chunk: u32,
+) -> Result<u32, JsValue> {
     let value = value
         .as_f64()
-        .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
-    if !public::is_safe_integer(value) || value < 1.0 || value > f64::from(MAX_PAGE_SIZE) {
-        return Err(js_error(
-            "invalid-page-size",
-            "machine page limit must be 1..=256",
-        ));
-    }
-    Ok(())
+        .filter(|value| public::is_safe_integer(*value) && *value >= 1.0)
+        .ok_or_else(|| {
+            js_error(
+                "invalid-page-size",
+                "page size must be a positive safe integer",
+            )
+        })?;
+    acyclic_machines::page_limit(value.min(f64::from(u32::MAX)) as u32, chunk)
+        .map_err(|error| js_error("invalid-page-size", &error.to_string()))
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical

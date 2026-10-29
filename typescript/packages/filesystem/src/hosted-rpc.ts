@@ -19,7 +19,7 @@ export class HostedFsError extends Error {
 export interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
-  readonly maximumTransactionMutations: number;
+  readonly maximumTransactionMutations: number | undefined;
   readonly maximumPageItems: number;
   readonly s3Credentials: boolean;
   readonly sourceReconciliation: boolean;
@@ -145,7 +145,7 @@ export function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number
 }
 
 export function validateMergeLimits(value: Pick<JoinOptions, "maximumGenerations" | "maximumChanges" | "maximumConflicts">): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
-  positiveU32(value.maximumChanges, "maximum changes");
-  positiveU32(value.maximumConflicts, "maximum conflicts");
+  if (value.maximumGenerations !== undefined) positiveU32(value.maximumGenerations, "maximum generations");
+  if (value.maximumChanges !== undefined) positiveU32(value.maximumChanges, "maximum changes");
+  if (value.maximumConflicts !== undefined) positiveU32(value.maximumConflicts, "maximum conflicts");
 }

@@ -38,8 +38,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         cwd: root.path().into(),
         environment: Default::default(),
         inherit_environment: true,
-        timeout_ms: 300_000,
-        control_timeout_ms: 1000,
+        timeout_ms: Some(300_000),
         maximum_output_bytes: 32_768,
         standard_input: None,
         process_custody: None,
@@ -124,7 +123,7 @@ mod simulation {
                         request.command.get_args().collect::<Vec<_>>(),
                         ["-c", "printf dst"]
                     );
-                    assert_eq!(request.timeout, Duration::from_millis(1000));
+                    assert_eq!(request.timeout, Some(Duration::from_millis(1000)));
                     assert_eq!(request.maximum, 3);
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
@@ -150,8 +149,7 @@ mod simulation {
                 cwd: "/".into(),
                 environment: Default::default(),
                 inherit_environment: false,
-                timeout_ms: 1000,
-                control_timeout_ms: 1000,
+                timeout_ms: Some(1000),
                 maximum_output_bytes: 3,
                 process_custody: None,
                 standard_input: None,

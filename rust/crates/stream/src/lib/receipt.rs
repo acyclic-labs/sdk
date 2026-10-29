@@ -122,7 +122,6 @@ impl CommitReceipt {
             .checked_add(self.forks.len())
             .ok_or(StreamError::InvalidArgument)?;
         if count == 0
-            || count > MAX_ITEMS
             || self
                 .appends
                 .windows(2)
@@ -133,7 +132,6 @@ impl CommitReceipt {
                 .any(|pair| pair[0].destination >= pair[1].destination)
             || self.appends.iter().any(|a| {
                 a.start >= a.tail
-                    || a.tail - a.start > MAX_ITEMS as u64
                     || self
                         .forks
                         .binary_search_by(|f| f.destination.cmp(&a.path))
@@ -142,7 +140,6 @@ impl CommitReceipt {
             || self.forks.iter().any(|f| {
                 f.source == f.destination
                     || f.forked_at > f.tail
-                    || f.tail - f.forked_at > MAX_ITEMS as u64
                     || f.commit_id != self.commit_id
                     || f.revision != self.revision
             })

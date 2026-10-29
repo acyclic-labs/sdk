@@ -1,7 +1,7 @@
 //! The claim protocol, written once over [`Host`] so that native runs and the
 //! model run the same code.
 
-use super::record::{Contents, Process, RECORD_LIMIT, Record};
+use super::record::{Contents, Process, ReadRecord, Record};
 use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -34,8 +34,8 @@ pub(super) trait Host {
     /// Takes the file's exclusive lock, waiting for its holder.
     fn lock(&self, file: &Self::File) -> io::Result<()>;
     fn unlock(&self, file: &Self::File) -> io::Result<()>;
-    /// The whole file, up to [`super::record::RECORD_LIMIT`] bytes.
-    fn read(&self, file: &Self::File) -> io::Result<Vec<u8>>;
+    /// The complete record, retaining any original allocation custody.
+    fn read(&self, file: &Self::File) -> io::Result<ReadRecord>;
     /// Replaces the whole file with `bytes`.
     fn write(&self, file: &Self::File, bytes: &[u8]) -> io::Result<()>;
     /// This process, when it holds a process lock that claims can name,
@@ -45,7 +45,7 @@ pub(super) trait Host {
     /// this process only after its lock is established.
     fn established(&self) -> Option<&Process>;
     /// What can be proven about `process`, counting each probe in `probes`.
-    fn liveness(&self, process: &Process, probes: &mut u64) -> Liveness;
+    fn liveness(&self, process: &Process<&[u8]>, probes: &mut u64) -> io::Result<Liveness>;
     /// A token no other claim of this process has used.
     fn token(&self) -> u64;
     fn table(&self) -> &Table<Self::Key>;
@@ -179,7 +179,7 @@ impl<Key: Clone + Eq + Hash> Table<Key> {
         if let Some(entry) = entries.get(key) {
             let holds = !entry.recorded
                 || matches!(contents, Contents::Record(record)
-                    if own == Some(&record.process) && record.token == entry.token);
+                    if own.map(Process::borrowed).as_ref() == Some(&record.process) && record.token == entry.token);
             if holds {
                 return Err(contention("store already claimed in this process"));
             }
@@ -228,23 +228,23 @@ fn excludes<H: Host>(
     own: Option<&Process>,
     contents: &Contents,
     probes: &mut u64,
-) -> Option<io::Error> {
+) -> io::Result<Option<io::Error>> {
     let record = match contents {
-        Contents::Empty | Contents::Torn => return None,
+        Contents::Empty | Contents::Torn => return Ok(None),
         // Not a record any claim wrote, nor provably the remains of one.
-        Contents::Oversized => return Some(contention("store claim file exceeds a record")),
+        Contents::Malformed => return Ok(Some(contention("store claim record is malformed"))),
         Contents::Record(record) => record,
     };
     // A record of this process that its table does not hold is a release
     // that could not clear it: no owner.
-    if own == Some(&record.process) {
-        return None;
+    if own.map(Process::borrowed).as_ref() == Some(&record.process) {
+        return Ok(None);
     }
-    match host.liveness(&record.process, probes) {
+    Ok(match host.liveness(&record.process, probes)? {
         Liveness::Dead => None,
         Liveness::Alive => Some(contention("store claimed by a live process")),
         Liveness::Unknown => Some(contention("store claimed by a process of unknown liveness")),
-    }
+    })
 }
 
 /// One held claim.
@@ -304,11 +304,12 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
         entry: None,
     };
     let exchanged = (|| {
-        let contents = Contents::decode(&host.read(&file)?);
+        let bytes = host.read(&file)?;
+        let contents = bytes.contents();
         let own = host.process();
         host.table().insert(&key, token, &handles, &contents, own)?;
         pending.entry = Some((key.clone(), token));
-        if let Some(refusal) = excludes(&host, own, &contents, &mut 0) {
+        if let Some(refusal) = excludes(&host, own, &contents, &mut 0)? {
             return Err(refusal);
         }
         let Some(process) = own else {
@@ -320,17 +321,10 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
             return Ok(false);
         };
         let record = Record {
-            process: process.clone(),
+            process: process.borrowed(),
             token,
         };
         let encoded = record.encode();
-        // A record that cannot be read back whole would read as another.
-        if encoded.len() > RECORD_LIMIT {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "claim record exceeds its bound",
-            ));
-        }
         host.write(&file, &encoded)?;
         // Before the file closes: until then its identity cannot be reused.
         host.table().recorded(&key, token)?;
@@ -366,12 +360,17 @@ pub(super) fn acquire<H: Host>(host: H, path: &Path) -> io::Result<Claim<H>> {
 /// owner that excludes others: a live process, one of unknown liveness, or
 /// this one. Also returns the reads it made: the record, then each probe.
 pub(super) fn is_claimed<H: Host>(host: &H, file: &H::File) -> io::Result<(bool, u64)> {
-    let contents = Contents::decode(&host.read(file)?);
+    let bytes = host.read(file)?;
+    let contents = bytes.contents();
     let mut reads = 1;
     let own = host.established();
     let claimed = match &contents {
-        Contents::Record(record) if own == Some(&record.process) => true,
-        _ => excludes(host, own, &contents, &mut reads).is_some(),
+        Contents::Record(record)
+            if own.map(Process::borrowed).as_ref() == Some(&record.process) =>
+        {
+            true
+        }
+        _ => excludes(host, own, &contents, &mut reads)?.is_some(),
     };
     Ok((claimed, reads))
 }
@@ -417,13 +416,18 @@ impl<H: Host> Claim<H> {
         // stands. Giving up instead would leave a record naming this live
         // process, which locks every other process out until it exits.
         self.host.lock(&file)?;
-        let cleared = (|| match Contents::decode(&self.host.read(&file)?) {
-            Contents::Record(record)
-                if Some(&record.process) == self.host.process() && record.token == token =>
-            {
-                self.host.write(&file, &[])
+        let cleared = (|| {
+            let bytes = self.host.read(&file)?;
+            match bytes.contents() {
+                Contents::Record(record)
+                    if Some(&record.process)
+                        == self.host.process().map(Process::borrowed).as_ref()
+                        && record.token == token =>
+                {
+                    self.host.write(&file, &[])
+                }
+                _ => Ok(()),
             }
-            _ => Ok(()),
         })();
         let unlocked = self.host.unlock(&file);
         cleared.and(unlocked)

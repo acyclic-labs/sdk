@@ -18,7 +18,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
             path: path(&["one"])?,
             record: first,
         }],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     fn fixture_state(
@@ -67,7 +66,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 path: path(&["same"])?,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let failure = fixture_state(
@@ -112,7 +110,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 record: first,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let absent = PathBatchEntry {
@@ -149,7 +146,6 @@ fn transaction_construction_rejects_every_contradictory_sparse_seed()
                 path: path(&["right"])?,
             },
         ],
-        limits,
         WorkBudget::UNBOUNDED,
     )?;
     let conflicting_first = FileRecord {

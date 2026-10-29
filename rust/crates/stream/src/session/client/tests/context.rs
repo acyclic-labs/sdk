@@ -315,9 +315,10 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             b_origin.in_scope(|| Observation::channel(3).operation.clone());
         // The real Cursor drop sets cancellation before its queued removal runs.
         let client = Client {
+            registration_timeout: None,
             connections: super::super::super::Connections::new(),
             executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands: mpsc::channel(2).0,
+            commands: commands::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
             active: Arc::clone(&pool.active),

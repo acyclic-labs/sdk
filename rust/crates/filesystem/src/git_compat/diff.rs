@@ -19,13 +19,14 @@ pub async fn git_compatible_diff_counts<A, O>(
     to: &Generation<A, O>,
     repository: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<GitDiffCounts, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
@@ -105,13 +106,14 @@ pub async fn git_restore_paths<A, O>(
     from: &Generation<A, O>,
     to: &Generation<A, O>,
     repository: &GitIgnorePolicy,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<Vec<String>, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let changes = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
@@ -223,13 +225,14 @@ pub async fn git_tracked_paths_after<A, O>(
     current: &Generation<A, O>,
     repository: &GitIgnorePolicy,
     already_tracked: &BTreeSet<String>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     cancellation: &CancellationToken,
 ) -> Result<BTreeSet<String>, GitCaptureError>
 where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    let maximum_changes = maximum_changes.into();
     let changes = before
         .diff_to(
             published,

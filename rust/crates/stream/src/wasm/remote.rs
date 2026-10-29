@@ -17,8 +17,7 @@ impl Remote {
     }
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
         let response_limits =
-            tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
-                .ok_or(StreamError::InvalidArgument)?;
+            tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES);
         let endpoint = socket::Endpoint::new(
             url,
             acyclic_auth::credential::javascript::provider(credential),
@@ -32,10 +31,7 @@ impl Remote {
         })
     }
     fn service(&self) -> Service {
-        self.service_with_options(
-            tonic_web_wasm_client::options::FetchOptions::new()
-                .timeout(std::time::Duration::from_secs(1)),
-        )
+        self.service_with_options(tonic_web_wasm_client::options::FetchOptions::new())
     }
     fn service_with_options(
         &self,
@@ -208,7 +204,7 @@ impl StreamProvider for Remote {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.sessions.follow(request).await
+        Ok(Box::pin(self.sessions.follow(request).await?))
     }
 
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {

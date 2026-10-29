@@ -62,7 +62,7 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
             client,
             publish,
             read,
-            namespace: &namespace,
+            namespace: &follower.inner.namespace,
             wakes,
             head: observed_head,
         },
@@ -93,7 +93,7 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
         client,
         publish,
         read,
-        namespace: &namespace,
+        namespace: &follower.inner.namespace,
         wakes,
         head: &mut forgotten,
     };
@@ -137,8 +137,8 @@ impl ReplayObserver for CompetingPublication<'_> {
             let free = writer
                 .client
                 .query_one(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1937006962))",
-                    &[&self.writer.inner.namespace],
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'),1937006962))",
+                    &[&self.writer.inner.namespace.as_slice()],
                 )
                 .await
                 .map_err(unavailable)?;
@@ -184,7 +184,7 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
             client,
             publish,
             read,
-            namespace: &namespace,
+            namespace: &provider.inner.namespace,
             wakes,
             head: observed_head,
         },
@@ -216,7 +216,7 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
     let count = client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
-            &[&namespace],
+            &[&provider.inner.namespace.as_slice()],
         )
         .await?;
     assert_eq!(count.get::<_, i64>(0), 1);
@@ -246,7 +246,7 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
     let peer = PostgresStream::connect(&database, &namespace).await?;
     let (listener, mut notifications) = tokio_postgres::connect(&database, NoTls).await?;
     let (sent, received) = tokio::sync::oneshot::channel();
-    let observed = namespace.clone();
+    let observed = blake3::hash(namespace.as_bytes()).to_hex().to_string();
     let notification = tokio::spawn(async move {
         while let Some(message) =
             futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
@@ -289,7 +289,7 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
         .client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
-            &[&namespace],
+            &[&provider.inner.namespace.as_slice()],
         )
         .await?;
     assert_eq!(rows.get::<_, i64>(0), 1);

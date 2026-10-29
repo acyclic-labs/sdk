@@ -414,11 +414,26 @@ async fn a_collection_begins_after_every_admitted_record_is_written()
 -> Result<(), Box<dyn std::error::Error>> {
     let collection = Arc::new(Collection::default());
     let hold = collection.admit(&[object(1)], |_| false, 0).await?;
+    let (waiting, registered) = tokio::sync::oneshot::channel();
     let begun = tokio::spawn({
         let collection = Arc::clone(&collection);
-        async move { drop(collection.begin().await) }
+        async move {
+            let mut begin = std::pin::pin!(collection.begin());
+            let mut waiting = Some(waiting);
+            let collecting = std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(begin.as_mut(), cx);
+                if result.is_pending()
+                    && let Some(waiting) = waiting.take()
+                {
+                    let _ = waiting.send(());
+                }
+                result
+            })
+            .await;
+            drop(collecting);
+        }
     });
-    tokio::task::yield_now().await;
+    registered.await?;
     assert!(!begun.is_finished(), "the collection waits for the record");
     drop(hold);
     begun.await?;

@@ -164,7 +164,6 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.identity".to_vec(),
-        128,
     )?;
     assert!(
         checkout
@@ -355,29 +354,9 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate() -
 }
 
 #[tokio::test]
-async fn facade_kind_and_read_bounds_fail_without_creating_files() -> TestResult {
+async fn facade_kind_guards_reject_detaching_directories() -> TestResult {
     let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    assert!(
-        create(
-            &mut checkout,
-            "oversized",
-            OwnedBytes::from_static(b"xx"),
-            &cancel
-        )
-        .await
-        .is_err()
-    );
-    assert!(
-        checkout
-            .lookup_no_follow(&path("oversized")?, B, &cancel)
-            .await?
-            .value
-            .record
-            .is_none()
-    );
+    let (_, mut checkout) = fixture(config(), &cancel).await?;
     checkout
         .create(
             AuthoredMutation::CreateDirectory {
@@ -401,56 +380,6 @@ async fn facade_kind_and_read_bounds_fail_without_creating_files() -> TestResult
 }
 
 #[tokio::test]
-async fn detached_payload_bounds_and_authority_volume_identity_fail_closed() -> TestResult {
-    let cancel = CancellationToken::new();
-    let mut limited = config();
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    let id = create(&mut checkout, "bounded", OwnedBytes::new(), &cancel).await?;
-    let attribute = AttributeName::new(
-        crate::kernel::AttributeClass::PosixXattr,
-        b"user.bounded".to_vec(),
-        128,
-    )?;
-    checkout
-        .change_named_attribute(
-            id,
-            &attribute,
-            Some((
-                &OwnedBytes::from_static(b"xx"),
-                NamedAttributeWriteMode::Create,
-            )),
-            B,
-            &cancel,
-        )
-        .await?;
-    let mut detached = checkout
-        .detach_regular_file(&path("bounded")?, B, &cancel)
-        .await?
-        .value;
-    assert!(matches!(
-        detached.read_named_attribute(&attribute, B, &cancel).await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
-    assert!(matches!(
-        detached
-            .change_content(
-                ContentChange::Write {
-                    offset: 0,
-                    bytes: OwnedBytes::from_static(b"xx")
-                },
-                None,
-                B,
-                &cancel
-            )
-            .await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
+async fn authority_volume_identity_fails_closed() -> TestResult {
     assert_authority_volume_identity_fails_closed().await
 }

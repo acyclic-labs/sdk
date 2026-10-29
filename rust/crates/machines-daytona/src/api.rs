@@ -23,8 +23,6 @@ use crate::DaytonaConfig;
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
 const LIST_PAGE_LIMIT: u32 = 200;
-/// Upper bound on list pages followed, so a cursor loop cannot run forever.
-const MAX_LIST_PAGES: usize = 256;
 
 /// One Daytona sandbox (`Sandbox` and `SandboxListItem` in the specification).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -251,8 +249,11 @@ impl DaytonaApi {
         if config.api_key.is_empty() {
             return Err(ProviderError::Invalid("Daytona API key is empty".into()));
         }
-        let http = reqwest::Client::builder()
-            .timeout(config.request_timeout)
+        let mut http = reqwest::Client::builder();
+        if let Some(timeout) = config.request_timeout {
+            http = http.timeout(timeout);
+        }
+        let http = http
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
         Ok(Self {
@@ -387,7 +388,8 @@ impl DaytonaApi {
             .map_err(|error| ProviderError::Invalid(format!("label filter: {error}")))?;
         let mut sandboxes = Vec::new();
         let mut cursor: Option<String> = None;
-        for _ in 0..MAX_LIST_PAGES {
+        let mut seen = std::collections::HashSet::new();
+        loop {
             let mut query = vec![("limit", LIST_PAGE_LIMIT.to_string())];
             if let Some(encoded) = &encoded {
                 query.push(("labels", encoded.clone()));
@@ -400,13 +402,17 @@ impl DaytonaApi {
                 .await?;
             sandboxes.extend(page.items);
             match page.next_cursor.filter(|value| !value.is_empty()) {
-                Some(next) => cursor = Some(next),
+                Some(next) => {
+                    if !seen.insert(next.clone()) {
+                        return Err(ProviderError::Rejected(
+                            "Daytona sandbox cursor repeated".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
                 None => return Ok(sandboxes),
             }
         }
-        Err(ProviderError::Rejected(
-            "Daytona sandbox listing did not terminate".into(),
-        ))
     }
 
     /// Starts a stopped or archived sandbox, or resumes a paused one:
@@ -731,16 +737,15 @@ fn transport_error(error: &reqwest::Error) -> ProviderError {
 
 /// Maps an HTTP status to the closest provider-boundary failure.
 fn status_error(status: StatusCode, body: &str) -> ProviderError {
-    let detail = body.chars().take(512).collect::<String>();
     match status {
-        StatusCode::NOT_FOUND => ProviderError::NotFound(detail),
-        StatusCode::CONFLICT => ProviderError::Conflict(detail),
+        StatusCode::NOT_FOUND => ProviderError::NotFound(body.to_owned()),
+        StatusCode::CONFLICT => ProviderError::Conflict(body.to_owned()),
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
-            ProviderError::Invalid(detail)
+            ProviderError::Invalid(body.to_owned())
         }
         StatusCode::TOO_MANY_REQUESTS => ProviderError::Unavailable,
         _ if status.is_server_error() => ProviderError::Unavailable,
-        _ => ProviderError::Rejected(format!("{status}: {detail}")),
+        _ => ProviderError::Rejected(format!("{status}: {body}")),
     }
 }
 
@@ -856,25 +861,26 @@ mod tests {
 
     #[test]
     fn status_mapping_is_stable() {
+        let body = format!("{}complete tail", "λ".repeat(1024));
         assert!(matches!(
-            status_error(StatusCode::NOT_FOUND, ""),
-            ProviderError::NotFound(_)
+            status_error(StatusCode::NOT_FOUND, &body),
+            ProviderError::NotFound(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::CONFLICT, ""),
-            ProviderError::Conflict(_)
+            status_error(StatusCode::CONFLICT, &body),
+            ProviderError::Conflict(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::BAD_REQUEST, ""),
-            ProviderError::Invalid(_)
+            status_error(StatusCode::BAD_REQUEST, &body),
+            ProviderError::Invalid(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::BAD_GATEWAY, ""),
+            status_error(StatusCode::BAD_GATEWAY, &body),
             ProviderError::Unavailable
         ));
         assert!(matches!(
-            status_error(StatusCode::UNAUTHORIZED, ""),
-            ProviderError::Rejected(_)
+            status_error(StatusCode::UNAUTHORIZED, &body),
+            ProviderError::Rejected(detail) if detail == format!("{}: {body}", StatusCode::UNAUTHORIZED)
         ));
     }
 }

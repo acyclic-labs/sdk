@@ -56,6 +56,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if head.sequence == Sequence::GENESIS {
             return Err(WorkspaceError::engine(FsError::EmptyAuthority));
         }
+        let maximum_payload_bytes = work
+            .accounting()
+            .remaining()
+            .map_err(WorkspaceError::engine)?
+            .authority_bytes_read;
         let latest = self
             .inner
             .authority
@@ -64,7 +69,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 Sequence::new(head.sequence.get().saturating_sub(1)),
                 ReplayLimit {
                     records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                    payload_bytes: maximum_payload_bytes,
                 },
                 &mut work,
             )
@@ -74,7 +79,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let latest = latest
             .first()
             .ok_or_else(|| WorkspaceError::engine(FsError::InvalidAuthorityHistory))?;
-        if let Ok(deleted) = decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
+        if let Ok(deleted) = decode_workspace_deleted(&latest.payload, latest.payload.len() as u64)
+        {
             if deleted != volume.id {
                 return Err(WorkspaceError::engine(FsError::VolumeMismatch));
             }

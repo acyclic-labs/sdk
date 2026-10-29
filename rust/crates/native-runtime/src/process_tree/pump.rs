@@ -4,38 +4,27 @@
 //! When nothing more can move, it returns, and the caller arms one wait on
 //! exactly the sources that can make progress: the open output pipes, stdin
 //! while input remains, the child's exit until it is observed, and the next
-//! check or the deadline. A synchronous caller parks on that wait; an async
+//! owner control signal or the deadline. A synchronous caller parks on that wait; an async
 //! caller awaits it, holding no thread while the child runs.
 
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
 
-/// When a capture stops and how often it rechecks its owner.
+/// The absolute lifetime policy of a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// The capture fails with `TimedOut` once this much time has passed.
-    pub timeout: Duration,
-    /// Also run the check this often while nothing else happens. `None`
-    /// checks only when output, input, exit or the deadline wakes capture.
-    pub check_every: Option<Duration>,
+    /// Optional caller deadline; absence waits for exit or owner cancellation.
+    pub timeout: Option<Duration>,
 }
 
 impl CaptureSchedule {
-    /// A capture bounded by `timeout` that checks only on its own events.
+    /// Selects a caller deadline, checking only on capture events.
     #[must_use]
-    pub const fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: impl Into<Option<Duration>>) -> Self {
         Self {
-            timeout,
-            check_every: None,
+            timeout: timeout.into(),
         }
-    }
-
-    /// Also checks every `interval` while the child is quiet.
-    #[must_use]
-    pub const fn checking_every(mut self, interval: Duration) -> Self {
-        self.check_every = Some(interval);
-        self
     }
 }
 
@@ -82,10 +71,8 @@ pub struct CaptureOutcome<H> {
 }
 
 pub(super) struct Pump<'a> {
-    deadline: Instant,
-    check_every: Option<Duration>,
-    next_check: Instant,
-    remaining: usize,
+    deadline: Option<Instant>,
+    remaining: Option<usize>,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
     stdout: Option<ChildStdout>,
@@ -127,7 +114,7 @@ impl<'a> Pump<'a> {
     pub(super) fn new(
         tree: &mut ProcessTree,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<PendingStdin<'a>>,
         meter: Option<&dyn crate::NativeReadMeter>,
         output: [Vec<u8>; 2],
@@ -139,12 +126,17 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = now.checked_add(schedule.timeout).ok_or_else(|| {
-            ProcessCaptureFailure::before_capture(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "process deadline overflow",
-            ))
-        })?;
+        let deadline = schedule
+            .timeout
+            .map(|timeout| {
+                now.checked_add(timeout).ok_or_else(|| {
+                    ProcessCaptureFailure::before_capture(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "process deadline overflow",
+                    ))
+                })
+            })
+            .transpose()?;
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -182,8 +174,6 @@ impl<'a> Pump<'a> {
         };
         Ok(Self {
             deadline,
-            check_every: schedule.check_every,
-            next_check: now,
             remaining: max_bytes,
             output,
             input,
@@ -226,13 +216,7 @@ impl<'a> Pump<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         loop {
-            let now = capture_now();
-            if self.check_every.is_none_or(|_| now >= self.next_check) {
-                check()?;
-                if let Some(interval) = self.check_every {
-                    self.next_check = capture_now() + interval;
-                }
-            }
+            check()?;
             let mut progressed = self
                 .input
                 .as_mut()
@@ -282,7 +266,10 @@ impl<'a> Pump<'a> {
                 }
                 return Ok(true);
             }
-            if capture_now() >= self.deadline {
+            if self
+                .deadline
+                .is_some_and(|deadline| capture_now() >= deadline)
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "process output deadline exceeded; effects may have occurred",
@@ -300,13 +287,18 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = match self.check_every {
-            Some(_) => self.next_check.min(self.deadline),
-            None => self.deadline,
-        };
-        // The capture clock is frozen in some tests; the hub runs on wall
-        // time, so arm the same remaining interval from now.
-        let wake_at = Instant::now() + wake_at.saturating_duration_since(capture_now());
+        // The capture clock may be frozen; arm its remaining interval on the
+        // hub clock. An unbounded capture has no timer registration.
+        let wake_at = self
+            .deadline
+            .map(|deadline| {
+                Instant::now()
+                    .checked_add(deadline.saturating_duration_since(capture_now()))
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+                    })
+            })
+            .transpose()?;
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         {
@@ -345,7 +337,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
         #[cfg(windows)]
         {
@@ -382,7 +374,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
     }
 
@@ -428,7 +420,7 @@ impl<'a> Pump<'a> {
     }
 
     /// Bytes captured so far, for the operation span.
-    pub(super) fn captured(&self, max_bytes: usize) -> usize {
-        max_bytes - self.remaining
+    pub(super) fn captured(&self) -> usize {
+        self.output.iter().map(Vec::len).sum()
     }
 }

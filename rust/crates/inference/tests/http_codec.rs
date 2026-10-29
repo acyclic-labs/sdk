@@ -1,7 +1,7 @@
 //! Native protobuf JSON boundary conformance.
 
 use acyclic_inference::{
-    MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES,
+    MAXIMUM_MESSAGE_BYTES,
     http_codec::{decode_http_request, encode_http_response, routes},
     wire,
 };
@@ -82,10 +82,9 @@ fn malformed_unknown_and_oversized_inputs_fail_closed() {
         assert!(decode_http_request("runs/watch", json).is_err());
     }
     assert!(decode_http_request("/v1/inference/runs/watch", b"{}").is_err());
-    assert!(decode_http_request("models/list", &vec![b' '; MAXIMUM_HTTP_JSON_BYTES + 1]).is_err());
     assert!(encode_http_response("runs/watch", &[255]).is_err());
     assert!(encode_http_response("runs/watch", &vec![0; MAXIMUM_MESSAGE_BYTES + 1]).is_err());
-    // Escaped strings can fit the protobuf ceiling while exceeding the JSON ceiling.
+    // JSON expansion streams without an unrelated whole-value ceiling.
     let event = wire::RunEvent {
         sequence: 1,
         event: Some(wire::run_event::Event::Progress(wire::RunProgress {
@@ -94,5 +93,10 @@ fn malformed_unknown_and_oversized_inputs_fail_closed() {
     };
     let wire = event.encode_to_vec();
     assert!(wire.len() < MAXIMUM_MESSAGE_BYTES);
-    assert!(encode_http_response("runs/watch", &wire).is_err());
+    let json = encode_http_response("runs/watch", &wire).expect("complete escaped response");
+    let decoded: serde_json::Value = serde_json::from_slice(&json).expect("complete JSON");
+    assert_eq!(
+        decoded["progress"]["kind"].as_str(),
+        Some("\0".repeat(MAXIMUM_MESSAGE_BYTES / 2).as_str())
+    );
 }

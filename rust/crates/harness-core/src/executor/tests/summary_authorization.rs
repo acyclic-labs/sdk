@@ -53,7 +53,7 @@ fn writerless_summaries_reject_before_any_model_or_journal_work() -> Result<()> 
                             operation_id: operation,
                             input: instruction.clone(),
                             selected_context: None,
-                            max_steps: 1,
+                            max_steps: Some(1),
                         };
                         executor
                             .summarize_in_turn(&journal, &input, 0, source, instruction)
@@ -106,7 +106,7 @@ async fn writerless_summary_negative_control_dispatches_when_resolution_is_defer
         operation_id: operation,
         input: ModelContent::Text("summarize".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let journal = Journal::default();
     execution.ensure_started(&journal, &input).await?;
@@ -220,14 +220,24 @@ fn only_the_authenticated_immutable_summary_is_admitted() -> Result<()> {
         exact(observed),
         "unexpected exact-summary projection permissions: {observed:?}"
     );
-    // Deliberately broken grant: the same detector must reject a root-directory
-    // grant, which admits unrelated private journal contents.
-    let broad = RuntimeScope::new(
+    // Directory grants cover public paths only, including at the root.
+    let public = RuntimeScope::new(
         Capabilities::new([file.volume().directory_read_capability("", &mut None)?]),
         Limits::default(),
     )?;
+    assert_eq!(observe(&public)?, [true, false]);
+    // Deliberately broken grant: whole-volume authority includes unrelated
+    // private journal contents and must fail the exact-summary detector.
+    let broad = RuntimeScope::new(
+        Capabilities::new([file
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Read, &mut None)?]),
+        Limits::default(),
+    )?;
+    let observed = observe(&broad)?;
+    assert_eq!(observed, [true, true]);
     assert!(
-        !exact(observe(&broad)?),
+        !exact(observed),
         "detector missed a broad private-volume grant"
     );
     let strategy = (0usize..7, "[a-z]{1,16}", any::<u8>());
