@@ -148,7 +148,7 @@ pub trait StreamBackedAuthority: AsyncAuthorityStore {
     fn stream_provider(&self) -> Arc<Self::Stream>;
 }
 
-impl<P: acyclic_stream::StreamProvider> StreamBackedAuthority for StreamAuthorityStore<P> {
+impl<P: crate::distributed::AuthorityProvider> StreamBackedAuthority for StreamAuthorityStore<P> {
     type Stream = P;
 
     fn stream_provider(&self) -> Arc<Self::Stream> {

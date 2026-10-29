@@ -1,6 +1,6 @@
 //! Single-lock deterministic reference state machine; no durability or availability claim.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
 
 #[cfg(any(test, loom))]

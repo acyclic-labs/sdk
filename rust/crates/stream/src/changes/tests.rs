@@ -225,7 +225,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn prepared_ingress(provider: &impl StreamProvider) {
+async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
     use crate::{CommitCondition, CommitMutation, CommitRequest, IdempotencyKey};
     let owner = StreamPath::new("changes-owner").unwrap();
     let target = StreamPath::new("changes-target").unwrap();

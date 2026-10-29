@@ -7,7 +7,7 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
 -> Result<(), Box<dyn std::error::Error>> {
     for local in [false, true] {
         let directory = tempfile::tempdir()?;
-        let provider: Arc<dyn StreamProvider> = if local {
+        let provider: Arc<dyn crate::NativeStreamProvider> = if local {
             Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
         } else {
             Arc::new(MemoryStream::new(MemoryLimits::default()))

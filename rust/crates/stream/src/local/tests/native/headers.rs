@@ -23,7 +23,7 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
 -> Result<(), Box<dyn std::error::Error>> {
     for local in [false, true] {
         let directory = tempfile::tempdir()?;
-        let provider: Arc<dyn StreamProvider> = if local {
+        let provider: Arc<dyn crate::NativeStreamProvider> = if local {
             Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
         } else {
             Arc::new(MemoryStream::new(MemoryLimits::default()))
