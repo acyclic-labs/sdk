@@ -375,7 +375,7 @@ function transaction(
   const stage = (value: WireMutation): Promise<void> => {
     assertOpen(client);
     if (closed) throw new HostedFsError("closed", "transaction is closed");
-    if (mutations.length >= client.maximumTransactionMutations) {
+    if (client.maximumTransactionMutations !== undefined && mutations.length >= client.maximumTransactionMutations) {
       throw new RangeError("transaction exceeds the advertised mutation bound");
     }
     mutations.push(value);
