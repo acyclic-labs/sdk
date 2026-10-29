@@ -1128,7 +1128,7 @@ fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::er
 /// Every watch shares the hub's service pool; a pass that waited for a held
 /// cursor parked a pool thread, and once records had scheduled the held watch
 /// once per pool thread, no other watch in the process was delivered until the
-/// cursor was released. A long pause (`lost_changes_are_reported_as_everything`
+/// cursor was released. A long pause (`a_paused_watch_preserves_changes_or_reports_host_loss`
 /// writing 20000 files) starved concurrent demand watches past their deadline.
 /// The held watch is served as soon as its cursor is released. Negative
 /// controls: a service pass taking `self.reading()` instead of
