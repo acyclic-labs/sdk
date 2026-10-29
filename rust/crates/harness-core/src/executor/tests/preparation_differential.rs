@@ -216,10 +216,10 @@ fn exact(invalid: bool, restore: bool) -> TestCaseResult {
         .unwrap(),
     )
     .unwrap();
-    // Exact snapshot of capture using the stable inline projection. Request
-    // headers and segments are staged only when dispatch is claimed.
-    // The response context helper drops its copied ContextInput before
-    // accounting/staging: one allocation and eight peak bytes in this fixture.
+    // Exact snapshot of capture with accounting in the same projection.
+    // Request headers and segments are staged only when dispatch is claimed.
+    // One larger encoded projection replaces the separate accounting file;
+    // retain both the smaller allocation count and its larger physical peak.
     // This is not a growing allowance; restoring extra preparation must still fail.
     // The table is feature-independent: the boxed source projection, whose
     // size follows cfg-gated filesystem state, is added from its type.
