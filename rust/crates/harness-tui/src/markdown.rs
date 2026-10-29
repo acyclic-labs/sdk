@@ -4,11 +4,13 @@
 use ratatui::style::{Color, Modifier, Style};
 use std::ops::Range;
 
-/// `text` presented as markdown: its visible text, lines joined by `\n`,
-/// and the style of each styled byte range of it, in order and disjoint.
+/// `text` presented as markdown with tables sized to `width` columns: its
+/// visible text, lines joined by `\n`, and the style of each styled byte
+/// range of it, in order and disjoint.
 #[must_use]
-pub fn render(text: &str) -> (String, Vec<(Range<usize>, Style)>) {
-    let mut parser = acyclic_markdown::Markdown::default();
+pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) {
+    let mut parser =
+        acyclic_markdown::Markdown::with_width(u16::try_from(width).unwrap_or(u16::MAX));
     parser.push(text);
     let mut shown = String::with_capacity(text.len());
     let mut styles = Vec::new();
@@ -53,7 +55,7 @@ mod tests {
 
     #[test]
     fn markers_become_styles() {
-        let (shown, styles) = render("streaming **test answer**");
+        let (shown, styles) = render("streaming **test answer**", 80);
         assert_eq!(shown, "streaming test answer");
         let (range, style) = &styles[0];
         assert_eq!(&shown[range.clone()], "test answer");

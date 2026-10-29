@@ -163,6 +163,12 @@ impl View {
                     Phase::WaitingApproval { id } => conversation.approval_prompt(id).await?,
                     _ => None,
                 };
+                // A settled agent consumed every request before its cursor:
+                // a context request it passed without an entry was dropped
+                // (cancelled) or failed, and is no longer work.
+                if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
+                    self.checkpoints.retain(|inbox| *inbox >= status.cursor);
+                }
                 if let Phase::Done {
                     outcome: AgentOutcome::Failed { message },
                 } = &status.phase

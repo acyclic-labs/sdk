@@ -177,13 +177,14 @@ fn bounded_text(text: &str) -> String {
 /// A prompt is shown bold as typed; an answer is rendered markdown.
 fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
     let marked = width > 2;
+    let columns = if marked { width - 2 } else { width };
     let (text, styles) = if prompt {
         (
             text.to_owned(),
             vec![(0..text.len(), Style::default().add_modifier(Modifier::BOLD))],
         )
     } else {
-        crate::markdown::render(text)
+        crate::markdown::render(text, columns)
     };
     let style_at = |offset: usize| {
         let at = styles.partition_point(|(range, _)| range.end <= offset);
@@ -192,7 +193,7 @@ fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
             .filter(|(range, _)| range.start <= offset)
             .map_or_else(Style::default, |(_, style)| *style)
     };
-    let layout = Layout::new(&Editor::new(&text), if marked { width - 2 } else { width });
+    let layout = Layout::new(&Editor::new(&text), columns);
     let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
     let mut rows = Vec::new();
     if first > 0 {
