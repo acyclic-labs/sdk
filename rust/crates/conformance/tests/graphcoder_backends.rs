@@ -16,7 +16,7 @@ use std::{
     collections::BTreeSet,
     io::{BufRead as _, BufReader, Write as _},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
+    process::{ChildStdin, Command, Stdio},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
@@ -305,19 +305,58 @@ impl Home {
 /// A running binary whose output arrives as it is written: stdout by line,
 /// stderr as written, since `graphcoder` prompts there without a newline.
 struct Running {
-    child: Child,
-    stdout: mpsc::Receiver<String>,
-    stderr: mpsc::Receiver<String>,
+    child: acyclic_native_runtime::ProcessTree,
+    stdin: ChildStdin,
+    stdout: mpsc::Receiver<Output>,
+    stderr: mpsc::Receiver<Output>,
     /// Stderr received so far.
     seen: String,
 }
 
-fn lines(source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> {
+enum Output {
+    Data(String),
+    Eof,
+    Error(std::io::Error),
+}
+
+fn lines(source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<Output> {
     let (sender, receiver) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(source).lines() {
-            let Ok(line) = line else { return };
-            if sender.send(line).is_err() {
+            let output = match line {
+                Ok(line) => Output::Data(line),
+                Err(error) => {
+                    let _ = sender.send(Output::Error(error));
+                    return;
+                }
+            };
+            if sender.send(output).is_err() {
+                return;
+            }
+        }
+        let _ = sender.send(Output::Eof);
+    });
+    receiver
+}
+
+fn chunks(mut source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<Output> {
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buffer = [0; 4096];
+        loop {
+            let output = match source.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = sender.send(Output::Eof);
+                    return;
+                }
+                Ok(read) => Output::Data(String::from_utf8_lossy(&buffer[..read]).into_owned()),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    let _ = sender.send(Output::Error(error));
+                    return;
+                }
+            };
+            if sender.send(output).is_err() {
                 return;
             }
         }
@@ -325,27 +364,23 @@ fn lines(source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> 
     receiver
 }
 
-fn chunks(mut source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buffer = [0; 4096];
-        while let Ok(read @ 1..) = source.read(&mut buffer) {
-            let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-            if sender.send(chunk).is_err() {
-                return;
-            }
-        }
-    });
-    receiver
+fn diagnostics(receiver: &mpsc::Receiver<Output>) -> impl Iterator<Item = String> + '_ {
+    receiver.try_iter().filter_map(|output| match output {
+        Output::Data(chunk) => Some(chunk),
+        Output::Eof => None,
+        Output::Error(error) => Some(format!("[output read failed: {error}]")),
+    })
 }
 
 impl Running {
     fn start(mut command: Command) -> Self {
-        let mut child = command.spawn().unwrap();
-        let stdout = lines(child.stdout.take().unwrap());
-        let stderr = chunks(child.stderr.take().unwrap());
+        let mut child = acyclic_native_runtime::ProcessTree::spawn(&mut command).unwrap();
+        let stdin = child.take_stdin().unwrap();
+        let stdout = lines(child.take_stdout().unwrap());
+        let stderr = chunks(child.take_stderr().unwrap());
         Self {
             child,
+            stdin,
             stdout,
             stderr,
             seen: String::new(),
@@ -355,10 +390,11 @@ impl Running {
     /// The first stdout line.
     fn line(&mut self) -> String {
         match self.stdout.recv_timeout(DEADLINE) {
-            Ok(line) => line,
+            Ok(Output::Data(line)) => line,
+            Ok(Output::Eof) => panic!("the binary closed stdout before its first line"),
+            Ok(Output::Error(error)) => panic!("the binary stdout read failed: {error}"),
             Err(error) => {
-                std::thread::sleep(Duration::from_millis(50));
-                self.seen.extend(self.stderr.try_iter());
+                self.seen.extend(diagnostics(&self.stderr));
                 panic!("the binary printed no line ({error}): {}", self.seen)
             }
         }
@@ -368,40 +404,37 @@ impl Running {
     fn wait_for(&mut self, needle: &str) {
         let deadline = Instant::now() + DEADLINE;
         while !self.seen.contains(needle) {
-            assert!(
-                Instant::now() < deadline,
-                "no {needle:?} on stderr: {}",
-                self.seen
-            );
-            if let Ok(chunk) = self.stderr.recv_timeout(Duration::from_millis(100)) {
-                self.seen += &chunk;
+            match self
+                .stderr
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(Output::Data(chunk)) => self.seen += &chunk,
+                Ok(Output::Eof) => panic!("stderr closed before {needle:?}: {}", self.seen),
+                Ok(Output::Error(error)) => panic!("stderr read failed before {needle:?}: {error}"),
+                Err(error) => panic!("no {needle:?} on stderr ({error}): {}", self.seen),
             }
         }
     }
 
     fn answer(&mut self, input: &str) {
-        let stdin = self.child.stdin.as_mut().unwrap();
+        let stdin = &mut self.stdin;
         stdin.write_all(input.as_bytes()).unwrap();
         stdin.flush().unwrap();
     }
 
     /// Its stdout and stderr once it exits successfully.
     fn finish(mut self) -> (String, String) {
-        let deadline = Instant::now() + DEADLINE;
-        let status = loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() > deadline {
-                self.seen.extend(self.stderr.try_iter());
-                panic!("the binary did not exit: {}", self.seen);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        // The readers drain the closed pipes, then hang up.
-        let stdout: Vec<_> = std::iter::from_fn(|| self.stdout.recv_timeout(DRAIN).ok()).collect();
-        self.seen
-            .extend(std::iter::from_fn(|| self.stderr.recv_timeout(DRAIN).ok()));
+        let status = self.child.wait(DEADLINE).unwrap_or_else(|error| {
+            self.seen.extend(diagnostics(&self.stderr));
+            panic!("the binary did not exit ({error}): {}", self.seen);
+        });
+        // Descendants cannot keep the output open after physical retirement.
+        self.child.terminate(None).unwrap();
+        // Both readers must report actual EOF. One deadline covers the whole
+        // drain; a timeout must never masquerade as a complete transcript.
+        let deadline = Instant::now() + DRAIN;
+        let stdout: Vec<_> = drain(&self.stdout, deadline).collect();
+        self.seen.extend(drain(&self.stderr, deadline));
         assert!(
             status.success(),
             "exit {status:?}\n{stdout:?}\n{}",
@@ -416,11 +449,25 @@ impl Running {
     }
 }
 
+/// A reader must explicitly report EOF; sender loss is producer failure.
+fn drain(
+    receiver: &mpsc::Receiver<Output>,
+    deadline: Instant,
+) -> impl Iterator<Item = String> + '_ {
+    std::iter::from_fn(move || {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(Output::Data(chunk)) => Some(chunk),
+            Ok(Output::Eof) => None,
+            Ok(Output::Error(error)) => panic!("binary output read failed: {error}"),
+            Err(error) => panic!("binary output did not reach EOF: {error}"),
+        }
+    })
+}
+
 /// A failed assertion leaves no binary running.
 impl Drop for Running {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.child.terminate(None);
     }
 }
 

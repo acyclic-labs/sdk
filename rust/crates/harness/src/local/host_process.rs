@@ -190,7 +190,12 @@ impl HostProcessLease {
 
     /// Admits one child's storage and retirement independently of its manager.
     pub fn funded_process(self) -> Result<HostSessionProcess> {
-        self.process(&polling_work()?)
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        self.process(&work)
     }
 
     /// An unstarted lease already fenced every preceding physical owner.
@@ -269,14 +274,6 @@ fn remove_absent(root: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
         }
         Err(error) => Err(storage(error)),
     }
-}
-
-fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::work_budget(65_536, 65_536),
-        &acyclic_fs::CancellationToken::new(),
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
 
 impl HostSessionProcess {
@@ -446,6 +443,14 @@ impl HostSessionProcess {
 #[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
+
+    fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
+        acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(65_536, 65_536),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    }
 
     fn test_agent() -> AgentPath {
         AgentPath::root(&crate::agent::AgentId::from_bytes(

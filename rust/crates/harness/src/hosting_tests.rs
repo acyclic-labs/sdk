@@ -140,8 +140,8 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             executors: Arc::new(Never),
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
@@ -199,8 +199,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
-    // A spawn is the parent's own step: the reply names the child, and the
-    // running host's next step for the parent creates it.
+    // The reply waits for the parent's committed spawn step.
     let runner = {
         let server = server.clone();
         tokio::spawn(async move { server.run(|_, _| {}).await })
@@ -218,17 +217,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         matches!(call(&client, "agents", &spawn).await?, Ok(AgentReply::Spawned { agent, .. }) if agent == child),
         "a retried spawn names the same child"
     );
-    let mut listed = false;
-    for _ in 0..500 {
-        if let Ok(AgentReply::Children { items, .. }) = call(&client, "agents", &children).await?
-            && items.iter().any(|item| item.agent == child)
-        {
-            listed = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    assert!(listed, "the parent's step spawned the child");
+    assert!(
+        matches!(call(&client, "agents", &children).await?,
+            Ok(AgentReply::Children { items, .. }) if items.iter().any(|item| item.agent == child)),
+        "the committed spawn reply must name an already published child"
+    );
     // Nothing waits on an approval, so none is listed and none can be decided.
     assert!(matches!(
         call(

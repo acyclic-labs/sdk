@@ -50,7 +50,7 @@ async fn root(store: &MemoryObjectStore, keys: &[u8], width: usize, after: bool)
 async fn run<const PREFIX: bool, const RESET: bool>(
     store: &MemoryObjectStore,
     roots: (ObjectId, ObjectId),
-    maximum: u32,
+    maximum: impl Into<Option<u32>>,
     items: u64,
 ) -> (Outcome, WorkCounters) {
     let cancellation = CancellationToken::new();
@@ -92,6 +92,14 @@ async fn compare(
         root(&store, before, widths.0, false).await,
         root(&store, after, widths.1, true).await,
     );
+    // Absence follows the same full traversal and physical receipts as a
+    // finite selection that admits this generated input. Its exact item
+    // receipt must also admit a complete run on the original budget.
+    let full = run::<true, true>(&store, roots, None, u64::MAX).await;
+    let selected = run::<true, true>(&store, roots, u32::MAX, u64::MAX).await;
+    prop_assert_eq!(&full, &selected);
+    let exact = run::<true, true>(&store, roots, None, full.1.items_examined).await;
+    prop_assert_eq!(exact, full);
     // The old-search mode uses the same real read/frontier/insertion/retirement
     // path. Only the known-prefix optimization is disabled.
     let (old, old_work) = run::<false, true>(&store, roots, maximum, u64::MAX).await;
@@ -185,8 +193,8 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
         &cancellation,
     );
     let mut tasks = Owned::<Vec<Task>>::allocate(0, &mut accounting).unwrap();
-    let mut values = Owned::<Changes>::allocate(0, &mut accounting).unwrap();
-    let mut truncated = false;
+    let mut values =
+        super::super::Changes::<FileTableFormat>::allocate(128, &mut accounting).unwrap();
     COMPARISONS.with(|count| count.set(Some(0)));
     let result = (|| {
         for (before, keys) in pages {
@@ -215,9 +223,6 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
                 *before,
                 &mut tasks,
                 &mut values,
-                128,
-                &mut truncated,
-                DecodeLimits::default(),
                 &mut accounting,
             )?;
         }
@@ -226,9 +231,9 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
     let probes = COMPARISONS.with(|count| count.replace(None).unwrap());
     let work = accounting.spent();
     tasks.retire(&mut accounting).unwrap();
-    let partial = values.value.clone();
+    let partial = values.snapshot();
     let outcome = match result {
-        Ok(()) => Ok((values.value.clone(), truncated)),
+        Ok(()) => Ok((values.snapshot(), values.truncated)),
         Err(error) => Err(error.to_string()),
     };
     values.retire(&mut accounting).unwrap();
@@ -263,4 +268,59 @@ fn actual_page_mover_preserves_all_277_comparison_budget_prefixes() {
         broken, baseline,
         "the production reset is essential across sides"
     );
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_page_mover_denies_unfunded_index_writes_and_retires_original_custody() {
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let child = original
+        .native_volume_work(WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        })
+        .unwrap();
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&child, &cancellation);
+    let mut tasks = Owned::<Vec<Task>>::allocate(0, &mut accounting).unwrap();
+    let mut values =
+        super::super::Changes::<FileTableFormat>::allocate(128, &mut accounting).unwrap();
+    let mut records = Owned::<Vec<FileRecord>>::allocate(1, &mut accounting).unwrap();
+    records.value.push(file_record(1).unwrap());
+    let page = Owned::new(
+        OwnedPage {
+            page: PageLease::Owned(Page::Leaf(records.value)),
+            logical_bytes: records.bytes,
+            native_custody: None,
+        },
+        records.allocation,
+        records.bytes,
+    );
+    let result = push_page::<FileTableFormat, true, true>(
+        page,
+        true,
+        &mut tasks,
+        &mut values,
+        &mut accounting,
+    );
+    assert!(matches!(
+        result,
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
+                counter: "bytes_copied",
+                ..
+            })
+        ))
+    ));
+    assert_eq!(
+        values.len(),
+        0,
+        "the first index write must be funded before append"
+    );
+    assert_eq!(original.receipt().bytes_copied, 0);
+    tasks.retire(&mut accounting).unwrap();
+    values.retire(&mut accounting).unwrap();
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert!(original.remaining().is_ok());
 }

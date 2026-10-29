@@ -1,6 +1,6 @@
 use super::InvalidPolicy;
 include!(concat!(env!("OUT_DIR"), "/case_fold.rs"));
-use super::compilation::{MAXIMUM_NFA_STATES, spend};
+use super::compilation::spend;
 
 pub(super) fn valid_path(path: &str) -> bool {
     !path.contains(['\\', '\0'])
@@ -121,6 +121,42 @@ pub(super) struct Nfa {
     pub nodes: Vec<Node>,
 }
 
+/// Reuse a dense visitation epoch across transitions, without clearing the NFA
+/// or searching the growing closure for every edge.
+pub(super) struct ClosureScratch {
+    seen: Vec<usize>,
+    epoch: usize,
+}
+
+impl ClosureScratch {
+    pub fn new(nodes: usize) -> Self {
+        Self {
+            seen: vec![0; nodes],
+            epoch: 0,
+        }
+    }
+
+    fn begin(&mut self, work: &mut usize) -> Result<(), InvalidPolicy> {
+        if self.epoch == usize::MAX {
+            spend(work, self.seen.len())?;
+            self.seen.fill(0);
+            self.epoch = 0;
+        }
+        self.epoch += 1;
+        Ok(())
+    }
+
+    fn insert(&mut self, state: usize) -> Result<bool, InvalidPolicy> {
+        let seen = self
+            .seen
+            .get_mut(state)
+            .ok_or(InvalidPolicy("invalid glob state"))?;
+        let fresh = *seen != self.epoch;
+        *seen = self.epoch;
+        Ok(fresh)
+    }
+}
+
 impl Nfa {
     fn node_mut(&mut self, id: usize) -> Result<&mut Node, InvalidPolicy> {
         self.nodes
@@ -130,9 +166,6 @@ impl Nfa {
 
     pub fn node(&mut self) -> Result<usize, InvalidPolicy> {
         let id = self.nodes.len();
-        if id == MAXIMUM_NFA_STATES {
-            return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
-        }
         self.nodes.push(Node::default());
         Ok(id)
     }
@@ -142,9 +175,6 @@ impl Nfa {
         pattern: &str,
         folded: bool,
     ) -> Result<(usize, usize), InvalidPolicy> {
-        if pattern.chars().count() > MAXIMUM_NFA_STATES {
-            return Err(InvalidPolicy("glob compilation exceeds NFA state limit"));
-        }
         let start = self.node()?;
         let mut current = start;
         let mut components: Vec<_> = pattern.split('/').filter(|part| !part.is_empty()).collect();
@@ -238,7 +268,12 @@ impl Nfa {
         Ok((start, current))
     }
 
-    pub fn close(&self, states: &mut Vec<usize>, work: &mut usize) -> Result<(), InvalidPolicy> {
+    pub fn close(
+        &self,
+        states: &mut Vec<usize>,
+        work: &mut usize,
+        scratch: &mut ClosureScratch,
+    ) -> Result<(), InvalidPolicy> {
         let mut cursor = 0;
         while let Some(id) = states.get(cursor).copied() {
             spend(work, 1)?;
@@ -249,14 +284,40 @@ impl Nfa {
                 .ok_or(InvalidPolicy("invalid glob state"))?
                 .epsilon
             {
-                spend(work, states.len() + 1)?;
-                if !states.contains(next) {
+                spend(work, 1)?;
+                if scratch.insert(*next)? {
                     states.push(*next);
                 }
             }
         }
+        spend(
+            work,
+            states
+                .len()
+                .checked_mul(states.len().checked_ilog2().unwrap_or(0) as usize + 1)
+                .ok_or(InvalidPolicy("glob compilation work overflow"))?,
+        )?;
         states.sort_unstable();
         Ok(())
+    }
+
+    pub fn start(
+        &self,
+        states: &mut Vec<usize>,
+        work: &mut usize,
+        scratch: &mut ClosureScratch,
+    ) -> Result<(), InvalidPolicy> {
+        scratch.begin(work)?;
+        let mut unique = 0;
+        for index in 0..states.len() {
+            spend(work, 1)?;
+            if scratch.insert(states[index])? {
+                states[unique] = states[index];
+                unique += 1;
+            }
+        }
+        states.truncate(unique);
+        self.close(states, work, scratch)
     }
 
     pub fn step(
@@ -264,7 +325,9 @@ impl Nfa {
         states: &[usize],
         ch: char,
         work: &mut usize,
+        scratch: &mut ClosureScratch,
     ) -> Result<Vec<usize>, InvalidPolicy> {
+        scratch.begin(work)?;
         let mut next = Vec::new();
         for id in states {
             spend(work, 1)?;
@@ -276,14 +339,14 @@ impl Nfa {
             {
                 spend(work, 1)?;
                 if symbol.matches(ch) {
-                    spend(work, next.len() + 1)?;
-                    if !next.contains(target) {
+                    spend(work, 1)?;
+                    if scratch.insert(*target)? {
                         next.push(*target);
                     }
                 }
             }
         }
-        self.close(&mut next, work)?;
+        self.close(&mut next, work, scratch)?;
         Ok(next)
     }
 }

@@ -1,5 +1,6 @@
 //! Capability-aware planning for speculative movement between storage locations.
 
+use super::active::Active;
 use super::{ResidencyPermit, ResidencyReason};
 use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -8,7 +9,7 @@ use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     ObjectFailure, ObjectId, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::future::Future;
 use thiserror::Error;
 
@@ -121,21 +122,9 @@ pub struct PromotionPlan {
     pub estimated_cost_units: u64,
 }
 
-/// Hard bounds for one promotion planner.
+/// Adaptive feedback policy for one promotion planner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PromotionSpeculatorOptions {
-    /// Maximum concurrently executing plans.
-    pub maximum_active_operations: u32,
-    /// Maximum canonical bytes across active plans.
-    pub maximum_active_bytes: u64,
-    /// Maximum estimated movement cost across active plans.
-    pub maximum_active_cost_units: u64,
-    /// Maximum residency facts accepted per candidate.
-    pub maximum_residency_facts: u32,
-    /// Maximum destination capabilities accepted per candidate.
-    pub maximum_destinations: u32,
-    /// Maximum ordered tiers accepted per candidate.
-    pub maximum_accepted_tiers: u32,
     /// Number of recent terminal outcomes retained.
     pub outcome_window: u32,
     /// Outcomes required before adaptive rejection is enabled.
@@ -147,12 +136,6 @@ pub struct PromotionSpeculatorOptions {
 impl Default for PromotionSpeculatorOptions {
     fn default() -> Self {
         Self {
-            maximum_active_operations: 4,
-            maximum_active_bytes: 16 * 1024 * 1024,
-            maximum_active_cost_units: u64::MAX,
-            maximum_residency_facts: 64,
-            maximum_destinations: 32,
-            maximum_accepted_tiers: 4,
             outcome_window: 32,
             minimum_usefulness_samples: 4,
             minimum_usefulness_basis_points: 5_000,
@@ -162,15 +145,7 @@ impl Default for PromotionSpeculatorOptions {
 
 impl PromotionSpeculatorOptions {
     fn validate(self) -> Result<Self, PromotionSpeculatorError> {
-        if self.maximum_active_operations == 0
-            || self.maximum_active_bytes == 0
-            || self.maximum_active_cost_units == 0
-            || self.maximum_residency_facts == 0
-            || self.maximum_destinations == 0
-            || self.maximum_accepted_tiers == 0
-            || self.outcome_window == 0
-            || self.minimum_usefulness_samples == 0
-        {
+        if self.outcome_window == 0 || self.minimum_usefulness_samples == 0 {
             return Err(PromotionSpeculatorError::ZeroBound);
         }
         if self.minimum_usefulness_samples > self.outcome_window {
@@ -198,6 +173,9 @@ pub enum PromotionSpeculatorError {
     /// Exact accounting cannot be represented.
     #[error("promotion speculation accounting overflowed")]
     Overflow,
+    /// The allocator could not retain input identity keys for validation.
+    #[error("promotion speculation input allocation failed")]
+    AllocationFailed,
     /// Terminal feedback did not identify an active plan.
     #[error("promotion speculation plan is not active")]
     UnknownPlan,
@@ -210,18 +188,14 @@ pub enum PromotionRejection {
     WrongVolume,
     /// Candidate belongs to a generation no longer selected.
     StaleGeneration,
-    /// Request or accepted-tier list is empty, duplicated, or over bound.
+    /// Request or accepted-tier list is empty or duplicated.
     InvalidRequest,
-    /// Residency or destination input exceeds its explicit bound.
-    InputCapacity,
     /// No observed readable source contains the exact object.
     MissingSource,
     /// The same immutable object already has an active movement plan.
     DuplicateObject,
     /// The same idempotency identity already names an active movement plan.
     DuplicateOperation,
-    /// Concurrent operation, byte, or estimated-cost capacity is exhausted.
-    ActiveCapacity,
     /// No writable compatible destination can accept the complete object.
     NoDestination,
     /// Recent movement has not been useful enough.
@@ -268,7 +242,7 @@ pub struct PromotionSpeculator {
     options: PromotionSpeculatorOptions,
     volume_id: VolumeId,
     generation_id: GenerationId,
-    active: BTreeMap<OperationId, PromotionPlan>,
+    active: Active<PromotionPlan>,
     outcomes: VecDeque<bool>,
     metrics: PromotionMetrics,
 }
@@ -288,13 +262,13 @@ impl PromotionSpeculator {
             options: options.validate()?,
             volume_id,
             generation_id,
-            active: BTreeMap::new(),
+            active: Active::default(),
             outcomes: VecDeque::new(),
             metrics: PromotionMetrics::default(),
         })
     }
 
-    /// Selects at most one movement from bounded residency and capability facts.
+    /// Selects at most one movement from residency and capability facts.
     ///
     /// # Errors
     ///
@@ -309,8 +283,7 @@ impl PromotionSpeculator {
         let admission = self.prepare_plan(candidate, residency, destinations, &mut metrics)?;
         self.metrics = metrics;
         if let PromotionAdmission::Planned(plan) = &admission {
-            self.active
-                .insert(plan.candidate.operation_id, plan.clone());
+            self.active.insert(plan.clone());
         }
         Ok(admission)
     }
@@ -323,7 +296,7 @@ impl PromotionSpeculator {
         metrics: &mut PromotionMetrics,
     ) -> Result<PromotionAdmission, PromotionSpeculatorError> {
         metrics.candidates = checked_increment(metrics.candidates)?;
-        if let Some(rejection) = self.basic_rejection(&candidate, residency, destinations) {
+        if let Some(rejection) = self.basic_rejection(&candidate, residency, destinations)? {
             return Self::reject(metrics, rejection);
         }
         if let Some(current) = best_satisfied(&candidate, residency) {
@@ -345,18 +318,6 @@ impl PromotionSpeculator {
             .maximum_bytes
             .checked_mul(destination.cost_units_per_byte)
             .ok_or(PromotionSpeculatorError::Overflow)?;
-        if self.active.len() >= self.options.maximum_active_operations as usize
-            || metrics
-                .active_bytes
-                .checked_add(candidate.request.maximum_bytes)
-                .is_none_or(|bytes| bytes > self.options.maximum_active_bytes)
-            || metrics
-                .active_cost_units
-                .checked_add(estimated_cost_units)
-                .is_none_or(|cost| cost > self.options.maximum_active_cost_units)
-        {
-            return Self::reject(metrics, PromotionRejection::ActiveCapacity);
-        }
         let plan = PromotionPlan {
             candidate,
             source,
@@ -486,41 +447,38 @@ impl PromotionSpeculator {
         candidate: &PromotionCandidate,
         residency: &[ObjectResidency],
         destinations: &[PromotionDestination],
-    ) -> Option<PromotionRejection> {
+    ) -> Result<Option<PromotionRejection>, PromotionSpeculatorError> {
         if candidate.volume_id != self.volume_id {
-            return Some(PromotionRejection::WrongVolume);
+            return Ok(Some(PromotionRejection::WrongVolume));
         }
         if candidate.generation_id != self.generation_id {
-            return Some(PromotionRejection::StaleGeneration);
+            return Ok(Some(PromotionRejection::StaleGeneration));
+        }
+        let mut tiers = 0u8;
+        for tier in &candidate.accepted_tiers {
+            let bit = 1 << *tier as u8;
+            if tiers & bit != 0 {
+                return Ok(Some(PromotionRejection::InvalidRequest));
+            }
+            tiers |= bit;
         }
         if candidate.request.maximum_bytes == 0
             || candidate.accepted_tiers.is_empty()
-            || candidate.accepted_tiers.len() > self.options.maximum_accepted_tiers as usize
-            || has_duplicate_by(&candidate.accepted_tiers, |tier| *tier)
             || residency
                 .iter()
                 .any(|fact| fact.object_id != candidate.request.object_id)
-            || has_duplicate_by(residency, |fact| fact.location_id)
-            || has_duplicate_by(destinations, |destination| destination.location_id)
+            || has_duplicate_by(residency, |fact| fact.location_id)?
+            || has_duplicate_by(destinations, |destination| destination.location_id)?
         {
-            return Some(PromotionRejection::InvalidRequest);
+            return Ok(Some(PromotionRejection::InvalidRequest));
         }
-        if residency.len() > self.options.maximum_residency_facts as usize
-            || destinations.len() > self.options.maximum_destinations as usize
-        {
-            return Some(PromotionRejection::InputCapacity);
-        }
-        if self
-            .active
-            .values()
-            .any(|plan| plan.candidate.request.object_id == candidate.request.object_id)
-        {
-            return Some(PromotionRejection::DuplicateObject);
+        if self.active.contains_object(&candidate.request.object_id) {
+            return Ok(Some(PromotionRejection::DuplicateObject));
         }
         if self.active.contains_key(&candidate.operation_id) {
-            return Some(PromotionRejection::DuplicateOperation);
+            return Ok(Some(PromotionRejection::DuplicateOperation));
         }
-        None
+        Ok(None)
     }
 
     fn useful_enough(&self) -> bool {
@@ -777,11 +735,29 @@ fn best_destination(
     })
 }
 
-fn has_duplicate_by<T, K: Eq>(values: &[T], key: impl Fn(&T) -> K) -> bool {
-    values
-        .iter()
-        .enumerate()
-        .any(|(index, value)| values[..index].iter().any(|prior| key(prior) == key(value)))
+fn has_duplicate_by<T>(
+    values: &[T],
+    key: impl Fn(&T) -> StorageLocationId,
+) -> Result<bool, PromotionSpeculatorError> {
+    if values.len() < 2 {
+        return Ok(false);
+    }
+    let mut inline = [StorageLocationId::from_bytes([0; 16]); 16];
+    let mut heap;
+    let keys = if values.len() <= inline.len() {
+        for (slot, value) in inline.iter_mut().zip(values) {
+            *slot = key(value);
+        }
+        &mut inline[..values.len()]
+    } else {
+        heap = Vec::new();
+        heap.try_reserve_exact(values.len())
+            .map_err(|_| PromotionSpeculatorError::AllocationFailed)?;
+        heap.extend(values.iter().map(key));
+        heap.as_mut_slice()
+    };
+    keys.sort_unstable();
+    Ok(keys.windows(2).any(|pair| pair[0] == pair[1]))
 }
 
 fn checked_increment(value: u64) -> Result<u64, PromotionSpeculatorError> {

@@ -394,9 +394,10 @@ message ExecStart {
   MachineId machine = 2;
   reserved 3, 8;
   reserved "argv", "stdin";
-  // Positive command deadline in milliseconds. The caller authority's expiry
-  // remains an independent upper bound, even while no output is produced.
-  uint32 timeout_ms = 4;
+  // Optional positive command deadline in milliseconds. Absence waits for
+  // completion or cancellation. Authority expiry is an independent bound,
+  // including while output credit is withheld.
+  optional uint64 timeout_ms = 4;
   optional uint64 expiry_unix_ms = 5;
   // Combined stdout/stderr allowance; absent is unbounded, zero allows no bytes.
   optional uint64 maximum_output_bytes = 6;

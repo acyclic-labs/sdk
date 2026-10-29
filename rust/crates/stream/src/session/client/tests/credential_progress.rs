@@ -162,7 +162,6 @@ async fn source_change_cancels_pending_reply_admission_and_remote_rejection() ->
                     destination_node: "node".into(),
                     receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                     receive_frames: crate::MAX_ITEMS as u32,
-                    credentials: vec![],
                 }),
             ))
             .await?;

@@ -81,12 +81,20 @@ fn preflight_context_composition(
         .messages
         .len()
         .checked_add(contribution.messages.len())
-        .is_none_or(|count| count > limits.context_messages)
+        .is_none_or(|count| {
+            limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+        })
         || context
             .metadata
             .len()
             .checked_add(contribution.metadata.len())
-            .is_none_or(|count| count > limits.attachments)
+            .is_none_or(|count| {
+                limits
+                    .attachments
+                    .is_some_and(|maximum| count > maximum.get())
+            })
     {
         return Err(crate::executor::stock_boundary(
             io,
