@@ -53,6 +53,8 @@ impl Client {
     }
 
     /// Observes named heads and children at one cut, on the shared credited session.
+    /// A revision-only request checks credential context without a resource
+    /// grant; named heads and children retain their resource authorization.
     pub async fn heads(
         &self,
         mut request: crate::HeadsRequest,

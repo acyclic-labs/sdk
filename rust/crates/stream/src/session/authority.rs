@@ -106,7 +106,8 @@ pub(super) struct Slots {
 pub(super) struct Binding {
     credential_revision: u64,
     pub(super) slot: u32,
-    resource: String,
+    /// No resource means a revision-only credential-context observation.
+    resource: Option<String>,
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
     resource_authorization: Option<ResourceAuthorization>,
@@ -117,12 +118,13 @@ impl Binding {
     /// Finite one-shot replies (Actors calls and children pages) carry no
     /// record filter and get no credit-free lookahead.
     pub(super) fn is_reply(&self) -> bool {
-        self.resource_authorization.as_ref().is_some_and(|value| {
-            matches!(
-                value.action,
-                "actors/invoke" | "streams/list" | "streams/read"
-            )
-        })
+        self.resource.is_none()
+            || self.resource_authorization.as_ref().is_some_and(|value| {
+                matches!(
+                    value.action,
+                    "actors/invoke" | "streams/list" | "streams/read"
+                )
+            })
     }
 }
 
@@ -275,9 +277,21 @@ impl Authority {
             .as_ref()
             .map_or("streams/follow", |authorization| authorization.action);
         let scoped = binding.resource_authorization.is_some();
-        self.check(&**capability, action, &binding.resource, scoped, channels)?;
+        let target = binding
+            .resource
+            .as_deref()
+            .map_or(Target::Context, |resource| Target::Resource {
+                action,
+                resource,
+            });
+        self.check(&**capability, target, scoped, channels)?;
         for (action, resource) in &binding.additional {
-            self.check(&**capability, action, resource, false, channels)?;
+            self.check(
+                &**capability,
+                Target::Resource { action, resource },
+                false,
+                channels,
+            )?;
         }
         Ok(())
     }
@@ -289,15 +303,19 @@ impl Authority {
         resource: &str,
         channels: usize,
     ) -> Result<(), Rejection> {
-        self.check(capability, action, resource, false, channels)
+        self.check(
+            capability,
+            Target::Resource { action, resource },
+            false,
+            channels,
+        )
     }
-    /// The one admission check for every session action on one resource.
+    /// The one admission check for session context and resource actions.
     /// `scoped` follows a product resource through its owner's authorization.
     fn check(
         &self,
         capability: &dyn Admission,
-        action: &'static str,
-        resource: &str,
+        target: Target<'_>,
         scoped: bool,
         channels: usize,
     ) -> Result<(), Rejection> {
@@ -315,7 +333,7 @@ impl Authority {
             tokens: None,
         };
         let request = Request {
-            target: Target::Resource { action, resource },
+            target,
             audience: &self.audience,
             holder: self.holder.as_deref(),
             now_unix_seconds: snapshot.now_unix_seconds,
@@ -325,9 +343,22 @@ impl Authority {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        let scope = match (action, scoped) {
-            ("actors/invoke" | "streams/read", _) => Scope::Exact,
-            ("streams/list", _) => Scope::Children,
+        let scope = match (target, scoped) {
+            (
+                Target::Context
+                | Target::Resource {
+                    action: "actors/invoke" | "streams/read",
+                    ..
+                },
+                _,
+            ) => Scope::Exact,
+            (
+                Target::Resource {
+                    action: "streams/list",
+                    ..
+                },
+                _,
+            ) => Scope::Children,
             (_, true) => Scope::ResourceFollow,
             (_, false) => Scope::Follow,
         };
@@ -369,7 +400,7 @@ impl Authority {
         let mut binding = Binding {
             credential_revision: slots.entries.get(&slot).ok_or(Rejection::Forbidden)?.0,
             slot,
-            resource: stream_resource(Some(path)),
+            resource: Some(stream_resource(Some(path))),
             requested,
             filter_digest: [0; 32],
             resource_authorization: None,
@@ -397,7 +428,7 @@ impl Authority {
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
-            resource,
+            resource: Some(resource),
             requested,
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -459,7 +490,7 @@ impl Authority {
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
-            resource,
+            resource: Some(resource),
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -488,7 +519,7 @@ impl Authority {
         let mut binding = Binding {
             credential_revision: *revision,
             slot,
-            resource,
+            resource: Some(resource),
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
@@ -536,7 +567,7 @@ impl Authority {
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
-                resource,
+                resource: (!request.paths.is_empty()).then_some(resource),
                 requested: wire::SessionFilter::default(),
                 filter_digest: [0; 32],
                 resource_authorization: Some(authorization.clone()),
@@ -547,6 +578,8 @@ impl Authority {
         binding.additional = request
             .paths
             .iter()
+            // Without a child page, the primary binding already checks path one.
+            .skip(usize::from(request.children.is_none()))
             .map(|path| ("streams/read", stream_resource(Some(path))))
             .collect();
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();

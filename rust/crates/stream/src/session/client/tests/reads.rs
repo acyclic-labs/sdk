@@ -19,6 +19,47 @@ fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamE
         at_least: Default::default(),
     })
 }
+
+#[tokio::test]
+async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> TestResult {
+    use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "allowed/events", 1).await?;
+    let cut = crate::RevisionCut::of(provider.wait_applied(&Default::default()).await?);
+    let credential = crate::session::testing::credential_with_grants(vec![ResourceGrant {
+        resource: ResourcePattern {
+            name: "streams:/allowed".into(),
+            prefix: true,
+        },
+        actions: vec!["streams/read".into(), "streams/follow".into()],
+    }]);
+    let owner = Fixture::open(provider, "owner").await?;
+    let scoped = |fixture: &Fixture| -> Result<grpc::Client, StreamError> {
+        let client = grpc::Client::from_channel(
+            fixture._channel.clone(),
+            "Bearer fixture"
+                .parse()
+                .map_err(|_| StreamError::InvalidArgument)?,
+        );
+        client
+            .session_client()?
+            .register_credential(0, credential.clone())?;
+        Ok(client)
+    };
+    let relay = Fixture::open(Arc::new(scoped(&owner)?), "relay").await?;
+    for fixture in [&owner, &relay] {
+        let client = scoped(fixture)?;
+        assert!(cut.proven_by(Some(&client.wait_applied(&cut).await?)));
+        let mut request = read("allowed/events", 0, 1)?;
+        request.at_least = cut.clone();
+        assert_eq!(sequences(client.read(request).await?).await?, vec![0]);
+        assert_eq!(
+            client.head(StreamPath::new("outside")?).await.err(),
+            Some(StreamError::AccessDenied),
+        );
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
