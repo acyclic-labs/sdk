@@ -2,8 +2,8 @@
 use crate::wire;
 use std::collections::HashSet;
 
-fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
+pub(crate) fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty()
 }
 
 fn valid_actor_scope(account: &[u8], namespace: Option<&str>, id: &str) -> bool {

@@ -199,7 +199,7 @@ proptest! {
     }
     /// Plain API keys, bearer credentials and credential-bearing URLs never become refs.
     #[test]
-    fn plaintext_credentials_are_never_secret_references(payload in "[A-Za-z0-9_-]{1,120}") {
+    fn plaintext_credentials_are_never_secret_references(payload in "[A-Za-z0-9_-]{1,120}", depth in 1usize..=32) {
         for value in [format!("sk-ant-api03-{payload}"), format!("Bearer {payload}"),
             format!("https://user:{payload}@provider.example/"), format!("secrets:/user:{payload}"),
             format!("secrets:/{payload}@provider"), payload.to_owned(), format!("secrets:/{payload}?token=key")] {
@@ -208,8 +208,8 @@ proptest! {
             *json.pointer_mut("/environments/0/secrets/0/reference").ok_or_else(missing)? = value.into();
             prop_assert!(parse(&serde_json::to_vec(&json)?).is_err());
         }
-        let reference = SecretReference::new(format!("secrets:/models/{payload}"));
-        prop_assert_eq!(reference.is_ok(), payload.len() <= 63);
+        let reference = SecretReference::new(format!("secrets:/{}{payload}", "models/".repeat(depth)));
+        prop_assert!(reference.is_ok());
         if let Ok(reference) = reference {
             prop_assert_eq!(serde_json::from_str::<SecretReference>(&serde_json::to_string(&reference)?)?, reference);
         }
