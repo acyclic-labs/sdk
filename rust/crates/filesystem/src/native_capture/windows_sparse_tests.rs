@@ -125,9 +125,10 @@ async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()
                         OperationFailure::new(capture_demand_error(error), work.native.receipt())
                     })?;
             }
-            let result = settled_sparse_ranges(&native, &metadata, reported, 16, &scope.native)
-                .await
-                .map(drop);
+            let result =
+                settled_sparse_ranges(&native, &metadata, reported, Some(16), &scope.native)
+                    .await
+                    .map(drop);
             scope
                 .release()
                 .map_err(|error| OperationFailure::new(error, original.receipt()))?;
