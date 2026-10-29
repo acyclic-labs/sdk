@@ -149,22 +149,26 @@ fn continuation_is_stable_per_settle_and_independent_of_goal_revision() -> Resul
 }
 
 #[test]
-fn policy_has_a_finite_configurable_default_and_blocks_at_the_boundary() -> Result<()> {
-    let default = GoalContinuationPolicy::default();
-    assert_eq!(default.max_continuations, 32);
+fn only_a_selected_goal_allowance_blocks_at_the_boundary() -> Result<()> {
     let declared: GoalContinuationPolicy =
         serde_json::from_str("{}").map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(declared, default);
     let view = goal(b"Ship it")?;
     let task = TaskId::new();
     let turn = OperationId::new();
     assert!(matches!(
-        default.on_settle(&view, task, turn, 31),
+        declared.on_settle(&view, task, turn, u32::MAX),
         Some(GoalContinuation::Continue(_))
     ));
-    let Some(GoalContinuation::Block(contents)) = default.on_settle(&view, task, turn, 32) else {
+    let selected = GoalContinuationPolicy {
+        max_continuations: Some(32),
+    };
+    assert!(matches!(
+        selected.on_settle(&view, task, turn, 31),
+        Some(GoalContinuation::Continue(_))
+    ));
+    let Some(GoalContinuation::Block(contents)) = selected.on_settle(&view, task, turn, 32) else {
         return Err(Error::Invalid(
-            "expected blocked goal at default cap".into(),
+            "expected blocked goal at selected allowance".into(),
         ));
     };
     let blocked = goal(contents.as_bytes())?;
@@ -174,12 +178,11 @@ fn policy_has_a_finite_configurable_default_and_blocks_at_the_boundary() -> Resu
         blocked.reason.as_deref(),
         Some("Maximum goal continuations reached (limit 32).")
     );
-    assert_eq!(default.on_settle(&blocked, task, turn, 32), None);
+    assert_eq!(selected.on_settle(&blocked, task, turn, 32), None);
     for limit in [0, 1, 7] {
         let declared: GoalContinuationPolicy =
             serde_json::from_value(serde_json::json!({"max_continuations": limit}))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(declared.max_continuations, limit);
         assert!(matches!(
             declared.on_settle(&view, task, turn, limit),
             Some(GoalContinuation::Block(_))
@@ -306,7 +309,7 @@ proptest! {
                     }
                 }
             }
-            let policy = GoalContinuationPolicy { max_continuations: cap };
+            let policy = GoalContinuationPolicy { max_continuations: Some(cap) };
             let action = policy.on_settle(&view, TaskId::new(), OperationId::new(), cap);
             let Some(GoalContinuation::Block(rewritten)) = action else {
                 prop_assert!(false, "expected cap block");
@@ -337,7 +340,7 @@ async fn boundary_cap_output_is_accepted_by_the_ordinary_writer() -> Result<()> 
         .await?;
     let view = GoalView::from_file(reference, body.as_bytes(), 4096)?;
     let policy = GoalContinuationPolicy {
-        max_continuations: u32::MAX,
+        max_continuations: Some(u32::MAX),
     };
     let Some(GoalContinuation::Block(contents)) =
         policy.on_settle(&view, TaskId::new(), OperationId::new(), u32::MAX)
