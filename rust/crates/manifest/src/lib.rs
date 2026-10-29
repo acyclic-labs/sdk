@@ -174,13 +174,13 @@ impl JsonSchema for SecretReference {
         "SecretReference".into()
     }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"string", "maxLength":256,
-            "pattern":"^secrets:/[A-Za-z0-9_-]{1,63}(/[A-Za-z0-9_-]{1,63})*$"})
+        schemars::json_schema!({"type":"string",
+            "pattern":"^secrets:/[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*$"})
     }
 }
 
 impl SecretReference {
-    /// Admit only bounded secrets:/ identifier paths.
+    /// Admit only secrets:/ identifier paths.
     pub fn new(value: String) -> Result<Self, ManifestError> {
         if !acyclic_actors::domain::SecretSelection::valid_reference(&value) {
             return Err(ManifestError::invalid("reference", "secret-reference"));
