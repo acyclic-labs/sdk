@@ -360,11 +360,7 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     })
     .await?;
     let key = acyclic_fs::IdempotencyKey::from_bytes(
-        capture::capture_operation(
-            OperationId::from_bytes(operation.into_bytes().as_slice()),
-            1,
-        )
-        .into_bytes(),
+        capture::capture_operation(OperationId::from_bytes(operation.into_bytes()), 1).into_bytes(),
     );
     let settled = view
         .workspace()
