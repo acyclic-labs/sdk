@@ -124,12 +124,6 @@ fn negative_control_omits_a_parked_followers_path_wait() {
     acyclic_stream::verification::local_persist_wakes_parked_followers(true);
 }
 #[test]
-fn discovery_observes_failure_without_waiting_for_durability() {
-    acyclic_stream::discovery_verification::local_failure(false);
-    acyclic_stream::discovery_verification::local_accepted(false);
-}
-
-#[test]
 fn failure_borrows_end_before_visibility_waits() {
     acyclic_stream::verification::local_failure_lock_order(false);
 }

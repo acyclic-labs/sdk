@@ -149,6 +149,14 @@ async fn names(
 
 #[tokio::test]
 async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
+    use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(waits.clone()).with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        ),
+    );
     // Retain the exact admission the served tree derives its credentials from.
     // Minting another scope with the same grants does not identify that parent.
     struct Admission(std::sync::Mutex<Option<crate::core::Scope>>);
@@ -181,11 +189,20 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
+    let mut failures = harness
+        .agent_failures()
+        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    let entries = settled(&agents, &root).await?;
+    let entries = tokio::select! {
+        result = settled(&agents, &root) => result,
+        failure = failures.recv() => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
+    };
+    let entries = entries.inspect_err(|_| {
+        let _ = waits.report(&mut std::io::stderr());
+    })?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
     // Each turn's calls share one directory, named by the turn.

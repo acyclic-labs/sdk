@@ -86,7 +86,7 @@ impl Client {
         credential: Option<grpc::CredentialProvider>,
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
-        revisions: std::sync::Arc<crate::RevisionTracker>,
+        revisions: crate::query_sync::Arc<crate::RevisionTracker>,
     ) -> Self {
         let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
@@ -122,7 +122,7 @@ impl Client {
         authorization: Option<MetadataValue<Ascii>>,
         credential: Option<grpc::CredentialProvider>,
         connect: Connect,
-        revisions: std::sync::Arc<crate::RevisionTracker>,
+        revisions: crate::query_sync::Arc<crate::RevisionTracker>,
     ) -> Self {
         let home = endpoint(channel, authorization.clone(), credential.clone());
         let connect: std::sync::Arc<transport::Connect> = std::sync::Arc::new(move |node| {

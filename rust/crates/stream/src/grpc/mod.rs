@@ -78,7 +78,7 @@ pub struct Client {
     sessions: Arc<crate::session::Cache>,
     /// Read-your-writes floors; kept across credential changes, which only
     /// replace the session pool.
-    revisions: Arc<crate::RevisionTracker>,
+    revisions: crate::query_sync::Arc<crate::RevisionTracker>,
     session_ca: Option<Arc<[u8]>>,
     session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
 }
@@ -217,7 +217,7 @@ impl Client {
             acknowledge_deliveries: true,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
-            revisions: Arc::default(),
+            revisions: crate::query_sync::Arc::default(),
             session_ca: None,
             session_verifier: None,
         }
@@ -234,7 +234,7 @@ impl Client {
             acknowledge_deliveries: true,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
-            revisions: Arc::default(),
+            revisions: crate::query_sync::Arc::default(),
             session_ca: None,
             session_verifier: None,
         }

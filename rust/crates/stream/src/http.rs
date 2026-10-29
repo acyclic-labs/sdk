@@ -115,7 +115,7 @@ impl HttpStream {
         })
     }
     /// The session pool's revision tracker, shared by every route of this client.
-    fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
+    fn revisions(&self) -> Result<crate::query_sync::Arc<crate::RevisionTracker>, StreamError> {
         self.session_client()?.revisions()
     }
     async fn authorization(&self) -> Result<HeaderValue, StreamError> {
