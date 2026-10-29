@@ -43,6 +43,8 @@ pub fn typescript() -> Result<String, String> {
         EntryRuntime,
         TimerInbox,
         WorkerLimits,
+        EntryAsset,
+        AssetRole,
         FetchBinding,
         BindingGrant,
         SecretRef,

@@ -1,0 +1,22 @@
+{
+  "name": "@acyclic-labs/harness-actor",
+  "version": "0.2.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "The shared harness as one deployable Actor application artifact",
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "test": "bun test test"
+  },
+  "dependencies": {
+    "@acyclic-labs/actors": "0.2.0",
+    "@acyclic-labs/harness": "0.2.0",
+    "@acyclic-labs/workers": "0.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  }
+}

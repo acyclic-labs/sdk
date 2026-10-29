@@ -46,6 +46,8 @@ pub enum SpawnRefusal {
     Depth,
     /// The agent already has [`MAX_OPEN_CHILDREN`] open children.
     Limit,
+    /// The host runs no children, so it creates none to wait forever.
+    Unhosted,
 }
 
 /// What the step that applied a spawn did with it.

@@ -16,6 +16,8 @@ type Hosted = Server<dyn StreamProvider, Objects>;
 struct Policy {
     policy: Function,
     admitted: Function,
+    /// The preset's open-children bound is not zero.
+    children: bool,
 }
 
 impl hosting::Platform for Policy {
@@ -48,6 +50,9 @@ impl hosting::Platform for Policy {
                 None => Err(StreamError::InvalidResponse),
             }
         })
+    }
+    fn runs_children(&self) -> bool {
+        self.children
     }
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
@@ -92,6 +97,9 @@ impl WasmAgentServer {
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let limits = options.preset.execution_limits(options.limits);
+        // A preset admitting no open children binds a host that runs none:
+        // spawn commands are refused like the preset's spawn tool refuses.
+        let children = options.preset.max_children != Some(0);
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;
@@ -163,7 +171,11 @@ impl WasmAgentServer {
             observation,
             server: RefCell::new(None),
             pending: RefCell::new(None),
-            platform: Arc::new(Policy { policy, admitted }),
+            platform: Arc::new(Policy {
+                policy,
+                admitted,
+                children,
+            }),
             authority: authority.authority(),
             binding,
             lifetime: RefCell::new(Some(tokio::sync::watch::channel(()).0)),
@@ -279,6 +291,27 @@ impl WasmAgentServer {
         let credential = snapshot(&credential)?;
         self.invoke(Bytes::from(invocation), Bytes::from(credential))
             .await
+    }
+
+    /// One Actor fetch the platform routed to this endpoint: the discovery or
+    /// command URL, with the caller's original prepared command as its body.
+    /// It becomes the exact envelope a session ActorCall carries and runs
+    /// through the same authenticated call; the reply is the response body.
+    #[wasm_bindgen(js_name = fetchCall)]
+    pub async fn fetch_call(
+        &self,
+        url: String,
+        body: js_sys::Uint8Array,
+        credential: js_sys::Uint8Array,
+    ) -> std::result::Result<Vec<u8>, JsValue> {
+        let binding = AgentBinding::new(&self.binding).map_err(boundary_error)?;
+        let invocation = binding
+            .routed(&url, snapshot(&body)?)
+            .map_err(boundary_error)?;
+        let credential = snapshot(&credential)?;
+        let reply = self.invoke(invocation, Bytes::from(credential)).await?;
+        let reply = wire::InvokeActorResponse::decode(reply.as_slice()).map_err(boundary_error)?;
+        Ok(reply.body)
     }
 
     /// Convenience for a trusted platform's own controls; uses that platform's

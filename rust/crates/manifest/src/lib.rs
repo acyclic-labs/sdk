@@ -10,7 +10,9 @@ pub mod wire;
 pub use acyclic_actors::domain::{ActorLimits, Binding, SubscriptionSpec};
 pub use acyclic_auth::contract::{Limits, ResourceGrant, ResourcePattern};
 pub use generation::{environment_typescript, json_schema, typescript};
-pub use validation::{ManifestError, lower_actor, lower_worker, validate, validate_work};
+pub use validation::{
+    ManifestError, lower_actor, lower_worker, validate, validate_work, verify_artifact,
+};
 use wire::Contract;
 
 /// Maximum untrusted JSON size, before allocation or parsing.
@@ -83,6 +85,9 @@ pub struct Entry {
     pub name: String,
     /// Nonzero lowercase SHA-256 of the immutable code artifact.
     pub artifact_sha256: String,
+    /// Every file the entry loads beside its artifact, delivered unchanged.
+    #[serde(default)]
+    pub assets: Vec<EntryAsset>,
     /// Logical artifact module identifier, never a filesystem path.
     pub module: String,
     /// Explicitly selected binding names.
@@ -93,6 +98,31 @@ pub struct Entry {
     pub runtime: EntryRuntime,
     /// Optional scoped HTTPS handle; absence denies outbound HTTPS.
     pub fetch: Option<FetchBinding>,
+}
+
+/// File an entry loads beside its artifact, admitted only by exact digest and size.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntryAsset {
+    /// One file-name component, resolved beside the entry artifact.
+    pub path: String,
+    /// Nonzero lowercase SHA-256 of the file bytes.
+    pub sha256: String,
+    /// Exact file size in bytes.
+    #[ts(type = "number")]
+    pub size: u64,
+    /// Media type the file is delivered with; a module is `application/wasm`.
+    pub media_type: String,
+    /// How the entry uses the file.
+    pub role: AssetRole,
+}
+
+/// Use of an entry asset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum AssetRole {
+    /// A WebAssembly module the entry instantiates.
+    Module,
 }
 
 /// Product configuration lowered to the corresponding platform request.
@@ -174,9 +204,11 @@ pub struct SecretRef {
     pub reference: SecretReference,
 }
 
-/// Validated credential-store address; never a credential value or URL.
+/// Credential-store address; never a credential value or URL. `SecretReference::new`
+/// and `parse` admit only valid addresses. Decoding defers that check to validation,
+/// so an inline credential is refused with its typed `secret-reference` rule.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(try_from = "String", into = "String")]
+#[serde(transparent)]
 #[ts(type = "string")]
 pub struct SecretReference(String);
 
@@ -299,6 +331,34 @@ pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
     let manifest = serde_json::from_slice(input).map_err(ManifestError::json)?;
     validate(&manifest)?;
     Ok(manifest)
+}
+
+/// Node/browser artifact admission: the entry bytes and every supplied file are
+/// checked against the parsed manifest's declared entry and assets.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen(js_name = verifyArtifact)]
+pub fn verify_artifact_json(
+    input: &str,
+    environment: &str,
+    entry: &str,
+    artifact: &[u8],
+    paths: Vec<String>,
+    files: Vec<js_sys::Uint8Array>,
+) -> Result<(), wasm_bindgen::JsValue> {
+    let manifest = parse(input.as_bytes())
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))?;
+    // Every supplied file is checked: unpaired paths or files are refused, not dropped.
+    if paths.len() != files.len() {
+        return Err(wasm_bindgen::JsValue::from_str(
+            &ManifestError::invalid("assets", "undeclared-asset").to_string(),
+        ));
+    }
+    let files: Vec<(String, Vec<u8>)> = paths
+        .into_iter()
+        .zip(files.into_iter().map(|file| file.to_vec()))
+        .collect();
+    verify_artifact(&manifest, environment, entry, artifact, &files)
+        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
 
 /// Node/browser admission export; executes the same parser and validator as Rust.

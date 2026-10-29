@@ -5,6 +5,7 @@
     { "path": "./typescript/packages/actors" },
     { "path": "./typescript/packages/workers" },
     { "path": "./typescript/packages/harness" },
+    { "path": "./typescript/packages/harness-actor" },
     { "path": "./typescript/packages/filesystem" },
     { "path": "./typescript/packages/stream" },
     { "path": "./typescript/packages/objects" },

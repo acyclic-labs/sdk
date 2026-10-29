@@ -33,8 +33,8 @@ pub use runtime::Runtime;
 use crate::{
     agent::{
         AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,
-        InboxRecord, IntentId, Message, Sender, SpawnOutcome, SpawnRequest, StatusRecord,
-        requested_child,
+        InboxRecord, IntentId, Message, Sender, SpawnOutcome, SpawnRefusal, SpawnRequest,
+        StatusRecord, requested_child,
     },
     model::ModelContent,
 };
@@ -64,6 +64,12 @@ pub trait Platform: ProviderPlatform + 'static {
         principal: &'a Principal,
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>>;
+
+    /// Whether this platform runs the children a spawn creates. One that runs
+    /// none refuses every spawn command before it stages or commits anything.
+    fn runs_children(&self) -> bool {
+        true
+    }
 
     /// Durable wake admission, after both credential and current policy allow
     /// dispatch, and before any command effect. Native continuous runtimes need
@@ -530,6 +536,9 @@ where
             }
             AgentCommand::Spawn { parent, id, brief } => {
                 let parent = self.within_tree(parent)?;
+                if !self.platform.runs_children() {
+                    return Err(Error::SpawnRefused(SpawnRefusal::Unhosted));
+                }
                 let brief = text(brief)?;
                 let brief = self
                     .bound

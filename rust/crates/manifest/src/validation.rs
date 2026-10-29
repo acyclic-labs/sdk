@@ -83,6 +83,14 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         && value.bytes().any(|b| b != b'0')
 }
+fn file_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
 fn path(value: &str) -> bool {
     value.starts_with('/')
         && (value == "/" || !value.ends_with('/'))
@@ -232,7 +240,11 @@ fn validate_environment<'a>(
     }
     for secret in &environment.secrets {
         require(identifier(&secret.name), p, "secret-name")?;
-        SecretReference::new(secret.reference.as_str().into())?;
+        require(
+            acyclic_actors::domain::SecretSelection::valid_reference(secret.reference.as_str()),
+            p,
+            "secret-reference",
+        )?;
         work += 1;
     }
     let (selected, subscribed) = validate_entries(environment, p, &bindings, &secrets, &mut work)?;
@@ -411,6 +423,21 @@ fn validate_entries<'a>(
                 secrets.contains_key(name.as_str()) && secret_names.insert(name.as_str()),
                 &ep,
                 "selected-secret",
+            )?;
+            *work += 2;
+        }
+        let mut asset_paths = HashSet::new();
+        for asset in &entry.assets {
+            require(
+                file_name(&asset.path)
+                    && asset_paths.insert(asset.path.as_str())
+                    && digest(&asset.sha256)
+                    && asset.size > 0
+                    && match asset.role {
+                        AssetRole::Module => asset.media_type == "application/wasm",
+                    },
+                &ep,
+                "entry-asset",
             )?;
             *work += 2;
         }
@@ -687,6 +714,12 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
             budget.text(&entry.name)?;
             budget.text(&entry.module)?;
             budget.text(&entry.artifact_sha256)?;
+            budget.list(&entry.assets)?;
+            for asset in &entry.assets {
+                budget.text(&asset.path)?;
+                budget.text(&asset.sha256)?;
+                budget.text(&asset.media_type)?;
+            }
             budget.list(&entry.bindings)?;
             budget.list(&entry.secrets)?;
             for name in entry.bindings.iter().chain(&entry.secrets) {
@@ -738,6 +771,51 @@ fn native_bounds(manifest: &DeploymentManifest) -> Result<(), ManifestError> {
         }
     }
     Ok(())
+}
+
+/// Admit a deployable artifact against its validated manifest: the entry bytes match
+/// `artifactSha256`, and the supplied files are exactly the entry's declared assets,
+/// each with its declared size and digest.
+pub fn verify_artifact(
+    manifest: &DeploymentManifest,
+    environment: &str,
+    entry: &str,
+    artifact: &[u8],
+    files: &[(String, Vec<u8>)],
+) -> Result<(), ManifestError> {
+    use sha2::Digest;
+    let hex = |bytes: &[u8]| hex::encode(sha2::Sha256::digest(bytes));
+    validate(manifest)?;
+    let entry = manifest
+        .environments
+        .iter()
+        .find(|candidate| candidate.name == environment)
+        .and_then(|candidate| candidate.entries.iter().find(|e| e.name == entry))
+        .ok_or_else(|| ManifestError::invalid("entry", "undeclared-entry"))?;
+    require(
+        hex(artifact) == entry.artifact_sha256,
+        "artifact",
+        "artifact-digest",
+    )?;
+    let declared: HashMap<&str, &EntryAsset> = entry
+        .assets
+        .iter()
+        .map(|asset| (asset.path.as_str(), asset))
+        .collect();
+    let mut supplied = HashSet::new();
+    for (path, bytes) in files {
+        let asset = declared
+            .get(path.as_str())
+            .ok_or_else(|| ManifestError::invalid("assets", "undeclared-asset"))?;
+        require(supplied.insert(path.as_str()), "assets", "duplicate-asset")?;
+        require(
+            u64::try_from(bytes.len()) == Ok(asset.size),
+            "assets",
+            "asset-size",
+        )?;
+        require(hex(bytes) == asset.sha256, "assets", "asset-digest")?;
+    }
+    require(supplied.len() == declared.len(), "assets", "missing-asset")
 }
 
 /// Lower one named Worker script, preserving its CPU, memory and duration limits.

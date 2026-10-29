@@ -193,6 +193,27 @@ impl AgentBinding {
         PreparedAgentInvocation::new(&self.0, Cow::Borrowed(command))
     }
 
+    /// The canonical invocation of an Actor fetch the platform routed to this
+    /// endpoint. `url`, relative or absolute, names discovery's or this
+    /// binding's route by its path and query alone, and `body` is one frame
+    /// of the caller's prepared command, kept byte for byte: the result is
+    /// the envelope a session ActorCall carries here for the same frame.
+    ///
+    /// # Errors
+    /// [`CommandError::Invalid`] for another URL or a body that is not a
+    /// command frame; [`CommandError::Capacity`] past the frame budget.
+    pub fn routed(&self, url: &str, body: Vec<u8>) -> Result<Bytes, CommandError> {
+        PreparedCommand::decode(&body)?;
+        let route = route_path(url);
+        if route == route_path(DISCOVERY_URL) {
+            with_body(&Self::discovery().0, &body)
+        } else if route == route_path(&self.0.url) {
+            with_body(&self.0, &body)
+        } else {
+            Err(CommandError::Invalid)
+        }
+    }
+
     /// Own both the original command and invocation across browser awaits.
     pub fn prepare_owned(
         &self,
@@ -200,6 +221,14 @@ impl AgentBinding {
     ) -> Result<PreparedAgentInvocation<'static>, CommandError> {
         PreparedAgentInvocation::new(&self.0, Cow::Owned(command))
     }
+}
+
+/// The one canonical form of an Actor fetch route: its path and query. A
+/// published route may be relative or absolute; a fetch URL is absolute.
+fn route_path(url: &str) -> &str {
+    url.split_once("://").map_or(url, |(_, rest)| {
+        rest.find('/').and_then(|at| rest.get(at..)).unwrap_or("/")
+    })
 }
 
 /// Controls use the very same pool and credential as the selected agent fold.
@@ -444,6 +473,42 @@ mod tests {
         assert_eq!(request.actor_id, template.actor_id);
         assert_eq!(request.url, template.url);
         assert_eq!(request.method, template.method);
+        Ok(())
+    }
+
+    #[test]
+    fn routed_fetches_are_the_session_actor_call_envelopes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let binding = AgentBinding::new(&invocation(Vec::new()).encode_to_vec())?;
+        for (route, url, kind) in [
+            (
+                AgentBinding::discovery(),
+                "https://actor.invalid/agents/bind",
+                "bind",
+            ),
+            (
+                AgentBinding::new(&invocation(Vec::new()).encode_to_vec())?,
+                "https://fixture.invalid/command",
+                "root",
+            ),
+        ] {
+            let body = format!("{{ \"kind\" : \"{kind}\" }}").into_bytes();
+            let command = PreparedCommand::from_bytes(body.clone())?;
+            let routed = binding.routed(url, body.clone())?;
+            assert_eq!(route.prepare(&command)?.invocations(), [routed.clone()]);
+            assert_eq!(AgentCall::decode(&routed)?.invocation().body, body);
+        }
+        assert!(matches!(
+            binding.routed("/agents/other", b"{\"kind\":\"root\"}".to_vec()),
+            Err(CommandError::Invalid)
+        ));
+        assert!(matches!(
+            binding.routed(
+                DISCOVERY_URL,
+                b"{\"kind\":\"bind\",\"principal\":\"admin\"}".to_vec()
+            ),
+            Err(CommandError::Invalid)
+        ));
         Ok(())
     }
 

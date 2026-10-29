@@ -14,7 +14,12 @@ impl CommandJournal for HostPort {
             .map_err(unavailable)?;
         let from = u32::try_from(from).map_err(unavailable)?;
         let page = u32::try_from(page).map_err(unavailable)?;
+        // A page is an Array or a Promise of one: SQLite reads synchronously,
+        // an Actor state binding pages its committed journal asynchronously.
         let value = self.journal.read(from, page).map_err(unavailable)?;
+        let value = JsFuture::from(js_sys::Promise::resolve(&value))
+            .await
+            .map_err(unavailable)?;
         let values = value.dyn_into::<js_sys::Array>().map_err(unavailable)?;
         if values.length() == 0 || values.length() > page.saturating_add(1) {
             return Err(StreamError::InvalidResponse);

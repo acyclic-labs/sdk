@@ -85,20 +85,22 @@ test('rollback preserves an earlier pending metadata, journal and alarm group', 
   }]);
 });
 
-test('flush excludes concurrent calls until its original host commit resolves', async () => {
+test('a transaction during an in-flight flush stages the next packet, dispatched only after the first is durable', async () => {
   const owner = host(), binding = materializeActorState(owner);
   const entered = Promise.withResolvers(), committed = Promise.withResolvers();
-  owner.commit = async request => { owner.commits.push(request); entered.resolve(); await committed.promise; };
-  binding.transaction(state => state.put('value',Uint8Array.of(1)));
-  const flushing = binding.flush();
+  owner.commit = async request => { owner.commits.push(request); if (owner.commits.length === 1) { entered.resolve(); await committed.promise; } };
+  binding.transaction(state => state.appendJournal(0n,[Uint8Array.of(1)]));
+  const first = binding.flush();
   await entered.promise;
-  assert.throws(() => binding.transaction(() => {}),/fenced/);
-  await assert.rejects(binding.flush(),/fenced/);
-  await assert.rejects(binding.readJournal(0n,1),/fenced/);
+  binding.transaction(state => { assert.equal(state.journalTail,1n); state.appendJournal(1n,[Uint8Array.of(2)]); state.put('value',Uint8Array.of(3)); });
+  await assert.rejects(binding.readJournal(1n,1),/invalid actor journal page/);
+  const second = binding.flush();
+  await Promise.resolve();
   assert.equal(owner.commits.length,1);
   committed.resolve();
-  await flushing;
-  binding.transaction(state => assert.deepEqual(state.get('value'),Uint8Array.of(1)));
+  await Promise.all([first,second]);
+  assert.deepEqual(owner.commits.map(commit => commit.journalFrom),['0','1']);
+  assert.deepEqual(owner.commits[1].writes,[{key:'value',value:Uint8Array.of(3)}]);
   assert.deepEqual(owner.fences,[]);
 });
 
