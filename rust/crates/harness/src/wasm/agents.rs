@@ -724,9 +724,7 @@ impl WasmAgents {
             .map(|record| {
                 Ok(WasmAgentRecord {
                     sequence: record.sequence,
-                    value: serde_json::from_slice(&record.value).map_err(|_| {
-                        js_error(Error::Invalid("agent record is malformed".into()))
-                    })?,
+                    value: crate::agent::decode_record(&record.value).map_err(agent_error)?,
                 })
             })
             .collect::<std::result::Result<Vec<_>, JsValue>>()?;

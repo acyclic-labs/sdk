@@ -40,9 +40,17 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
     }
 }
 
+/// A saved effect of any version but [`crate::agent::RECORD_VERSION`] is
+/// refused whole.
 fn decode(bytes: &[u8]) -> Result<TurnEffect> {
-    serde_json::from_slice(bytes)
-        .map_err(|_| Error::Storage("recorded agent effect is malformed".into()))
+    crate::agent::records::open(bytes).map_err(|unopened| match unopened {
+        crate::agent::records::Unopened::Version(version) => {
+            Error::UnsupportedRecordVersion(version)
+        }
+        crate::agent::records::Unopened::Malformed => {
+            Error::Storage("recorded agent effect is malformed".into())
+        }
+    })
 }
 
 impl<P, A, O> TurnEffects for FilesystemTurnEffects<P, A, O>
@@ -83,7 +91,7 @@ where
                     Err(error) => return Err(Error::Storage(error.to_string())),
                 }
             }
-            let bytes = crate::contract::canonical_json_bytes(effect)?;
+            let bytes = crate::agent::records::seal(effect)?;
             match self.files.create(&path, &bytes, self.maximum_bytes).await? {
                 Some(existing) => decode(&existing),
                 None => Ok(effect.clone()),
@@ -130,7 +138,7 @@ mod tests {
     };
 
     #[tokio::test]
-    async fn call_files_replay_first_effect_and_order_by_key() -> Result<()> {
+    async fn call_files_replay_the_first_effect_of_this_record_version_by_key() -> Result<()> {
         let provider =
             ProviderRef::new("agents".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(acyclic_fs::Fs::memory(), &provider, None)?;
@@ -197,7 +205,10 @@ mod tests {
         assert_eq!(effects.record("0000000002-b", &later).await?, later);
         assert_eq!(effects.record("0000000001-a", &first).await?, first);
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
-        assert_eq!(effects.recorded().await?, vec![first, later]);
+        assert_eq!(
+            effects.recorded().await?,
+            vec![first.clone(), later.clone()]
+        );
         // Effects of other calls hold a call until they commit; its own never do.
         let own = OperationId::from_bytes([9; 16]);
         assert!(effects.holds(own).await?);
@@ -224,6 +235,38 @@ mod tests {
                 Err(Error::Invalid(_))
             ));
         }
+        // A saved effect of another version is refused whole, both by replay,
+        // which would otherwise resume a spawn of another format, and by the
+        // listing. Negative control: this version's `first`, saved under the
+        // same call key of segment 0 above, replays.
+        let old = FilesystemTurnEffects::new(
+            files.clone(),
+            Arc::new(acyclic_stream::MemoryStream::default()),
+            AgentPath::root(&crate::agent::AgentId::from_bytes([3; 16])),
+            (OperationId::from_bytes([5; 16]), 2),
+            4096,
+        );
+        // A spawn effect of the headerless version 1, its brief a string.
+        let saved = br#"{"spawn":{"brief":"review the diff","intent":"first"}}"#;
+        assert_eq!(
+            files
+                .create(&format!("{}/0000000001-a.json", old.directory), saved, 4096)
+                .await?,
+            None
+        );
+        let refusal = crate::agent::UnsupportedRecordVersion {
+            found: 1,
+            expected: crate::agent::RECORD_VERSION,
+        };
+        assert!(matches!(
+            old.record("0000000001-a", &first).await,
+            Err(Error::UnsupportedRecordVersion(version)) if version == refusal
+        ));
+        assert!(matches!(
+            old.recorded().await,
+            Err(Error::UnsupportedRecordVersion(version)) if version == refusal
+        ));
+        assert_eq!(effects.record("0000000001-a", &later).await?, first);
         Ok(())
     }
 }

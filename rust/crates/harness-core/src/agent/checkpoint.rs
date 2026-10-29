@@ -508,7 +508,7 @@ mod tests {
         record
             .check()
             .expect("generated record satisfies structural admission");
-        let raw = crate::contract::canonical_json_bytes(record).expect("canonical record");
+        let raw = crate::agent::records::seal(record).expect("canonical record");
         assert!(
             raw.len() <= MAX_RECORD_BYTES,
             "{}: {} > {MAX_RECORD_BYTES}",
