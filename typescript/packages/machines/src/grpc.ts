@@ -13,6 +13,12 @@ export interface MachinesGrpcOptions extends CredentialOptions {
 
 /** Node/Bun client for the Cloud product API's protobuf admissions and observations. */
 export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
+  const { transport, close } = createMachinesGrpcTransport(options);
+  return { ...createMachinesClient(transport), close };
+}
+
+/** Retains the same authenticated HTTP/2 owner for a typed or Rust client. */
+export function createMachinesGrpcTransport(options: MachinesGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
@@ -29,5 +35,5 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
     acceptCompression: [], interceptors: [authenticate],
     readMaxBytes: maximum, writeMaxBytes: maximum,
   });
-  return { ...createMachinesClient(transport), close: () => session.abort() };
+  return { transport, close: () => session.abort() };
 }

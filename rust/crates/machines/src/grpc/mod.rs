@@ -5,6 +5,9 @@ use transport::{Deadline as _, Endpoint as RpcEndpoint, Messages as _, RpcClient
 
 /// Typed public RPC transport and platform ownership contracts.
 pub mod transport;
+/// Thread-affine binding to an embedding platform's authenticated Connect transport.
+#[cfg(all(target_arch = "wasm32", feature = "javascript"))]
+pub mod javascript;
 
 /// One Machines client core over an authenticated platform endpoint.
 #[derive(Clone)]

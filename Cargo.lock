@@ -783,6 +783,7 @@ dependencies = [
  "heck",
  "hex",
  "hyper-util",
+ "js-sys",
  "proptest",
  "prost",
  "prost-types",
@@ -803,6 +804,7 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

@@ -4,10 +4,11 @@ import { createSecureServer } from "node:http2";
 import { once } from "node:events";
 import { after, test } from "node:test";
 import { createHook } from "node:async_hooks";
-import { create } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
-import { createMachinesGrpcClient, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
+import { createMachinesGrpcClient, createMachinesGrpcTransport, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
+import { createMachinesRpcTransport } from "../dist/transport.js";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
@@ -46,8 +47,9 @@ async function fixture(t, implementation, rawExec = false) {
   await once(server, "listening");
   const options = { endpoint: `https://127.0.0.1:${server.address().port}`, token: "fixture", caCertificate };
   const client = createMachinesGrpcClient(options);
-  t.after(async () => { client.close(); await closeServer(); });
-  return { ...client, options };
+  const raw = createMachinesGrpcTransport(options);
+  t.after(async () => { raw.close(); client.close(); await closeServer(); });
+  return { ...client, options, rpc: createMachinesRpcTransport(raw.transport) };
 }
 
 function authenticate(context) {
@@ -596,4 +598,67 @@ test("invalid transport configuration is rejected before opening a session", () 
   for (const caCertificate of ["", "x".repeat(65537)]) {
     assert.throws(() => createMachinesGrpcClient({ ...options, caCertificate }), RangeError);
   }
+});
+
+test("Rust transport projection preserves original binary duplex pressure and cancellation", async t => {
+  let attempts = 0;
+  let signalStopped;
+  const stopped = new Promise(resolve => { signalStopped = resolve; });
+  const { rpc } = await fixture(t, {
+    async *exec(input, context) {
+      attempts++;
+      authenticate(context);
+      assert.equal(context.requestHeader.get("grpc-timeout"), "17S");
+      context.signal.addEventListener("abort", signalStopped, { once: true });
+      for await (const frame of input) {
+        if (frame.input.case === "commandComplete") break;
+      }
+      yield { machine, output: channelData(new Uint8Array([0, 255, 1]), wire.ExecStream.STDERR) };
+      await stopped;
+    },
+  }, true);
+  const frames = [
+    { input: { case: "start", value: { protocol, machine, timeoutMs: 1000 } } },
+    { input: { case: "argument", value: { data: new TextEncoder().encode("shell"), end: true } } },
+    { input: { case: "commandComplete", value: {} } },
+  ];
+  let pulls = 0;
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const stream = rpc("exec", async () => {
+    const frame = frames[pulls++];
+    return frame === undefined ? blocked : toBinary(wire.ExecInputSchema, create(wire.ExecInputSchema, frame));
+  }, "17S");
+  t.after(() => { stream.cancel(); release(undefined); });
+  await stream.ready;
+  const first = fromBinary(wire.ExecOutputSchema, await stream.next());
+  assert.equal(first.output.case, "data");
+  assert.equal(first.output.value.stream, wire.ExecStream.STDERR);
+  assert.deepEqual(first.output.value.bytes, new Uint8Array([0, 255, 1]));
+  assert.ok(pulls >= 3 && pulls <= 4);
+  stream.cancel();
+  release(undefined);
+  await stopped;
+  assert.equal(await stream.next(), undefined);
+  assert.equal(attempts, 1);
+});
+
+test("Rust transport projection retains unary refusal before response admission", async t => {
+  let attempts = 0;
+  const { rpc } = await fixture(t, {
+    create(_query, context) {
+      attempts++;
+      authenticate(context);
+      throw new ConnectError("original rejected admission", Code.PermissionDenied);
+    },
+  });
+  let pulls = 0;
+  const stream = rpc("create", async () => {
+    pulls++;
+    return toBinary(wire.CreateMachineRequestSchema, create(wire.CreateMachineRequestSchema, { protocol }));
+  });
+  t.after(() => stream.cancel());
+  await assert.rejects(stream.ready, error => error.code === Code.PermissionDenied && error.rawMessage === "original rejected admission");
+  assert.equal(pulls, 1);
+  assert.equal(attempts, 1);
 });

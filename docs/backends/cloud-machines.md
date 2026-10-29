@@ -17,6 +17,32 @@ It must support bidirectional streaming, input backpressure and `AbortSignal`.
 The Node/Bun `@acyclic-labs/machines/grpc` entry point uses this same client core
 and owns its HTTP/2 connection; the portable entry point imports no Node APIs.
 
+Rust embeddings on WebAssembly enable `acyclic-machines`'s `javascript` feature.
+Construct `grpc::javascript::Endpoint::new(open, budget)` and
+`grpc::Provider::over(endpoint)`. `open` is the function returned by
+`createMachinesRpcTransport(originalAuthenticatedTransport)`, exported by the
+same portable TypeScript entry point. `budget` binds the platform's original
+clock/cancellation owner, implementing `grpc::transport::Deadline`; it receives
+the relative execution budget and authenticated absolute expiry, or only the
+absolute file deadline. It must retain that event across credentials, headers
+and every output pull, rather than starting a new timer for each stage.
+
+This uses the same admission, decoding and lifecycle core as native Tonic.
+RPC forwarding is generated from the canonical service descriptor. The binding
+encodes one protobuf message per pull, with one copy across the WebAssembly/JS
+memory boundary in each direction; the native path adds neither conversion.
+It owns cancellation before waiting for response headers, so dropping a stalled
+credential/connect wait closes both directions. Original gRPC deadline metadata
+is forwarded unchanged; the injected Transport's default timeout is disabled
+because the original Rust budget already owns expiry. A quiet watch has no
+implicit timeout. No aggregate request/response array is constructed.
+
+The workspace must be constructed in the same WebAssembly module as its harness
+consumer, using the original admitted Machine/VolumeRef and authority. This
+transport constructor grants no filesystem or caller authority and serializes
+no scope, issuer, credential or physical mapping capability. A typed transport
+binding does not qualify a platform's duplex implementation or physical guest.
+
 `GrpcProvider::qualify_default_image()` obtains the service's installed immutable
 image identity when discovery is needed. `CreateMachine::new(key, None, network_policy)`
 sends no image: the server selects its installed default and returns its immutable
@@ -87,6 +113,7 @@ Run the shared lifecycle and protocol checks with:
 
 ```sh
 cargo test --locked -p acyclic-machines --features conformance --lib
+cargo check --locked -p acyclic-machines --no-default-features --features javascript --target wasm32-unknown-unknown
 cargo test --locked -p acyclic-harness-core --features machines --lib --no-run
 ```
 

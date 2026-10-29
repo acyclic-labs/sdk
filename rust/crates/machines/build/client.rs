@@ -1,6 +1,6 @@
 //! Project the client ownership contract from the canonical service descriptor.
 
-use heck::ToSnakeCase as _;
+use heck::{ToLowerCamelCase as _, ToSnakeCase as _};
 use prost::Message as _;
 use std::{fmt::Write as _, path::Path};
 
@@ -20,6 +20,9 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut native = String::from(
         "#[cfg(not(target_arch = \"wasm32\"))]\nimpl RpcClient for super::native::Client {\n",
     );
+    let mut javascript = String::from(
+        "#[cfg(all(target_arch = \"wasm32\", feature = \"javascript\"))]\nimpl RpcClient for super::javascript::Client {\n",
+    );
     for method in &service.method {
         let name = method.name.as_deref().ok_or("RPC name is missing")?;
         let rust = name.to_snake_case();
@@ -33,6 +36,10 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
             writeln!(
                 native,
                 "type {name}Stream = tonic::Streaming<wire::{output}>;"
+            )?;
+            writeln!(
+                javascript,
+                "type {name}Stream = super::javascript::Output<wire::{output}>;"
             )?;
             format!("Self::{name}Stream")
         } else {
@@ -58,10 +65,29 @@ pub fn generate(output: &Path) -> Result<(), Box<dyn std::error::Error>> {
             native,
             "{signature} {{ async move {{ Self::{rust}(self, request).await }} }}"
         )?;
+        let request = if method.client_streaming() {
+            "request".to_owned()
+        } else {
+            "Request::new(futures::stream::once(std::future::ready(request)))".to_owned()
+        };
+        let call = if method.server_streaming() {
+            "stream"
+        } else {
+            "unary"
+        };
+        let local = name.to_lower_camel_case();
+        writeln!(
+            javascript,
+            "{signature} {{ async move {{ self.{call}(\"{local}\", {request}).await }} }}"
+        )?;
     }
     contract.push_str("}\n");
     native.push_str("}\n");
-    std::fs::write(output.join("machines-client.rs"), contract + &native)?;
+    javascript.push_str("}\n");
+    std::fs::write(
+        output.join("machines-client.rs"),
+        contract + &native + &javascript,
+    )?;
     Ok(())
 }
 

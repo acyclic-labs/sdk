@@ -20,6 +20,7 @@ default = ["grpc"]
 
 local = ["dep:acyclic-native-runtime", "dep:rustix", "tokio/time", "tokio/macros"]
 grpc = ["dep:acyclic-native-runtime", "dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros"]
+javascript = ["grpc", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -53,6 +54,8 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optio
 tracing.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
 tsify.workspace = true
 wasm-bindgen.workspace = true
 
