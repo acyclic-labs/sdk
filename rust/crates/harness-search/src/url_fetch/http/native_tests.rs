@@ -290,3 +290,44 @@ async fn native_fetch_connection_failure_is_not_a_safe_provider_rejection() -> R
     assert!(joined(server).await?.starts_with("GET /source HTTP/1.1"));
     Ok(())
 }
+
+#[tokio::test]
+async fn native_redirect_cycles_retire_original_custody_without_an_extra_exchange() -> Result<()> {
+    for paths in [
+        vec!["/start".into()],
+        vec!["/start".into(), "/second".into()],
+    ] {
+        let work = work(budget(), &CancellationToken::new())?;
+        let baseline = work.live_allocation_bytes();
+        let (url, server) = super::tests::redirect_route(&paths, Some("/start"), "").await?;
+        let provider = HttpFetch::new()?;
+        let request = FetchRequest { url };
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            provider.fetch_with_native_work(&request, &work)?,
+        )
+        .await
+        .map_err(|_| Error::Invalid("native redirect cycle did not settle".into()))?
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "fetch redirect cycle"
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(work.receipt().backend_read_operations, paths.len() as u64);
+        assert_eq!(
+            server
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))??,
+            paths.len()
+        );
+        drop(error);
+        assert_eq!(work.live_allocation_bytes(), baseline);
+    }
+    Ok(())
+}
