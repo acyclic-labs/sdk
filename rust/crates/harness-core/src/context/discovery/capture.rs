@@ -90,16 +90,18 @@ impl DiscoveredContext {
             let sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
             self.validate_skills(quota.work())?;
             sources.reservation(
-                limits
-                    .render_bytes
-                    .checked_sub(skill_bytes)
-                    .ok_or_else(|| {
-                        stock_boundary(
-                            io,
-                            ErrorCode::Invalid,
-                            "skill metadata exceeds render bound",
-                        )
-                    })?,
+                Some(
+                    limits
+                        .render_bytes
+                        .checked_sub(skill_bytes)
+                        .ok_or_else(|| {
+                            stock_boundary(
+                                io,
+                                ErrorCode::Invalid,
+                                "skill metadata exceeds render bound",
+                            )
+                        })?,
+                ),
                 io,
             )?;
             self.project_messages(limits, io, count, skill_bytes, &sources)
