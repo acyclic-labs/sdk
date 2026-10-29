@@ -46,6 +46,27 @@ pub fn cut_from_wire(value: Vec<wire::Revision>) -> Result<RevisionCut, StreamEr
     )
 }
 
+/// Checks the retained wire minimum without decoding or canonicalizing it
+/// again. Proving every supplied entry also proves their greatest indices;
+/// malformed or conflicting incarnations cannot match one applied revision.
+/// An empty minimum is proven even when `applied` is absent.
+#[must_use]
+pub fn cut_proven_by(minimum: &[wire::Revision], applied: Option<&Revision>) -> bool {
+    let Some(applied) = applied else {
+        return minimum.is_empty();
+    };
+    let incarnation = applied.incarnation.to_be_bytes();
+    minimum.iter().all(|minimum| {
+        minimum.scope.as_ref() == applied.scope.as_bytes()
+            && minimum.incarnation.as_ref() == incarnation
+            && minimum.index <= applied.index
+    })
+}
+
+#[cfg(all(test, not(loom), not(target_arch = "wasm32")))]
+#[path = "revision_tests.rs"]
+mod tests;
+
 /// Serves one wire tail: waits for its minimum cut first, so the returned
 /// tail covers it, and reports the applied revision served. Every host
 /// shares this one handler.

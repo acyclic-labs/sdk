@@ -10,70 +10,95 @@ use std::task::{Context, Poll};
 type Action = (u8, u8, u8);
 
 #[tokio::test]
-async fn changed_session_incarnation_settles_the_opener_and_preserves_its_sibling()
+async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
 -> Result<(), Box<dyn std::error::Error>> {
     let channel = tonic::transport::Endpoint::from_static("http://ordering.invalid").connect_lazy();
-    let (mut pool, mut records) = fixture::fixture(&channel);
     let original = crate::AppliedRevisions::in_process().at(1);
-    pool.routes
-        .get_mut(&3)
-        .ok_or("missing original route")?
-        .revisions = Arc::clone(&pool.revisions);
-    let opened = |id, generation, revision| {
-        frame(
-            id,
-            generation,
-            Body::Opened(wire::SessionOpened {
-                resume: Some(super::super::super::cursor(0)),
-                applied: Some(wire_codec::revision_to_wire(revision)),
-                preceding_commit_id: Bytes::new(),
-            }),
-        )
-    };
-    pool.receive("good", opened(3, 1, &original))?;
-    let (sender, _sibling_records) = mpsc::channel(2);
-    let mut sibling = fixture::route(
-        "good",
-        Kind::Follow(wire::SessionFollow {
-            resource: wire_codec::session::stream_resource("sibling"),
-            ..Default::default()
-        }),
-        sender,
-    );
-    sibling.revisions = Arc::clone(&pool.revisions);
-    let (ready, sibling_opened) = oneshot::channel();
-    sibling.ready = Some(ready);
-    sibling.opened = false;
-    pool.routes.insert(5, sibling);
-    let route = pool.routes.get_mut(&3).ok_or("missing original route")?;
-    let (ready, reset_opened) = oneshot::channel();
-    route.ready = Some(ready);
-    route.opened = false;
-    route.generation = 2;
     let reset = crate::Revision {
         incarnation: original.incarnation ^ 1,
         ..original.clone()
     };
-    pool.receive("good", opened(3, 2, &reset))?;
-    assert_eq!(reset_opened.await?, Err(StreamError::RevisionForeign));
-    assert!(matches!(
-        records.recv().await,
-        Some(Err(StreamError::RevisionForeign))
-    ));
-    assert!(records.recv().await.is_none());
-    assert!(!pool.routes.contains_key(&3));
-    let held = &pool
-        .links
-        .get("good")
-        .ok_or("lost sibling connection")?
-        .served;
-    assert!(held.covers(&original));
-    assert!(!held.covers(&reset));
-    // Re-subscription must use the same tracker that observed both opens.
-    pool.subscribe(5)?;
-    assert!(pool.routes.contains_key(&5));
-    pool.receive("good", opened(5, 1, &original))?;
-    assert_eq!(sibling_opened.await?, Ok(5));
+    for (minimum, reply, error) in [
+        (false, Some(reset.clone()), StreamError::RevisionForeign),
+        (true, None, StreamError::InvalidResponse),
+        (
+            true,
+            Some(crate::Revision {
+                index: 0,
+                ..original.clone()
+            }),
+            StreamError::InvalidResponse,
+        ),
+        (true, Some(reset.clone()), StreamError::InvalidResponse),
+        (
+            true,
+            Some(crate::Revision {
+                scope: crate::RevisionScope::new(b"another-authority".to_vec()),
+                ..original.clone()
+            }),
+            StreamError::InvalidResponse,
+        ),
+    ] {
+        let (mut pool, mut records) = fixture::fixture(&channel);
+        pool.routes
+            .get_mut(&3)
+            .ok_or("missing original route")?
+            .revisions = Arc::clone(&pool.revisions);
+        let opened = |id, generation, revision: Option<&crate::Revision>| {
+            frame(
+                id,
+                generation,
+                Body::Opened(wire::SessionOpened {
+                    resume: Some(super::super::super::cursor(0)),
+                    applied: revision.map(wire_codec::revision_to_wire),
+                    preceding_commit_id: Bytes::new(),
+                }),
+            )
+        };
+        pool.receive("good", opened(3, 1, Some(&original)))?;
+        let (sender, _sibling_records) = mpsc::channel(2);
+        let mut sibling = fixture::route(
+            "good",
+            Kind::Follow(wire::SessionFollow {
+                resource: wire_codec::session::stream_resource("sibling"),
+                ..Default::default()
+            }),
+            sender,
+        );
+        sibling.revisions = Arc::clone(&pool.revisions);
+        let (ready, sibling_opened) = oneshot::channel();
+        sibling.ready = Some(ready);
+        sibling.opened = false;
+        pool.routes.insert(5, sibling);
+        let route = pool.routes.get_mut(&3).ok_or("missing original route")?;
+        let (ready, reset_opened) = oneshot::channel();
+        route.ready = Some(ready);
+        route.opened = false;
+        route.generation = 2;
+        if minimum && let Kind::Follow(follow) = &mut route.kind {
+            follow.at_least = vec![wire_codec::revision_to_wire(&original)];
+        }
+        pool.receive("good", opened(3, 2, reply.as_ref()))?;
+        assert_eq!(reset_opened.await?, Err(error.clone()));
+        assert!(matches!(
+            records.recv().await,
+            Some(Err(ref received)) if received == &error
+        ));
+        assert!(records.recv().await.is_none());
+        assert!(!pool.routes.contains_key(&3));
+        let held = &pool
+            .links
+            .get("good")
+            .ok_or("lost sibling connection")?
+            .served;
+        assert!(held.covers(&original));
+        assert!(!held.covers(&reset));
+        // Re-subscription must use the same tracker that observed both opens.
+        pool.subscribe(5)?;
+        assert!(pool.routes.contains_key(&5));
+        pool.receive("good", opened(5, 1, Some(&original)))?;
+        assert_eq!(sibling_opened.await?, Ok(5));
+    }
     Ok(())
 }
 

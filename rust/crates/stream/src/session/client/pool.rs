@@ -529,10 +529,7 @@ impl Pool {
     /// minimum is always proven; a missing revision proves no minimum.
     fn proves(kind: &Kind, applied: Option<&crate::Revision>) -> bool {
         match kind {
-            Kind::Follow(follow) if !follow.at_least.is_empty() => {
-                wire_codec::cut_from_wire(follow.at_least.clone())
-                    .is_ok_and(|minimum| minimum.proven_by(applied))
-            }
+            Kind::Follow(follow) => wire_codec::cut_proven_by(&follow.at_least, applied),
             _ => true,
         }
     }
