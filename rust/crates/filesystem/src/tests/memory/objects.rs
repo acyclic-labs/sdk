@@ -117,7 +117,7 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     *state
         .objects
-        .get_or_try_insert_with(object_id.to_bytes(), &mut accounting, |_| {
+        .get_or_try_insert_with(object_id.index_key(), &mut accounting, |_| {
             Err(ObjectStoreError::Missing.into())
         })? = OwnedBytes::from_static(b"corrupted");
     drop(state);

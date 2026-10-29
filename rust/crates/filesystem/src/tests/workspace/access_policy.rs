@@ -312,14 +312,16 @@ async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box
         .await
         .err()
         .ok_or("zero-write budget stored policy")?;
-    let mut cause: &dyn Error = &failure.error;
-    while cause.downcast_ref::<crate::WorkError>().is_none() {
-        cause = cause.source().ok_or("failure lost its typed work cause")?;
-    }
-    assert!(matches!(
-        cause.downcast_ref::<crate::WorkError>(),
-        Some(crate::WorkError::BudgetExceeded { .. })
-    ));
+    // Transparent wrappers expose their source's source; use the same typed
+    // normalization as workspace callers rather than walking past the cause.
+    let error = crate::WorkspaceError::from(failure.error);
+    assert!(
+        matches!(
+            error,
+            crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded { .. })
+        ),
+        "finite policy budget lost its typed refusal: {error:?}"
+    );
     assert_eq!(failure.work.backend_write_operations, 0);
     assert!(!checkout.has_pending_mutations());
 
@@ -345,14 +347,16 @@ async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box
         .await
         .err()
         .ok_or("finite read budget read complete policy")?;
-    let mut cause: &dyn Error = &failure.error;
-    while cause.downcast_ref::<crate::WorkError>().is_none() {
-        cause = cause.source().ok_or("failure lost its typed work cause")?;
-    }
-    assert!(matches!(
-        cause.downcast_ref::<crate::WorkError>(),
-        Some(crate::WorkError::BudgetExceeded { .. })
-    ));
+    // Transparent wrappers expose their source's source; use the same typed
+    // normalization as workspace callers rather than walking past the cause.
+    let error = crate::WorkspaceError::from(failure.error);
+    assert!(
+        matches!(
+            error,
+            crate::WorkspaceError::Work(crate::WorkError::BudgetExceeded { .. })
+        ),
+        "finite policy budget lost its typed refusal: {error:?}"
+    );
     assert!(failure.work.object_bytes_read <= 16_384);
     Ok(())
 }

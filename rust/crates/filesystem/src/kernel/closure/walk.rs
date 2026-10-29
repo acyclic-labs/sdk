@@ -208,7 +208,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         }
         if let Some(directories) = directories {
             let record =
-                map_get(&records, &root.0.root_file_id).ok_or(ClosureError::MissingRootFile)?;
+                map_get(&records, &root.0.root_file_id)?.ok_or(ClosureError::MissingRootFile)?;
             if !matches!(record.payload, FilePayload::Directory { .. }) {
                 return Err(ClosureError::RootIsNotDirectory.into());
             }
