@@ -4,7 +4,7 @@ import { Spool } from "./process.mjs";
 // Keep the shipping JSONL connection open across turns. Agent effects publish
 // when a turn settles; child reports become a later parent turn, not a wait tool.
 export async function conversation(processes, binary, fixture, input, capture, beforeTurn = async () => {}) {
-  const active = processes.start(binary, [...fixture.args, "--operation", input.operation,
+  const active = await processes.startReported(binary, [...fixture.args, "--operation", input.operation,
     "--input-format", "jsonl"], { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   // One reply per turn, keyed by the turn's id: a repeated id fails the spool.
   const replies = new Spool(active.child.stdout, active.closed, { key: event => [event.id], unique: true });
