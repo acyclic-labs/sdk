@@ -119,9 +119,6 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
     let mutations = value["mutations"]
         .as_array()
         .ok_or(StreamError::Unavailable)?;
-    if mutations.len() > MAX_ITEMS {
-        return Err(StreamError::Unavailable);
-    }
     let mutations = mutations
         .iter()
         .map(|value| {
@@ -130,9 +127,6 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                 .map(parse_records)
                 .transpose()?
                 .unwrap_or_default();
-            if records.len() > MAX_ITEMS {
-                return Err(StreamError::Unavailable);
-            }
             match parse_string(field(value, "type")?)? {
                 "append" => Ok(CommittedMutation::Append(CommittedAppend {
                     path: parse_path(field(value, "path")?)?,

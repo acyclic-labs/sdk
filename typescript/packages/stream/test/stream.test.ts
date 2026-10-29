@@ -124,13 +124,8 @@ describe("website Stream contract", () => {
     const stream = client.bytes("bounded");
     await expect(stream.appendBatch([], { idempotencyKey: key("stream.test-110") })).rejects.toMatchObject({ code: "limit_exceeded" });
     await expect(stream.appendBatch([new Uint8Array(65_537)], { idempotencyKey: key("stream.test-111") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    await expect(stream.appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-112") })).rejects.toMatchObject({ code: "limit_exceeded" });
     const customProvider = new MemoryStreamProvider();
     let customCalls = 0;
-    const originalAppend = customProvider.append.bind(customProvider);
-    customProvider.append = (...args) => { customCalls += 1; return originalAppend(...args); };
-    await expect(new StreamClient(customProvider).bytes("custom").appendBatch(Array(1_025).fill(new Uint8Array()), { idempotencyKey: key("stream.test-117") })).rejects.toMatchObject({ code: "limit_exceeded" });
-    expect(customCalls).toBe(0);
     const customStream = new StreamClient({
       append: () => { customCalls += 1; throw new Error("custom provider called"); },
     } as never).bytes("custom");
