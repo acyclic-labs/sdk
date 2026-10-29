@@ -193,6 +193,7 @@ async fn expected_fetch_failure(case: u8) -> Result<()> {
         volume(directory.path()).await?,
         provider.clone(),
     )?
+    .without_default_tools()
     .web_tools();
     let local = Arc::new(LocalHarness::open(config).await?);
     assert_eq!(
@@ -211,6 +212,7 @@ async fn expected_fetch_failure(case: u8) -> Result<()> {
         "expected failure terminated the session or retried the model"
     );
     for request in &requests {
+        assert_eq!(request.tools.len(), 1);
         assert!(request.tools.iter().any(|tool| tool.name == "url_fetch"));
         assert!(
             !request.tools.iter().any(|tool| tool.name == "web_search"),
@@ -291,6 +293,7 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
             volume(directory.path()).await?,
             provider.clone(),
         )?
+        .without_default_tools()
         .web_tools();
         let local = Arc::new(LocalHarness::open(config).await?);
         assert_eq!(run(&local, "read the exact source").await?, "source read");
@@ -298,6 +301,7 @@ async fn model_fetch_preserves_exact_nonbmp_body_redirect_and_absent_search() ->
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
         for request in &requests {
+            assert_eq!(request.tools.len(), 1);
             assert!(request.tools.iter().any(|tool| tool.name == "url_fetch"));
             assert!(!request.tools.iter().any(|tool| tool.name == "web_search"));
         }
