@@ -2102,9 +2102,17 @@ The isolated real-watch control holds both read cursors, injects a real OS hangu
 The existing held-cursor control still requires one entry per service thread, delivery to the independent watch while the first cursor is held, zero delivery to that held watch, and eventual delivery after releasing its original cursor. Its original blocking-service and missing-reschedule negative controls remain. Notification before the receiver waits is retained by the channel; loss of the sender is an error. The service-entry sender exists only in test builds. Production costs change by zero. Test readiness removes repeated atomic loads and1ms sleeps; each observed service entry and nonempty delivery instead sends one channel notification, with no new watcher, worker, filesystem probe or physical I/O. Formatting/static checks pass; changed-source compilation, runtime and negative execution remain pending.
 
 
+## Shared source errors observed by foreground operations
+
+| Mechanism | File:line | Category | Action |
+| --- | --- | --- | --- |
 | Foreground queue-read service failure | `rust/crates/filesystem/src/source_watch/inotify/hub.rs:232,379,416` | Required producer terminal | Foreground fences, registration's preexisting-queue drain and the router publish shared source failures through the same retained-health owner after releasing the routing lock. A missing/path-denied registration remains its own refusal and does not poison the hub. FIONREAD retries only EINTR. Healthy work adds no syscall, lock, allocation or copy; errors add the required exceptional terminal delivery. The same isolated real OS control also uses a directory descriptor to obtain actual FIONREAD/read failures and requires both foreground drains to retain their exact OS cause. Formatting/static only; runtime and former-behavior negative remain pending. |
 
 
+## Existing cursor and retirement synchronization
+
+| Mechanism | File:line | Category | Action |
+| --- | --- | --- | --- |
 | Redundant watch startup counter waits | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:463,567` (historical); `inotify/mod.rs:102` (removed flag) | Test-harness readiness polling | DELETE both yield loops and the test-only polling flag plus all producer writes. Startup already returns after registration and cursor release. The original paused/read cursor excludes an in-flight delivery before testing held custody or acquiring the accounting leaf. No new event, allocation, timer, work or I/O is needed. |
 | Callback-panic physical retirement wait | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:688` (historical); `inotify/lifecycle.rs:650` | Existing primitive completion | Replace the yield loop with the existing reading_changed condition under its original cursor mutex. The native retirement producer sets completed and notifies while holding that same cursor; notification before waiting remains visible in the predicate. Keep the original one-shot failure bound, original ledger/one-returned-item assertions, physical descriptor/custody checks and callback-unwind negative. Add zero production work, tasks, timers, locks or notifications. Formatting/static only; runtime pending. |
 
