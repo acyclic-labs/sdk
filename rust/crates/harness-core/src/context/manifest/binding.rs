@@ -18,7 +18,9 @@ impl ContextManifest {
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
         crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
-            || reference.descriptor().byte_length() > limits.render_bytes
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
         {
             return Err(stock_boundary(
                 io,
@@ -31,7 +33,12 @@ impl ContextManifest {
         #[cfg(not(feature = "filesystem"))]
         let content_io = None;
         let bytes = reader
-            .read(&reference, limits.render_bytes, None, content_io)?
+            .read(
+                &reference,
+                reference.descriptor().byte_length(),
+                None,
+                content_io,
+            )?
             .await?;
         crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
         #[cfg(feature = "filesystem")]
@@ -70,9 +77,9 @@ impl ContextManifest {
         let mut discovered = manifest.discovery.messages(limits, io)?;
         append_context_messages(&mut messages, &mut discovered, io)?;
         let bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
+            crate::executor::json::json_byte_length(&messages, limits.render_bytes, work)
         })?;
-        let mut remaining = Some(limits.render_bytes - bytes);
+        let mut remaining = limits.render_bytes.map(|maximum| maximum - bytes);
         crate::model::reserve_instruction_bodies(&messages, &mut remaining, io)?;
         for name in manifest.selected_skills {
             let skill = manifest

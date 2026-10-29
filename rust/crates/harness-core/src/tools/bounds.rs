@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 /// The call's scope limits that bound it: rendered bytes and path bytes.
 pub(super) fn limits(context: &ToolContext) -> (Option<u64>, Option<std::num::NonZeroUsize>) {
     let limits = context.effective_scope().limits();
-    (Some(limits.render_bytes), limits.path_bytes)
+    (limits.render_bytes, limits.path_bytes)
 }
 
 /// Refuses an operand the model must correct: a command longer than one

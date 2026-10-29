@@ -45,7 +45,7 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
         environment: Default::default(),
         inherit_environment: true,
         timeout_ms: Some(300_000),
-        maximum_output_bytes: 32_768,
+        maximum_output_bytes: None,
         standard_input: None,
         process_custody: None,
     };
@@ -131,7 +131,7 @@ mod simulation {
                         ["-c", "printf dst"]
                     );
                     assert_eq!(request.timeout, Some(Duration::from_millis(1000)));
-                    assert_eq!(request.maximum, 3);
+                    assert_eq!(request.maximum, Some(3));
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
                     for chunk in [b"s".as_slice(), b"im".as_slice()] {
@@ -157,7 +157,7 @@ mod simulation {
                 environment: Default::default(),
                 inherit_environment: false,
                 timeout_ms: Some(1000),
-                maximum_output_bytes: 3,
+                maximum_output_bytes: Some(3),
                 process_custody: None,
                 standard_input: None,
             };

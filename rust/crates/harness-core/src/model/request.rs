@@ -54,7 +54,7 @@ impl ModelRequest {
                 "model output token bound must be positive".into(),
             ));
         }
-        let mut remaining = Some(limits.render_bytes);
+        let mut remaining = limits.render_bytes;
         reserve_instruction_bodies(&self.messages, &mut remaining, io)?;
         Self::validate_messages(&mut self.messages, &self.tools, limits, io)?;
         Ok(remaining)

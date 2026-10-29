@@ -45,10 +45,14 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             value.validate(&mut None).map_err(js_error)?;
             let js = to_js(&value)?;
             for (key, bound) in [
-                ("file_bytes", value.file_bytes),
+                ("file_bytes", Some(value.file_bytes)),
                 ("render_bytes", value.render_bytes),
             ] {
-                set_js_field(&js, key, &exact_js_number(bound)?)?;
+                let bound = bound
+                    .map(exact_js_number)
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
             }
             for (key, bound) in [
                 (

@@ -77,7 +77,7 @@ impl DiscoveredContext {
             ));
         }
         let skill_bytes = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&self.skills, Some(limits.render_bytes), work)
+            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
@@ -89,21 +89,7 @@ impl DiscoveredContext {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let sources = crate::model::InstructionSources::new(&self.instructions, &mut quota)?;
             self.validate_skills(quota.work())?;
-            sources.reservation(
-                Some(
-                    limits
-                        .render_bytes
-                        .checked_sub(skill_bytes)
-                        .ok_or_else(|| {
-                            stock_boundary(
-                                io,
-                                ErrorCode::Invalid,
-                                "skill metadata exceeds render bound",
-                            )
-                        })?,
-                ),
-                io,
-            )?;
+            sources.reservation(limits.render_bytes.map(|maximum| maximum - skill_bytes), io)?;
             self.project_messages(limits, io, count, skill_bytes, &sources)
         })
     }

@@ -220,7 +220,7 @@ mod tests {
                 let model = Model::new("test".into(), "review".into(), "1".into())?;
                 let request = ApprovalRequest::new("original", b"{\"action\":\"exact\"}", 4096)?;
                 let limits = Limits {
-                    render_bytes: if case == 7 { 512 } else { 4096 },
+                    render_bytes: Some(if case == 7 { 512 } else { 4096 }),
                     ..Limits::default()
                 };
                 let first = review_model(

@@ -249,7 +249,7 @@ fn dispatch_admission_checks_bounds_and_current_user() {
     assert!(
         selected
             .validate_for_dispatch(Limits {
-                render_bytes: 4,
+                render_bytes: Some(4),
                 ..Limits::default()
             })
             .is_err()
@@ -299,7 +299,7 @@ async fn manifest_projection_checks_limit_before_resolution_and_exact_count_afte
     let limits = Limits {
         context_messages: std::num::NonZeroUsize::new(256),
         attachments: std::num::NonZeroUsize::new(1),
-        render_bytes: 128 * 1024,
+        render_bytes: Some(128 * 1024),
         ..Limits::default()
     };
     assert!(

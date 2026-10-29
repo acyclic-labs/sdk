@@ -64,7 +64,7 @@ impl ContextManifest {
         use crate::{executor::stock_boundary, wire::ErrorCode};
         crate::executor::with_history_io(io, |work| -> Result<()> {
             limits.validate(work)?;
-            crate::executor::json::json_byte_length(self, Some(limits.render_bytes), work)?;
+            crate::executor::json::json_byte_length(self, limits.render_bytes, work)?;
             self.discovery.validate(work)?;
             for file in self
                 .discovery
@@ -179,8 +179,8 @@ impl ContextManifest {
             std::marker::PhantomData,
             bytes,
             JsonBounds {
-                maximum_bytes: Some(limits.render_bytes),
-                maximum_items: Some(limits.render_bytes),
+                maximum_bytes: limits.render_bytes,
+                maximum_items: limits.render_bytes,
                 maximum_depth: 256,
             },
             None,

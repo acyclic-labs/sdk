@@ -211,7 +211,7 @@ fn changed_limits_revalidate_the_admitted_prefix() -> Result<()> {
         continuation
             .finish(
                 Limits {
-                    render_bytes: 8,
+                    render_bytes: Some(8),
                     ..Limits::default()
                 },
                 None
@@ -241,7 +241,7 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
         crate::model::instruction_tests::file("nested/AGENTS.md", &"x".repeat(1_024), "rules");
     let instruction = project_instruction(&file.into(), None)?;
     let limits = Limits {
-        render_bytes: 2_000,
+        render_bytes: Some(2_000),
         ..Limits::default()
     };
     let mut original = request(1)?;
@@ -263,7 +263,7 @@ fn instruction_reservations_span_the_immutable_prefix_and_new_suffix() -> Result
     let mut continuation = prepared.into_continuation();
     continuation.messages().push(instruction);
     let enlarged = Limits {
-        render_bytes: 4_000,
+        render_bytes: Some(4_000),
         ..limits
     };
     let continued = continuation.finish(enlarged, None)?;

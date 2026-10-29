@@ -115,8 +115,9 @@ pub async fn select_model_context(
     with_history_io(io, |work| {
         validate_model_context_selection(conversation, &selection, conversation_revision, work)
     })?;
-    if limits.render_bytes == 0
-        || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    if limits
+        .render_bytes
+        .is_some_and(|maximum| maximum == 0 || maximum > crate::conversation::MAX_EXACT_JS_INTEGER)
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         || limits
             .context_messages
@@ -137,13 +138,9 @@ pub async fn select_model_context(
         })?;
         let (role, content) = match message.kind {
             MessageKind::ToolCall => {
-                let call = artifacts::read_tool_call(
-                    resolver,
-                    &message.content,
-                    Some(limits.render_bytes),
-                    io,
-                )
-                .await?;
+                let call =
+                    artifacts::read_tool_call(resolver, &message.content, limits.render_bytes, io)
+                        .await?;
                 with_history_io(io, |work| {
                     crate::tool::ToolInvocation::validate_identity(
                         &call.call_id,
@@ -254,7 +251,7 @@ pub(crate) async fn read_tool_output(
     }
     let projection = projection
         .ok_or_else(|| stock_boundary(io, Invalid, "tool result lacks its model projection"))?;
-    artifacts::read_result(resolver, &projection.file, Some(limits.render_bytes), io).await
+    artifacts::read_result(resolver, &projection.file, limits.render_bytes, io).await
 }
 
 async fn project_message(
@@ -277,8 +274,7 @@ async fn project_message(
                 "reasoning artifact identity is invalid",
             ));
         }
-        let block =
-            artifacts::read_reasoning(resolver, event, Some(limits.render_bytes), io).await?;
+        let block = artifacts::read_reasoning(resolver, event, limits.render_bytes, io).await?;
         return Ok((
             role,
             ModelContent::Part(ModelContentPart::Reasoning { block }),
@@ -286,10 +282,12 @@ async fn project_message(
     }
     let policy = match message.content.descriptor().media_type() {
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-            attachments::native_image(&message.content, Some(limits.render_bytes), io)?
+            attachments::native_image(&message.content, limits.render_bytes, io)?
         }
         kind if FileProjectionPolicy::is_text(kind)
-            && message.content.descriptor().byte_length() <= limits.render_bytes =>
+            && limits
+                .render_bytes
+                .is_none_or(|maximum| message.content.descriptor().byte_length() <= maximum) =>
         {
             FileProjectionPolicy::BoundedFull
         }
@@ -306,14 +304,7 @@ async fn project_message(
         file: crate::model::clone_file(&message.content, io)?,
         policy,
     });
-    attachments::append(
-        items,
-        hold,
-        count,
-        &mut parts,
-        Some(limits.render_bytes),
-        io,
-    )?;
+    attachments::append(items, hold, count, &mut parts, limits.render_bytes, io)?;
     if omitted != 0 {
         parts.push(ModelContentPart::Text {
             text: attachments::omission_text(omitted, io)?,

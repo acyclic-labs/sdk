@@ -69,7 +69,9 @@ pub(crate) fn limits_admit(admitted: Limits, current: Limits) -> bool {
         && current
             .attachments
             .is_none_or(|maximum| admitted.attachments.is_some_and(|value| value <= maximum))
-        && admitted.render_bytes <= current.render_bytes
+        && current
+            .render_bytes
+            .is_none_or(|maximum| admitted.render_bytes.is_some_and(|value| value <= maximum))
         && current.context_messages.is_none_or(|maximum| {
             admitted
                 .context_messages

@@ -88,7 +88,7 @@ fn invocation(root: &Path) -> Invocation {
         environment: BTreeMap::new(),
         inherit_environment: false,
         timeout_ms: Some(300_000),
-        maximum_output_bytes: 32_768,
+        maximum_output_bytes: Some(32_768),
         process_custody: None,
         standard_input: None,
     }
