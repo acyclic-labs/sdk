@@ -172,7 +172,7 @@ fn contended_os_lock_waits_leave_a_worker_to_release_the_holder() -> io::Result<
     drop(abandoned);
 
     // The holder's unlock uses exactly the same shared worker service. Without
-    // wait credit every worker is in flock/LockFileEx and this cannot execute.
+    // wait credit every worker is waiting on the OS lock and this cannot execute.
     complete(run_blocking_io(move || holder.unlock(), None)?)??;
     for waiter in waiters {
         complete(waiter)?;
