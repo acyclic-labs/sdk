@@ -672,12 +672,19 @@ mod http {
                 set(
                     &result,
                     "retained",
-                    &array_js(field(item, "retained")?, |record| {
-                        if record.is_null() {
-                            Ok(JsValue::UNDEFINED)
-                        } else {
-                            record_js(record)
+                    &array_js(field(item, "retained")?, |observation| {
+                        let observation = object(observation)?;
+                        let selected = Object::new();
+                        set(
+                            &selected,
+                            "path",
+                            &JsValue::from_str(string(field(observation, "path")?)?),
+                        )?;
+                        let record = field(observation, "record")?;
+                        if !record.is_null() {
+                            set(&selected, "record", &record_js(record)?)?;
                         }
+                        Ok(selected.into())
                     })?,
                 )?;
                 set(

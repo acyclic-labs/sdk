@@ -43,6 +43,16 @@ pub struct RetainedRecord {
     pub sequence: u64,
 }
 
+/// An original publication observation bound to its selected destination,
+/// including when no record exists at the requested position.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetainedRecordObservation {
+    /// Original append destination, echoed in selection order.
+    pub path: StreamPath,
+    /// Original record, or absence without proof of nonexecution.
+    pub record: Option<Record>,
+}
+
 /// Named observations and an optional hierarchy page at one authority cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadsRequest {
@@ -95,7 +105,7 @@ pub struct Heads {
     /// Original retained records in selection order at this snapshot. Returned
     /// bytes, sequence, publication identity and time are the original facts;
     /// they do not certify that the current path still contains that prefix.
-    pub retained: HeadSet<Option<Record>>,
+    pub retained: HeadSet<RetainedRecordObservation>,
     /// Exact projection used for every named path.
     pub projection: HeadProjection,
     /// Exact authority revision shared by heads, absence and the hierarchy page.
@@ -135,10 +145,12 @@ impl Heads {
         {
             return Err(StreamError::InvalidResponse);
         }
-        for (record, selected) in self.retained.iter().zip(&request.retained) {
-            if record.as_ref().is_some_and(|record| {
-                record.commit_id != selected.commit_id || record.sequence != selected.sequence
-            }) {
+        for (observation, selected) in self.retained.iter().zip(&request.retained) {
+            if observation.path != selected.path
+                || observation.record.as_ref().is_some_and(|record| {
+                    record.commit_id != selected.commit_id || record.sequence != selected.sequence
+                })
+            {
                 return Err(StreamError::InvalidResponse);
             }
         }

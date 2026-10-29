@@ -285,7 +285,10 @@ destination and sequence. Heads, absence, selected records and children share
 one applied snapshot and one result budget. Denial on any selected destination
 refuses the whole view. A missing retained position is not proof that a command
 never executed. Original record bytes, headers, sequence, publication and time
-are returned; selecting them makes no claim about the path's current ancestry.
+are returned with the original destination, including for absence. Clients
+validate that destination against the request, so same-publication records at
+equal sequences cannot be exchanged across paths. Selecting original facts makes
+no claim about the path's current ancestry.
 Actors can join an original reply and state publication without substituting the
 latest state or copying a complete multi-path envelope.
 

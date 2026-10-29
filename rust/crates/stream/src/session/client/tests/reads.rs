@@ -400,7 +400,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
         sequence: original.sequence,
     });
     assert_eq!(
-        client.heads(allowed.clone(), 1).await?.retained[0],
+        client.heads(allowed.clone(), 1).await?.retained[0].record,
         Some(original.clone())
     );
     // A retained-only selection still binds its actual destination, never context.
@@ -408,7 +408,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     selected_only.paths.clear();
     selected_only.children = None;
     assert_eq!(
-        client.heads(selected_only.clone(), 1).await?.retained[0],
+        client.heads(selected_only.clone(), 1).await?.retained[0].record,
         Some(original)
     );
     selected_only.retained[0].path = StreamPath::new("tree/absent")?;

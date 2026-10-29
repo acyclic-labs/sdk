@@ -122,11 +122,14 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
         .saturating_add(
             view.retained
                 .iter()
-                .map(|record| {
+                .map(|observation| {
                     block_len(
-                        record
-                            .as_ref()
-                            .map_or(0, |record| block_len(record_len(record))),
+                        block_len(observation.path.as_str().len()).saturating_add(
+                            observation
+                                .record
+                                .as_ref()
+                                .map_or(0, |record| block_len(record_len(record))),
+                        ),
                     )
                 })
                 .fold(0usize, usize::saturating_add),

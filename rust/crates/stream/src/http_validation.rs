@@ -328,7 +328,10 @@ pub fn validate(route: &str, value: &Value) -> Result {
         }
         Some("heads") => {
             let item = object(value)?;
-            for record in array(field(item, "retained")?)? {
+            for observation in array(field(item, "retained")?)? {
+                let observation = object(observation)?;
+                path(field(observation, "path")?)?;
+                let record = field(observation, "record")?;
                 if !record.is_null() {
                     validate_record(record)?;
                 }

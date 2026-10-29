@@ -62,7 +62,8 @@ pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
             .retained
             .into_iter()
             .map(|selected| wire::RetainedRecordObservation {
-                record: selected.map(record_wire),
+                path: selected.path.to_string(),
+                record: selected.record.map(record_wire),
             })
             .collect(),
         projection: projection_to_wire(value.projection),
@@ -85,7 +86,13 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
         retained: value
             .retained
             .into_iter()
-            .map(|selected| selected.record.map(record).transpose())
+            .map(|selected| {
+                Ok(crate::RetainedRecordObservation {
+                    path: StreamPath::new(selected.path)
+                        .map_err(|_| StreamError::InvalidResponse)?,
+                    record: selected.record.map(record).transpose()?,
+                })
+            })
             .collect::<Result<_, _>>()?,
         projection,
         snapshot: issued_from_wire(value.snapshot)?,
@@ -199,7 +206,30 @@ mod tests {
             };
             let wire = heads_request_to_wire(request.clone());
             let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
-            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request);
+            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request.clone());
+            let view = crate::Heads {
+                retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {
+                    path: selected.path.clone(),
+                    record: (selected.sequence % 2 == 0).then(|| crate::Record {
+                        sequence: selected.sequence, value: selected.path.as_str().as_bytes().to_vec().into(),
+                        commit_id: selected.commit_id, committed_at_micros: 1,
+                        headers: Default::default(),
+                    }),
+                }).collect(),
+                projection: request.projection,
+                snapshot: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
+                heads: Default::default(), children: None,
+            };
+            prop_assert_eq!(view.validate_for(&request), Ok(()));
+            let response = heads_to_wire(view.clone());
+            prop_assert_eq!(crate::wire_codec::requests::heads_len(&view), response.encoded_len());
+            let decoded = wire::HeadsResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+            prop_assert_eq!(heads_from_response(decoded).unwrap(), view);
+            if !response.retained.is_empty() {
+                let mut malformed = response;
+                malformed.retained[0].path.clear();
+                prop_assert_eq!(heads_from_response(malformed), Err(StreamError::InvalidResponse));
+            }
             if !wire.retained.is_empty() {
                 let mut malformed = wire.clone();
                 malformed.retained[0].commit_id = Bytes::new();

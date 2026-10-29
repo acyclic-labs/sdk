@@ -56,7 +56,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                 assert!(
                     view.retained
                         .iter()
-                        .all(|record| record.as_ref().is_some_and(|record| {
+                        .all(|record| record.record.as_ref().is_some_and(|record| {
                             record.commit_id == oldest
                                 && record.sequence == 0
                                 && record.value.as_ref() == b"value"

@@ -131,6 +131,8 @@ message RetainedRecord {
 message RetainedRecordObservation {
   // Missing is not proof that a command never executed. Denial refuses the view.
   Record record = 1;
+  // Echoed even for an absent record, binding the observation to its selection.
+  string path = 2;
 }
 
 message HeadObservation {

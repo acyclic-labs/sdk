@@ -102,8 +102,11 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
         at_least: Default::default(),
     };
     let original_view = provider.heads(selected.clone()).await?;
-    assert_eq!(original_view.retained[0], Some(append.records[0].clone()));
-    assert_eq!(original_view.retained[1], None);
+    assert_eq!(
+        original_view.retained[0].record,
+        Some(append.records[0].clone())
+    );
+    assert_eq!(original_view.retained[1].record, None);
     let fork_observed = provider
         .inspect_idempotency(fork.idempotency_key.clone())
         .await?

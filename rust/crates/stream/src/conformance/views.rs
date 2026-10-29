@@ -69,10 +69,10 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         if view.snapshot != receipt.revision || view.heads[2].is_some() {
             return Err(StreamError::Unavailable);
         }
-        if view.retained[0] != view.heads[0].as_ref().and_then(|head| head.last.clone())
-            || view.retained[1] != view.heads[1].as_ref().and_then(|head| head.last.clone())
-            || view.retained[2].is_some()
-            || view.retained[3].is_some()
+        if view.retained[0].record != view.heads[0].as_ref().and_then(|head| head.last.clone())
+            || view.retained[1].record != view.heads[1].as_ref().and_then(|head| head.last.clone())
+            || view.retained[2].record.is_some()
+            || view.retained[3].record.is_some()
         {
             return Err(StreamError::Unavailable);
         }
@@ -91,11 +91,16 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             return Err(StreamError::Unavailable);
         }
         let mut wrong_position = view.clone();
-        wrong_position.retained[0] = view.retained[1].clone();
-        if let Some(record) = &mut wrong_position.retained[0] {
-            record.sequence += 1;
-        }
+        // Both records have identical publication/sequence and different bytes.
+        // Swapping their observations must fail solely on destination binding.
+        wrong_position.retained.swap(0, 1);
         if wrong_position.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            return Err(StreamError::Unavailable);
+        }
+        // Missing results retain the same destination binding.
+        let mut wrong_absence = view.clone();
+        wrong_absence.retained.swap(2, 3);
+        if wrong_absence.validate_for(&request) != Err(StreamError::InvalidResponse) {
             return Err(StreamError::Unavailable);
         }
         for (index, head) in view.heads[..2].iter().enumerate() {
