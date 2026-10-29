@@ -3,6 +3,7 @@ use super::deadline::GuestDeadline;
 use super::journal::{Admission, Journal};
 use super::*;
 use acyclic_stream::{StreamPath, StreamProvider};
+use tokio::sync::MutexGuard;
 
 /// Physical primitives. Authentication, selection, keyed settlement and
 /// retained observations belong to the shared provider above this boundary.
@@ -79,7 +80,8 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         key: IdempotencyKey,
         target: MachineState,
     ) -> Result<MutationOutcome, ProviderError> {
-        let (value, pending_key) = &mut *self.observation.lock().await;
+        let mut admission = self.observation.lock().await;
+        let (value, pending_key) = &mut *admission;
         Self::select(value, machine)?;
         let (intent, outcome) = match target {
             MachineState::Suspended => (
@@ -136,7 +138,9 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             })
             .await?
         {
-            Admission::Replay(original) => return Ok(original),
+            Admission::Replay(original) => {
+                return self.reconcile(key, original, admission).await;
+            }
             Admission::Original(head) => head,
         };
         if value.state != target {
@@ -156,6 +160,32 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         *value = pending;
         *pending_key = None;
         Ok(result)
+    }
+
+    async fn reconcile(
+        &self,
+        key: IdempotencyKey,
+        outcome: MutationOutcome,
+        admission: MutexGuard<'_, (MachineObservation, Option<IdempotencyKey>)>,
+    ) -> Result<MutationOutcome, ProviderError> {
+        if admission.1 != Some(key) {
+            return Ok(outcome);
+        }
+        drop(admission);
+        // A retained terminal result proves that its atomic Machine publication
+        // committed, even when the original reply or observer was lost. Read it
+        // without holding admission, then join only that same pending key.
+        let published = self
+            .journal
+            .machine()
+            .await
+            .map_err(|_| ProviderError::Indeterminate(key))?;
+        let (value, pending_key) = &mut *self.observation.lock().await;
+        if *pending_key == Some(key) {
+            *value = published;
+            *pending_key = None;
+        }
+        Ok(outcome)
     }
 }
 
@@ -401,23 +431,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         let outcome = self.journal.recover(key).await?;
-        if self.observation.lock().await.1 != Some(key) {
-            return Ok(outcome);
-        }
-        // A retained terminal result proves that its atomic Machine publication
-        // committed, even when the original reply or observer was lost. Read it
-        // without holding admission, then join only that same pending key.
-        let published = self
-            .journal
-            .machine()
+        self.reconcile(key, outcome, self.observation.lock().await)
             .await
-            .map_err(|_| ProviderError::Indeterminate(key))?;
-        let (value, pending_key) = &mut *self.observation.lock().await;
-        if *pending_key == Some(key) {
-            *value = published;
-            *pending_key = None;
-        }
-        Ok(outcome)
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         let operation = OperationId(key.0);
