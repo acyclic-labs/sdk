@@ -290,9 +290,15 @@ impl HostWorkspace {
         .map_err(storage)?;
         drop(state);
         let child_owner: Arc<dyn ViewOwner> = Arc::new(AgentOwner(child.clone()));
+        let authority = self
+            .workspace
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+            .for_scope(&signed)?;
         let (workspace, mounts) = self
             .workspace
-            .bound_task_view(view, &project, scratch, &*child_owner, &signed)
+            .bound_task_view(view, &project, scratch, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {

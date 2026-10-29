@@ -177,18 +177,13 @@ impl LocalWorkspace {
         Ok(owned)
     }
     /// The mounts of a view of `project` with `scratch` bound beside it, under
-    /// the already signed workload `signed` that grants both.
+    /// the original admitted workload that grants both.
     pub(super) async fn bound_mounts(
         &self,
         project: &VolumeRef,
         scratch: VolumeRef,
-        signed: &Scope,
+        authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<Mounts>> {
-        let authority = self
-            .mount_authority
-            .as_ref()
-            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
-            .for_scope(signed)?;
         // Bind auxiliary volumes outside the sparse projection. Linux's
         // elevated mount helper cannot traverse an owner-only FUSE parent.
         let binding = blake3::hash(project.storage_name(&mut None)?.as_bytes())
@@ -209,7 +204,7 @@ impl LocalWorkspace {
             &self.store,
             &root,
             &mut mounts,
-            &authority,
+            authority,
             &self.task_view_admission,
         )
         .await?;

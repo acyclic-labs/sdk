@@ -23,7 +23,7 @@ impl LocalWorkspace {
         project: &VolumeRef,
         scratch: VolumeRef,
         owner: &dyn super::owner::ViewOwner,
-        signed: &Scope,
+        authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
         let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
         let key = project.storage_name(&mut None)?;
@@ -34,12 +34,12 @@ impl LocalWorkspace {
         {
             mounts
         } else {
-            let mounts = self.bound_mounts(project, scratch, signed).await?;
+            let mounts = self.bound_mounts(project, scratch, authority).await?;
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
         };
         let workspace = self
-            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), signed)
+            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), authority)
             .await?;
         Ok((workspace, mounts))
     }
@@ -123,7 +123,7 @@ impl LocalWorkspace {
         view: workspace::View,
         owner: &dyn super::owner::ViewOwner,
         mounts: Option<Arc<workspace::Mounts>>,
-        signed: &Scope,
+        authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
@@ -151,11 +151,7 @@ impl LocalWorkspace {
             identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
             filesystem: self.filesystem.clone(),
             store: self.store.clone(),
-            mount_authority: self
-                .mount_authority
-                .as_ref()
-                .map(|authority| authority.for_scope(signed))
-                .transpose()?,
+            mount_authority: Some(authority.clone()),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());

@@ -191,8 +191,12 @@ impl LocalHarness {
                 .ok_or_else(|| Error::Invalid("agent has no scratch volume".into()))?;
             let view = workspace.spawned_project_view(project).await?;
             let owner = super::workspace::owner::AgentOwner(agent.path.clone());
+            let mount_authority = crate::filesystem::NativeMountAuthority::admitted(
+                verifier.clone(),
+                authority.scope.copy(&mut None)?,
+            );
             let (workspace, _) = workspace
-                .bound_task_view(view, project, scratch, &owner, &authority.scope)
+                .bound_task_view(view, project, scratch, &owner, &mount_authority)
                 .await?;
             let (tools, writer) = workspace
                 .executor(
