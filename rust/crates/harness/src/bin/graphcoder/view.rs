@@ -458,7 +458,7 @@ pub async fn run(
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
     let mut diff_open = false;
     let mut diff_panel: Option<diff::DiffPanel> = None;
-    let mut diff_query = None;
+    let mut diff_query = std::pin::pin!(None);
     let mut diff_credit = 0;
     // The message id and text of the prompt the host last refused.
     let mut unsent: Option<(String, String)> = None;
@@ -539,16 +539,16 @@ pub async fn run(
         let credit = u32::try_from(page.saturating_sub(1).clamp(1, 128))?;
         if diff_open && diff_credit != credit {
             diff_credit = credit;
-            diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
+            diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
         }
         tokio::select! {
             result = async {
-                match diff_query.as_mut() {
+                match diff_query.as_mut().as_pin_mut() {
                     Some(query) => query.await,
                     None => std::future::pending().await,
                 }
             } => {
-                diff_query = None;
+                diff_query.set(None);
                 match result {
                     Ok(panel) => {
                         diff_panel = Some(panel);
@@ -573,7 +573,7 @@ pub async fn run(
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
                 if diff_open && settled {
-                    diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
+                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
                 }
                 // A settled turn clears the output and the streamed answer.
                 if view.reply != events.reply() {
@@ -637,7 +637,7 @@ pub async fn run(
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Shortcuts })) => {
                                         diff_open = false;
                                         diff_panel = None;
-                                        diff_query = None;
+                                        diff_query.set(None);
                                         overlay = Some(("Help", View::help(&catalog, &input)));
                                         overlay_top = 0;
                                         continue;
@@ -646,7 +646,7 @@ pub async fn run(
                                         overlay = None;
                                         diff_open = true;
                                         diff_credit = credit;
-                                        diff_query = Some(diff::query(Arc::clone(&conversation), credit, None));
+                                        diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
                                         overlay_top = 0;
                                         continue;
                                     }
@@ -706,7 +706,7 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if diff_open => {
                                 diff_open = false;
                                 diff_panel = None;
-                                diff_query = None;
+                                diff_query.set(None);
                             }
                             InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
                                 view.prompt = None;
@@ -728,7 +728,7 @@ pub async fn run(
                                 if cursor.is_some()
                                     || rows > 0 && diff_panel.as_ref().is_some_and(|panel| panel.continued)
                                 {
-                                    diff_query = Some(diff::query(Arc::clone(&conversation), credit, cursor));
+                                    diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, cursor)));
                                 }
                             }
                             InputEffect::Scroll(_) if diff_open => {}
