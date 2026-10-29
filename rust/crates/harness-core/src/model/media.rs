@@ -105,7 +105,7 @@ impl NativeConfigurationBinding {
         let _bytes;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _bytes = io.encode(self, io.remaining()?.bytes_encoded, false)?;
+            _bytes = io.encode(self, Some(io.remaining()?.bytes_encoded), false)?;
             _hold = io.guard_owned(_bytes.len() as u64)?;
         }
         self.configuration.validate()?;
@@ -121,7 +121,7 @@ impl NativeConfigurationBinding {
                     admission.selected(),
                     admission.configurations(),
                 ),
-                io.remaining()?.bytes_encoded,
+                Some(io.remaining()?.bytes_encoded),
                 false,
             )?;
             _hold = io.guard_bytes(&bytes)?;
