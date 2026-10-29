@@ -1,6 +1,6 @@
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
     if limit == 0 {
-        Err(StreamError::LimitExceeded)
+        Err(StreamError::InvalidArgument)
     } else {
         Ok(())
     }
