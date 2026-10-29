@@ -677,6 +677,35 @@ where
         intent: &IntentId,
         text: &str,
     ) -> Result<FileRef, Error> {
+        self.staged_input(agent, kind, by, intent, Some(text))
+            .await?
+            .ok_or(Error::Record("a staged input is missing its file"))
+    }
+
+    /// The text [`Self::stage_text`] already staged for this input, if any:
+    /// a replay answers from it, never from the sender's current text.
+    ///
+    /// # Errors
+    /// As [`Self::stage_text`].
+    pub async fn staged_text(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+    ) -> Result<Option<FileRef>, Error> {
+        self.staged_input(agent, kind, by, intent, None).await
+    }
+
+    /// Stages `text` once, or with `None` only observes what was staged.
+    async fn staged_input(
+        &self,
+        agent: &AgentPath,
+        kind: &str,
+        by: &Sender,
+        intent: &IntentId,
+        text: Option<&str>,
+    ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
@@ -701,6 +730,14 @@ where
             None,
         )
         .map_err(turn)?;
+        let Some(text) = text else {
+            let (staged, _) = publisher
+                .observe_staged_once(operation, self.maximum_bytes, ContentAccess::default())
+                .map_err(turn)?
+                .await
+                .map_err(turn)?;
+            return Ok(staged);
+        };
         let path = format!("inputs/{operation}.txt");
         let staged = publisher
             .stage_once(
@@ -714,7 +751,7 @@ where
             .map_err(turn)?
             .await
             .map_err(turn)?;
-        Ok(staged.0)
+        Ok(Some(staged.0))
     }
 
     /// Verifies original scope identity, audience, lifetime and attenuation

@@ -94,7 +94,7 @@ impl crate::hosting::Platform for LocalUser {
     fn attachments<'a>(
         &'a self,
         key: &'a [u8],
-        text: &'a str,
+        text: Option<&'a str>,
     ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
         Box::pin(async move {
             self.0

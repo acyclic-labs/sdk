@@ -5,7 +5,7 @@ use super::super::LocalAgents;
 use super::{ScriptedModelProvider, text, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
-    agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord, TurnInput},
+    agent::{AgentPath, AgentRecord, ConversationEntry, Reply, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
@@ -631,12 +631,18 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     let client = conversation(&harness).await?;
     let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
     // A capture for one message replays its pinned manifest exactly.
-    let first = harness.prompt_attachments(b"direct", prompt).await?;
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    let first = harness.prompt_attachments(b"direct", Some(prompt)).await?;
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     let inbox = client.send("mention", prompt).await?;
     let entries = settled(&agents, &root).await?;
     // Later publications on the private volume leave a replay unchanged.
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let TurnInput::Message {
         attachments: Some(manifest),
@@ -696,11 +702,14 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     // manifest, so it still matches the delivered message exactly.
     std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
     std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
-    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    assert_eq!(
+        harness.prompt_attachments(b"direct", Some(prompt)).await?,
+        first
+    );
     assert_eq!(client.send("mention", prompt).await?, inbox);
     // A new message sees the files as they are now.
     let fresh = harness
-        .prompt_attachments(b"fresh", "inspect @mention.txt")
+        .prompt_attachments(b"fresh", Some("inspect @mention.txt"))
         .await?
         .expect("a manifest");
     let fresh = listed(&harness, &fresh).await?;
@@ -708,6 +717,48 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
         b"CHANGED\n"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is_gone() -> Result<()>
+{
+    let (_directory, harness, _provider) = checkout_with(&[
+        (
+            ".claude/commands/marker.md".into(),
+            b"MARKER $ARGUMENTS with @note.txt
+"
+            .to_vec(),
+        ),
+        (
+            "note.txt".into(),
+            b"NOTE
+"
+            .to_vec(),
+        ),
+    ])
+    .await?;
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let inbox = client.send("marker", "/marker now").await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    // The command, the skill catalog and the mentioned file are all gone.
+    std::fs::remove_dir_all(checkout.join(".claude")).map_err(agent)?;
+    std::fs::remove_file(checkout.join("note.txt")).map_err(agent)?;
+    // Negative control: a new delivery reads the project as it is now.
+    assert!(client.send("fresh", "/marker now").await.is_err());
+    // The replay is the first delivery, answered from its committed record.
+    assert_eq!(client.send("marker", "/marker now").await?, inbox);
+    let Reply::Answered {
+        entry: replayed, ..
+    } = client.reply("marker", inbox).await?
+    else {
+        return Err(Error::Conflict("the replay lost its saved answer".into()));
+    };
+    assert_eq!(replayed, entry);
     Ok(())
 }
 
