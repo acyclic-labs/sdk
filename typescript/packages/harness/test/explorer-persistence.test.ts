@@ -1,4 +1,4 @@
-import { beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import "fake-indexeddb/auto";
 import { CredentialCache, CredentialSnapshot } from "../../auth/src/credential.js";
 import { WasmExplorer, WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -114,4 +114,46 @@ test("settled unsupported source deletes persisted bytes instead of preserving t
     explorer.save();
     expect(await saved(db, key)).toBeUndefined();
   } finally { explorer?.dispose(); stream.free(); db.close(); }
+});
+
+test("render disposal retires scheduling before returning to the frame handler", async () => {
+  const rendered = deferred<void>();
+  const stream = WasmStream.connect("https://localhost.invalid", () => "synthetic-raw");
+  let explorer: AgentExplorer | undefined;
+  try {
+    explorer = await AgentExplorer.open(stream, {
+      render(_, current) {
+        current.dispose();
+        rendered.resolve();
+      },
+    });
+    await rendered.promise;
+    const timers = spyOn(globalThis, "setTimeout");
+    try {
+      explorer.schedule();
+      explorer.schedule();
+      explorer.save();
+      explorer.dispose();
+      expect(timers).not.toHaveBeenCalled();
+    } finally { timers.mockRestore(); }
+  } finally { explorer?.dispose(); stream.free(); }
+});
+
+test("a failed persistence transaction still releases the reader", async () => {
+  const stream = new WasmStream();
+  const explorer = await AgentExplorer.open(stream, { persist: crypto.randomUUID(), render() {} });
+  const transaction = IDBDatabase.prototype.transaction;
+  const transactions = spyOn(IDBDatabase.prototype, "transaction").mockImplementation(function (
+    this: IDBDatabase, stores: string | string[], mode?: IDBTransactionMode, options?: IDBTransactionOptions,
+  ) {
+    this.close();
+    return transaction.call(this, stores, mode, options);
+  });
+  try {
+    expect(() => explorer.dispose()).toThrow();
+    // The actual WASM owner is gone even though IndexedDB refused the write.
+    expect(() => explorer.health()).toThrow();
+    explorer.dispose();
+    explorer.schedule();
+  } finally { transactions.mockRestore(); explorer.dispose(); stream.free(); }
 });
