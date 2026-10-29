@@ -179,6 +179,7 @@
   },
   "patchedDependencies": {
     "@napi-rs/cli@3.10.9": "patches/napi-rs-cli-3.10.9.patch",
+    "@connectrpc/connect@2.2.0": "patches/connect-2.2.0.patch",
   },
   "packages": {
     "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],

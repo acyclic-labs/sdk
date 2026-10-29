@@ -20,6 +20,7 @@
     "bun.lock",
     "compatibility",
     "package.json",
+    "patches/connect-2.2.0.patch",
     "patches/napi-rs-cli-3.10.9.patch",
     "rust-toolchain.toml",
     "rust/crates/auth",

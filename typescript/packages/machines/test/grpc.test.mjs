@@ -2,13 +2,27 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createSecureServer } from "node:http2";
 import { once } from "node:events";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { createHook } from "node:async_hooks";
 import { create } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createMachinesGrpcClient, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
+
+// Real RPC cancellation must release its deadline even when the consumer stops
+// before EOF. A live referenced timer would otherwise keep the process alive.
+const timers = new Map();
+const timerHook = createHook({
+  init(id, type, _trigger, resource) { if (type === "Timeout") timers.set(id, resource); },
+  destroy(id) { timers.delete(id); },
+}).enable();
+after(async () => {
+  await new Promise(resolve => setImmediate(resolve));
+  timerHook.disable();
+  assert.equal([...timers.values()].filter(timer => timer.hasRef()).length, 0, "RPC completion retained deadline timers");
+});
 
 const caCertificate = readFileSync(new URL("./fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("./fixtures/server-key.pem", import.meta.url), "utf8");
