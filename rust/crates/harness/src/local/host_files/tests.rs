@@ -48,19 +48,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
+    let mut serving = Box::pin(serve(Arc::clone(&local)));
+    // Endpoint publication and request-watch registration precede its first
+    // suspension, just as in the native child-process fixture.
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let owner = tokio::spawn(serving);
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !descriptor.is_file() {
-            assert!(
-                !owner.is_finished(),
-                "workspace owner stopped before readiness"
-            );
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(storage)?;
+    assert!(descriptor.is_file());
     assert!(
         serve(Arc::clone(&local)).await.is_err(),
         "a second workspace owner must not dispatch the same requests"
@@ -223,19 +217,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while std::fs::read_dir(&requests)
+    projection_settled(&requests, RecursiveMode::NonRecursive, || {
+        assert!(!owner.is_finished(), "invalid request stopped the owner");
+        Ok(std::fs::read_dir(&requests)
             .map_err(storage)?
             .next()
-            .is_some()
-        {
-            assert!(!owner.is_finished(), "invalid request stopped the owner");
-            tokio::task::yield_now().await;
-        }
-        Ok::<_, Error>(())
+            .is_none())
     })
-    .await
-    .map_err(storage)??;
+    .await?;
     assert!(
         !owner.is_finished(),
         "invalid writable projections must not stop the owner"
@@ -253,26 +242,29 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Every read reply is dropped from its agent's latest status.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let mut pending = 0;
-            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if let Some((_, path)) = latest(&entry.map_err(storage)?.path())? {
-                    // A status superseded while read is counted as pending.
-                    pending += std::fs::read(path).ok().map_or(1, |bytes| {
-                        serde_json::from_slice::<Status>(&bytes)
-                            .map_or(1, |status| status.replies.len())
-                    });
+    // Every key was created by the completed requests above. Arm their
+    // watches before checking whether the owner has published withdrawals.
+    projection_settled(&statuses, RecursiveMode::Recursive, || {
+        assert!(
+            !owner.is_finished(),
+            "owner stopped before reply withdrawal"
+        );
+        for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+            if let Some((_, path)) = latest(&entry.map_err(storage)?.path())? {
+                // A status superseded while read is still pending; its
+                // replacement publication already has an armed notification.
+                let Ok(bytes) = std::fs::read(path) else {
+                    return Ok(false);
+                };
+                let status: Status = serde_json::from_slice(&bytes).map_err(storage)?;
+                if !status.replies.is_empty() {
+                    return Ok(false);
                 }
             }
-            if pending == 0 {
-                return Ok::<_, Error>(());
-            }
-            tokio::task::yield_now().await;
         }
+        Ok(true)
     })
-    .await
-    .map_err(storage)??;
+    .await?;
     // Every registration retired, and with the last of each key its watch.
     let directory = std::fs::canonicalize(checkout.path())
         .map_err(storage)?
@@ -296,6 +288,33 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .disconnect()
         .await?;
     Ok(())
+}
+
+/// Observes the real projection notifications, arming before the first
+/// read and retaining an early notification while that read is in progress.
+async fn projection_settled(
+    directory: &Path,
+    recursive: RecursiveMode,
+    mut settled: impl FnMut() -> Result<bool>,
+) -> Result<()> {
+    let notices = Arc::new(Notices::new(directory.to_path_buf()));
+    let notified = Arc::clone(&notices);
+    let mut watcher =
+        notify::recommended_watcher(move |event| notified.note(&event)).map_err(storage)?;
+    watcher.watch(directory, recursive).map_err(storage)?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            // Drain the names with the same adapter as the owner; one Notify
+            // permit retains any event racing the state observation.
+            notices.take();
+            if settled()? {
+                return Ok(());
+            }
+            notices.changed.notified().await;
+        }
+    })
+    .await
+    .map_err(storage)?
 }
 
 #[test]
