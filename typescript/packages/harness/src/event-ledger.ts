@@ -47,7 +47,7 @@ export class EventStreamLedger implements StreamLedger {
   objectLength(key: Uint8Array) { return this.objects.length(key); }
   objectRead(key: Uint8Array, maximum: bigint) { return this.objects.read(key, maximum); }
   objectPut(keys: Uint8Array[], values: Uint8Array[]) { return this.objects.put(keys, values); }
-  pending(): number { return this.wakes.pending().length; }
+  pending(): number { return this.wakes.pendingCount(); }
 
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
     // A wait parks until later writes apply, so it never holds the write order.

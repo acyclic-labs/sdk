@@ -98,10 +98,7 @@ pub(crate) async fn git_apply_patch(
         ));
     }
     let patch_path = workspace_path_argument(root, patch_path)?;
-    workspace
-        .read(&patch_path, 16 * 1024 * 1024)
-        .await
-        .map(Some)
+    workspace.read(&patch_path, None).await.map(Some)
 }
 
 /// Captures the lazy or exact tree required by the command.

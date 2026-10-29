@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 // Content-addressed cache for `build-wasm.mjs PACKAGE`: one build per input
 // tree, shared by every consumer on the build box.
 //
@@ -18,7 +19,6 @@
 // directory, so readers never see a partial entry. DIR defaults to
 // $ACYCLIC_WASM_CACHE, else /mnt/bb/artifacts/wasm when /mnt/bb/artifacts
 // exists; with neither, this is exactly build-wasm.mjs.
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -44,7 +44,7 @@ export function restamp(path, bytes, head) {
 }
 
 const capture = (command, args) => {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 });
+  const result = captureCommand(command, args, { cwd: root, encoding: "utf8", windowsHide: true, });
   if (result.error || result.status !== 0) throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.error}`);
   return result.stdout;
 };
@@ -166,7 +166,7 @@ export function fetchOrBuild(name, cache) {
   console.log(!cache ? `WASM_CACHE_NONE package=${name}`
     : key ? `WASM_CACHE_MISS package=${name} key=${key}`
     : `WASM_CACHE_BYPASS package=${name}: ${overrides().length ? `build overrides ${overrides().join(",")}` : "input tree is not clean"}`);
-  const result = spawnSync(process.execPath, [join(root, "scripts/build-wasm.mjs"), name], { cwd: root, stdio: "inherit", windowsHide: true });
+  const result = captureCommand(process.execPath, [join(root, "scripts/build-wasm.mjs"), name], { cwd: root, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
   if (!key) return;

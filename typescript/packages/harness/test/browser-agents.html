@@ -52,7 +52,7 @@ try {
   await agents.pause(a, true);
   assert((await agents.send(a, "m2", "later")).kind === "committed", "send to a paused agent failed");
   assert((await conversation(a)()).length === 2, "paused agent ran a turn");
-  agents.free();
+  await fixture.close(agents);
   agents = await fixture.open();
   assert((await conversation(a)()).length === 2, "reopened paused agent ran a turn");
   await agents.pause(a, false);
@@ -72,7 +72,7 @@ try {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
 } finally {
-  agents?.free();
+  await fixture?.close(agents);
   fixture?.free();
 }
 </script>

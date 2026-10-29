@@ -18,7 +18,7 @@ proptest! {
         let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
         let expected = names.iter().map(|name| {
             crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
-                name.as_bytes().to_vec(), config.limits.maximum_component_bytes)
+                name.as_bytes().to_vec())
                 .map(|name| name.case_fold_key())
         }).collect::<Result<std::collections::BTreeSet<_>, _>>()?.len() == names.len();
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
@@ -36,11 +36,11 @@ proptest! {
             let keys = checkout.folded_collision_keys(entries, &mut accounting, &cancellation).await?;
             for name in &names {
                 let logical = crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
-                    name.as_bytes().to_vec(), config.limits.maximum_component_bytes)?;
+                    name.as_bytes().to_vec())?;
                 let key = logical.case_fold_key();
                 let expected = names.iter().filter(|other| {
                     crate::kernel::LogicalName::new(crate::kernel::NameEncoding::Utf8,
-                        other.as_bytes().to_vec(), config.limits.maximum_component_bytes)
+                        other.as_bytes().to_vec())
                         .is_ok_and(|name| name.case_fold_key() == key)
                 }).count() > 1;
                 assert_eq!(crate::facade::ambiguous_folded_name(&keys.value, &logical, &mut accounting)?, expected);

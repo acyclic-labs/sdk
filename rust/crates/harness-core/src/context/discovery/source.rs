@@ -40,7 +40,9 @@ pub struct DiscoveryPage<R, C> {
     pub next: Option<C>,
 }
 
-/// Storage adapters supply pages; ordering, pinning and quotas belong to discovery.
+/// Storage adapters supply advancing pages against the same immutable revision.
+/// Opaque cursors must progress, including across empty source/authored phases;
+/// ordering, revision validation and optional quotas belong to discovery.
 #[doc(hidden)]
 pub trait DiscoverySource {
     type Revision: Clone + Eq;
@@ -70,7 +72,7 @@ pub trait SkillReader: DiscoverySource {
         &'a mut self,
         path: &'a str,
         revision: &'a Self::Revision,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>>;
 }
 
@@ -82,7 +84,11 @@ impl DiscoveryWork {
         let directories = self.directories.checked_add(used.directories);
         match (entries, directories) {
             (Some(entries), Some(directories))
-                if entries <= self.limits.entries && directories <= self.limits.directories =>
+                if self.limits.entries.is_none_or(|maximum| entries <= maximum)
+                    && self
+                        .limits
+                        .directories
+                        .is_none_or(|maximum| directories <= maximum) =>
             {
                 self.entries = entries;
                 self.directories = directories;
@@ -117,29 +123,30 @@ impl DiscoveryWork {
             .directories
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("discovery work overflow".into()))?;
-        if self.directories > self.limits.directories {
+        if self
+            .limits
+            .directories
+            .is_some_and(|maximum| self.directories > maximum)
+        {
             return Err(Error::Invalid("discovery directory bound exceeded".into()));
         }
         let mut pinned = revision.cloned();
         let mut entries: Vec<DiscoveryEntry> = Vec::new();
         let mut cursor = None;
-        let mut pages = 0u32;
         loop {
-            let remaining = self
-                .limits
-                .entries
-                .checked_sub(self.entries)
-                .filter(|n| *n > 0)
-                .ok_or_else(|| Error::Invalid("discovery entry bound exceeded".into()))?;
-            pages = pages
-                .checked_add(1)
-                .filter(|p| *p <= self.limits.entries)
-                .ok_or_else(|| Error::Invalid("discovery page bound exceeded".into()))?;
+            let maximum = match self.limits.entries {
+                Some(maximum) => maximum
+                    .checked_sub(self.entries)
+                    .filter(|remaining| *remaining > 0)
+                    .ok_or_else(|| Error::Invalid("discovery entry bound exceeded".into()))?
+                    .min(128) as u32,
+                None => 128,
+            };
             let page = source
-                .page(directory, pinned.as_ref(), cursor, remaining.min(128))
+                .page(directory, pinned.as_ref(), cursor, maximum)
                 .await?;
             if pinned.as_ref().is_some_and(|r| r != &page.revision)
-                || page.scanned > remaining.min(128)
+                || page.scanned > maximum
                 || page.entries.len() > page.scanned as usize
             {
                 return Err(Error::Storage(
@@ -155,7 +162,10 @@ impl DiscoveryWork {
                 }
             }
             pinned = Some(page.revision);
-            self.entries += page.scanned;
+            self.entries = self
+                .entries
+                .checked_add(u64::from(page.scanned))
+                .ok_or_else(|| Error::Invalid("discovery work overflow".into()))?;
             entries.extend(page.entries);
             cursor = page.next;
             if cursor.is_none() {
@@ -230,7 +240,11 @@ pub async fn capture_instructions<S: InstructionReader>(
             ));
         }
     }
-    if names.len() > work.limits.entries as usize {
+    if work
+        .limits
+        .entries
+        .is_some_and(|maximum| names.len() as u64 > maximum)
+    {
         return Err(Error::Invalid(
             "discovery declarations exceed work bounds".into(),
         ));
@@ -253,7 +267,16 @@ pub async fn capture_instructions<S: InstructionReader>(
                 }
                 result.push(
                     source
-                        .instruction(&child(&directory, name), &r, work.limits.instruction_bytes)
+                        .instruction(
+                            &child(&directory, name),
+                            &r,
+                            // The owner reader's numeric file representation is
+                            // the only default whole-file bound. A workflow can
+                            // attenuate it explicitly with instruction_bytes.
+                            work.limits
+                                .instruction_bytes
+                                .unwrap_or(crate::conversation::MAX_EXACT_JS_INTEGER),
+                        )
                         .await?,
                 );
             }
@@ -303,16 +326,34 @@ pub async fn discover_skills_from<S: SkillReader>(
         if entry.kind != DiscoveryKind::File {
             return Err(Error::Invalid("skill entry is not a file".into()));
         }
-        let (prefix, pinned) = source
-            .skill_prefix(
-                &child(&directory, name),
-                &revision,
-                work.limits.header_bytes,
-            )
-            .await?;
-        if prefix.len() > work.limits.header_bytes as usize {
-            return Err(Error::Storage("prefix reader exceeded bound".into()));
-        }
+        let path = child(&directory, name);
+        let mut maximum = work.limits.header_bytes.unwrap_or(16_384);
+        let mut selected = None;
+        let (prefix, pinned) = loop {
+            let (prefix, pinned) = source.skill_prefix(&path, &revision, maximum).await?;
+            if prefix.len() as u64 > maximum {
+                return Err(Error::Storage("prefix reader exceeded bound".into()));
+            }
+            if selected
+                .as_ref()
+                .is_some_and(|previous| previous != &pinned)
+            {
+                return Err(Error::Storage(
+                    "prefix reader changed its pinned source".into(),
+                ));
+            }
+            if frontmatter_end(&prefix).is_ok()
+                || work.limits.header_bytes.is_some()
+                || (prefix.len() as u64) < maximum
+                || !(prefix.starts_with(b"---\n") || prefix.starts_with(b"---\r\n"))
+            {
+                break (prefix, pinned);
+            }
+            selected = Some(pinned);
+            maximum = maximum
+                .checked_mul(2)
+                .ok_or_else(|| Error::Invalid("frontmatter length overflows".into()))?;
+        };
         result.push(parse_skill_metadata(&prefix, pinned)?);
     }
     Ok(result)
@@ -397,7 +438,7 @@ impl InstructionReader for VolumeDiscovery<'_> {
             };
             let (file, bytes) = source.read(self.reader, maximum).await?;
             ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             }
             .validate_instruction(&bytes)?;
@@ -410,7 +451,7 @@ impl SkillReader for VolumeDiscovery<'_> {
         &'a mut self,
         path: &'a str,
         revision: &'a GenerationRef,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
         Box::pin(async move {
             let prefix = self
@@ -420,7 +461,7 @@ impl SkillReader for VolumeDiscovery<'_> {
                     &self.root.directory,
                     path,
                     revision,
-                    u64::from(maximum),
+                    maximum,
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?;

@@ -9,19 +9,19 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
+        let unswept = self.collection.unswept().await;
         let mut spill = self.spill_io.write().await;
-        let (objects, proven_at) = match scope {
-            PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
-            PublicationScope::Everything => (&[][..], self.collection.sweeps()),
-        };
         let unswept = self
             .collection
-            .admit(
-                objects,
+            .admit_held(
+                unswept,
+                &self.inner,
+                scope,
                 |id| self.index().objects.contains_key(id),
-                proven_at,
+                &mut work.accounting(),
             )
-            .await?;
+            .await
+            .map_err(crate::async_storage::object_error)?;
         let (_allocation, targets) = {
             let index = self.index();
             let capacity = match scope {

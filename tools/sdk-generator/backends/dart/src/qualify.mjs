@@ -1,9 +1,8 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { gunzipSync } from "node:zlib";
-import { tarPayload } from "../../../../../scripts/archive-utils.mjs";
+import { readArchivePayload } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -22,9 +21,8 @@ const negatives = { InvalidActorBytes: "List<int>?", InvalidOptionalInteger: "In
 const marker = "PASS: installed Dart descriptors, bytes, unsigned bits, optional presence, oneof and gRPC shapes";
 const packageName = "acyclic_sdk_transport-0.2.0-alpha.1.tar.gz";
 
-function archivePayload(bytes) {
-  if (bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
-  return tarPayload(gunzipSync(bytes, { maxOutputLength: 256 * 1024 * 1024 }), canonical);
+async function archivePayload(bytes) {
+  return (await readArchivePayload(bytes, { canonical })).payload;
 }
 
 // This adapter enumerates maintained reflection variables and message factories;
@@ -60,8 +58,8 @@ function reflection(payload) {
 }
 
 // Injected commands/pins allow offline staging controls; the CLI uses real tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
-  if (process.platform !== "win32" && command === spawnSync) throw new Error("installed Dart qualification currently requires the admitted Windows runtime");
+export async function qualify(args, { command = captureCommand, toolchain = pinned } = {}) {
+  if (process.platform !== "win32" && command === captureCommand) throw new Error("installed Dart qualification currently requires the admitted Windows runtime");
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["dart-home"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, archiver, cache, dirname(directory)]);
@@ -88,7 +86,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     if (!/^[a-z_][a-z0-9_]*$/.test(pin.name) || pin.name === "acyclic_sdk_transport" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:[+-][a-zA-Z0-9.+-]+)?$/.test(pin.version)) throw new Error("unsafe dependency coordinate");
     const filename = `${pin.name}-${pin.version}.tar.gz`;
     if (archives.has(filename)) throw new Error("duplicate dependency archive");
-    const bytes = readInput(cache, filename, pin.sha256), contents = archivePayload(bytes);
+    const bytes = readInput(cache, filename, pin.sha256), contents = await archivePayload(bytes);
     if (!contents.has("pubspec.yaml")) throw new Error("dependency lacks package metadata");
     archives.set(filename, bytes); dependencies.push({ pin, filename, contents });
   }
@@ -101,10 +99,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   Object.assign(env, { HOME: join(output, "home"), USERPROFILE: join(output, "home"),
     APPDATA: join(output, "home/appdata"), LOCALAPPDATA: join(output, "home/local"), XDG_CONFIG_HOME: join(output, "home/config"),
     PUB_CACHE: join(output, "cache"), DART_SUPPRESS_ANALYTICS: "true", SDK_QUALIFIED_PACKAGE: join(output, "sdk") });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
-  const runtimeVersion = execute(dart, ["--version"], directory), versionText = (runtimeVersion.stdout ?? "") + (runtimeVersion.stderr ?? "");
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000 });
+  const runtimeVersion = await execute(dart, ["--version"], directory), versionText = (runtimeVersion.stdout ?? "") + (runtimeVersion.stderr ?? "");
   if (runtimeVersion.error || runtimeVersion.status !== 0 || !versionText.startsWith(`Dart SDK version: ${toolchain.dart_sdk_version} (stable)`) || !versionText.includes('"windows_x64"')) throw new Error("Dart runtime version differs from pin");
-  const tarVersion = execute(archiver, ["--version"], directory);
+  const tarVersion = await execute(archiver, ["--version"], directory);
   if (tarVersion.error || tarVersion.status !== 0 || tarVersion.stdout.trim() !== archiverPin.version) throw new Error("archiver version differs from pin");
   mkdirSync(output);
   const put = (name, bytes) => { const path = join(output, name); mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, bytes, { flag: "wx" }); return path; };
@@ -114,27 +112,27 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   put("project/reflection.dart", adapter);
   mkdirSync(env.HOME, { recursive: true });
   const logs = [];
-  const run = (name, exe, argv, cwd = output, negative = false) => {
-    const result = execute(exe, argv, cwd), text = (result.stdout ?? "") + (result.stderr ?? "");
+  const run = async (name, exe, argv, cwd = output, negative = false) => {
+    const result = await execute(exe, argv, cwd), text = (result.stdout ?? "") + (result.stderr ?? "");
     put(`${name}.log`, text); logs.push(`${name}.log`);
     if (result.error || (negative ? result.status === 0 || result.status === null : result.status !== 0)) throw new Error(`${name} failed: ${text}`);
     return text;
   };
   const built = join(output, "package", packageName); mkdirSync(dirname(built));
   const archiveOptions = ["--format", "ustar", "--options", "gzip:!timestamp", "--mtime", "@1767225600", "--uid", "0", "--gid", "0", "--uname", "root", "--gname", "root"];
-  run("build-package", archiver, [...archiveOptions, "-czf", built, "-C", join(output, "package-source"), ...[...payload.keys()].sort()]);
-  const archive = readFileSync(built), builtPayload = archivePayload(archive);
+  await run("build-package", archiver, [...archiveOptions, "-czf", built, "-C", join(output, "package-source"), ...[...payload.keys()].sort()]);
+  const archive = readFileSync(built), builtPayload = await archivePayload(archive);
   if (archive.readUInt32LE(4) !== 0 || JSON.stringify([...builtPayload.keys()].sort()) !== JSON.stringify([...payload.keys()].sort())) throw new Error("built archive metadata or inventory differs");
   for (const [name, bytes] of payload) if (sha256(builtPayload.get(name)) !== sha256(bytes)) throw new Error("built package payload differs");
   const installed = join(output, "sdk"); mkdirSync(installed);
-  run("install-sdk", archiver, ["-xzf", built, "-C", installed]); verifyInstalledPayload(installed, payload);
+  await run("install-sdk", archiver, ["-xzf", built, "-C", installed]); verifyInstalledPayload(installed, payload);
   for (const { pin, filename, contents } of dependencies) {
     const feed = put(`feed/${filename}`, archives.get(filename));
     const root = join(env.PUB_CACHE, "hosted/pub.dev", `${pin.name}-${pin.version}`); mkdirSync(root, { recursive: true });
-    run(`install-${pin.name}`, archiver, ["-xzf", feed, "-C", root]); verifyInstalledPayload(root, contents);
+    await run(`install-${pin.name}`, archiver, ["-xzf", feed, "-C", root]); verifyInstalledPayload(root, contents);
   }
   const project = join(output, "project");
-  run("resolve-offline", dart, ["pub", "get", "--offline", "--enforce-lockfile"], project);
+  await run("resolve-offline", dart, ["pub", "get", "--offline", "--enforce-lockfile"], project);
   if (sha256(readFileSync(join(project, "pubspec.lock"))) !== sha256(templates.get("pubspec.lock"))) throw new Error("consumer lock changed");
   const configPath = join(project, ".dart_tool/package_config.json"), config = JSON.parse(readFileSync(configPath));
   const roots = new Map([["acyclic_sdk_transport", installed], ["sdk_dart_consumer", project], ...dependencies.map(({ pin }) => [pin.name, join(env.PUB_CACHE, "hosted/pub.dev", `${pin.name}-${pin.version}`)])]);
@@ -144,12 +142,12 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
     if (seen.has(pkg.name) || !roots.has(pkg.name) || pkg.packageUri !== "lib/" || realpathSync(fileURLToPath(new URL(pkg.rootUri, pathToFileURL(configPath)))) !== realpathSync(roots.get(pkg.name))) throw new Error("resolved package provenance differs");
     seen.add(pkg.name);
   }
-  run("compile-positive", dart, ["compile", "kernel", "installed_consumer.dart", "-o", join(output, "consumer.dill")], project);
+  await run("compile-positive", dart, ["compile", "kernel", "installed_consumer.dart", "-o", join(output, "consumer.dill")], project);
   const descriptors = targets.map((name, index) => put(`authority/${index}.bin`, approved.inputs.get(approved.descriptors.get(name))));
-  const positive = run("positive", dart, [`--packages=${configPath}`, join(output, "consumer.dill"), ...descriptors], project);
+  const positive = await run("positive", dart, [`--packages=${configPath}`, join(output, "consumer.dill"), ...descriptors], project);
   if (!positive.split(/\r?\n/).includes(marker)) throw new Error("positive consumer did not report completed controls");
   for (const [name, type] of Object.entries(negatives)) {
-    const text = run(`negative-${name}`, dart, ["analyze", "--format", "machine", `${name}.dart`], project, true);
+    const text = await run(`negative-${name}`, dart, ["analyze", "--format", "machine", `${name}.dart`], project, true);
     const lines = text.trim().split(/\r?\n/);
     if (lines.length !== 1 || !lines[0].startsWith("ERROR|COMPILE_TIME_ERROR|ARGUMENT_TYPE_NOT_ASSIGNABLE|") || !lines[0].includes(`${name}.dart|2|`) || !lines[0].includes(`parameter type '${type}'`)) throw new Error(`${name} did not reject the intended assignment`);
   }
@@ -176,7 +174,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;
 }
 
-runCli(import.meta.url, values => {
-  const result = qualify(values);
+runCli(import.meta.url, async values => {
+  const result = await qualify(values);
   return { scope: result.scope, archive_sha256: result.archive_sha256, qualification: resolve(values.output, "qualification.json") };
 }, ["package", "authority", "dart-home", "archiver", "cache", "output"]);
