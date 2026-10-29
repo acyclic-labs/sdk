@@ -121,6 +121,9 @@ pub(crate) fn mutation_from_wire(
 }
 
 /// Validate a retained retry observation for a caller-owned transport adapter.
+///
+/// Callers must separately check that the returned `idempotency_key` matches
+/// the requested key before treating it as that retry's outcome.
 pub fn observation_from_wire(
     value: wire::IdempotencyObservation,
 ) -> Result<IdempotencyObservation, StreamError> {
