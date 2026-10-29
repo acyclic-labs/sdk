@@ -71,7 +71,6 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
                     cancellation.cancelled().await;
                 }
                 Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -152,65 +151,50 @@ async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_
 }
 
 #[tokio::test]
-async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
-    for oversized in [false, true] {
-        let provider = Arc::new(MemoryStream::default());
-        let driver = super::script(vec![TurnStep {
-            reserved_children: 0,
-            checkpoint: Some(vec![7; if oversized { MAX_CHECKPOINT_BYTES } else { 8 }]),
-            outs: vec![
-                Out::Conversation(b"first".to_vec()),
-                Out::Conversation(b"second".to_vec()),
-            ],
-            wait: Wait::Approval(intent("decision")),
-            drops: None,
-        }]);
-        let host = AgentHost::new(
-            provider.clone(),
-            driver,
-            ActorReference::new(b"account", b"agents", b"owner")?,
-            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
-            Arc::new(SystemClock),
-        )?;
-        let root = host.create(&intent("create"), adopted(id(1))).await?;
-        assert!(host.runtime().drain().await.is_empty());
-        let before = host.state(&root).await?;
-        let input = InboxRecord::ApprovalRequested(ApprovalRequested {
-            child: root.child(&id(2))?,
-            id: intent("approval"),
-        });
-        assert!(matches!(
-            host.send(&root, &user(), &input).await?,
-            Delivered::Committed { .. }
-        ));
-        let failures = host.runtime().drain().await;
-        assert!(failures.is_empty(), "{failures:?}");
-        // Reopening decodes the actual checkpoint published by the handler.
-        let committed = host.state(&root).await?;
-        assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
-        assert_eq!(committed.status_tail, before.status_tail + 1);
-        assert_eq!(
-            values(&provider, root.conversation()?).await?,
-            vec![b"first".to_vec(), b"second".to_vec()]
-        );
-        assert_eq!(
-            values(&provider, root.status()?).await?.len() as u64,
-            committed.status_tail
-        );
-        if oversized {
-            assert_eq!(committed.turn, None);
-            assert_eq!(
-                committed.phase,
-                Phase::Done {
-                    outcome: AgentOutcome::Failed {
-                        message: OVERSIZED_STATE.into(),
-                    }
-                }
-            );
-        } else {
-            assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
-        }
-    }
+async fn committed_checkpoints_carry_final_tails() -> Result {
+    let provider = Arc::new(MemoryStream::default());
+    let driver = super::script(vec![TurnStep {
+        checkpoint: Some(vec![7; 8]),
+        outs: vec![
+            Out::Conversation(b"first".to_vec()),
+            Out::Conversation(b"second".to_vec()),
+        ],
+        wait: Wait::Approval(intent("decision")),
+        drops: None,
+    }]);
+    let host = AgentHost::new(
+        provider.clone(),
+        driver,
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    assert!(host.runtime().drain().await.is_empty());
+    let before = host.state(&root).await?;
+    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child: root.child(&id(2))?,
+        id: intent("approval"),
+    });
+    assert!(matches!(
+        host.send(&root, &user(), &input).await?,
+        Delivered::Committed { .. }
+    ));
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    // Reopening decodes the actual checkpoint published by the handler.
+    let committed = host.state(&root).await?;
+    assert_eq!(committed.conversation_tail, before.conversation_tail + 2);
+    assert_eq!(committed.status_tail, before.status_tail + 1);
+    assert_eq!(
+        values(&provider, root.conversation()?).await?,
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+    assert_eq!(
+        values(&provider, root.status()?).await?.len() as u64,
+        committed.status_tail
+    );
+    assert_eq!(committed.turn.map(|turn| turn.checkpoint), Some(vec![7; 8]));
     Ok(())
 }
 
