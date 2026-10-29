@@ -229,9 +229,17 @@ impl Hub {
             // other watches share may hold records about this watch's names
             // from before it existed. Route them to the earlier interests
             // first, as a fresh instance would never have queued them.
-            self.check()
+            match self
+                .check()
                 .and_then(|()| self.drain_locked(&mut routes, &mut ready))
-                .and_then(|()| self.add_locked(&mut routes, watch, path, mask, interest))
+            {
+                Ok(()) => self.add_locked(&mut routes, watch, path, mask, interest),
+                Err(error) => {
+                    drop(routes);
+                    self.fail_all(&error);
+                    Err(error)
+                }
+            }
         };
         self.schedule_ready(ready);
         added
@@ -351,12 +359,19 @@ impl Hub {
     /// Bytes the kernel has queued.
     fn queued(&self) -> io::Result<usize> {
         let mut queued: libc::c_int = 0;
-        // SAFETY: FIONREAD writes one int, the queued byte count.
-        if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), libc::FIONREAD, &raw mut queued) } < 0
-        {
-            return Err(io::Error::last_os_error());
+        loop {
+            // SAFETY: FIONREAD writes one int, the queued byte count.
+            if unsafe { libc::ioctl(self.descriptor.as_raw_fd(), libc::FIONREAD, &raw mut queued) }
+                >= 0
+            {
+                return usize::try_from(queued)
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
         }
-        usize::try_from(queued).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))
     }
 
     /// Routes every record the kernel queued before this call, so a fence
@@ -364,7 +379,7 @@ impl Hub {
     /// router: the work is bounded by the queue at entry, however busy.
     pub(super) fn drain(&self) -> io::Result<()> {
         self.check()?;
-        let queued = self.queued()?;
+        let queued = self.queued().inspect_err(|error| self.fail_all(error))?;
         // The queue is FIFO and the router reads under the routing lock: once
         // this call has read `queued` bytes or found the queue empty, every
         // record queued at entry was routed by this call or before its batch.
@@ -401,7 +416,7 @@ impl Hub {
             self.route_batch(&mut routes, &mut ready)
         };
         self.schedule_ready(ready);
-        result
+        result.inspect_err(|error| self.fail_all(error))
     }
 
     /// Schedules the watches that became due. Every watch upgraded under the
@@ -547,8 +562,7 @@ impl Hub {
             let routed = self.drain_batch();
             #[cfg(test)]
             drop(paused);
-            if let Err(error) = routed {
-                self.fail_all(&error);
+            if routed.is_err() {
                 return;
             }
         }
@@ -837,6 +851,22 @@ mod tests {
         Ok(false)
     }
 
+    fn failed_queue_reads_retain_health(root: &Path) -> io::Result<()> {
+        let reads: [fn(&Hub) -> io::Result<()>; 2] =
+            [Hub::drain, |hub| hub.drain_batch().map(|_| ())];
+        for read in reads {
+            let mut hub = Hub::open().map_err(io::Error::from_raw_os_error)?;
+            // A real directory descriptor refuses both FIONREAD and byte
+            // reads. Neither foreground path may leave service health live.
+            hub.descriptor = std::fs::File::open(root)?.into();
+            let error = read(&hub).expect_err("broken queue source must refuse");
+            let retained = hub.check().expect_err("source failure must be retained");
+            assert_eq!(retained.raw_os_error(), error.raw_os_error());
+            assert!(retained.raw_os_error().is_some());
+        }
+        Ok(())
+    }
+
     #[test]
     fn fatal_router_loss_notifies_held_watches_and_refuses_future_admission()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -845,6 +875,7 @@ mod tests {
         }
 
         let root = tempfile::tempdir()?;
+        failed_queue_reads_retain_health(root.path())?;
         let mut work = crate::native_host::ordinary_work();
         let host = crate::native_host::HostRoot::open(root.path(), &mut work)?;
         let (lost, observed) = mpsc::channel();
