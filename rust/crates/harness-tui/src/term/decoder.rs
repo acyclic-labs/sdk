@@ -78,9 +78,13 @@ impl Decoder {
         Ok(())
     }
 
-    pub(crate) fn input_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
+    pub(crate) fn input_deadline(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<std::time::Instant> {
         if self.probe.pending_escape() {
-            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(30))
+            let escape = std::time::Instant::now() + std::time::Duration::from_millis(30);
+            Some(deadline.map_or(escape, |deadline| deadline.min(escape)))
         } else {
             deadline
         }

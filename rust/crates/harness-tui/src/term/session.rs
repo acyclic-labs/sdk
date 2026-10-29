@@ -142,15 +142,20 @@ impl Tty {
         lifecycle::resume(&self.state, RawTty::reapply)
     }
 
-    /// Read only classified events. Late probe replies remain in this decoder.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
+    /// Read classified events until input, owner close or an optional deadline.
+    /// Late probe replies remain in this decoder.
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
         let mut events = self.decoder.take_events();
         while events.is_empty() {
             let mut bytes = [0; 1024];
-            let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
+            let input_deadline = self.decoder.input_deadline(deadline);
+            let count = self.receive_input(&mut bytes, input_deadline)?;
+            if count == 0 && !input_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Err(io::ErrorKind::UnexpectedEof.into());
+            }
             self.decoder
                 .feed(bytes.get(..count).ok_or(io::ErrorKind::InvalidData)?)?;
-            if count == 0 || Instant::now() >= deadline {
+            if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 self.decoder.finish_input()?;
                 events = self.decoder.take_events();
                 break;
@@ -169,16 +174,10 @@ impl Tty {
         }
         Ok(output)
     }
-}
 
-impl ProbeIo for Tty {
-    fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
-        lifecycle::active(&self.state, |guard| guard.writer().send(bytes, deadline))
-    }
-
-    fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
+    fn receive_input(&mut self, bytes: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
         loop {
-            if Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 return Ok(0);
             }
             // Drain before observing state so a concurrent restore/resume or
@@ -196,6 +195,16 @@ impl ProbeIo for Tty {
                 result => return result,
             }
         }
+    }
+}
+
+impl ProbeIo for Tty {
+    fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()> {
+        lifecycle::active(&self.state, |guard| guard.writer().send(bytes, deadline))
+    }
+
+    fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
+        self.receive_input(bytes, Some(deadline))
     }
 
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
@@ -242,12 +251,12 @@ mod tests {
         let reader = std::thread::spawn(move || {
             started.send(()).map_err(io::Error::other)?;
             let mut bytes = [0; 8];
-            let count = tty.receive(&mut bytes, Instant::now() + Duration::from_secs(2))?;
+            let count = tty.receive_input(&mut bytes, None)?;
             Ok::<_, io::Error>((tty, bytes, count))
         });
         starting.recv().map_err(io::Error::other)?;
         // This must finish while the input read is pending. Retaining the
-        // state lock across the OS wait would deadlock until its deadline.
+        // state lock across the indefinite OS wait would prevent output.
         output.write_all(b"frame")?;
         master.write_all(b"x")?;
         let (mut tty, bytes, count) = reader
@@ -261,7 +270,7 @@ mod tests {
         let reader = std::thread::spawn(move || {
             started.send(()).map_err(io::Error::other)?;
             let mut bytes = [0; 32];
-            let count = tty.receive(&mut bytes, Instant::now() + Duration::from_secs(2))?;
+            let count = tty.receive_input(&mut bytes, None)?;
             Ok::<_, io::Error>((tty, bytes, count))
         });
         starting.recv().map_err(io::Error::other)?;
@@ -277,7 +286,7 @@ mod tests {
         let (started, starting) = std::sync::mpsc::sync_channel(0);
         let reader = std::thread::spawn(move || {
             started.send(()).map_err(io::Error::other)?;
-            tty.receive(&mut [0; 8], Instant::now() + Duration::from_secs(2))
+            tty.receive_input(&mut [0; 8], None)
         });
         starting.recv().map_err(io::Error::other)?;
         drop(output);
@@ -326,7 +335,7 @@ mod tests {
                         lifecycle::active(&tty.state, |guard| guard.writer().read(&mut [0; 8]))?;
                     assert_eq!(count, 1);
                 } else {
-                    let events = tty.read_events(deadline)?;
+                    let events = tty.read_events(Some(deadline))?;
                     assert_eq!(events.len(), 1);
                 }
                 draw()?;
@@ -360,7 +369,7 @@ mod tests {
         // signal callback can. No scheduling or timing assumptions are needed.
         let retained = Arc::clone(&old.state);
         let (mut old, output) = old.split();
-        let events = old.read_events(Instant::now())?;
+        let events = old.read_events(Some(Instant::now()))?;
         let typed: String = events
             .iter()
             .filter_map(|event| match event {
