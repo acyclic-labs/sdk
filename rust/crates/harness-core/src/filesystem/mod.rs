@@ -29,6 +29,7 @@ use std::{collections::BTreeMap, future::Future, sync::Arc};
 mod content_input;
 use content_input::ContentInput;
 mod content_publisher;
+mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
@@ -245,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let receipt_path =
                 content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
-            let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
+            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
@@ -314,11 +315,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 drop(original_receipt);
-                let indexed_path = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                })?;
                 let indexed =
-                    read_generation(&prior, &indexed_path, receipt_bytes.len() as u64, io).await?;
+                    read_generation(&prior, &metadata_path, receipt_bytes.len() as u64, io).await?;
                 if !content_metadata_matches(&indexed, &provisional, &receipt_bytes, io)? {
                     return Err(stock_boundary(
                         io,
@@ -356,21 +354,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
-            if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
-                return Err(stock_boundary(
+            let absolute = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
+            })?;
+            if let Some(expected) = expected_generation
+                && expected != &authorized_generation.0
+            {
+                self.require_unchanged_content(
+                    &opened,
+                    expected,
+                    &authorized_generation.0,
+                    [&metadata_path, &absolute],
                     io,
-                    crate::wire::ErrorCode::Conflict,
-                    "workspace generation changed before content authorization",
-                ));
+                )?
+                .await?;
             }
             let policy_fence = if expected_generation.is_some() {
                 policy_fence.pin_generation()
             } else {
                 policy_fence
             };
-            let absolute = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
-            })?;
             let mut mutations = crate::model::vec_with_capacity(6, io)?;
             if let Some((parent, _)) = absolute.rsplit_once('/')
                 && !parent.is_empty()
@@ -392,9 +395,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     path: stock_string_copy("/.system/harness-uploads", io)?,
                 });
                 mutations.push(WorkspaceMutation::PutFile {
-                    path: crate::executor::with_history_io(io, |work| {
-                        crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                    })?,
+                    path: metadata_path,
                     bytes: receipt_bytes.mutation_bytes(io)?,
                 });
             }

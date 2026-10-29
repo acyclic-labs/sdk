@@ -141,6 +141,183 @@ async fn publication_adapters_preserve_pinned_content_and_reject_changed_operati
 type MemoryHost =
     FilesystemHost<acyclic_fs::MemoryAuthorityBackend, acyclic_fs::MemoryObjectBackend>;
 
+async fn replace_source(
+    host: &MemoryHost,
+    write: &ContentGrant,
+    source: &FileRef,
+    bytes: &[u8],
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+) -> Result<FileRef> {
+    let expected = host.file_generation(source, io)?;
+    host.put_content_impl(
+        source.volume(),
+        write,
+        source.path(),
+        bytes,
+        source.descriptor().media_type(),
+        source.display_name(),
+        64,
+        key,
+        None,
+        Some(&expected),
+        None,
+        io,
+    )?
+    .await
+}
+
+#[tokio::test]
+async fn replacement_fences_the_original_file_instead_of_unrelated_publications() -> Result<()> {
+    for adapter in 0..3 {
+        let provider =
+            ProviderRef::new("replace".into(), "filesystem".into(), "1".into(), &mut None)?;
+        let mut host = FilesystemHost::new(Fs::memory(), &provider, None)?;
+        let agent = crate::AgentId::from_bytes([38; 16]);
+        let volume = VolumeRef::new(
+            provider.clone(),
+            "private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+            &mut None,
+        )?;
+        host.create_volume(&volume).await?;
+        let (write, read) = publication_grants(&volume, agent)?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let budget = acyclic_fs::performance::work_budget(8_000_000, 8_000_000);
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = match adapter {
+            0 => None,
+            1 => Some(PreparationIo::from_budget(budget, &cancellation)?),
+            _ => Some(PreparationIo::from_native_work(&native)?),
+        };
+        let access = crate::conversation::ContentAccess {
+            ceiling: None,
+            io: io.as_ref(),
+        };
+        let workspace = bounded_io::content_workspace(&provider, &volume, None)?;
+        let opened = host.open(&workspace, None).await?;
+        let race = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let race_arm = race.clone();
+        let race_workspace = opened.clone();
+        Arc::get_mut(&mut host).unwrap().publication_pause = Some(Arc::new(move || {
+            let armed = race_arm.swap(false, std::sync::atomic::Ordering::SeqCst);
+            let workspace = race_workspace.clone();
+            Box::pin(async move {
+                if armed {
+                    workspace
+                        .write_text("/nested/value", "racer")
+                        .await
+                        .unwrap();
+                }
+            })
+        }));
+        let original = host
+            .put_content(
+                &volume,
+                &write,
+                "nested/value",
+                b"before",
+                "text/plain",
+                "value",
+                64,
+                &IdempotencyKey::new("original")?,
+                None,
+                access,
+            )
+            .await?;
+        // A real tool-result publication advances the same private volume.
+        host.put_internal_content(
+            &volume,
+            &write,
+            &format!("{}result", InternalContentClass::Execution.prefix()),
+            b"settled",
+            "application/json",
+            "result",
+            64,
+            &IdempotencyKey::new("tool-result")?,
+            InternalContentClass::Execution,
+            io.as_ref(),
+        )
+        .await?;
+        let key = IdempotencyKey::new("edit")?;
+        let edited = replace_source(&host, &write, &original, b"after", &key, io.as_ref()).await?;
+        assert_eq!(
+            host.read_content(&edited, &read, 64, io.as_ref())
+                .await?
+                .as_ref(),
+            b"after"
+        );
+        assert_eq!(
+            host.read_content(&original, &read, 64, io.as_ref())
+                .await?
+                .as_ref(),
+            b"before"
+        );
+        assert_eq!(
+            replace_source(&host, &write, &original, b"after", &key, io.as_ref()).await?,
+            edited
+        );
+        let before = host.resolve(&workspace, None).await?;
+        assert!(matches!(
+            replace_source(&host, &write, &original, b"lost update", &IdempotencyKey::new("stale")?, io.as_ref()).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
+        assert!(matches!(
+            replace_source(&host, &write, &original, b"changed retry", &key, io.as_ref()).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        // Equal body bytes in a different publication still invalidate the source.
+        let equal = host
+            .put_content(
+                &volume,
+                &write,
+                "nested/value",
+                b"after",
+                "text/plain",
+                "value",
+                64,
+                &IdempotencyKey::new("equal-body-new-publication")?,
+                None,
+                access,
+            )
+            .await?;
+        assert!(matches!(
+            replace_source(&host, &write, &edited, b"lost update", &IdempotencyKey::new("old-publication")?, io.as_ref()).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
+        if io.is_some() {
+            // Change the target after comparison and policy-fence registration.
+            race.store(true, std::sync::atomic::Ordering::SeqCst);
+            assert!(matches!(
+                replace_source(&host, &write, &equal, b"overwrite racer", &IdempotencyKey::new("raced")?, io.as_ref()).await,
+                Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+            ));
+        } else {
+            opened
+                .write_text("/nested/value", "racer")
+                .await
+                .map_err(map_error)?;
+        }
+        // Raw filesystem writes did not update the protected publication index.
+        let before = host.resolve(&workspace, None).await?;
+        assert!(matches!(
+            replace_source(&host, &write, &equal, b"overwrite raw write", &IdempotencyKey::new("raw-stale")?, io.as_ref()).await,
+            Err(error) if error.code() == crate::wire::ErrorCode::Conflict
+        ));
+        assert_eq!(host.resolve(&workspace, None).await?, before);
+        assert_eq!(
+            host.read(&workspace, None, "/nested/value", 64, None)
+                .await?
+                .as_ref(),
+            b"racer"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn measured_replacement_failures_retain_the_workspace_cause() -> Result<()> {
     for native_adapter in [false, true] {

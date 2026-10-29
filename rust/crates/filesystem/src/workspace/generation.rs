@@ -269,6 +269,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
+        self.compare_file(original, path, false, work, cancellation)
+            .await
+    }
+
+    /// Compares the exact file identity, kind and payload without reading bodies.
+    /// Both paths must exist; unrelated files and metadata do not affect the result.
+    pub async fn matches_file_payload<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
+        self.compare_file(original, path, true, work, cancellation)
+            .await
+    }
+
+    async fn compare_file<W: crate::facade::FsWork>(
+        &self,
+        original: &Self,
+        path: &str,
+        exact_payload: bool,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
         if original.workspace.id != self.workspace.id
             || !self
                 .workspace
@@ -284,6 +309,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             self.id,
             original.id,
             path,
+            exact_payload,
             work,
             cancellation,
         )
