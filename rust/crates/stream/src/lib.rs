@@ -144,7 +144,7 @@ pub use memory::{MemoryLimits, MemoryStream};
 
 /// Maximum opaque record body.
 pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
-/// Maximum records, participants, mutations, or path segments in one request.
+/// Shared session credit quantum and current hierarchy depth bound.
 pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
 /// Materialized hierarchy page size; larger requests continue through next_after.

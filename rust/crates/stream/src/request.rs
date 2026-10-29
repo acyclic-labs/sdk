@@ -2,11 +2,11 @@
 use crate::AppendRecord;
 use crate::{
     AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, MAX_COMMAND_BYTES,
-    MAX_ITEMS, MAX_RECORD_BYTES, StreamError, StreamPath,
+    MAX_RECORD_BYTES, StreamError, StreamPath,
 };
 use sha2::{Digest, Sha256};
 pub(crate) fn validate_records(records: &[AppendRecord]) -> Result<(), StreamError> {
-    if records.is_empty() || records.len() > MAX_ITEMS {
+    if records.is_empty() {
         return Err(StreamError::LimitExceeded);
     }
     for record in records {
@@ -46,21 +46,15 @@ pub fn append_digest(request: &AppendRequest) -> Result<[u8; 32], StreamError> {
 pub(crate) fn canonical_exclusions(
     paths: &[crate::RelativePath],
 ) -> Result<Vec<crate::RelativePath>, StreamError> {
-    if paths.len() > MAX_ITEMS {
-        return Err(StreamError::LimitExceeded);
-    }
     let mut canonical = Vec::new();
     canonical
         .try_reserve_exact(paths.len())
         .map_err(|_| StreamError::LimitExceeded)?;
     canonical.extend_from_slice(paths);
-    normalize_exclusions(&mut canonical)?;
+    normalize_exclusions(&mut canonical);
     Ok(canonical)
 }
-fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), StreamError> {
-    if paths.len() > MAX_ITEMS {
-        return Err(StreamError::LimitExceeded);
-    }
+fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) {
     paths.sort_unstable();
     paths.dedup();
     let mut kept = 0;
@@ -80,7 +74,6 @@ fn normalize_exclusions(paths: &mut Vec<crate::RelativePath>) -> Result<(), Stre
         }
     }
     paths.truncate(kept);
-    Ok(())
 }
 fn hash_exclusions(hash: &mut Sha256, paths: &[crate::RelativePath]) -> Result<(), StreamError> {
     let canonical = canonical_exclusions(paths)?;
@@ -364,10 +357,7 @@ pub(crate) fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
 }
 
 pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
-    if request.conditions.len() > MAX_ITEMS
-        || request.mutations.is_empty()
-        || request.mutations.len() > MAX_ITEMS
-    {
+    if request.mutations.is_empty() {
         return Err(StreamError::LimitExceeded);
     }
     for mutation in &request.mutations {
@@ -389,7 +379,7 @@ pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), Stream
     }
     for mutation in &mut request.mutations {
         if let CommitMutation::Fork { exclude, .. } = mutation {
-            normalize_exclusions(exclude)?;
+            normalize_exclusions(exclude);
         }
     }
     request.conditions.sort_unstable_by(|left, right| {

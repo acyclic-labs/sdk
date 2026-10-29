@@ -461,7 +461,6 @@ mod tests {
         for records in [
             Vec::new(),
             vec![OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES + 1])],
-            vec![OwnedBytes::from_static(b""); crate::MAX_ITEMS + 1],
             vec![
                 OwnedBytes::from(vec![0; crate::MAX_RECORD_BYTES]);
                 crate::MAX_COMMAND_BYTES / crate::MAX_RECORD_BYTES + 1
