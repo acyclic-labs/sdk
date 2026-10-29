@@ -161,6 +161,25 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         adoption.volumes = vec![binding];
         let state = AgentState::adopted(path.clone(), &adoption);
         let wake = || requested("r1", &parent);
+        if !matching_limits {
+            let refused = driver
+                .step(
+                    &state,
+                    2,
+                    Some(Queued {
+                        inbox: 1,
+                        input: TurnInput::ApprovalRequested {
+                            child: parent.clone(),
+                            id: intent("r1"),
+                        },
+                    }),
+                    acyclic_actors::guest::CancellationToken::new(),
+                )
+                .await;
+            assert!(matches!(&refused, Err(Error::Turn(error))
+                if matches!(**error, acyclic_harness_core::Error::Unauthorized(_))));
+            assert!(model.requests().is_empty());
+        }
         let first = step(
             &driver,
             &path,
@@ -171,19 +190,26 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         )
         .await;
         if !matching_limits {
-            // The original stale scope refuses before the model or tool can start.
-            assert!(matches!(&first, Err(Error::Turn(error))
-                if matches!(**error, acyclic_harness_core::Error::Unauthorized(_))));
+            // The same refusal commits a failed status without dispatch or output.
+            let first = first?;
+            assert!(matches!(
+                first.state.phase,
+                Phase::Done {
+                    outcome: AgentOutcome::Failed { .. }
+                }
+            ));
+            assert_eq!(first.status.ok_or("missing failed status")?.cursor, 2);
+            assert!(
+                !first
+                    .outs
+                    .iter()
+                    .any(|out| matches!(out, Out::Conversation(_)))
+            );
             assert!(model.requests().is_empty());
             continue;
         }
         let first = first?;
-        let Phase::Done {
-            outcome: AgentOutcome::Succeeded { result: Some(_) },
-        } = &first.state.phase
-        else {
-            return Err(format!("unexpected phase {:?}", first.state.phase).into());
-        };
+        assert_eq!(first.state.phase, Phase::Idle);
         let entries: Vec<_> = first
             .outs
             .iter()
@@ -193,6 +219,7 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
             })
             .collect::<std::result::Result<_, _>>()?;
         assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].outcome, TurnOutcome::Completed);
         // A crash before the step commit re-runs the step; the journal replays it.
         let again = step(
             &driver,
@@ -552,6 +579,12 @@ async fn admitted_root_after_its_child(
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
+        if let Phase::Done {
+            outcome: AgentOutcome::Failed { message },
+        } = &stepped.state.phase
+        {
+            return Err(message.clone().into());
+        }
         // Settle the first turn as its step commit would.
         let records = stepped
             .outs
@@ -574,7 +607,7 @@ async fn admitted_root_after_its_child(
                 idempotency_key: intent_key("settle", &[root.as_str()])?,
             })
             .await?;
-        step(
+        let stepped = step(
             &driver,
             &root,
             Some(stepped.state),
@@ -583,6 +616,12 @@ async fn admitted_root_after_its_child(
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
+        if let Phase::Done {
+            outcome: AgentOutcome::Failed { message },
+        } = &stepped.state.phase
+        {
+            return Err(message.clone().into());
+        }
         Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result))
     };
     run.await.map_err(|error| error.to_string())
@@ -698,7 +737,15 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
     );
     assert_eq!(calls, 1);
     let (read_only, calls) = run(&[VolumeOperation::Read]).await?;
-    assert!(read_only.is_err(), "a read-only admission cannot write");
+    assert!(
+        matches!(
+            read_only?,
+            Phase::Done {
+                outcome: AgentOutcome::Failed { .. }
+            }
+        ),
+        "a read-only admission cannot write"
+    );
     assert_eq!(calls, 0, "refused before the model runs");
     Ok(())
 }
@@ -855,11 +902,32 @@ async fn a_refused_admission_reads_no_history_and_has_no_effect() -> Result {
                 acyclic_actors::guest::CancellationToken::new(),
             )
             .await;
-            assert!(stepped.is_err());
+            let calls = stream.calls.load(std::sync::atomic::Ordering::SeqCst);
+            match stepped {
+                Ok(stepped) => {
+                    assert_eq!(calls, 0, "admission refuses before stream IO");
+                    assert!(matches!(
+                        stepped.state.phase,
+                        Phase::Done {
+                            outcome: AgentOutcome::Failed { .. }
+                        }
+                    ));
+                    assert!(
+                        !stepped
+                            .outs
+                            .iter()
+                            .any(|out| matches!(out, Out::Conversation(_)))
+                    );
+                }
+                Err(error) => {
+                    assert!(calls > 0, "valid admission reaches the refusing stream");
+                    assert!(error.uncertain(), "storage refusal cannot settle the input");
+                    assert!(matches!(&error, Error::Turn(cause)
+                        if matches!(**cause, acyclic_harness_core::Error::Storage(_))));
+                }
+            }
             assert_eq!(model.requests().len(), 0);
-            Ok::<_, Box<dyn std::error::Error>>(
-                stream.calls.load(std::sync::atomic::Ordering::SeqCst),
-            )
+            Ok::<_, Box<dyn std::error::Error>>(calls)
         }
     };
     use acyclic_fs::access::ActionSet;
