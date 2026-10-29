@@ -1223,3 +1223,9 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | `CALLBACK_TIMEOUT`30s | `rust/crates/filesystem/src/native_mount/adapter/mod.rs:40`; `adapter/runtime.rs:251,264`; `adapter/locks.rs:15` | 1 deleted | Delete the automatic timeout and elapsed-to-Stale projection from ordinary/native callback and binding-lease waits. The same shared parked waker/Condvar and funded view-gate cancellation registrations wait for actual completion/cancellation. Original NativeAllocation admission before future construction, retained waker custody, cancellation and authority-expiry/return-fence controls remain. No new optional policy or wait mechanism. Compilation pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| `GIT_STATUS_BYTES` 64KiB | `rust/crates/harness/src/local/context/environment.rs:10` (removed) | 1 replaced by 2 | Parse the complete NUL-delimited output incrementally instead of buffering/truncating the whole value. Retain only a three-byte status prefix, branch text and four counters; discard filename bytes as they arrive. Renames/copies consume their separate source record without interpreting it as a status. Read chunks split input without refusing it. |
+| `GIT_STATUS_TIMEOUT` 2s | `rust/crates/harness/src/local/context/environment.rs:12` (removed) | 1 deleted | Remove automatic deadline and cap-only deadline test. Owner cancellation still kills the child; real process/IO failures still return no summary. Preserve bound-checkout discovery and inherited Git environment sanitization. Chunk-boundary properties, real repository-binding negatives and a complete >64KiB summary control remain. Compilation pending. |
