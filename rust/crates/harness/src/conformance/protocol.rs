@@ -332,7 +332,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             },
         )
         .await?;
-        if !matches!(refused, Err(AgentControlFailure::Refused { code }) if code == "no_such_agent")
+        if !matches!(refused, Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent")
         {
             return Err("an outside-tree command was not a typed refusal".into());
         }

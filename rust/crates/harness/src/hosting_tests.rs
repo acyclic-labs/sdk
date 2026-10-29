@@ -258,7 +258,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             }
         )
         .await?,
-        Err(AgentControlFailure::Refused { code }) if code == "invalid_agent_record"
+        Err(AgentControlFailure::Refused { code, .. }) if code == "invalid_agent_record"
     ));
     let prompt = AgentCommand::Prompt {
         agent: root.clone(),
@@ -283,7 +283,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             }
         )
         .await?,
-        Err(AgentControlFailure::Refused { code }) if code == "no_such_agent"
+        Err(AgentControlFailure::Refused { code, .. }) if code == "no_such_agent"
     ));
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(

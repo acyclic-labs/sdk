@@ -53,8 +53,8 @@ const CASES: &[&str] = &[
 fn same_control(expected: &AgentControlFailure, actual: &AgentControlFailure) -> bool {
     match (expected, actual) {
         (
-            AgentControlFailure::Refused { code: left },
-            AgentControlFailure::Refused { code: right },
+            AgentControlFailure::Refused { code: left, .. },
+            AgentControlFailure::Refused { code: right, .. },
         ) => left == right,
         (AgentControlFailure::Unknown(left), AgentControlFailure::Unknown(right)) => {
             wire_codec::commit_to_wire(left).encode_to_vec()

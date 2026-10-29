@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 /// must credit/chunk this bounded envelope, never discard an uncertain request.
 pub const MAX_AGENT_REPLY_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES + 128;
 
+/// A refusal's reason is the host error's own text, cut at a character
+/// boundary to this many bytes so a refusal always fits its envelope.
+pub const MAX_REFUSAL_REASON_BYTES: usize = 4096;
+
 /// Child discovery carries status at the page cut, without another follow.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -129,9 +133,10 @@ impl AgentReply {
 /// Remote failures preserve uncertain custody as a typed original request.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentControlFailure {
-    /// A definitive refusal, classified by the host's canonical error code.
-    #[error("agent control refused: {code}")]
-    Refused { code: String },
+    /// A definitive refusal, classified by the host's canonical error code,
+    /// with the host error's own text as its reason.
+    #[error("{}", refusal(code, reason))]
+    Refused { code: String, reason: String },
     /// The exact original request; presentation must not replace this with prose.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<CommitRequest>),
@@ -141,10 +146,31 @@ impl AgentControlFailure {
     /// Stable classification without losing the owned recovery request.
     pub fn code(&self) -> &str {
         match self {
-            Self::Refused { code } => code,
+            Self::Refused { code, .. } => code,
             Self::Unknown(_) => "agent_unknown",
         }
     }
+}
+
+/// A refusal reads as its reason, or its code when the host gave none.
+fn refusal(code: &str, reason: &str) -> String {
+    if reason.is_empty() {
+        format!("agent control refused: {code}")
+    } else {
+        reason.to_owned()
+    }
+}
+
+/// `text` cut to at most [`MAX_REFUSAL_REASON_BYTES`] at a character boundary.
+fn bounded_reason(mut text: String) -> String {
+    if text.len() > MAX_REFUSAL_REASON_BYTES {
+        let mut end = MAX_REFUSAL_REASON_BYTES;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text
 }
 
 // One binary envelope is shared by in-process and network session adapters.
@@ -153,6 +179,9 @@ impl AgentControlFailure {
 struct Envelope {
     #[prost(oneof = "envelope::Value", tags = "1, 2, 3")]
     value: Option<envelope::Value>,
+    /// A refusal's reason; present only beside [`envelope::Value::Refused`].
+    #[prost(string, optional, tag = "4")]
+    reason: Option<String>,
 }
 
 mod envelope {
@@ -174,6 +203,7 @@ pub fn encode_agent_reply(
     command: &AgentCommand,
 ) -> Result<Vec<u8>, CommandError> {
     use envelope::Value;
+    let mut reason = None;
     let value = match result {
         Ok(reply) => {
             let mut writer = ReplyWriter(Vec::with_capacity(MAX_AGENT_COMMAND_BYTES));
@@ -186,9 +216,15 @@ pub fn encode_agent_reply(
             }
             Value::Unknown(wire_codec::commit_to_wire(request))
         }
-        Err(error) => Value::Refused(error.code().to_owned()),
+        Err(error) => {
+            reason = Some(bounded_reason(error.to_string()));
+            Value::Refused(error.code().to_owned())
+        }
     };
-    let envelope = Envelope { value: Some(value) };
+    let envelope = Envelope {
+        value: Some(value),
+        reason,
+    };
     let encoded_len = envelope.encoded_len();
     if encoded_len > MAX_AGENT_REPLY_BYTES {
         return Err(CommandError::Capacity);
@@ -213,6 +249,14 @@ pub fn decode_agent_reply(
     // The one Rust encoder is the protocol authority. Reject duplicate/unknown
     // protobuf fields instead of projecting a different recovery request.
     if envelope.encode_to_vec() != bytes {
+        return Err(CommandError::Invalid);
+    }
+    let reason = envelope.reason;
+    if reason
+        .as_ref()
+        .is_some_and(|reason| reason.len() > MAX_REFUSAL_REASON_BYTES)
+        || (reason.is_some() && !matches!(envelope.value, Some(envelope::Value::Refused(_))))
+    {
         return Err(CommandError::Invalid);
     }
     match envelope.value.ok_or(CommandError::Invalid)? {
@@ -243,7 +287,10 @@ pub fn decode_agent_reply(
             {
                 return Err(CommandError::Invalid);
             }
-            Ok(Err(AgentControlFailure::Refused { code }))
+            Ok(Err(AgentControlFailure::Refused {
+                code,
+                reason: reason.unwrap_or_default(),
+            }))
         }
         envelope::Value::Reply(bytes) => {
             if bytes.len() > MAX_AGENT_COMMAND_BYTES {
@@ -400,9 +447,60 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_carries_its_host_reason() -> Result<(), Box<dyn std::error::Error>> {
+        let result = Err(AgentError::Turn(Box::new(
+            acyclic_harness_core::Error::NotFound("Unknown command: /marke".into()),
+        )));
+        let bytes = encode_agent_reply(&result, &AgentCommand::Root {})?;
+        let Err(refused @ AgentControlFailure::Refused { .. }) =
+            decode_agent_reply(&bytes, &AgentCommand::Root {})?
+        else {
+            return Err("a refusal decoded as another result".into());
+        };
+        assert_eq!(refused.code(), "agent_turn_error");
+        assert!(
+            refused.to_string().contains("Unknown command: /marke"),
+            "{refused}"
+        );
+        // Negative controls: a reason beside a reply, or past its bound, is
+        // malformed rather than shown.
+        let reply = Envelope {
+            value: Some(envelope::Value::Reply(b"{}".to_vec())),
+            reason: Some("stray".into()),
+        }
+        .encode_to_vec();
+        assert!(matches!(
+            decode_agent_reply(&reply, &AgentCommand::Root {}),
+            Err(CommandError::Invalid)
+        ));
+        let oversized = Envelope {
+            value: Some(envelope::Value::Refused("agent_turn_error".into())),
+            reason: Some("x".repeat(MAX_REFUSAL_REASON_BYTES + 1)),
+        }
+        .encode_to_vec();
+        assert!(matches!(
+            decode_agent_reply(&oversized, &AgentCommand::Root {}),
+            Err(CommandError::Invalid)
+        ));
+        // A long host error is cut to the bound at a character boundary.
+        let long = Err(AgentError::Turn(Box::new(
+            acyclic_harness_core::Error::Invalid("\u{e9}".repeat(MAX_REFUSAL_REASON_BYTES)),
+        )));
+        let bytes = encode_agent_reply(&long, &AgentCommand::Root {})?;
+        let Err(AgentControlFailure::Refused { reason, .. }) =
+            decode_agent_reply(&bytes, &AgentCommand::Root {})?
+        else {
+            return Err("a long refusal decoded as another result".into());
+        };
+        assert!(reason.len() <= MAX_REFUSAL_REASON_BYTES && !reason.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn unknown_without_owned_request_is_not_a_refusal() {
         let bytes = Envelope {
             value: Some(envelope::Value::Refused("agent_unknown".into())),
+            reason: None,
         }
         .encode_to_vec();
         assert!(matches!(
@@ -417,6 +515,7 @@ mod tests {
         request.deadline_unix_millis = Some(42);
         let bytes = Envelope {
             value: Some(envelope::Value::Unknown(request)),
+            reason: None,
         }
         .encode_to_vec();
         assert!(matches!(
