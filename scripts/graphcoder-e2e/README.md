@@ -45,6 +45,16 @@ The strict helper launcher also owns its complete process tree. Its active
 nine-second budget cancels and drains the scope; cancellation always fails
 qualification, including when a late child summary reports success.
 
+To split a serial matrix into diagnostic selections, pass a zero-based `INDEX/COUNT`
+after the two executable paths. Run partitions sequentially, with a fresh
+`E2E_OUTPUT` directory for each. Each exports `partition.json`; a partition
+never qualifies the platform. Collect all receipts with
+`node scripts/graphcoder-e2e/serial.mjs --collect FRESH_OUTPUT PARTITION.json ...`.
+Collection rejects missing or duplicate partitions, changed executable/source
+identities, changed case definitions and missing suite receipts. Case assertions
+and the nine-second active scope stay unchanged. A failed partition is retained;
+collection does not execute or retry any case.
+
 Set `E2E_SCRATCH_ROOT` to an absolute owned directory before any Windows
 invocation; this lane uses `D:/lane-scratch/e2e-gate/`. Windows has no system-temp
 fallback. The old independent `E2E_WORKSPACE_ROOT` and `E2E_NTFS_ROOT` selectors
@@ -65,6 +75,12 @@ receipt has `qualification: false`; a successful selection never qualifies the
 complete platform. The full run requires both passing cases and coverage.
 Known product failures retain their assertions and fail normally.
 
+`child-result` keeps a JSONL connection open while the spawn turn commits, then
+waits for the mock's acknowledged parent `child_done` request before submitting
+the reporting turn. It requires the real child result and the parent's read of
+that result in the final model context. Native agents deliver child results as
+later parent turns; their public tools are `spawn`, `send` and `archive`.
+
 `instructions-and-skills` checks discovery without loading an unselected skill
 body. `skill-invocation` selects `/inventory` through headless and real-PTY
 composer input, then requires the instruction markers, selected body and expanded
@@ -79,6 +95,31 @@ is missing or unreadable. Capture evidence has one publication path, so a failed
 fixture/export walk cannot erase it when the build snapshot is released.
 
 Installed-host and component acceptance cases consume prebuilt executables:
+
+`plugin-client-lifecycle` uses the shared `managed:lifecycle` descriptor from
+`plugin/tests/hosts/qualify-scripted.mjs`, with the matrix's existing process
+owner, fixture profile and ten-second budget. Supply matching `E2E_PLUGIN_BINARY`
+and pinned `E2E_CODEX` executables. Its native session is scripted; its sandbox
+is the real Codex sandbox. It does not qualify installed model-session parity.
+The deleted `plugin/tests/e2e.rs` executable cannot satisfy this case.
+
+The actual Codex plugin-manager installation check consumes the same prebuilt
+plugin and pinned Codex executable, without a model or credentials:
+
+```sh
+ACYCLIC_TEST_BINARY=/absolute/acyclic E2E_CODEX=/absolute/codex \
+  node --test --test-concurrency=1 plugin/tests/hosts/native-installation.test.mjs
+```
+
+It stages the production npm file closure, rejects a missing marketplace,
+installs through the shipping CLI, verifies the native cache's binary and
+manifest hashes, then removes the plugin. This check does not qualify the
+installed-host model loop or recursive child behavior.
+
+`fs-branch-merge` and `fs-conflict-continue` write their project fixtures through
+the shipping `shell` tool. `write` targets an agent-private volume; it cannot
+seed a project branch. Both cases retain their original history, conflict,
+request-count and final project-byte assertions.
 
 | Environment variable | Artifact |
 | --- | --- |
@@ -120,3 +161,25 @@ The orphan case waits for an acknowledged HTTP barrier from a real native-tool
 descendant, kills the shipping owner and reopens the workspace. It checks both
 process identities while the mock's held response remains open. Closing the
 mock first would let an unfenced descendant exit and hide the failure.
+If the interrupted tool has no authoritative outcome, reopening must report the
+typed may-have-run failure with exit 1. It must neither request a recovery answer
+from the model nor start the tool again. The case retains its unexpected-recovery
+model response so an additional generation fails the request/step oracle.
+
+The separate real-login tier accepts an existing Codex login directory by path:
+
+```sh
+LIVE_CODEX_HOME=/absolute/existing/login node scripts/graphcoder-e2e/live.mjs /absolute/graphcoder /absolute/fresh-output
+```
+
+It runs session, shell, child-result, settled-operation resume and fork/merge
+cases serially. Selected case names can follow the output directory. It shares
+the fixture factory, process owner and case budget with deterministic acceptance;
+it reads no login files and supplies no API keys. The report preserves raw
+shipping output, so secret-scan it before exporting or publishing. Every failed
+case makes the command fail. Shell and collaboration checks require actual
+filesystem effects and completed tool hooks. Collaboration keeps stdin open
+across turns and observes the recorded `UserPromptSubmit` child result through
+filesystem notifications. The text oracle follows `-p`;
+JSONL replay compares the committed `{id,inbox,text}` answer and rejects repeated
+tool calls. This tier complements the installed-host matrix.

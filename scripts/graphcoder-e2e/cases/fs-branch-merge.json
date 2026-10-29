@@ -35,12 +35,9 @@
         "tools": [
           {
             "id": "write",
-            "name": "write",
+            "name": "shell",
             "arguments": {
-              "path": "topic.txt",
-              "text": "TOPIC_E2E\n",
-              "media_type": "text/plain",
-              "display_name": "topic.txt"
+              "command": "node \"{{support}}/write-project.mjs\" \"topic.txt\" VE9QSUNfRTJFCg=="
             }
           }
         ]

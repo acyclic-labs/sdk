@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { stripVTControlCharacters } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import assert from "node:assert/strict";
 import { isAbsolute } from "node:path";
@@ -19,14 +20,14 @@ export class Processes {
   stopping = false;
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, ...spawnOptions } = options;
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReportSignal, ...spawnOptions } = options;
     const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
       if (scopeTreeControl) { child.stdin.end(); return; }
       child.kill(scopeKillSignal);
     };
-    let stdout = "", stderr = "";
+    let stdout = "", stderr = "", reportRequested = false;
     const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
     child.stdout.on("data", bytes => { stdout += outputDecoder.write(bytes); });
     child.stderr.on("data", bytes => { stderr += errorDecoder.write(bytes); });
@@ -42,12 +43,13 @@ export class Processes {
       child.on("close", (code, signal) => {
         this.children.delete(child);
         stdout += outputDecoder.end(); stderr += errorDecoder.end();
-        resolve({ code, signal, stdout, stderr });
+        const stuck_on = reportRequested ? waitDetails(stderr + "\n" + stdout) : [];
+        resolve({ code, signal, stdout, stderr, ...(reportRequested ? { termination: { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 } } : {}) });
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    this.children.set(child, { kill, closed });
+    this.children.set(child, { kill, closed, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
     return { child, exited, closed, get stdout() { return stdout; } };
   }
   async run(program, args, options, input = "") {
@@ -77,6 +79,16 @@ export class Processes {
   async close() {
     this.stopping = true;
     const children = [...this.children.values()];
+    const reporting = children.filter(child => child.report);
+    if (reporting.length) {
+      // The active deadline already failed. The existing drain reservation
+      // permits diagnostics before the same physical termination barrier.
+      let force;
+      const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
+      for (const child of reporting) child.report();
+      try { await Promise.race([Promise.all(reporting.map(child => child.closed)), forced]); }
+      finally { clearTimeout(force); }
+    }
     for (const child of children) child.kill();
     await Promise.all(children.map(child => child.closed));
   }
@@ -115,4 +127,9 @@ export class Events {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
+}
+
+export function waitDetails(stderr) {
+  return Array.from(stripVTControlCharacters(stderr).matchAll(/^waiting: (\S+) (\S+) since (\d+(?:\.\d+)?) \(.*\)\r?$/gm),
+    match => ({ primitive: match[1], key: match[2], since: Number(match[3]) }));
 }

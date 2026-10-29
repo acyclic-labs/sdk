@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { dirname, isAbsolute } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { readFile } from "node:fs/promises";
 
 export function qualified(result, format, minimum) {
   assert.equal(result.code, 0, result.stderr);
@@ -34,6 +35,21 @@ export function qualified(result, format, minimum) {
 }
 
 export async function qualification(processes, input, fixture, capture) {
+  if (input.format === "scripted-host") {
+    const { scriptedScenario, runScriptedScenario } = await import("../../plugin/tests/hosts/qualify-scripted.mjs");
+    const plugin = fixture.env.E2E_PLUGIN_BINARY, codex = fixture.env.E2E_CODEX;
+    assert.ok(plugin && isAbsolute(plugin),
+      "step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable");
+    for (const [name, path] of [["GraphCoder", fixture.binary], ["E2E_CODEX", codex]])
+      if (path !== undefined) assert.ok(isAbsolute(path), `step=admit ${name}; recovery=set ${name} to its matching prebuilt absolute executable`);
+    const scenario = scriptedScenario({ artifacts: { acyclic: { path: plugin }, graphcoder: { path: fixture.binary } } }, codex, input.scenario);
+    const receipt = await runScriptedScenario({ scenario, processes, directory: fixture.output,
+      env: fixture.env, cwd: fixture.workspace });
+    capture({ ...receipt, log: await readFile(join(fixture.output, scenario.name + ".log"), "utf8") });
+    assert.equal(receipt.accepted, true,
+      `step=qualify ${input.scenario}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${fixture.id}`);
+    return;
+  }
   const binary = fixture.env[input.binary_env];
   assert.ok(binary && isAbsolute(binary), `${input.binary_env} must name a prebuilt absolute executable`);
   const env = { ...fixture.env, RUST_TEST_THREADS: "1",

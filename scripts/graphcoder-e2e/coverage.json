@@ -26,6 +26,7 @@
       "owner": "children-controller",
       "cases": [
         "child-fork-message-merge",
+        "child-result",
         "child-discard",
         "nested-children"
       ]

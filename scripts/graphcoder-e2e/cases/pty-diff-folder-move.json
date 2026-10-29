@@ -119,7 +119,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -129,7 +129,7 @@
           "when": {
             "contains": [
               "FOLDER_EDIT_READY",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "/diff "
@@ -151,7 +151,7 @@
               "moved/a.txt (added)",
               "+FOLDER_EDIT_E2E",
               "FOLDER_CHANGE_READY",
-              "○"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

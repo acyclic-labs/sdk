@@ -22,7 +22,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },

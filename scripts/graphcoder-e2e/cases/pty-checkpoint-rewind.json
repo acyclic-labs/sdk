@@ -57,7 +57,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -67,7 +67,7 @@
           "when": {
             "contains": [
               "REWIND_E2E_FIRST",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "/compact "
@@ -76,7 +76,7 @@
           "when": {
             "contains": [
               "Compacted conversation",
-              "○"
+              "Enter sends"
             ]
           },
           "after_request": {
@@ -89,7 +89,7 @@
           "when": {
             "contains": [
               "REWIND_E2E_DISCARDED",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "/rewind "
@@ -98,7 +98,7 @@
           "when": {
             "contains": [
               "Rewound to selected checkpoint",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "continue after rewind"
@@ -107,7 +107,7 @@
           "when": {
             "contains": [
               "REWIND_E2E_DONE",
-              "○"
+              "Enter sends"
             ]
           },
           "send": "\u0004"
@@ -121,7 +121,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder",
+              "graphcoder",
               "REWIND_E2E_DONE"
             ],
             "cursor": true
@@ -132,7 +132,7 @@
           "when": {
             "contains": [
               "REWIND_REOPEN_DONE",
-              "○"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

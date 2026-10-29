@@ -50,6 +50,7 @@ async def main():
     loop.add_reader(master, output)
     loop.add_reader(sys.stdin.fileno(), input_ready)
     loop.add_signal_handler(signal.SIGUSR1, child.kill)
+    loop.add_signal_handler(signal.SIGTERM, child.terminate)
     try:
         code = await child.wait()
         await drained
@@ -58,6 +59,7 @@ async def main():
         loop.remove_reader(master)
         loop.remove_reader(sys.stdin.fileno())
         loop.remove_signal_handler(signal.SIGUSR1)
+        loop.remove_signal_handler(signal.SIGTERM)
         if child.returncode is None:
             child.kill()
             await child.wait()

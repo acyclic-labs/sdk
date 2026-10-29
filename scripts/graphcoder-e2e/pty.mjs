@@ -55,6 +55,7 @@ export async function pty(processes, binary, fixture, input, capture) {
     cwd: fixture.workspace,
     env: { ...fixture.env, TERM: "xterm-256color" },
     scopeKillSignal: killSignal,
+    ...(process.platform !== "win32" ? { scopeReportSignal: "SIGTERM" } : {}),
     ...(process.platform === "win32" ? { scopeInheritInput: true } : {}),
   });
   screen.onData(data => running.child.stdin.write(data));

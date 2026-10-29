@@ -30,11 +30,11 @@
       "mode": "pty",
       "actions": [
         {
-          "when": {"contains": ["GraphCoder"], "cursor": true},
+          "when": {"contains": ["graphcoder"], "cursor": true},
           "prompt": "/inventory Report the exact instruction and skill markers supplied in your context."
         },
         {
-          "when": {"contains": ["INVENTORY_E2E_PTY_DONE", "\u25cb"]},
+          "when": {"contains": ["INVENTORY_E2E_PTY_DONE", "Enter sends"]},
           "send": "\u0004"
         }
       ]
