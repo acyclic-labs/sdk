@@ -32,7 +32,6 @@ pub(crate) struct ProofContext<'a, S> {
 }
 
 struct PublicationOrder<'a> {
-    seen: u64,
     objects: ProofVec<'a, ObjectId>,
     completed: crate::kernel::allocation::fixed_index::FixedIndex<bool, { ObjectId::ENCODED_LEN }>,
 }
@@ -52,7 +51,6 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
 
     pub(crate) fn publication_order(mut self) -> Self {
         self.publication = Some(PublicationOrder {
-            seen: 0,
             objects: ProofVec::new(&self.meter),
             completed: Default::default(),
         });
@@ -262,29 +260,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
         if let Some(order) = &mut self.publication {
-            let seen = &mut order.seen;
             self.meter.with_accounting(|accounting| {
                 order
                     .completed
-                    .get_or_try_insert_with(object.index_key(), accounting, |_| {
-                        let observed = seen.checked_add(1).ok_or(WorkError::Overflow)?;
-                        if self
-                            .limits
-                            .maximum_objects
-                            .is_some_and(|maximum| observed > maximum)
-                        {
-                            return Err(ClosureError::TooManyObjects {
-                                observed,
-                                maximum: self
-                                    .limits
-                                    .maximum_objects
-                                    .expect("selected object policy"),
-                            }
-                            .into());
-                        }
-                        *seen = observed;
-                        Ok(false)
-                    })
+                    .get_or_try_insert_with(object.index_key(), accounting, |_| Ok(false))
                     .map(|_| ())
             })?;
         } else {

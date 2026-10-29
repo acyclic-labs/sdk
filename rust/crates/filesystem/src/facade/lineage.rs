@@ -293,10 +293,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
         while let Some(generation) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
             if !VisitedObjectSet::insert_with_accounting(
                 &mut seen,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 accounting,
             )?
             .inserted
@@ -311,10 +308,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
                 {
                     if VisitedObjectSet::insert_with_accounting(
                         &mut seen,
-                        ObjectId {
-                            kind: ObjectKind::GenerationRoot,
-                            digest: frontier.digest(),
-                        },
+                        frontier.object_id(),
                         accounting,
                     )?
                     .inserted
@@ -428,10 +422,7 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
             let is_candidate_frontier = matches!(candidate, Some(None));
             if !VisitedObjectSet::insert_with_accounting(
                 &mut visited,
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 accounting,
             )?
             .inserted
