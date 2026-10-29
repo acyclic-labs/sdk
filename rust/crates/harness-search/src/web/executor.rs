@@ -148,7 +148,7 @@ fn output(
     maximum: u64,
     work: NativeWork<'_>,
 ) -> Result<(ToolResult, NativeCustody)> {
-    let (value, held) = crate::tool::value(value, maximum, work)?;
+    let (value, held) = crate::tool::value(value, Some(maximum), work)?;
     Ok((ToolResult { value }, held))
 }
 

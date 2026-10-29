@@ -88,7 +88,7 @@ impl FileTool {
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _file_custody = io.map(|io| io.take_native_custody(file.1)).transpose()?;
-        let encoded = super::value(&FileResult { file: file.0 }, u64::MAX, work)?;
+        let encoded = super::value(&FileResult { file: file.0 }, None, work)?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
     }
     async fn search(
@@ -115,7 +115,7 @@ impl FileTool {
         };
         let encoded = super::value(
             &result,
-            maximum_result_bytes.min(context.effective_scope().limits().file_bytes),
+            Some(maximum_result_bytes.min(context.effective_scope().limits().file_bytes)),
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -471,7 +471,7 @@ impl ToolExecutor for FileTool {
                     .await?;
             match receipt.0 {
                 Some(file) => {
-                    let encoded = super::value(&FileResult { file }, u64::MAX, Some(work))?;
+                    let encoded = super::value(&FileResult { file }, None, Some(work))?;
                     Ok((
                         Some(ToolResult { value: encoded.0 }),
                         encoded.1.ok_or(Error::NativeBoundary {
