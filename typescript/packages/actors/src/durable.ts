@@ -85,23 +85,22 @@ export class ActorActivation<State> {
   constructor(initialize: () => State | Promise<State>) { this.#initialize = initialize; }
   // Remove settled observers: a terminal promise's reactions would retain history
   // for the entire activation. Only currently pending operations observe stop.
-  #observe<Result>(operation: Promise<Result>): Promise<Result> {
+  #observe<Result>(operation: (fail: (error: unknown) => void) => Promise<Result>): Promise<Result> {
     return new Promise<Result>((resolve, reject) => {
       const observer: ActivationObserver = { previous: undefined, next: undefined, reject };
-      if (this.#failure) reject(this.#failure);
-      else {
-        observer.next = this.#observers;
-        if (observer.next) observer.next.previous = observer;
-        this.#observers = observer;
-      }
-      operation.then(value => {
-        this.#unlink(observer);
-        if (this.#failure) reject(this.#failure); else resolve(value);
-      }, error => {
+      if (this.#failure) { reject(this.#failure); return; }
+      observer.next = this.#observers;
+      if (observer.next) observer.next.previous = observer;
+      this.#observers = observer;
+      const fail = (error: unknown) => {
         this.#unlink(observer);
         reject(error);
         this.fence(error);
-      });
+      };
+      operation(fail).then(value => {
+        this.#unlink(observer);
+        if (this.#failure) reject(this.#failure); else resolve(value);
+      }, fail);
     });
   }
   #unlink(observer: ActivationObserver): void {
@@ -114,6 +113,9 @@ export class ActorActivation<State> {
   #available(): void { if (this.#failure) throw this.#failure; }
   blockConcurrencyWhile<Result>(callback: (state: State) => Result | Promise<Result>): Promise<Result> {
     if (this.#failure) return Promise.reject(this.#failure);
+    return this.#observe(fail => this.#exclusive(callback, fail));
+  }
+  #exclusive<Result>(callback: (state: State) => Result | Promise<Result>, fail: (error: unknown) => void): Promise<Result> {
     const operation = this.#gate.then(async () => {
       this.#available();
       if (!this.#initialized) {
@@ -127,26 +129,27 @@ export class ActorActivation<State> {
       this.#available();
       return result;
     });
-    this.#gate = operation.then(() => undefined, () => undefined);
-    return this.#observe(operation);
+    // Settle this section's original public owner before fencing its peers or
+    // opening the queue. An internal section is not another public observer.
+    this.#gate = operation.then(() => undefined, fail);
+    return operation;
   }
   deliver<Result>(handler: (state: State) => Result | Promise<Result>): Promise<Result> {
     if (this.#failure) return Promise.reject(this.#failure);
     const batch = this.#batch, admission = this.#admission;
     // Registration precedes every await, including initialization and admission.
     batch.active++;
-    const delivery = (async () => {
+    return this.#observe(fail => (async () => {
       try {
         if (admission) await admission;
-        const state = await this.blockConcurrencyWhile(state => state);
+        const state = await this.#exclusive(state => state, fail);
         // Ownership may be revoked after admission resolves but before this continuation.
         this.#available();
         const result = await handler(state);
         this.#available();
         return result;
       } finally { if (--batch.active === 0) batch.drained?.(); }
-    })();
-    return this.#observe(delivery);
+    })());
   }
   /** Host capture waits for admitted handlers and gates new deliveries until complete.
    * Call outside a handler: a handler cannot wait for its own completion.
@@ -157,12 +160,14 @@ export class ActorActivation<State> {
     const drained = batch.active === 0 ? Promise.resolve() : new Promise<void>(resolve => { batch.drained = resolve; });
     // Close admission first. Already admitted handlers retain exclusive access
     // while draining; capture acquires it only after their completion event.
-    const operation = (this.#admission?.then(() => drained) ?? drained).then(() => this.blockConcurrencyWhile(capture));
-    const released = () => { if (this.#admission === admission) this.#admission = undefined; };
-    const admission = operation.then(released, released);
-    this.#admission = admission;
-    this.#batch = { active: 0 };
-    return this.#observe(operation);
+    return this.#observe(fail => {
+      const operation = (this.#admission?.then(() => drained) ?? drained).then(() => this.#exclusive(capture, fail));
+      const released = () => { if (this.#admission === admission) this.#admission = undefined; };
+      const admission = operation.then(released, released);
+      this.#admission = admission;
+      this.#batch = { active: 0 };
+      return operation;
+    });
   }
   /** Host cancellation/ownership loss permanently invalidates this heap. */
   fence(cause?: unknown): void {

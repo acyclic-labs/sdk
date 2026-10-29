@@ -147,20 +147,16 @@ test("initialization and exclusive sections gate every handler; failed or fenced
 });
 
 test("capture closes admission, drains reentrant handlers, then acquires exclusive state", async () => {
-  let sections = 0, successorCalls = 0;
-  class Measured extends ActorActivation<{ value: number }> {
-    override blockConcurrencyWhile<Result>(callback: (state: { value: number }) => Result | Promise<Result>): Promise<Result> {
-      sections++;
-      return super.blockConcurrencyWhile(callback);
-    }
-  }
+  let reentered = 0, successorCalls = 0;
   const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  const attempting = Promise.withResolvers<void>();
   const capturing = Promise.withResolvers<void>(), publish = Promise.withResolvers<void>();
-  const activation = new Measured(() => ({ value: 0 }));
+  const activation = new ActorActivation(() => ({ value: 0 }));
   const delivery = activation.deliver(async () => {
     entered.resolve();
     await resume.promise;
-    await activation.blockConcurrencyWhile(state => { state.value++; });
+    attempting.resolve();
+    await activation.blockConcurrencyWhile(state => { reentered++; state.value++; });
   });
   await entered.promise;
   const capture = activation.quiesce(async state => {
@@ -170,17 +166,18 @@ test("capture closes admission, drains reentrant handlers, then acquires exclusi
   });
   const successor = activation.deliver(state => { successorCalls++; return ++state.value; });
   try {
-    // Former ordering requests exclusivity here, ahead of the admitted handler.
-    expect(sections).toBe(1);
     resume.resolve();
+    await attempting.promise;
+    // Hand the queue to the already admitted exclusive section once. Capture
+    // must not own that section while waiting for this handler to finish.
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect(reentered).toBe(1);
     await delivery;
     await capturing.promise;
-    expect(sections).toBe(3);
     expect(successorCalls).toBe(0);
     publish.resolve();
     expect(await capture).toBe(1);
     expect(await successor).toBe(2);
-    expect(sections).toBe(4);
   } finally {
     activation.fence(); resume.resolve(); publish.resolve();
     await Promise.allSettled([delivery, capture, successor]);
@@ -292,18 +289,48 @@ test("durable host receives the exact triple; validation rejects bounds before a
 
 
 test("fencing between admission and delivery prevents every handler effect", async () => {
-  // Model ownership revocation exactly at the public admission boundary.
-  class FencedAtDelivery extends ActorActivation<number> {
-    override async blockConcurrencyWhile<Result>(callback: (state: number) => Result | Promise<Result>): Promise<Result> {
-      const value = await super.blockConcurrencyWhile(callback);
-      this.fence();
-      return value;
+  const activation = new ActorActivation(() => 1);
+  const then = Promise.prototype.then;
+  let observed = false, effects = 0;
+  let delivery: Promise<void>;
+  Promise.prototype.then = function (...args) {
+    const operation = then.apply(this, args);
+    if (!observed) {
+      observed = true;
+      // Observe the actual admission completion before its handler continuation.
+      void then.call(operation, () => activation.fence(), () => undefined);
     }
-  }
-  let effects = 0;
-  const activation = new FencedAtDelivery(() => 1);
-  await expect(activation.deliver(() => { effects++; })).rejects.toThrow("fenced");
-  expect(effects).toBe(0); // Negative control: admission-only fencing calls the handler.
+    return operation;
+  };
+  try { delivery = activation.deliver(() => { effects++; }); }
+  finally { Promise.prototype.then = then; }
+  await expect(delivery!).rejects.toThrow("fenced");
+  expect(effects).toBe(0);
   await expect(activation.deliver(() => { effects++; })).rejects.toThrow();
+  expect(effects).toBe(0);
+});
+
+// Each public call owns its internal sections' error, independently of peers.
+test.each(["initialization", "capture"])("%s failure preserves its initiating error and fences peers", async origin => {
+  const original = new Error(`${origin} failed`);
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<number>();
+  const activation = new ActorActivation(() => {
+    if (origin === "initialization") { entered.resolve(); return release.promise; }
+    return 1;
+  });
+  let effects = 0;
+  const initiating = origin === "initialization"
+    ? activation.deliver(() => { effects++; })
+    : activation.quiesce(() => { entered.resolve(); return release.promise; });
+  const peer = activation.deliver(() => { effects++; });
+  const settled = Promise.allSettled([initiating, peer]);
+  await entered.promise;
+  release.reject(original);
+  const [first, second] = await settled;
+  expect(first!.status).toBe("rejected");
+  if (first!.status === "rejected") expect(first!.reason).toBe(original);
+  expect(second!.status).toBe("rejected");
+  if (second!.status === "rejected") expect(second!.reason).toMatchObject({ code: "unavailable", cause: original });
+  await expect(activation.deliver(() => { effects++; })).rejects.toMatchObject({ code: "unavailable", cause: original });
   expect(effects).toBe(0);
 });
