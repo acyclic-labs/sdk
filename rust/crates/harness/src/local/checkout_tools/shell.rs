@@ -6,7 +6,7 @@ impl CheckoutTools {
     pub(super) async fn shell(
         &self,
         input: crate::tools::ShellInput,
-        maximum_output: usize,
+        maximum_output: Option<usize>,
         state: OwnedMutexGuard<State>,
         files: output::Output,
         claims: workspace::volumes::Claims,
