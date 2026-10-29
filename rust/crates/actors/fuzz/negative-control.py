@@ -3,7 +3,7 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parent
-source = root.parent / "src" / "timers.rs"
+source = root.parent / "tests" / "retired" / "timers.rs"
 original = source.read_text()
 check = "if self.deadline_unix_ms == 0 {"
 assert original.count(check) == 1, "deadline check changed: update the mutation"

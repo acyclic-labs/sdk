@@ -1,12 +1,14 @@
 //! Instrument Stream's actual append/recovery locks with `RUSTFLAGS=--cfg loom`.
 #![cfg(loom)]
-use acyclic_actors::timers::{TimerRecord, fire};
+#[path = "retired/timers.rs"]
+mod timers;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt as _;
 use loom::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Wake, Waker};
+use timers::{TimerRecord, fire};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -36,7 +38,9 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
     // write lock. A reopened handle is published only after recovery completes.
     block_on(acyclic_stream::verification::recover(&restarted, &retained))?;
     drop(retained);
-    let mut follow = block_on(restarted.follow(inbox.clone(), 1))?;
+    let mut follow = acyclic_stream::records_only(block_on(
+        restarted.follow(acyclic_stream::FollowRequest::new(inbox.clone(), 1)),
+    )?);
     let pushed = Arc::new(Pushed(AtomicBool::new(false)));
     let waker = Waker::from(pushed.clone());
     assert!(
@@ -83,7 +87,9 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
         2,
         "timer delivered twice after restart"
     );
-    let mut history = block_on(restarted.follow(inbox, 0))?;
+    let mut history = acyclic_stream::records_only(block_on(
+        restarted.follow(acyclic_stream::FollowRequest::new(inbox, 0)),
+    )?);
     let original = block_on(history.next()).ok_or("restored timer missing")??;
     assert_eq!(original.sequence, 0);
     assert_eq!(

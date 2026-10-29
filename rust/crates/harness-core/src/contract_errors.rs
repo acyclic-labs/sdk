@@ -852,14 +852,5 @@ impl From<acyclic_stream::StreamError> for Error {
     }
 }
 
-impl From<acyclic_actors::timers::TimerError> for Error {
-    fn from(error: acyclic_actors::timers::TimerError) -> Self {
-        match error {
-            acyclic_actors::timers::TimerError::Stream(error) => error.into(),
-            other => Self::Invalid(other.to_string()),
-        }
-    }
-}
-
 /// Harness result type.
 pub type Result<T> = std::result::Result<T, Error>;

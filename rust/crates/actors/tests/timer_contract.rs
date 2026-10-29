@@ -1,11 +1,13 @@
 //! Timer source compatibility, stable identities and inbox wake behavior.
 #[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
-use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire};
+#[path = "retired/timers.rs"]
+mod timers;
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
 use proptest::prelude::*;
+use timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire};
 #[path = "support/timer_oracle.rs"]
 mod oracle;
 
@@ -166,9 +168,6 @@ fn malformed_records_and_checked_corpus() -> Result<(), Box<dyn std::error::Erro
 fn generated_timer_authoring_has_no_drift() -> Result<(), Box<dyn std::error::Error>> {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/authoring/timers.ts");
-    assert_eq!(
-        std::fs::read_to_string(path)?,
-        acyclic_actors::timers::typescript()
-    );
+    assert_eq!(std::fs::read_to_string(path)?, timers::typescript());
     Ok(())
 }

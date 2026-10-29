@@ -1,0 +1,67 @@
+{
+  "source_commit": "aefd8df65ba7b1936f7668a36de11574a56df381",
+  "preserved_source": "rust/crates/actors/src/timers.rs",
+  "purpose": "Original timer codec and inbox/retry proof baseline. No public SDK timer API or scheduler. Canonical actor alarms are independent and unchanged.",
+  "originals": [
+    {
+      "path": "rust/crates/actors/src/timers.rs",
+      "blob": "c0066408f62ce8e04e8dfbfe17fd90d322969778",
+      "sha256": "2e6630a25a1a9a186bb7a3887922a782a7e540fbf0abe41cd1b93371b5eb177e",
+      "bytes": 7051
+    },
+    {
+      "path": "rust/crates/actors/tests/timer_contract.rs",
+      "blob": "4d11539a5a31fc3f2bd80bcb10a4607c285d2e58",
+      "sha256": "9f4c852ca19c44f1778c9ef24100a06117a21b88f14fa433de06cce4a75b5d3a",
+      "bytes": 7009
+    },
+    {
+      "path": "rust/crates/actors/tests/timer_loom.rs",
+      "blob": "938a0ec323590b3688e8a4b3067e54957337d953",
+      "sha256": "cf47ecc0e887b721245bf72e81aee52ed2742f16f00a216a6b8d0899e77b1bee",
+      "bytes": 5673
+    },
+    {
+      "path": "rust/crates/actors/tests/support/timer_oracle.rs",
+      "blob": "ed6289f9fbd3f0192cf01e5629601db2fa1242f2",
+      "sha256": "77c21aa7032b06ba527f059cf7bf2259bed16ef0bd0494fc9b7dd813eef96a52",
+      "bytes": 792
+    },
+    {
+      "path": "rust/crates/actors/fuzz/fuzz_targets/timer_record.rs",
+      "blob": "2bf274bdf755b4bfa32994453f9d8bae4da72f09",
+      "sha256": "0833ac7e59249286651c36b6714a3f5d03d60cf9ac49ae531639d501ef49256c",
+      "bytes": 521
+    },
+    {
+      "path": "rust/crates/actors/tests/fixtures/authoring/timers.ts",
+      "blob": "c22b60ecb36545eb2701560c08f725ec65ccc1a4",
+      "sha256": "b78ce28b6f8f69d01b2d97c26660d60e4f0e0c668f6f6f6964ee71ea93cd061b",
+      "bytes": 468
+    },
+    {
+      "path": "rust/crates/actors/fuzz/corpus/timer_record/duplicate.json",
+      "blob": "8ff61a5edba0e050b8848b518043d6eb862a14af",
+      "sha256": "56af9cb92cb20437ea529bfafd0efe1dcd9488dc6c8243a12e0938ec963c429d",
+      "bytes": 147
+    },
+    {
+      "path": "rust/crates/actors/fuzz/corpus/timer_record/unknown.json",
+      "blob": "ecc4279b2691faba0602028698be968e265f2583",
+      "sha256": "a629f5579934f36b0eef793cce03afcc83cc20e17458174da9dc4f9e773b6604",
+      "bytes": 140
+    },
+    {
+      "path": "rust/crates/actors/fuzz/corpus/timer_record/valid.json",
+      "blob": "b74b9aa7b4cd90f84d7b5fdd4745960514a324bd",
+      "sha256": "442010dcafa751f357337e578fb3831b151456e8b1b626827c07ce37878079aa",
+      "bytes": 145
+    },
+    {
+      "path": "rust/crates/actors/fuzz/corpus/timer_record/zero.json",
+      "blob": "f2686d659eefc536102190a3b791cf6d07976fe6",
+      "sha256": "1fde4af1ec0b516bfaf849cc7834cd18271df9bd53337c4432c5d2271ce48a2e",
+      "bytes": 126
+    }
+  ]
+}

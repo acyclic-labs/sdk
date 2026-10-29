@@ -1,6 +1,8 @@
 #![no_main]
-use acyclic_actors::timers::TimerRecord;
+#[path = "../../tests/retired/timers.rs"]
+mod timers;
 use libfuzzer_sys::fuzz_target;
+use timers::TimerRecord;
 #[path = "../../tests/support/timer_oracle.rs"]
 mod oracle;
 

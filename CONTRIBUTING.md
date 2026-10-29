@@ -51,8 +51,8 @@ cargo test --locked -p acyclic-actors --test guest_contract generated_authoring_
 cargo test --locked -p acyclic-actors --test timer_contract generated_timer_authoring_has_no_drift -- --exact
 ```
 
-The producer uses the output path's parent for `guest.ts`, `timers.ts` and
-service metadata. Full TypeScript generation subsequently projects the metadata
+The producer uses the output path's parent for `guest.ts` and service metadata.
+The timer drift check retains its original test-only authoring fixture. Full TypeScript generation subsequently projects the metadata
 into `actors-service.ts`. Rust qualification generates these files before its
 workspace tests; drift checks only compare and never rewrite their inputs.
 
