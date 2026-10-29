@@ -75,6 +75,26 @@ impl<H: CaptureHandler> ProcessCaptureStream<H> {
         self.receiver.recv().await
     }
 
+    /// Polls the original credit receiver without allocating a reader future.
+    pub fn poll_recv(
+        &mut self,
+        context: &mut std::task::Context<'_>,
+    ) -> Poll<Option<ProcessChunk>> {
+        self.receiver.poll_recv(context)
+    }
+
+    /// Joins the original cleanup task without another completion channel.
+    /// Calling before output EOF closes credit and cancels remaining capture.
+    pub fn poll_finish(
+        &mut self,
+        context: &mut std::task::Context<'_>,
+    ) -> Poll<io::Result<CaptureOutcome<H>>> {
+        self.receiver.close();
+        std::pin::Pin::new(&mut self.completion)
+            .poll(context)
+            .map(|result| result.and_then(std::convert::identity))
+    }
+
     /// Joins physical cleanup and returns original callbacks and custody.
     /// Calling before output EOF cancels remaining output and the process.
     pub async fn finish(self) -> io::Result<CaptureOutcome<H>> {
@@ -93,14 +113,14 @@ impl ProcessTree {
     pub fn stream_capture<H: CaptureHandler>(
         self,
         spawner: &crate::TaskSpawner,
-        timeout: Duration,
+        schedule: impl Into<CaptureSchedule>,
         max_bytes: usize,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> ProcessCaptureStream<H> {
         let (sender, receiver) = mpsc::channel(1);
         let completion = spawner.spawn(self.capture_driven(
-            CaptureSchedule::new(timeout),
+            schedule.into(),
             max_bytes,
             input,
             handler,

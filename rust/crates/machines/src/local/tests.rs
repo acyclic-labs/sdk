@@ -12,6 +12,12 @@ fn child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_MACHINE_PROCESS") else {
         return Ok(());
     };
+    if let Some(marker) = std::env::var_os("ACYCLIC_TEST_MACHINE_MARKER") {
+        std::fs::write(
+            marker,
+            std::env::current_dir()?.to_string_lossy().as_bytes(),
+        )?;
+    }
     std::io::stdout().write_all(&[0, 255, 3])?;
     std::io::stdout().flush()?;
     std::io::stderr().write_all(&[0, 254, 4])?;
@@ -19,8 +25,113 @@ fn child() -> io::Result<()> {
     if mode == "credit" {
         std::io::stdout().write_all(&[b'x'; 512 * 1024])?;
     }
-    std::io::stdin().read_exact(&mut [0])?;
+    if mode == "input" {
+        let mut bytes = [0; 4];
+        std::io::stdin().read_exact(&mut bytes)?;
+        assert_eq!(bytes, [0, 255, 7, 0]);
+    } else {
+        std::io::stdin().read_exact(&mut [0])?;
+    }
     std::process::exit(9);
+}
+
+#[tokio::test]
+async fn local_machine_spawns_public_command_once_and_returns_original_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cwd = std::fs::canonicalize(std::env::temp_dir())?;
+    let marker = cwd.join(format!("acyclic-machine-{}", Uuid::new_v4()));
+    let machine = MachineId::new();
+    let local = LocalMachine::new(
+        machine,
+        LocalOptions {
+            cwd: cwd.clone(),
+            environment: BTreeMap::from([
+                ("ACYCLIC_TEST_MACHINE_PROCESS".into(), "input".into()),
+                (
+                    "ACYCLIC_TEST_MACHINE_MARKER".into(),
+                    marker.to_str().unwrap().into(),
+                ),
+            ]),
+            inherit_environment: true,
+            process_custody: None,
+        },
+    )?;
+    let command = || {
+        ExecCommand::new(
+            vec![
+                std::env::current_exe().unwrap().to_str().unwrap().into(),
+                "--exact".into(),
+                "local::tests::child".into(),
+                "--nocapture".into(),
+            ],
+            5_000,
+        )
+        .unwrap()
+        .with_stdin(vec![0, 255, 7, 0])
+    };
+    let buffers = Buffers::default();
+    let handler = || Handler {
+        buffers: buffers.clone(),
+        wake: ProcessWake::new().unwrap(),
+        lose_owner: false,
+    };
+    // The actual child would publish this file before doing anything else.
+    // An expired admission must refuse before creating that real process.
+    let mut refused = local.exec(command().with_expiry(1), handler()).await;
+    assert!(matches!(
+        refused.next().await,
+        Some(Err(ProviderError::Rejected(_)))
+    ));
+    assert!(Arc::ptr_eq(&refused.finish().await?.buffers, &buffers));
+    assert!(!marker.exists());
+    let mut execution = local.exec(command(), handler()).await;
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let mut exit = None;
+    while let Some(frame) = execution.next().await {
+        let (is_stderr, bytes, destination) = match frame? {
+            ExecOutput::Data(bytes) => (false, bytes, &mut stdout),
+            ExecOutput::Stderr(bytes) => (true, bytes, &mut stderr),
+            ExecOutput::ExitCode(code) => {
+                assert!(exit.replace(code).is_none());
+                continue;
+            }
+            ExecOutput::Stopped(stop) => panic!("unexpected native stop: {stop:?}"),
+        };
+        assert!(exit.is_none());
+        let original = buffers.lock().unwrap().pop_front().unwrap();
+        assert_eq!(original, (is_stderr, bytes.as_ptr() as usize, bytes.len()));
+        assert_ne!(
+            original.1,
+            bytes.clone().as_ptr() as usize,
+            "copying fails the same native-buffer oracle"
+        );
+        destination.extend(bytes);
+    }
+    assert_eq!(exit, Some(9));
+    assert!(stdout.ends_with(&[0, 255, 3]));
+    assert_eq!(stderr, [0, 254, 4]);
+    let original = execution.finish().await?;
+    assert!(Arc::ptr_eq(&original.buffers, &buffers));
+    assert_eq!(std::fs::read(&marker)?, cwd.to_string_lossy().as_bytes());
+    std::fs::remove_file(marker)?;
+    let mut lost = local
+        .exec(
+            command(),
+            Handler {
+                buffers,
+                wake: ProcessWake::new()?,
+                lose_owner: true,
+            },
+        )
+        .await;
+    assert!(
+        matches!(lost.next().await, Some(Err(ProviderError::CommandIndeterminate(id))) if id == machine)
+    );
+    assert!(
+        matches!(lost.finish().await, Err(ProviderError::CommandIndeterminate(id)) if id == machine)
+    );
+    Ok(())
 }
 
 type Buffers = Arc<Mutex<VecDeque<(bool, usize, usize)>>>;

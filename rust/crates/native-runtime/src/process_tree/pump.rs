@@ -19,6 +19,9 @@ pub struct CaptureSchedule {
     /// Also run the check this often while nothing else happens. `None`
     /// checks only when output, input, exit or the deadline wakes capture.
     pub check_every: Option<Duration>,
+    /// An original admission deadline, retained across worker submission and
+    /// spawn. When present it replaces the relative `timeout` calculation.
+    pub deadline: Option<Instant>,
 }
 
 impl CaptureSchedule {
@@ -28,6 +31,17 @@ impl CaptureSchedule {
         Self {
             timeout,
             check_every: None,
+            deadline: None,
+        }
+    }
+
+    /// Uses the original caller's deadline without restarting it on a worker.
+    #[must_use]
+    pub const fn until(deadline: Instant) -> Self {
+        Self {
+            timeout: Duration::ZERO,
+            check_every: None,
+            deadline: Some(deadline),
         }
     }
 
@@ -172,12 +186,15 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = now.checked_add(schedule.timeout).ok_or_else(|| {
-            ProcessCaptureFailure::before_capture(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "process deadline overflow",
-            ))
-        })?;
+        let deadline = schedule
+            .deadline
+            .or_else(|| now.checked_add(schedule.timeout))
+            .ok_or_else(|| {
+                ProcessCaptureFailure::before_capture(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process deadline overflow",
+                ))
+            })?;
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;

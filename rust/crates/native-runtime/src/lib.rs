@@ -52,10 +52,10 @@ pub use process_tree::PreparedClosedProcess;
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
-    CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput,
-    ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessControl, ProcessCustody,
-    ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessTree,
-    ProcessTreeIo, ProcessTreeStorage, ProcessWake,
+    CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, CaptureWakes, ControlledCapture,
+    OwnedCaptureInput, ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessControl,
+    ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
+    ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWake,
 };
 
 mod file;

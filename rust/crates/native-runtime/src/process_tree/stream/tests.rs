@@ -76,7 +76,7 @@ impl CaptureHandler for Handler {
 
 fn start(
     mode: &str,
-    timeout: Duration,
+    schedule: impl Into<CaptureSchedule>,
 ) -> io::Result<(
     ProcessCaptureStream<Handler>,
     std::process::ChildStdin,
@@ -103,7 +103,7 @@ fn start(
     let wake = ProcessWake::new()?;
     let output = tree.stream_capture(
         &crate::TaskSpawner::current(),
-        timeout,
+        schedule,
         usize::MAX,
         None,
         Handler {
@@ -180,15 +180,17 @@ async fn receiver_loss_retires_quiet_and_backpressured_children() -> io::Result<
 
 #[tokio::test]
 async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()> {
-    for expired in [false, true] {
-        let timeout = if expired {
-            Duration::from_millis(100)
-        } else {
-            Duration::from_secs(5)
+    for mode in ["stop", "relative", "admitted"] {
+        let schedule = match mode {
+            "admitted" => CaptureSchedule::until(Instant::now()),
+            "relative" => CaptureSchedule::new(Duration::from_millis(100)),
+            _ => CaptureSchedule::new(Duration::from_secs(5)),
         };
-        let (mut output, _input, _, _, wake) = start("credit", timeout)?;
-        assert!(output.recv().await.is_some());
-        if !expired {
+        let (mut output, _input, _, addresses, wake) = start("credit", schedule)?;
+        // An elapsed original deadline allows no pipe read. Restarting the
+        // relative budget instead delivers data, as the other real runs show.
+        assert_eq!(output.recv().await.is_none(), mode == "admitted");
+        if mode == "stop" {
             wake.stop()?;
         }
         // Await the ORIGINAL cleanup owner while retaining the unread receiver.
@@ -197,14 +199,17 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
         let failure = outcome.result.unwrap_err();
         assert_eq!(
             failure.error.kind(),
-            if expired {
-                io::ErrorKind::TimedOut
-            } else {
+            if mode == "stop" {
                 io::ErrorKind::Interrupted
+            } else {
+                io::ErrorKind::TimedOut
             }
         );
         assert!(failure.cleanup_completed);
         assert!(output.receiver.len() <= 1);
+        if mode == "admitted" {
+            assert!(addresses.lock().unwrap().is_empty());
+        }
     }
     Ok(())
 }
