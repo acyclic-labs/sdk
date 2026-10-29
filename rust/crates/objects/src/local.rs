@@ -90,17 +90,19 @@ impl crate::Account<LocalMedium> {
 }
 
 /// Submits `work` at once, so callers collecting several submit them
-/// together and await them after.
+/// together and await them after. The key is an opaque address in the original
+/// invocation, never the caller's object name or prefix. The runtime job identity
+/// distinguishes concurrent invocations even when an address is reused.
 fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'static>(
     medium: &LocalMedium,
     operation: &'static str,
-    key: &dyn std::fmt::Display,
+    key: usize,
     work: F,
 ) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
     let submitted = spawn_persistence(
         "objects",
         operation,
-        &format_args!("{:p}/{key}", Arc::as_ptr(&medium.unflushed)),
+        &format_args!("{:p}/{key:x}", Arc::as_ptr(&medium.unflushed)),
         work,
     );
     async move { submitted.await? }
@@ -463,7 +465,7 @@ impl Medium for LocalMedium {
         getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
         let temporary = self.root.join("tmp").join(hex::encode(name));
         let unflushed = self.unflushed.clone();
-        blocking(self, "create", &key, move || {
+        blocking(self, "create", key.as_ptr() as usize, move || {
             if target.exists() {
                 return Ok(false);
             }
@@ -492,7 +494,7 @@ impl Medium for LocalMedium {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         let path = self.path(key);
-        blocking(self, "read", &key, move || {
+        blocking(self, "read", key.as_ptr() as usize, move || {
             let mut file = match std::fs::File::open(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -519,13 +521,16 @@ impl Medium for LocalMedium {
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         let path = self.path(key);
         let unflushed = self.unflushed.clone();
-        blocking(self, "remove", &key, move || {
-            match unflushed.changed(&path, || std::fs::remove_file(&path)) {
+        blocking(
+            self,
+            "remove",
+            key.as_ptr() as usize,
+            move || match unflushed.changed(&path, || std::fs::remove_file(&path)) {
                 Ok(()) => Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
                 Err(error) => Err(error),
-            }
-        })
+            },
+        )
         .await
         .map_err(failed)
     }
@@ -542,7 +547,7 @@ impl Medium for LocalMedium {
         let temporary = self.root.join("tmp").join(hex::encode(name));
         let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
         let durability = self.durability;
-        blocking(self, "replace", &key, move || {
+        blocking(self, "replace", key.as_ptr() as usize, move || {
             let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
             if !holds(&target, &expected)? {
                 return Ok(false);
@@ -567,7 +572,7 @@ impl Medium for LocalMedium {
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
         let (path, expected) = (self.path(key), expected.to_vec());
         let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
-        blocking(self, "remove-if", &key, move || {
+        blocking(self, "remove-if", key.as_ptr() as usize, move || {
             let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
             if !holds(&path, &expected)? {
                 return Ok(false);
@@ -593,7 +598,7 @@ impl Medium for LocalMedium {
             .cloned()
             .zip(keys)
             .map(|(path, key)| {
-                blocking(self, "flush-content", key, move || {
+                blocking(self, "flush-content", key.as_ptr() as usize, move || {
                     sync_member(&path, durability)
                 })
             })
@@ -607,7 +612,7 @@ impl Medium for LocalMedium {
                 blocking(
                     self,
                     "flush-directory",
-                    &format_args!("{:p}", directory.as_os_str().as_encoded_bytes().as_ptr()),
+                    directory.as_os_str().as_encoded_bytes().as_ptr() as usize,
                     move || sync_member_directory(&directory, durability),
                 )
             })
@@ -616,7 +621,7 @@ impl Medium for LocalMedium {
             directory.await.map_err(failed)?;
         }
         let root = self.root.clone();
-        blocking(self, "flush-batch", &"root", move || {
+        blocking(self, "flush-batch", 0, move || {
             finish_batch(&root, durability)
         })
         .await
@@ -650,7 +655,7 @@ impl Medium for LocalMedium {
         let key = prefix;
         let prefix = prefix.to_owned();
         let after = after.map(str::to_owned);
-        blocking(self, "list", &key, move || {
+        blocking(self, "list", key.as_ptr() as usize, move || {
             let mut out = Vec::new();
             walk(&directory, &prefix, after.as_deref(), limit, &mut out)?;
             Ok(out)
