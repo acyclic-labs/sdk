@@ -125,6 +125,8 @@ impl CheckoutPublisher {
             if original.is_none() {
                 if let Some(native) = native {
                     native.sync().await?;
+                } else if let Some(mounted) = &self.tools.workspace.mounted {
+                    mounted.sync().await.map_err(storage)?;
                 } else if mount.view.source.is_none()
                     && matches!(&publication, Publication::Replace(_))
                 {
@@ -163,6 +165,12 @@ impl CheckoutPublisher {
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
+        if self.tools.workspace.mounted.is_some() {
+            // A native view already projects the committed generation. Advancing
+            // that view replaces physical checkout publication and recapture.
+            reconciliation::advance_mount(&self.tools.workspace, &|| async { Ok(()) }).await?;
+            return Ok(file);
+        }
         // The physical write carries host metadata (mode, owner, times) that
         // the staged generation cannot predict, so it is owed a capture of
         // its own, under the write's operation, so the agent's own write is
