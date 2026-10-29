@@ -105,6 +105,6 @@ pub(in crate::executor) fn stock_project_tool(
         Ok(content) => content,
         Err(violation) => return Ok(Err(violation)),
     };
-    stock_json_bound(&value, Some(limits.render_bytes), io)?;
+    stock_json_bound(&value, limits.render_bytes, io)?;
     Ok(Ok((value, content)))
 }
