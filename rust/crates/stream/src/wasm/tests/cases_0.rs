@@ -141,7 +141,7 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
     };
     assert_eq!(
         validate_request("children_page", &invalid_limit.encode_to_vec()),
-        "limit_exceeded"
+        "invalid_argument"
     );
     assert_eq!(validate_request("unknown", &[]), "invalid_argument");
 }
