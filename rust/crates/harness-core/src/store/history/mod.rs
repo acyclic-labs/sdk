@@ -89,12 +89,32 @@ pub trait HistoryIo: Send {
         Error::Storage(cause.to_string())
     }
     /// Clone authority.
-    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority>;
+    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
+        Ok(Authority {
+            kind: authority.kind,
+            id: self.clone_text(&authority.id)?,
+        })
+    }
     /// Clone text.
     fn clone_text(&mut self, value: &str) -> Result<String>;
 
     /// Reserve text.
-    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()>;
+    fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
+        if capacity <= text.capacity() {
+            return Ok(());
+        }
+        let extra = (capacity - text.capacity()) as u64;
+        self.retain_owned(extra)?;
+        let reserved = self.allocation_attempt(extra).and_then(|()| {
+            text.try_reserve_exact(capacity - text.len())
+                .map_err(|cause| self.allocation_failure(cause))
+        });
+        if let Err(error) = reserved {
+            self.release_owned(extra)?;
+            return Err(error);
+        }
+        self.retain_owned((text.capacity() - capacity) as u64)
+    }
     /// Records the attempt after its storage has been admitted.
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()>;
     /// Admit allocation.

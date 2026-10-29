@@ -1,7 +1,7 @@
 //! Aggregate accounting on the existing IO context.
 use super::HistoryIo;
 use crate::filesystem::PreparationIo;
-use crate::{Error, Result, core::Authority};
+use crate::{Error, Result};
 use acyclic_fs::{
     CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkCounters,
 };
@@ -135,12 +135,6 @@ impl HistoryIo for HistoryWork {
     fn release_owned(&mut self, bytes: u64) -> Result<()> {
         self.io.release(bytes).map_err(Into::into)
     }
-    fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
-        Ok(Authority {
-            kind: authority.kind,
-            id: self.clone_text(&authority.id)?,
-        })
-    }
     fn clone_text(&mut self, text: &str) -> Result<String> {
         self.admit_copy(text.len() as u64)?;
         let mut value = String::new();
@@ -158,25 +152,6 @@ impl HistoryIo for HistoryWork {
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         self.io.allocation_attempt(bytes)
     }
-    fn reserve_text(&mut self, values: &mut String, capacity: usize) -> Result<()> {
-        let old = values.capacity();
-        if capacity <= old {
-            return Ok(());
-        }
-        let extra = (capacity - old) as u64;
-        self.retain_owned(extra)?;
-        let reserved = self.io.allocation_attempt(extra).and_then(|()| {
-            values
-                .try_reserve_exact(capacity - values.len())
-                .map_err(|cause| self.allocation_failure(cause))
-        });
-        if let Err(error) = reserved {
-            self.release_owned(extra)?;
-            return Err(error);
-        }
-        self.retain_owned((values.capacity() - capacity) as u64)
-    }
-
     fn admit_copy(&self, bytes: u64) -> Result<()> {
         HistoryIo::admit_copy(&&self.io, bytes)
     }

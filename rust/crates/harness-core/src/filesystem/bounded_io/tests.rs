@@ -83,13 +83,47 @@ fn denied_vector_growth_does_not_retain_storage() -> Result<()> {
 #[test]
 fn denied_text_growth_releases_its_preclaim() -> Result<()> {
     use crate::store::history::HistoryIo;
+    fn denied(observer: &mut dyn HistoryIo) -> Result<()> {
+        let available = observer.remaining()?.peak_allocation_bytes;
+        let mut text = String::new();
+        let _failure = observer.reserve_text(&mut text, 32).unwrap_err();
+        assert_eq!(text.capacity(), 0);
+        assert_eq!(observer.remaining()?.peak_allocation_bytes, available);
+        #[cfg(not(target_arch = "wasm32"))]
+        if observer.original_native_work().is_some() {
+            assert!(matches!(
+                _failure,
+                Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                        acyclic_fs::WorkError::BudgetExceeded {
+                            counter: "allocation_operations",
+                            ..
+                        }
+                    ),
+                    ..
+                }
+            ));
+        }
+        observer.reserve_text(&mut text, 0)?;
+        Ok(())
+    }
     let mut budget = acyclic_fs::performance::work_budget(100_000, 16_000_000);
     budget.allocation_operations = 0;
     let io = PreparationIo::from_budget(budget, &CancellationToken::new())?;
-    let mut text = String::new();
-    assert!(io.history_io().reserve_text(&mut text, 32).is_err());
-    assert_eq!(text.capacity(), 0);
+    denied(&mut io.history_io())?;
     assert_eq!(io.owned_bytes()?, 0);
+    denied(&mut crate::store::HistoryWork::new(io.scoped()?))?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        budget.allocation_operations = 1;
+        let native = acyclic_fs::NativeMaterializationWork::new(budget, &CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let before = native.live_allocation_bytes();
+        let io = PreparationIo::from_native_work(&native)?;
+        denied(&mut io.history_io())?;
+        denied(&mut crate::store::HistoryWork::new(io.scoped()?))?;
+        assert_eq!(native.live_allocation_bytes(), before);
+    }
     Ok(())
 }
 
