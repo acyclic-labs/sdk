@@ -20,13 +20,29 @@ export class ProcessReport {
   #resolve;
   #completion = new Promise(resolve => { this.#resolve = resolve; });
   #channel;
+  #drainResolve;
+  #drained = new Promise(resolve => { this.#drainResolve = resolve; });
   #ended = false;
   #ownerExited = false;
   #write;
   #sent = false;
   constructor() { this.ready.catch(() => {}); }
-  attach(child) {
-    const channel = this.#channel = child.stdio[3];
+  attach(child, channel = child.stdio[3]) {
+    child.once("exit", () => {
+      this.#ownerExited = true;
+      // Drain bytes already written to the same transport before classifying
+      // a missing reply, even when process exit arrives first.
+      if (this.#ended && this.#request) this.#finish("exited");
+    });
+    if (channel instanceof Promise) channel.then(stream => this.#attachChannel(stream), error => {
+      this.#ended = true;
+      this.#finish(this.#ownerExited ? "exited" : "write-failed", error.code ?? "transport-error");
+      this.#drainResolve();
+    });
+    else this.#attachChannel(channel);
+  }
+  #attachChannel(channel) {
+    this.#channel = channel;
     const decoder = new StringDecoder("utf8");
     let partial = "";
     channel.on("data", chunk => {
@@ -37,20 +53,18 @@ export class ProcessReport {
         catch { this.#finish("write-failed", "invalid-acknowledgement"); }
       }
     });
-    channel.on("error", error => this.#finish("write-failed", error.code ?? "transport-error"));
+    channel.on("error", error => {
+      this.#finish("write-failed", error.code ?? "transport-error");
+      this.#drainResolve();
+    });
     const ended = () => {
       this.#ended = true;
+      this.#drainResolve();
       this.#endReady("write-failed", "control-eof-before-ready");
       if (this.#ownerExited && this.#request) this.#finish("exited");
     };
     channel.on("end", ended);
     channel.on("close", ended);
-    child.once("exit", () => {
-      this.#ownerExited = true;
-      // Exit can precede delivery of bytes already written to the control
-      // pipe. Drain that same pipe before classifying a missing reply.
-      if (this.#ended && this.#request) this.#finish("exited");
-    });
     this.#write = () => {
       if (!this.#request || !this.#ready || this.#terminal || this.#sent) return;
       this.#sent = true;
@@ -58,6 +72,13 @@ export class ProcessReport {
         if (error) this.#finish("write-failed", error.code ?? "transport-error");
       });
     };
+    this.#write();
+  }
+  closeTransport(close) {
+    // The selected process is physically closed. A connected pipe still owns
+    // any acknowledgement bytes already written; an unconnected listener has
+    // no remaining producer and must be withdrawn by that same close owner.
+    return this.#channel ? this.#drained.then(close) : close();
   }
   #receive(message) {
     if (this.#terminal) return;

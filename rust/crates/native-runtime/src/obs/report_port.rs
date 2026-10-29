@@ -8,6 +8,8 @@ use tokio::io::{AsyncBufReadExt as _, AsyncRead, AsyncWrite, AsyncWriteExt as _,
 
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+mod windows;
 
 /// An owner's one report request, bound to its selected launch and drain deadline.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -99,7 +101,11 @@ impl ReportPort {
         {
             unix::open()
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            windows::open()
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             Ok(None)
         }
