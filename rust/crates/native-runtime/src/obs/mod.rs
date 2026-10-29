@@ -9,7 +9,7 @@ mod wait_report;
 mod waiting;
 pub(crate) use tracing::field::Empty;
 pub use wait_report::WaitReport;
-pub use waiting::waiting;
+pub use waiting::{Waiting, waiting};
 
 macro_rules! span {
     ($level:ident, $name:literal $(, $($fields:tt)*)?) => {
