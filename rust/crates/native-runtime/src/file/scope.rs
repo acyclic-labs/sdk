@@ -66,6 +66,8 @@ pub(crate) fn in_file_scope(health: &Arc<FileHealth>) -> bool {
 pub(crate) fn poison_borrowed_file_health(file: &File, health: &Arc<FileHealth>) {
     let anchor = Arc::new(NativeFilePayload {
         file: file.try_clone().unwrap_or_else(|_| std::process::abort()),
+        #[cfg(windows)]
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     });
     poison_file_health(&anchor, health);

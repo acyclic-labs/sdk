@@ -41,6 +41,7 @@ fn state(flags: Vec<Arc<AtomicBool>>, error: bool) -> (DriverState, DriverFile, 
     );
     let file = DriverFile::Original(Arc::new(NativeFilePayload {
         file: tempfile::tempfile().unwrap(),
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     }));
     (state, file, published)
@@ -111,37 +112,44 @@ fn write_completion_retires_real_driver_buffers_before_its_callback() -> io::Res
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
     let directory = tempfile::tempdir()?;
     for overlapped in [false, true] {
+        let path = directory.path().join(format!("write-{overlapped}"));
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .custom_flags(if overlapped { FILE_FLAG_OVERLAPPED } else { 0 })
-            .open(directory.path().join(format!("write-{overlapped}")))?;
+            .open(&path)?;
         let file = Arc::new(NativeFilePayload {
             file,
+            completion_attached: std::sync::atomic::AtomicBool::new(false),
             _allocation: None,
         });
-        let (buffer, dropped) = bytes();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        submit_write(
-            file,
-            overlapped,
-            vec![OwnedWrite {
-                offset: 0,
-                bytes: buffer,
-            }],
-            Box::new(move |result| {
-                let _ = sender.send((result, dropped.load(Ordering::Acquire)));
-            }),
-        )?;
-        let (result, retired) = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)?;
-        result?;
-        assert!(
-            retired,
-            "the real completion callback still owns the write buffer"
-        );
+        // Reuse the actual original overlapped payload across batches. A second
+        // IOCP association or stale identity cache must not be needed.
+        for offset in [0, 3, 6] {
+            let (buffer, dropped) = bytes();
+            let (sender, receiver) = mpsc::sync_channel(1);
+            submit_write(
+                Arc::clone(&file),
+                overlapped,
+                vec![OwnedWrite {
+                    offset,
+                    bytes: buffer,
+                }],
+                Box::new(move |result| {
+                    let _ = sender.send((result, dropped.load(Ordering::Acquire)));
+                }),
+            )?;
+            let (result, retired) = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(io::Error::other)?;
+            result?;
+            assert!(
+                retired,
+                "the real completion callback still owns the write buffer"
+            );
+        }
+        assert_eq!(std::fs::read(path)?, b"abcabcabc");
     }
     Ok(())
 }

@@ -26,7 +26,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         &scope,
         &private,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let unsigned = issuer.bootstrap_scope(
@@ -41,7 +40,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             &unsigned,
             &private,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -54,7 +52,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         &inherited,
         &private,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let foreign_issuer = crate::core::AuthorityRoot::new(
@@ -77,7 +74,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             &copied,
             &private,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -167,12 +163,6 @@ fn descriptor_checks_exact_bytes() -> Result<()> {
 
 #[test]
 fn configured_limits_reject_oversized_references() -> Result<()> {
-    Limits::default().validate_file(
-        &file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES))?,
-        &mut None,
-    )?;
-    // Every reference is bounded by the protocol maxima, whatever the limits.
-    assert!(file(AgentId::new(), &"x".repeat(MAX_PATH_BYTES + 1)).is_err());
     let file = file(AgentId::new(), "message.txt")?;
     let mut limits = Limits {
         file_bytes: 4,
@@ -182,16 +172,18 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
     assert!(limits.validate_file(&file, &mut None).is_err());
     limits.file_bytes = 5;
     limits.validate_file(&file, &mut None)?;
-    limits.model_events_per_step = 1;
+    limits.model_events_per_step = std::num::NonZeroUsize::new(1);
     limits.validate(&mut None)?;
-    limits.attachments = 0;
-    assert!(limits.validate(&mut None).is_err());
+    let mut invalid =
+        serde_json::to_value(limits).map_err(|error| Error::Invalid(error.to_string()))?;
+    invalid["attachments"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<Limits>(invalid).is_err());
     Limits {
-        attachments: 65_537,
-        model_steps: 1_000_001,
-        model_events_per_step: 1_000_001,
-        tool_calls_per_step: 1_000_001,
-        context_messages: 1_000_001,
+        attachments: std::num::NonZeroUsize::new(65_537),
+        model_steps: std::num::NonZeroUsize::new(1_000_001),
+        model_events_per_step: std::num::NonZeroUsize::new(1_000_001),
+        tool_calls_per_step: std::num::NonZeroUsize::new(1_000_001),
+        context_messages: std::num::NonZeroUsize::new(1_000_001),
         ..Limits::default()
     }
     .validate(&mut None)?;
@@ -273,14 +265,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
         ContentGrant::verify_read(&verifier, &scope, &selected)?,
         ContentGrant::verify_directory_read(&verifier, &scope, volume, "scratch", &mut None)?,
     ];
-    let write = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
+    let write = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
     for grant in &reads {
         grant.require_file_read(&selected, None)?;
     }

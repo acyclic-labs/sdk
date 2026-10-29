@@ -3,7 +3,6 @@
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
-    io::Write as _,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::{Arc, Mutex},
@@ -111,7 +110,22 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Runs the binary to its exit, or kills it after a minute.
+struct Capture;
+
+impl acyclic_native_runtime::CaptureHandler for Capture {
+    fn check(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        _: acyclic_native_runtime::ProcessOutput<'_>,
+    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+        Ok(acyclic_native_runtime::ProcessInput::default())
+    }
+}
+
+/// Captures both pipes while delivering input, with a one-minute deadline.
 async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &str) -> Output {
     let mut command = Command::new(build_metadata::EXECUTABLE);
     fixture.custody.configure(&mut command);
@@ -137,23 +151,25 @@ async fn graphcoder(fixture: &Fixture, catalog: &Path, args: Vec<&str>, stdin: &
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let stdin = stdin.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let mut child = command.spawn().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(stdin.as_bytes())
-            .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        let _ = child.kill();
-        child.wait_with_output().unwrap()
+    let tree = acyclic_native_runtime::spawn_blocking(move || {
+        acyclic_native_runtime::ProcessTree::spawn(&mut command)
     })
     .await
+    .unwrap()
+    .unwrap();
+    // The owned capture keeps physical cleanup alive if its caller is dropped.
+    acyclic_native_runtime::spawn(tree.capture(
+        acyclic_native_runtime::CaptureSchedule::new(std::time::Duration::from_secs(60)),
+        None,
+        Some(acyclic_native_runtime::OwnedCaptureInput::Literal(
+            stdin.as_bytes().to_vec(),
+        )),
+        Capture,
+    ))
+    .await
+    .unwrap()
+    .unwrap()
+    .result
     .unwrap()
 }
 

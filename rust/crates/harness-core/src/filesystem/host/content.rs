@@ -61,7 +61,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     volume,
                     key,
                     expected_path: Some(path),
-                    maximum_bytes,
+                    maximum_bytes: Some(maximum_bytes),
                     internal_class: None,
                     purpose: PublicationPurpose::Metadata,
                     scope: grant.policy_scope(),

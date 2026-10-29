@@ -31,8 +31,11 @@ export class SqliteEventStorage implements EventStorage {
   put(key: string, value: string): void {
     this.storage.sql.exec("INSERT INTO acyclic_host_metadata (domain, key, value) VALUES (?, ?, ?) ON CONFLICT(domain, key) DO UPDATE SET value = excluded.value", this.domain, key, value);
   }
-  entries(): [string, string][] {
-    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? ORDER BY key", this.domain), row => {
+  delete(key: string): void {
+    this.storage.sql.exec("DELETE FROM acyclic_host_metadata WHERE domain = ? AND key = ?", this.domain, key);
+  }
+  entries(prefix: string, after: string, limit: number): [string, string][] {
+    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, `${prefix}\uffff`, after, limit), row => {
       if (typeof row.key !== "string" || typeof row.value !== "string") throw new Error("STEP sqlite-metadata-read failed; recovery: restore metadata from a verified SQLite backup");
       return [row.key, row.value];
     });
@@ -76,8 +79,8 @@ export class SqliteJournal {
   private maximumFrameBytes = 0;
   private readonly subscribers = new Set<{ after: number; ready: () => void }>();
   constructor(private readonly storage: SqliteStorage, private readonly domain: string, private readonly appended?: (changes: readonly StreamChange[]) => void) {
-    if (domain.length === 0 || domain.length > 256) {
-      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain of at most 256 characters");
+    if (domain.length === 0) {
+      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain");
     }
   }
 
@@ -197,7 +200,7 @@ function objectKey(value: Uint8Array): string {
 /** Immutable, chunked filesystem objects; put resolves only after durability. */
 export class SqliteObjects {
   constructor(private readonly storage: SqliteStorage, private readonly domain: string) {
-    if (domain.length === 0 || domain.length > 256) throw new Error("STEP sqlite-object-open failed; recovery: choose a domain of 1 to 256 characters");
+    if (domain.length === 0) throw new Error("STEP sqlite-object-open failed; recovery: choose a nonempty domain");
     storage.transactionSync(() => {
       storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_objects (domain TEXT NOT NULL, key TEXT NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, key))");
       storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_object_chunks (domain TEXT NOT NULL, key TEXT NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, key, chunk))");

@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     pub(super) async fn admit_rebased_bindings(
         &self,
         before: ObjectId,
-        maximum: u32,
+        maximum: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(), FsError> {

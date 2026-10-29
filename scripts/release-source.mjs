@@ -1,5 +1,5 @@
+import { commandOutput } from "./process-capture.mjs";
 import fs from 'node:fs';
-import {execFileSync} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 export function checkReleaseVersion(version){
@@ -20,10 +20,10 @@ function releaseSource(){
 const output=process.env.GITHUB_OUTPUT;
 if(!output)throw new Error('GITHUB_OUTPUT is required for release source outputs');
 const version=checkReleaseVersion(process.env.RELEASE_VERSION);
-const sha=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const sha=commandOutput('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 checkReleaseSource(sha,process.env.GITHUB_SHA);
 checkNpmVersions(version,JSON.parse(fs.readFileSync('release/npm-packages.json','utf8')));
-execFileSync(process.execPath,['scripts/publish-cargo-crates.mjs','check',sha,version],{stdio:'inherit'});
+commandOutput(process.execPath,['scripts/publish-cargo-crates.mjs','check',sha,version],{stdio:'inherit'});
 fs.appendFileSync(output,`sha=${sha}\nversion=${version}\nrun=${process.env.GITHUB_RUN_ID}\nattempt=${process.env.GITHUB_RUN_ATTEMPT}\n`);
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))releaseSource();

@@ -4,7 +4,6 @@ import { type WorkspaceRef as WireWorkspaceRef, type GenerationRef as WireGenera
 import { create } from "@bufbuild/protobuf";
 import { deleteStatus, sourceResult, commit, workspaceRebase, joinHistory, fileKind, metadata, wireName, logicalName, extentKind, transactionConflict, joinResult, fileSnapshot, treeEntry, workCounters } from "./hosted-values.js";
 import { secureServiceEndpoint } from "./endpoint.js";
-import { DEFAULT_HOSTED_OPTIONS } from "../generated/defaults.js";
 
 const workspaceOwners = new WeakMap<FsWorkspace, { readonly client: HostedClient; readonly reference: WireWorkspaceRef }>();
 
@@ -125,9 +124,6 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
     },
     async liveRebase(options, idempotencyKey) {
       validateMergeLimits(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebase({
         workspace: reference,
         maximumGenerations: options.maximumGenerations,
@@ -138,8 +134,7 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
       return workspaceRebase(response.status, response.generation, response.conflicts, response.truncated);
     },
     async diff(from, to, maximumChanges) {
-      positiveU32(maximumChanges, "maximum changes");
-      requirePageBound(client, maximumChanges, "maximum changes");
+      if (maximumChanges !== undefined) positiveU32(maximumChanges, "maximum changes");
       return diff(
         client,
         reference.workspaceId,
@@ -150,9 +145,6 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
     },
     async joinInto(target, options) {
       validateMergeLimits(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
       if (options.sourceGeneration !== undefined) requireReference(options.sourceGeneration, "source generation", 6);
       if (options.targetGeneration !== undefined) requireReference(options.targetGeneration, "target generation", 6);
@@ -387,7 +379,7 @@ function transaction(
   const stage = (value: WireMutation): Promise<void> => {
     assertOpen(client);
     if (closed) throw new HostedFsError("closed", "transaction is closed");
-    if (mutations.length >= client.maximumTransactionMutations) {
+    if (client.maximumTransactionMutations !== undefined && mutations.length >= client.maximumTransactionMutations) {
       throw new RangeError("transaction exceeds the advertised mutation bound");
     }
     mutations.push(value);
@@ -427,8 +419,7 @@ function transaction(
       return stage(mutation("cloneRange", { source, sourceOffset, destination, destinationOffset, length }));
     },
     async rebase(maximumConflicts): Promise<TransactionRebaseResult> {
-      positiveU32(maximumConflicts, "maximum conflicts");
-      requirePageBound(client, maximumConflicts, "maximum conflicts");
+      if (maximumConflicts !== undefined) positiveU32(maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebaseTransaction({
         base,
         mutations,
@@ -452,8 +443,6 @@ function transaction(
         base,
         mutations,
         operation: operationOptions,
-        // Generated from Rust's DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS.
-        maximumConflicts: Math.min(DEFAULT_HOSTED_OPTIONS.maximumPageItems, client.maximumPageItems),
       }));
       return commit(response.status, response.generation);
     },
@@ -476,9 +465,8 @@ async function diff(
   workspaceId: Uint8Array,
   from: WireGenerationRef,
   to: WireGenerationRef,
-  maximumChanges: number,
+  maximumChanges: number | undefined,
 ): Promise<FsChangeSet> {
-  requirePageBound(client, maximumChanges, "maximum changes");
   const response = await call(client.rpc.diff({ from, to, maximumChanges }));
   const semantic = generationDiff(response);
   const result: FsChangeSet = {
@@ -486,7 +474,7 @@ async function diff(
     to: generation(client, required(response.to, "diff result")),
     changes: () => semantic,
     async compose(next, bound) {
-      positiveU32(bound, "maximum changes");
+      if (bound !== undefined) positiveU32(bound, "maximum changes");
       const owner = changeSetOwners.get(next);
       if (owner === undefined || owner.client !== client || !equalBytes(owner.workspaceId, workspaceId)
         || !equalBytes(owner.from.generationId, to.generationId)) {

@@ -59,7 +59,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         maximum: u64,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
-        let plaintext_maximum = maximum.min(self.maximum_object_bytes);
+        let plaintext_maximum = maximum.min(self.maximum_object_bytes.unwrap_or(maximum));
         let maximum = self.sealer.stored_limit(id, plaintext_maximum)?;
         let remaining = work.remaining()?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -88,12 +88,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet((blob(id), ByteRange::FULL, maximum), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
                     object_probes: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                future.await.map_err(native_error)
+                future.await.map_err(|error| native_error(error, original))
             }
             _ => {
                 work.charge(WorkCounters {
@@ -154,24 +154,29 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 ByteRange::FULL,
                 self.sealer.stored_limit(
                     request.object_id,
-                    request.maximum_bytes.min(self.maximum_object_bytes),
+                    request
+                        .maximum_bytes
+                        .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                 )?,
             ));
         }
         let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
         let remaining = work.remaining()?;
-        let total = incoming.iter().try_fold(0u64, |total, request| {
-            total.checked_add(request.2).ok_or(WorkError::Overflow)
-        })?;
+        let total = incoming
+            .iter()
+            .try_fold(0u64, |total, request| total.checked_add(request.2));
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.native_work().is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        let mut quota = total.min(remaining.object_bytes_read);
-        if !native {
-            quota = quota.min(remaining.peak_allocation_bytes);
-        }
-        if total > quota {
+        let quota = total.and_then(|total| {
+            let mut quota = remaining.object_bytes_read;
+            if !native {
+                quota = quota.min(remaining.peak_allocation_bytes);
+            }
+            (total <= quota).then_some(total)
+        });
+        let Some(quota) = quota else {
             drop(incoming);
             release(work, custody, request_bytes)?;
             for request in requests {
@@ -184,7 +189,7 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                 values.push(read);
             }
             return Ok((values, output));
-        }
+        };
         let body = if native {
             KernelOwnedAllocation::Standalone
         } else {
@@ -205,14 +210,16 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet(incoming, custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 work.charge(WorkCounters {
                     object_probes: requests.len() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = future.await.map_err(native_error)?;
+                let results = future
+                    .await
+                    .map_err(|error| native_error(error, original))?;
                 values = self.finish_reads::<STORED>(
-                    results.map(|value| value.map_err(native_error)),
+                    results.map(|value| value.map_err(|error| native_error(error, original))),
                     requests,
                     quota,
                     work,
@@ -266,7 +273,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     .sealer
                     .stored_limit(
                         request.object_id,
-                        request.maximum_bytes.min(self.maximum_object_bytes),
+                        request
+                            .maximum_bytes
+                            .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                     )?
                     .min(left),
                 None => 0,
@@ -321,7 +330,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
             let bytes = self.read_representation::<STORED>(
                 request.object_id,
                 value.bytes.clone(),
-                request.maximum_bytes.min(self.maximum_object_bytes),
+                request
+                    .maximum_bytes
+                    .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes)),
                 work,
             )?;
             value.retention = retained(&bytes, work);
