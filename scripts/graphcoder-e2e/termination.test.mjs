@@ -90,6 +90,24 @@ test("selected owner exit cannot discard its already written acknowledgement", {
   } finally { await scope.close(); }
 });
 
+test("a capability wait ends when its report producer closes while the process stays alive", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "no-ready");
+  let physicallyClosed = false;
+  running.child.once("close", () => { physicallyClosed = true; });
+  try {
+    await assert.rejects(running.reportReady, error => error.code === "REPORT_CONTROL_ENDED"
+      && error.outcome === "write-failed");
+    assert.equal(physicallyClosed, false, "port closure does not imply process exit");
+    await scope.close();
+    const result = await running.closed;
+    assert.equal(result.termination.report_outcome, "write-failed");
+    assert.equal(result.termination.report_acknowledged, false);
+    assert.equal(physicallyClosed, true);
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
+});
+
 test("a dropped report request cannot acknowledge and concurrent close joins the same physical owner", { skip: process.platform === "win32" }, async () => {
   const transitions = [];
   const scope = new Processes({ onReport: transition => transitions.push(transition) });

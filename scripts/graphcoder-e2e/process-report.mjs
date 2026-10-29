@@ -14,7 +14,8 @@ export class ProcessReport {
   #request;
   #ready = false;
   #readyResolve;
-  ready = new Promise(resolve => { this.#readyResolve = resolve; });
+  #readyReject;
+  ready = new Promise((resolve, reject) => { this.#readyResolve = resolve; this.#readyReject = reject; });
   #terminal;
   #resolve;
   #completion = new Promise(resolve => { this.#resolve = resolve; });
@@ -23,6 +24,7 @@ export class ProcessReport {
   #ownerExited = false;
   #write;
   #sent = false;
+  constructor() { this.ready.catch(() => {}); }
   attach(child) {
     const channel = this.#channel = child.stdio[3];
     const decoder = new StringDecoder("utf8");
@@ -38,6 +40,7 @@ export class ProcessReport {
     channel.on("error", error => this.#finish("write-failed", error.code ?? "transport-error"));
     const ended = () => {
       this.#ended = true;
+      this.#endReady("write-failed", "control-eof-before-ready");
       if (this.#ownerExited && this.#request) this.#finish("exited");
     };
     channel.on("end", ended);
@@ -77,7 +80,15 @@ export class ProcessReport {
   #finish(outcome, cause, waits = [], acknowledged = false) {
     if (this.#terminal) return;
     this.#terminal = { outcome, cause, waits, acknowledged };
+    this.#endReady(outcome, cause);
     this.#resolve();
+  }
+  #endReady(outcome, cause) {
+    if (this.#ready) return;
+    const error = new Error(`report capability ended: ${cause ?? outcome}`);
+    error.code = "REPORT_CONTROL_ENDED";
+    error.outcome = outcome;
+    this.#readyReject(error);
   }
   request(deadline) {
     if (!this.#request) {
