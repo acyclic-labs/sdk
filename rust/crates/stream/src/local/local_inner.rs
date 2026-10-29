@@ -16,7 +16,7 @@ struct LocalInner {
     synced: watch::Sender<SyncProgress>,
     // Lock order: visibility -> publication -> journal -> failure watch. No failure borrow
     // crosses a visibility/publication wait or provider call. Only poison wakes this watch.
-    failed: watch::Sender<bool>,
+    failed: watch::Sender<Option<LocalStreamFailure>>,
     // Lock order: visibility -> publication -> revision watch; no borrow crosses provider work.
     // Borrow-only admission fence: record/discovery cursors never subscribe.
     revision: watch::Sender<u64>,
@@ -41,13 +41,19 @@ impl LocalInner {
     }
 
     fn poison(&self) -> StreamError {
+        self.fail(LocalStreamFailure::new("publication", "invariant"))
+    }
+
+    fn fail(&self, failure: LocalStreamFailure) -> StreamError {
         #[cfg(loom)]
         let notify =
             !crate::verification::fault_is(crate::verification::Fault::OmitPoisonPublication);
         #[cfg(not(loom))]
         let notify = true;
         if notify {
-            self.failed.send_replace(true);
+            self.failed.send_modify(|first| {
+                first.get_or_insert(failure);
+            });
         }
         // Wake every caller waiting for a flush, so it sees the poison.
         self.synced.send_modify(|_| {});
@@ -61,9 +67,9 @@ impl LocalInner {
             .send_modify(|revision| *revision = revision.saturating_add(1));
     }
 
-    async fn unavailable(failed: &mut watch::Receiver<bool>) -> StreamError {
+    async fn unavailable(failed: &mut watch::Receiver<Option<LocalStreamFailure>>) -> StreamError {
         loop {
-            if *failed.borrow_and_update() {
+            if failed.borrow_and_update().is_some() {
                 return StreamError::Unavailable;
             }
             if failed.changed().await.is_err() {
@@ -152,11 +158,15 @@ impl LocalInner {
             return None;
         };
         journal.syncing = false;
-        if let Ok(completion) = flushed {
-            self.publish_synced(&mut journal, target, completion);
-        } else {
-            drop(journal);
-            self.poison();
+        match flushed {
+            Ok(completion) => self.publish_synced(&mut journal, target, completion),
+            Err(error) => {
+                drop(journal);
+                self.fail(
+                    work.and_then(|work| work.failure("flush"))
+                        .unwrap_or_else(|| LocalStreamFailure::io("flush", &error)),
+                );
+            }
         }
         Some((target, synced_before, journal_bytes))
     }

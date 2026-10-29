@@ -84,7 +84,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
                 flushed: Some(0),
             })
             .0,
-            failed: watch::channel(false).0,
+            failed: watch::channel(None).0,
             revision: watch::channel(0).0,
             omit_follow_wake,
             retain_pending_read: false,

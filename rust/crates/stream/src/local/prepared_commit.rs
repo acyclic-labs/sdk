@@ -131,7 +131,13 @@ impl LocalStream {
         );
         let result = replica.execute_prepared(&command, plan, body).await;
         if replica.is_failed() {
-            self.inner.poison();
+            self.inner.fail(LocalStreamFailure::new(
+                "replicate_prepared",
+                result
+                    .as_ref()
+                    .err()
+                    .map_or("invalid_response", StreamError::code),
+            ));
         }
         let result = result.and_then(|execution| {
             let crate::WriteOutcome::Commit(outcome) = execution.outcome else {

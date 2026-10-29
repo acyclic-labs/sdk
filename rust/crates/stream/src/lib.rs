@@ -158,8 +158,8 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 pub use local::{CutSimulationError, PersistenceCut, fail_cut_truncation};
 #[cfg(feature = "local")]
 pub use local::{
-    LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
-    deferring_provider_durability, requiring_durability,
+    LocalDurability, LocalStream, LocalStreamError, LocalStreamFailure, LocalStreamLimits,
+    deferring_durability, deferring_provider_durability, requiring_durability,
 };
 pub use memory::{MemoryLimits, MemoryStream};
 

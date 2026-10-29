@@ -7,6 +7,7 @@ mod descriptors;
 mod native;
 mod ownership;
 
+mod failure;
 mod wakeups;
 
 mod compaction;
