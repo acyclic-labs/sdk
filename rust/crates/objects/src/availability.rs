@@ -222,30 +222,48 @@ impl AvailabilitySource {
 pub(crate) struct Restoration<'a> {
     source: &'a AvailabilitySource,
     digest: Digest,
-    completed: bool,
+    outcome: RestorationOutcome,
+}
+
+enum RestorationOutcome {
+    NoEffect,
+    Restored,
+    Indeterminate,
 }
 
 impl<'a> Restoration<'a> {
-    pub(crate) fn begin(source: &'a AvailabilitySource, digest: Digest) -> Self {
-        Self {
+    pub(crate) async fn write(
+        source: &'a AvailabilitySource,
+        digest: Digest,
+        write: impl Future<Output = Result<bool, crate::MediumError>>,
+    ) -> Result<bool, crate::MediumError> {
+        // Only a polled physical write can be indeterminate on cancellation.
+        // Classify its original result before any caller can propagate it.
+        let mut restoration = Self {
             source,
             digest,
-            completed: false,
-        }
-    }
-
-    pub(crate) fn complete(mut self, wrote: bool) {
-        if wrote && self.source.restored(self.digest).is_err() {
-            self.source.fail();
-        }
-        self.completed = true;
+            outcome: RestorationOutcome::Indeterminate,
+        };
+        let result = write.await;
+        restoration.outcome = match &result {
+            Ok(true) => RestorationOutcome::Restored,
+            Ok(false) | Err(crate::MediumError::Failed(_)) => RestorationOutcome::NoEffect,
+            Err(crate::MediumError::Ambiguous(_)) => RestorationOutcome::Indeterminate,
+        };
+        result
     }
 }
 
 impl Drop for Restoration<'_> {
     fn drop(&mut self) {
-        if !self.completed {
-            self.source.fail();
+        match self.outcome {
+            RestorationOutcome::NoEffect => {}
+            RestorationOutcome::Restored => {
+                if self.source.restored(self.digest).is_err() {
+                    self.source.fail();
+                }
+            }
+            RestorationOutcome::Indeterminate => self.source.fail(),
         }
     }
 }

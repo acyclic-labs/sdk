@@ -1067,12 +1067,10 @@ impl<M: Medium> Account<M> {
         let Some(indexed) = self.reference(&envelope.references, &tag).await? else {
             return Ok(Put::Unknown);
         };
-        let restoration = crate::availability::Restoration::begin(&self.state.availability, digest);
         let Some(wrote) = self.write_payload(&digest, &envelope, payload).await? else {
             return Ok(Put::Unknown);
         };
         self.completed(&digest, &envelope.version, created || indexed || wrote);
-        restoration.complete(wrote);
         Ok(if created {
             Put::Created { verified }
         } else {
@@ -1090,7 +1088,13 @@ impl<M: Medium> Account<M> {
     ) -> Result<Option<bool>, Error> {
         let key = self.payload_key(digest, &envelope.version);
         loop {
-            match self.medium.create(&key, payload.clone()).await {
+            match crate::availability::Restoration::write(
+                &self.state.availability,
+                *digest,
+                self.medium.create(&key, payload.clone()),
+            )
+            .await
+            {
                 Ok(true) => return Ok(Some(true)),
                 Ok(false) => {}
                 Err(MediumError::Ambiguous(_)) => return Ok(None),

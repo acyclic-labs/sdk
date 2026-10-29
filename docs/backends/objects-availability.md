@@ -22,7 +22,10 @@ a catalog watch cannot replace that connection.
 
 Observers do not retain their producer. Source loss, ambiguous completion and
 cancellation before physical acknowledgment terminate observations with
-`Unavailable`. An uncertain detached write may still complete; the consumer's
+`Unavailable`. A definite no-effect write refusal leaves the source and other
+observations live; the same store can retry once capacity is available. The
+physical write guard classifies the original medium outcome before caller error
+propagation. An uncertain detached write may still complete; the consumer's
 verification decides its result. A failed authority must be reopened by a new
 store/source owner, followed by the mandatory subscribe/verify handshake.
 
