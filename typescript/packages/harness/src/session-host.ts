@@ -74,7 +74,7 @@ export async function serveGrpcSession(host: Server, request: Request): Promise<
           if (terminal) throw terminal;
           const frame = await cursor!.next();
           if (terminal) throw terminal;
-          if (frame === null) throw failure("unavailable");
+          if (frame === null) { finish(); controller.close(); return; }
           controller.enqueue(frame);
         } catch (error) {
           const terminal = cause(error);

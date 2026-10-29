@@ -112,3 +112,31 @@ test("guest Session producer failure and owner loss end output with typed traile
     } finally { response.close(); reader.releaseLock(); f.free(); }
   }
 });
+
+test("guest gRPC Session distinguishes complete upload EOF from truncated envelopes", async () => {
+  for (const ending of ["complete", "header", "body"]) {
+    const f = await fixture();
+    let upload!: ReadableStreamDefaultController<Uint8Array>;
+    const input = new ReadableStream<Uint8Array>({ start(controller) { upload = controller; } }, { highWaterMark: 0 });
+    const response = await serveGrpcSession({ grpcSession: next => Promise.resolve(f.host.grpcSession(next)) }, request(input));
+    const reader = response.body.getReader();
+    try {
+      upload.enqueue(envelope({ body: { case: "hello", value: { version: 1, clientId: crypto.getRandomValues(new Uint8Array(16)),
+        receiveBytes: 1048576n, receiveFrames: 16, credentials: [f.credential] } } }));
+      const welcome = await reader.read();
+      expect(welcome.done).toBe(false);
+      expect(fromBinary(SessionFrameSchema, welcome.value!.subarray(5)).body.case).toBe("welcome");
+      const pending = reader.read();
+      if (ending === "header") upload.enqueue(new Uint8Array([0, 0]));
+      else if (ending === "body") upload.enqueue(new Uint8Array([0, 0, 0, 0, 2, 8]));
+      upload.close();
+      if (ending === "complete") {
+        expect((await pending).done).toBe(true);
+        expect((await response.trailers).get("grpc-status")).toBe("0");
+      } else {
+        await expect(pending).rejects.toMatchObject({ code: "invalid_response" });
+        expect((await response.trailers).get("grpc-status")).toBe("15");
+      }
+    } finally { response.close(); reader.releaseLock(); f.free(); }
+  }
+});
