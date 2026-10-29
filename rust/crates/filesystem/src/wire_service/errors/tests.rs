@@ -133,6 +133,7 @@ fn every_stream_category_survives_the_authority_wrapper() {
     let cases = [
         (E::InvalidPath, Code::InvalidArgument),
         (E::InvalidArgument, Code::InvalidArgument),
+        (E::InvalidResponse, Code::DataLoss),
         (E::LimitExceeded, Code::InvalidArgument),
         (E::NotFound, Code::NotFound),
         (E::AlreadyExists, Code::AlreadyExists),
