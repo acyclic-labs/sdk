@@ -94,6 +94,11 @@ fn inherited_report_port_joins_the_selected_real_process() {
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
         crate::coordination_runtime().unwrap().block_on(async {
             let mut port = ReportPort::from_environment().unwrap().unwrap();
+            if mode == "no-ready" {
+                drop(port);
+                std::future::pending::<()>().await;
+                return;
+            }
             let (_producer, completion) = tokio::sync::oneshot::channel::<()>();
             let _wait = if mode == "live" {
                 Some(crate::obs::waiting(
