@@ -54,17 +54,16 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
         cursor,
         observed_head,
         publish,
-        read_fenced,
+        read,
         wakes,
     } = &mut *session;
     let mut replica = Replicated::new(
         PgJournal {
-            storage: Storage::Connection(client),
+            client,
             publish,
-            read_fenced,
+            read,
             namespace: &namespace,
             wakes,
-            at_millis: 0,
             head: observed_head,
         },
         follower.inner.core.clone(),
@@ -91,12 +90,11 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
     wakes.borrow_and_update();
     let mut forgotten = *cursor;
     let mut journal = PgJournal {
-        storage: Storage::Connection(client),
+        client,
         publish,
-        read_fenced,
+        read,
         namespace: &namespace,
         wakes,
-        at_millis: 0,
         head: &mut forgotten,
     };
     // Negative control: reconstructing from only the applied cursor parks.
@@ -118,5 +116,182 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
             .await?,
         1
     );
+    Ok(())
+}
+
+struct CompetingPublication<'a> {
+    writer: &'a PostgresStream,
+    request: AppendRequest,
+    published: bool,
+}
+
+impl ReplayObserver for CompetingPublication<'_> {
+    async fn observe<'a>(
+        &'a mut self,
+        _: &'a MemoryStream,
+        _: &'a WriteRequest,
+        after: bool,
+    ) -> Result<(), StreamError> {
+        if !after && !self.published {
+            let writer = self.writer.inner.session.lock().await;
+            let free = writer
+                .client
+                .query_one(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1937006962))",
+                    &[&self.writer.inner.namespace],
+                )
+                .await
+                .map_err(unavailable)?;
+            assert!(
+                free.get::<_, bool>(0),
+                "planning retained the publication fence"
+            );
+            drop(writer);
+            self.published = true;
+            self.writer.append(self.request.clone()).await?;
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
+async fn stale_publication_replans_without_retaining_the_losing_identity()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let namespace = format!("stale-publication-{}", uuid::Uuid::new_v4());
+    let provider = PostgresStream::connect(&database, &namespace).await?;
+    let writer = PostgresStream::connect(&database, &namespace).await?;
+    let request = AppendRequest {
+        path: StreamPath::new("contended")?,
+        records: vec!["original".into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    // The other real session commits after our read, before our decision.
+    // Retaining a read-time database fence would deadlock this exact control.
+    let mut session = provider.inner.session.lock().await;
+    let Session {
+        client,
+        cursor,
+        observed_head,
+        publish,
+        read,
+        wakes,
+    } = &mut *session;
+    let mut replica = Replicated::new(
+        PgJournal {
+            client,
+            publish,
+            read,
+            namespace: &namespace,
+            wakes,
+            head: observed_head,
+        },
+        provider.inner.core.clone(),
+        Arc::clone(&provider.inner.clock),
+        *cursor,
+    );
+    let result = replica
+        .execute_with(
+            WriteRequest::Append(request.clone()),
+            None,
+            PAGE,
+            &mut CompetingPublication {
+                writer: &writer,
+                request: AppendRequest {
+                    idempotency_key: IdempotencyKey::unique(),
+                    ..request.clone()
+                },
+                published: false,
+            },
+        )
+        .await?;
+    assert!(matches!(
+        result.outcome,
+        WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 1 })
+    ));
+    *cursor = replica.cursor;
+    drop(replica);
+    let count = client
+        .query_one(
+            "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
+            &[&namespace],
+        )
+        .await?;
+    assert_eq!(count.get::<_, i64>(0), 1);
+    drop(session);
+    assert!(
+        provider
+            .inspect_idempotency(request.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    let corrected = AppendRequest {
+        if_tail: Some(1),
+        ..request
+    };
+    let accepted = provider.append(corrected.clone()).await?;
+    assert_eq!(writer.append(corrected).await?, accepted);
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
+async fn cancelled_acknowledgement_replays_the_committed_identity()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let namespace = format!("cancelled-ack-{}", uuid::Uuid::new_v4());
+    let provider = PostgresStream::connect(&database, &namespace).await?;
+    let peer = PostgresStream::connect(&database, &namespace).await?;
+    let (listener, mut notifications) = tokio_postgres::connect(&database, NoTls).await?;
+    let (sent, received) = tokio::sync::oneshot::channel();
+    let observed = namespace.clone();
+    let notification = tokio::spawn(async move {
+        while let Some(message) =
+            futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
+        {
+            match message {
+                Ok(AsyncMessage::Notification(value)) if value.payload() == observed => {
+                    let _ = sent.send(());
+                    return;
+                }
+                Ok(_) => {}
+                Err(_) => return,
+            }
+        }
+    });
+    listener
+        .batch_execute("LISTEN acyclic_stream_commits")
+        .await?;
+    let request = AppendRequest {
+        path: StreamPath::new("accepted")?,
+        records: vec!["original".into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    {
+        let pending = provider.append(request.clone());
+        tokio::pin!(pending);
+        assert!(futures::poll!(&mut pending).is_pending());
+        // PostgreSQL delivers NOTIFY only after COMMIT. Abandon the caller's
+        // acknowledgement after this real event, without polling it to success.
+        received.await?;
+    }
+    notification.await?;
+    let receipt = peer.append(request.clone()).await?;
+    assert_eq!(provider.append(request).await?, receipt);
+    let rows = peer
+        .inner
+        .session
+        .lock()
+        .await
+        .client
+        .query_one(
+            "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
+            &[&namespace],
+        )
+        .await?;
+    assert_eq!(rows.get::<_, i64>(0), 1);
     Ok(())
 }
