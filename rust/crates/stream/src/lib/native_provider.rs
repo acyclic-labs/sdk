@@ -57,7 +57,7 @@ pub trait NativeStreamProvider: StreamProvider {
         request: WriteRequest,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, WriteOutcome> {
-        let _ = (request, deadline);
+        let _ = request;
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
     /// Executes the canonical native Commit with an owned original guard before every protected publication attempt.
