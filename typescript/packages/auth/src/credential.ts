@@ -127,7 +127,12 @@ export class CredentialCache {
     signal?.throwIfAborted();
     const validity = this.#observe();
     requireRevision(validity);
-    if (this.#current && valid(this.#current, validity)) return this.#current;
+    const current = this.#current;
+    if (current && valid(current, validity) && this.#current === current) {
+      signal?.throwIfAborted();
+      return current;
+    }
+    signal?.throwIfAborted();
     if (this.#flight?.published) this.#flight = undefined;
     if (!this.#flight) {
       const controller = new AbortController();
@@ -138,8 +143,9 @@ export class CredentialCache {
           controller.signal.throwIfAborted();
           return this.#refresh(rejected, controller.signal);
         }).then(snapshot => {
+          const acceptable = valid(snapshot, this.#observe());
           controller.signal.throwIfAborted();
-          if (this.#flight !== flight || !valid(snapshot, this.#observe())) throw new Error("credential source changed or expired");
+          if (this.#flight !== flight || !acceptable) throw new Error("credential source changed or expired");
           if (this.#rejected?.token() === snapshot.token()) throw new Error("credential was rejected by server");
           this.#current = snapshot;
           this.#rejected = undefined;
@@ -151,22 +157,31 @@ export class CredentialCache {
     }
     const flight = this.#flight;
     flight.waiters += 1;
-    try {
-      const snapshot = await abortable(flight.promise, signal);
-      this.check(snapshot);
-      return snapshot;
-    } finally {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
       flight.waiters -= 1;
       if (flight.waiters === 0 && this.#flight === flight) {
         this.#flight = undefined;
         if (!flight.published) flight.controller.abort();
       }
+    };
+    try {
+      // Cancellation withdraws interest in the event callback itself, before
+      // a reentrant source observation can publish an abandoned refresh.
+      const snapshot = await abortable(flight.promise, signal, release);
+      this.check(snapshot);
+      return snapshot;
+    } finally {
+      release();
     }
   }
 
   /** Recheck immediately before dispatch, after channel acquisition or queuing. */
   check(snapshot: CredentialSnapshot): void {
-    if (this.#current !== snapshot || !valid(snapshot, this.#observe())) throw new Error("credential source changed or expired");
+    const acceptable = valid(snapshot, this.#observe());
+    if (this.#current !== snapshot || !acceptable) throw new Error("credential source changed or expired");
   }
 
   /** Only authenticated rejection of this exact request's lease invalidates it. */
@@ -222,11 +237,11 @@ function valid(snapshot: CredentialSnapshot, validity: CredentialValidity): bool
   return snapshot.revision === validity.revision && validity.nowUnixSeconds < snapshot.expiresAtUnixSeconds;
 }
 
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+function abortable<T>(promise: Promise<T>, signal?: AbortSignal, onAbort?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    if (signal?.aborted) { promise.catch(() => {}); reject(signal.reason); return; }
+    if (signal?.aborted) { promise.catch(() => {}); onAbort?.(); reject(signal.reason); return; }
     const cleanup = () => signal?.removeEventListener("abort", abort);
-    const abort = () => { cleanup(); reject(signal?.reason); };
+    const abort = () => { cleanup(); onAbort?.(); reject(signal?.reason); };
     signal?.addEventListener("abort", abort, { once: true });
     promise.then(value => { cleanup(); if (signal?.aborted) reject(signal.reason); else resolve(value); },
       error => { cleanup(); reject(error); });

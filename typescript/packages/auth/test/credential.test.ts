@@ -8,6 +8,42 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+test("observation cannot admit or republish synchronously invalidated custody", async () => {
+  for (const change of ["invalidate", "reject"] as const) {
+    let observeChange = () => {};
+    let calls = 0;
+    const cache = new CredentialCache(async () => new CredentialSnapshot(`synthetic-${++calls}`, "r", 100),
+      () => { const change = observeChange; observeChange = () => {}; change(); return { nowUnixSeconds: 1, revision: "r" }; });
+    const old = await cache.resolve();
+    observeChange = () => { if (change === "invalidate") cache.invalidate(); else cache.reject(old); };
+    expect(() => cache.check(old)).toThrow();
+    const next = await cache.resolve();
+    expect(next).not.toBe(old);
+    expect(calls).toBe(2);
+    cache.check(next);
+  }
+  for (const cancel of [false, true]) {
+    let observeChange = () => {};
+    let abandoned: CredentialSnapshot | undefined;
+    let calls = 0;
+    const controller = new AbortController();
+    const cache = new CredentialCache(async () => {
+      const snapshot = new CredentialSnapshot(`synthetic-${++calls}`, "r", 100);
+      if (calls === 1) {
+        abandoned = snapshot;
+        observeChange = () => { if (cancel) controller.abort(); else cache.invalidate(); };
+      }
+      return snapshot;
+    }, () => { const change = observeChange; observeChange = () => {}; change(); return { nowUnixSeconds: 1, revision: "r" }; });
+    await expect(cache.resolve(controller.signal)).rejects.toThrow();
+    expect(() => cache.check(abandoned!)).toThrow();
+    const current = await cache.resolve();
+    expect(current).not.toBe(abandoned);
+    expect(calls).toBe(2);
+    cache.check(current);
+  }
+});
+
 test("provider projects trusted binding and source changes without raw identity", async () => {
   let revision: string | undefined = "account/audience/1";
   const cache = new CredentialCache(async () => new CredentialSnapshot(`synthetic-${revision}`, revision!, 100),
