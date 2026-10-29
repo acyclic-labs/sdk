@@ -599,11 +599,9 @@ impl Inbox {
         let old = self.bytes.capacity();
         if needed > old {
             let capacity = old.checked_mul(2).ok_or(WorkError::Overflow)?.max(needed);
-            watch.ownership.claim_retained(
-                capacity as u64,
-                copied(self.bytes.len() as u64),
-                work,
-            )?;
+            watch
+                .ownership
+                .claim_retained(capacity as u64, WorkCounters::UNCHARGED, work)?;
             let mut grown = VecDeque::new();
             if let Err(error) = grown.try_reserve_exact(capacity) {
                 watch.ownership.discard_retained(capacity as u64, work)?;
@@ -621,6 +619,11 @@ impl Inbox {
                     watch.ownership.discard_retained(capacity as u64, work)?;
                     return Err(error);
                 }
+            }
+            if let Err(error) = work.started_io(copied(self.bytes.len() as u64)) {
+                drop(grown);
+                watch.ownership.discard_retained(actual as u64, work)?;
+                return Err(error);
             }
             if watch
                 .retained_variable_bytes
