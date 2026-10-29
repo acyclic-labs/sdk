@@ -162,7 +162,7 @@ pub fn console_read(
     input: usize,
     closed: &ConsoleClose,
     bytes: &mut [u8],
-    deadline: Instant,
+    deadline: Option<Instant>,
 ) -> io::Result<usize> {
     // One native read is a chunk; the caller retains the unconsumed input.
     let length = u16::try_from(bytes.len()).unwrap_or(u16::MAX).min(1024);
@@ -172,13 +172,23 @@ pub fn console_read(
     // Close precedes input so simultaneous readiness respects the close fence.
     let handles = [closed.0.as_raw_handle() as HANDLE, input as HANDLE];
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return Ok(0);
-        }
-        let remaining = deadline - now;
-        let millis = remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
-        let timeout = u32::try_from(millis).unwrap_or(u32::MAX - 1);
+        let timeout = match deadline {
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(0);
+                }
+                let remaining = deadline - now;
+                let millis =
+                    remaining.as_millis() + u128::from(remaining.subsec_nanos() % 1_000_000 != 0);
+                // Finite deadlines may need successive native wait chunks;
+                // the reserved INFINITE value belongs only to None.
+                u32::try_from(millis)
+                    .unwrap_or(u32::MAX - 1)
+                    .min(u32::MAX - 1)
+            }
+            None => u32::MAX,
+        };
         // SAFETY: the OS checks the handle; event and count are writable stack
         // storage, and ReadFile receives the exact allocated slice capacity.
         unsafe {
@@ -226,7 +236,6 @@ pub fn console_read(
 mod tests {
     use super::*;
     use std::sync::{Arc, mpsc};
-    use std::time::Duration;
 
     #[test]
     fn owner_close_wakes_input_and_precedes_simultaneous_readiness() -> io::Result<()> {
@@ -241,7 +250,7 @@ mod tests {
                 reader_input.0.as_raw_handle() as usize,
                 &reader_closed,
                 &mut [0; 1],
-                Instant::now() + Duration::from_secs(2),
+                None,
             )
         });
         ready.recv().map_err(io::Error::other)?;
@@ -258,14 +267,9 @@ mod tests {
         // close loses priority the attempted console read fails differently.
         input.close()?;
         assert_eq!(
-            console_read(
-                input.0.as_raw_handle() as usize,
-                &closed,
-                &mut [0; 1],
-                Instant::now() + Duration::from_secs(2),
-            )
-            .unwrap_err()
-            .kind(),
+            console_read(input.0.as_raw_handle() as usize, &closed, &mut [0; 1], None)
+                .unwrap_err()
+                .kind(),
             io::ErrorKind::NotConnected,
         );
         Ok(())
