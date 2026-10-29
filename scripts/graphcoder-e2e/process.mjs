@@ -26,7 +26,8 @@ export class Processes {
   started = 0;
   #transcripts;
   #closing;
-  constructor({ transcripts } = {}) { this.#transcripts = transcripts; }
+  #onReport;
+  constructor({ transcripts, onReport } = {}) { this.#transcripts = transcripts; this.#onReport = onReport; }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
@@ -126,20 +127,37 @@ export class Processes {
     this.stopping = true;
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
-    if (reporting.length) {
-      // The active deadline already failed. The existing drain reservation
-      // permits diagnostics before the same physical termination barrier.
-      let force;
-      const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
-      const deadline = Date.now() + 500;
+    let observationError;
+    const observed = (report, outcome) => {
       try {
-        await Promise.race([Promise.all(reporting.map(child => child.report.request(deadline))), forced]);
-        for (const child of reporting) { child.report.expire(); child.cancel?.(); }
-        await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]);
-      } finally { clearTimeout(force); }
+        this.#onReport?.({ request_id: report.requestId, generation: report.generation,
+          outcome, cause: report.termination?.report_cause });
+      } catch (error) { observationError ??= error; }
+    };
+    try {
+      if (reporting.length) {
+        // The active deadline already failed. The existing drain reservation
+        // permits diagnostics before the same physical termination barrier.
+        let force;
+        const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
+        const deadline = Date.now() + 500;
+        try {
+          const acknowledgements = reporting.map(child => {
+            const completion = child.report.request(deadline);
+            if (!this.#onReport) return completion;
+            observed(child.report, "requested");
+            return completion.then(() => observed(child.report, child.report.termination.report_outcome));
+          });
+          await Promise.race([Promise.all(acknowledgements), forced]);
+          for (const child of reporting) { child.report.expire(); child.cancel?.(); }
+          await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]);
+        } finally { clearTimeout(force); }
+      }
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map(child => child.reaped));
     }
-    for (const child of children) child.kill();
-    await Promise.all(children.map(child => child.reaped));
+    if (observationError) throw observationError;
   }
 }
 
