@@ -57,7 +57,7 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
     let mut received = Vec::new();
     let mut rejected = false;
     loop {
-        let events = match tty.read_events(Instant::now() + Duration::from_millis(20)) {
+        let events = match tty.read_events(None) {
             Err(error)
                 if mode == "rejected-paste" && error.kind() == io::ErrorKind::InvalidData =>
             {

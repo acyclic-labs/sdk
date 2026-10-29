@@ -398,8 +398,7 @@ fn terminal_events(
         .name("graphcoder-input".into())
         .spawn(move || {
             loop {
-                let deadline = Instant::now() + std::time::Duration::from_secs(86_400);
-                let events = tty.read_events(deadline);
+                let events = tty.read_events(None);
                 let failed = events.is_err();
                 if matches!(&events, Ok(events) if events.is_empty()) {
                     continue;

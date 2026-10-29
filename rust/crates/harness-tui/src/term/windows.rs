@@ -250,16 +250,21 @@ impl Tty {
     pub fn restore(&mut self) -> io::Result<()> {
         Owner::close(&self.owner, ConsoleIo::restore)
     }
-    /// Read classified VT input; the decoder coalesces ConPTY CR/LF.
-    pub fn read_events(&mut self, deadline: Instant) -> io::Result<Vec<InputEvent>> {
+    /// Read classified VT input until input, owner close or an optional deadline.
+    /// The decoder coalesces ConPTY CR/LF.
+    pub fn read_events(&mut self, deadline: Option<Instant>) -> io::Result<Vec<InputEvent>> {
         let events = self.decoder.take_events();
         if !events.is_empty() {
             return Ok(events);
         }
         let mut bytes = [0; 1024];
-        let count = self.receive(&mut bytes, self.decoder.input_deadline(deadline))?;
+        let input_deadline = self.decoder.input_deadline(deadline);
+        let count = self.receive_input(&mut bytes, input_deadline)?;
+        if count == 0 && !input_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
         self.decoder.feed(&bytes[..count])?;
-        if count == 0 || Instant::now() >= deadline {
+        if count == 0 || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             self.decoder.finish_input()?;
         }
         Ok(self.decoder.take_events())
@@ -269,6 +274,20 @@ impl Tty {
         Owner::run(&self.owner, deadline, move |guard| {
             guard.writer().write(&bytes)
         })
+    }
+
+    fn receive_input(&mut self, bytes: &mut [u8], deadline: Option<Instant>) -> io::Result<usize> {
+        // Input stays on the caller: a timed-out output worker must never
+        // consume bytes whose result could be abandoned at the deadline.
+        self.owner.check_open()?;
+        let count = ffi::console_read(
+            self.reader.as_raw_handle() as usize,
+            &self.closed,
+            bytes,
+            deadline,
+        )?;
+        self.owner.check_open()?;
+        Ok(count)
     }
 }
 impl ProbeIo for Tty {
@@ -291,18 +310,9 @@ impl ProbeIo for Tty {
         Ok(())
     }
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize> {
-        // Input stays on the caller: a timed-out output worker must never
-        // consume bytes whose result could be abandoned at the deadline.
-        self.owner.check_open()?;
-        let count = ffi::console_read(
-            self.reader.as_raw_handle() as usize,
-            &self.closed,
-            bytes,
-            deadline,
-        )?;
-        self.owner.check_open()?;
-        Ok(count)
+        self.receive_input(bytes, Some(deadline))
     }
+
     fn detected(&mut self, caps: &Capabilities) -> io::Result<()> {
         let caps = caps.clone();
         Owner::run(&self.owner, Instant::now() + PROBE_TIMEOUT, move |guard| {
