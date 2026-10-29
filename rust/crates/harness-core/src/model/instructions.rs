@@ -368,7 +368,7 @@ mod tests {
         let Err(error) = PreparedModelRequest::prepare(
             request,
             Limits {
-                render_bytes: 10_000,
+                render_bytes: Some(10_000),
                 ..Limits::default()
             },
             None,
