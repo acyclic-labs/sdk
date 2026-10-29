@@ -93,7 +93,7 @@ async fn ordinary(body: &[u8]) -> Result<(Arc<Host>, FileRef)> {
             &grant(volume, VolumeOperation::Read)?,
             "ordinary",
             Some(&generation),
-            body.len() as u64,
+            Some(body.len() as u64),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
@@ -328,7 +328,7 @@ async fn a_private_range_by_path_reads_only_its_bytes() -> Result<()> {
             &read,
             "ordinary",
             None,
-            u64::MAX,
+            Some(u64::MAX),
             crate::conversation::ContentAccess {
                 ceiling: None,
                 io: Some(&io),
