@@ -94,6 +94,7 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
             let original: Value = serde_json::from_slice(&bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             for (label, pointer, replacement) in [
+                ("missing signature", "/proof", Value::Null),
                 ("consumed count", "/prior_messages", Value::from(4)),
                 ("step", "/step", Value::from(0)),
                 (

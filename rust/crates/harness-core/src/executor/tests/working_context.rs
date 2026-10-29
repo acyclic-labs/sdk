@@ -2,6 +2,13 @@ use super::*;
 
 #[tokio::test]
 async fn selected_working_cut_survives_followup_steps_and_reopen_before_stages() -> Result<()> {
+    for signed in [false, true] {
+        selected_working_cut_case(signed).await?;
+    }
+    Ok(())
+}
+
+async fn selected_working_cut_case(signed: bool) -> Result<()> {
     let mut journal = Journal::default();
     let issuer = crate::core::AuthorityRoot::new(
         "selected-working-cut",
@@ -11,7 +18,11 @@ async fn selected_working_cut_survives_followup_steps_and_reopen_before_stages()
             id: crate::ConversationId::new().to_string(),
         },
     );
-    journal.8 = Some(issuer.verifier(&mut None)?);
+    journal.8 = if signed {
+        Some(issuer.verifier(&mut None)?)
+    } else {
+        None
+    };
     let (provider, _) = counted_model(
         65_536,
         None,
@@ -80,6 +91,16 @@ async fn selected_working_cut_survives_followup_steps_and_reopen_before_stages()
         .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     assert!(first.bytes().len() < 2_000);
+    let restarted = StockExecution::ordinary(&executor);
+    let replayed = restarted
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .await?;
+    assert_eq!(replayed.bytes(), first.bytes());
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "restart repeated paid compaction"
+    );
     let tail = vec![ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Text("tool result after the cut".into()),

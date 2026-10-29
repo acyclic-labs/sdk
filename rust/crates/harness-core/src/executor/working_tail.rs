@@ -14,7 +14,7 @@ pub(super) struct WorkingCut {
     source: FileRef,
     retained: FileRef,
     compaction: FileRef,
-    proof: ([u8; 32], [u8; 32]),
+    proof: Option<([u8; 32], [u8; 32])>,
 }
 
 impl WorkingCut {
@@ -246,16 +246,19 @@ impl<'a> StockExecution<'a> {
         #[cfg(not(feature = "filesystem"))]
         let io = self.io;
         let cut = retain_preparation(load_json::<WorkingCut>(journal, reference, io).await?)?;
-        let verifier = journal
-            .working_checkpoint_authority()
-            .ok_or_else(|| self.invalid_working_cut())?;
-        let digest = cut.payload_digest(io)?;
-        let mut signature = [0; 64];
-        signature[..32].copy_from_slice(&cut.proof.0);
-        signature[32..].copy_from_slice(&cut.proof.1);
-        with_history_io(io, |work| {
-            verifier.verify_working_checkpoint(digest, &signature, work)
-        })?;
+        match (journal.working_checkpoint_authority(), cut.proof) {
+            (Some(verifier), Some((first, second))) => {
+                let digest = cut.payload_digest(io)?;
+                let mut signature = [0; 64];
+                signature[..32].copy_from_slice(&first);
+                signature[32..].copy_from_slice(&second);
+                with_history_io(io, |work| {
+                    verifier.verify_working_checkpoint(digest, &signature, work)
+                })?;
+            }
+            (None, None) => {}
+            _ => return Err(self.invalid_working_cut()),
+        }
         for file in [&cut.source, &cut.retained, &cut.compaction] {
             with_history_io(io, |work| self.stock.limits.validate_file(file, work))?;
             if file.volume() != reference.volume()
@@ -364,17 +367,19 @@ impl<'a> StockExecution<'a> {
             source,
             retained,
             compaction: crate::model::clone_file(compaction, self.io)?,
-            proof: ([0; 32], [0; 32]),
+            proof: None,
         };
-        let verifier = journal
-            .working_checkpoint_authority()
-            .ok_or_else(|| self.invalid_working_cut())?;
-        let digest = cut.payload_digest(self.io)?;
-        let proof = with_history_io(self.io, |work| {
-            verifier.working_checkpoint_proof(digest, work)
-        })?;
-        cut.proof.0.copy_from_slice(&proof[..32]);
-        cut.proof.1.copy_from_slice(&proof[32..]);
+        if let Some(verifier) = journal.working_checkpoint_authority() {
+            let digest = cut.payload_digest(self.io)?;
+            let proof = with_history_io(self.io, |work| {
+                verifier.working_checkpoint_proof(digest, work)
+            })?;
+            let mut first = [0; 32];
+            let mut second = [0; 32];
+            first.copy_from_slice(&proof[..32]);
+            second.copy_from_slice(&proof[32..]);
+            cut.proof = Some((first, second));
+        }
         stage_json(
             journal,
             input.operation_id,

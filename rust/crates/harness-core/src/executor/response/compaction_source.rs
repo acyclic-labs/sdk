@@ -13,7 +13,10 @@ impl StockExecution<'_> {
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(crate::context::Context, bool)> {
         let selected_base = turn.1 == 0 && turn.0.selected_context.is_some();
-        if selected_base || journal.working_checkpoint_authority().is_some() {
+        if selected_base
+            || projection.working.is_some()
+            || journal.working_checkpoint_authority().is_some()
+        {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
             if selected_base {

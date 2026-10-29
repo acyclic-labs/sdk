@@ -67,7 +67,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
-        let working = if pre_stage && journal.working_checkpoint_authority().is_some() {
+        let working = if pre_stage {
             Some(
                 self.stage_working_cut(
                     journal,

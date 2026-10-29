@@ -59,7 +59,8 @@ pub struct ExecutionJournalCacheId(OperationId);
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticates private working cuts issued by this journal binding.
-    /// Without this capability the executor retains the ordinary replay path.
+    /// Without this capability the original journal's content and compaction
+    /// proof validation still bind its working cut; no signature is claimed.
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
         None
     }
