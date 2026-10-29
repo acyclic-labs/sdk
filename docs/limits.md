@@ -1989,3 +1989,10 @@ Ten further historical timer/yield entries are classified from their enclosing m
 
 
 Qualification355 on signed88f3416385 reaches the same single filesystem-access fixture type error on native and Windows: AgentAuthority now requires the canonical RuntimeAuthority. The fixture projects its existing explicit local AuthorityRoot through the existing From implementation, retaining its original verifier/scope/grants and all read/list denial assertions. This is an authority projection, not a changed optional limit. The new adoption-event and checkpoint-tail code compile without reported errors; custody/agent-model runtime phases were not reached after the all-target failure. Fresh checks remain pending.
+
+
+## Qualification356 and child identity repair
+
+Qualification356 on signed55cdcba7e9 passes affected native and Windows all-target compilation. The complete agent-model target runs47 tests:46 pass,1 fails in the conversation-follow control after its manual status publication preceded committed adoption. The control now drains original adoption before injecting its observation fixture; terminal/refusal assertions remain. The native ownership runtime did not execute because the invocation named a nonexistent integration target; the next qualification uses the complete library target.
+
+Persistent child membership indexes final child IDs under the owning agent. Both wait admission and completion settlement now verify the complete parent path before consulting that index. The regression delivers foreign ChildDone and ChildSettled records with a matching final ID under both any/all waiting, proves the real child remains awaited/open, then proves its actual completion resumes the parent. Foreign wait requests are also excluded. Current-source runtime qualification is pending; this is not milestone readiness.183 Inspect rows and the previously recorded structural gaps remain open.

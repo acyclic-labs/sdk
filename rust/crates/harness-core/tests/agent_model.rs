@@ -490,6 +490,130 @@ async fn a_checkpoint_is_indexed_with_its_append_and_inherited_at_a_spawn() -> R
 }
 
 #[tokio::test]
+async fn awaited_children_are_scoped_to_their_parent() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use std::collections::BTreeSet;
+
+    let path = AgentPath::root(&id(1));
+    let child = path.child(&id(2))?;
+    let foreign = AgentPath::root(&id(3)).child(&id(2))?;
+    for any in [false, true] {
+        for done in [false, true] {
+            let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+            state.open_children.insert(child.clone()).await?;
+            let driver = script(vec![
+                TurnStep {
+                    checkpoint: Some(b"waiting".to_vec()),
+                    outs: Vec::new(),
+                    wait: Wait::Children {
+                        children: BTreeSet::from([child.clone()]),
+                        any,
+                    },
+                    drops: None,
+                },
+                TurnStep {
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: Wait::Input,
+                    drops: None,
+                },
+            ]);
+            let waiting = step(
+                &driver,
+                &path,
+                Some(state),
+                2,
+                Wake::Inbox {
+                    sequence: 1,
+                    record: InboxRecord::Approval(Approval {
+                        id: intent("start"),
+                    }),
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+            assert_eq!(waiting.state.phase, Phase::WaitingChildren { any });
+            let completion = |child| {
+                if done {
+                    InboxRecord::ChildDone(ChildDone {
+                        child,
+                        outcome: AgentOutcome::Succeeded { result: None },
+                    })
+                } else {
+                    InboxRecord::ChildSettled(ChildSettled { child })
+                }
+            };
+            let still_waiting = step(
+                &driver,
+                &path,
+                Some(waiting.state),
+                3,
+                Wake::Inbox {
+                    sequence: 2,
+                    record: completion(foreign.clone()),
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+            assert_eq!(still_waiting.state.phase, Phase::WaitingChildren { any });
+            assert!(still_waiting.state.awaiting.contains(&child).await?);
+            assert!(still_waiting.state.open_children.contains(&child).await?);
+            let settled = step(
+                &driver,
+                &path,
+                Some(still_waiting.state),
+                4,
+                Wake::Inbox {
+                    sequence: 3,
+                    record: completion(child.clone()),
+                },
+                CancellationToken::new(),
+            )
+            .await?;
+            assert_eq!(settled.state.phase, Phase::Idle);
+            assert!(settled.state.awaiting.is_empty());
+            assert_eq!(settled.state.open_children.contains(&child).await?, !done);
+        }
+        // A foreign path is not an open child even when its final ID matches.
+        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+        state.open_children.insert(child.clone()).await?;
+        let driver = script(vec![TurnStep {
+            checkpoint: Some(b"foreign".to_vec()),
+            outs: Vec::new(),
+            wait: Wait::Children {
+                children: BTreeSet::from([foreign.clone()]),
+                any,
+            },
+            drops: None,
+        }]);
+        let continued = step(
+            &driver,
+            &path,
+            Some(state),
+            2,
+            Wake::Inbox {
+                sequence: 1,
+                record: InboxRecord::Approval(Approval {
+                    id: intent("start"),
+                }),
+            },
+            CancellationToken::new(),
+        )
+        .await?;
+        assert_eq!(continued.state.phase, Phase::Running);
+        assert!(continued.state.awaiting.is_empty());
+        assert!(!continued.outs.iter().any(|out| matches!(
+            out,
+            Out::Send {
+                record: InboxRecord::Awaited,
+                ..
+            }
+        )));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn done_reports_to_the_parent_exactly_once() -> Result {
     let parent = AgentPath::root(&id(1));
     let (path, state) = child_of(&parent, 2)?;
