@@ -192,7 +192,7 @@ fn write_record(record: &FileRecord, output: &mut Vec<u8>) {
 }
 
 /// The reader: the Session follow's projection and the tests decode entries.
-#[cfg(any(test, all(feature = "session", not(target_arch = "wasm32"))))]
+#[cfg(any(test, feature = "session"))]
 mod read {
     use super::*;
     use crate::kernel::FileKind;
@@ -302,7 +302,7 @@ mod read {
         NamespacePath::new(components, config.limits).map_err(|_| Malformed)
     }
 }
-#[cfg(any(test, all(feature = "session", not(target_arch = "wasm32"))))]
+#[cfg(any(test, feature = "session"))]
 pub(crate) use read::path;
 
 #[cfg(test)]
