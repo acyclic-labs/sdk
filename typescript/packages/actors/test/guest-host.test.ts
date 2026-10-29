@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { Buffer } from "node:buffer";
 import { GuestActivation } from "../src/guest-host.js";
 import { defineActor, GUEST_ABI_VERSION, type GuestContext } from "../src/guest.js";
 
-test("typed guests preserve original contexts, quiesced checkpoint cuts and terminal failure", async () => {
+test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, quiesced checkpoint cuts and terminal failure (%s)", async backing => {
+  const bytes = (value: number[]) => backing === "Buffer" ? Buffer.from(value) : new Uint8Array(value);
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
   const capturing = Promise.withResolvers<void>(), publish = Promise.withResolvers<void>();
   const account = Array.from(new TextEncoder().encode("account"));
@@ -14,10 +16,11 @@ test("typed guests preserve original contexts, quiesced checkpoint cuts and term
   const codec = {
     identity: { name: "counter", version: "1" },
     readable: [{ name: "counter", version: "1" }],
-    encode: (value: { count: number }) => new Uint8Array([value.count]),
+    encode: (value: { count: number }) => bytes([value.count]),
     decode: (value: { bytes: Uint8Array }) => ({ count: value.bytes[0] ?? 0 }),
   };
   let restores = 0, nextCalls = 0;
+  let capturedSource: Uint8Array | undefined;
   const actor = defineActor<{ count: number }, Record<string, never>>({
     abiVersion: GUEST_ABI_VERSION, codec,
     restore(checkpoint) { restores++; return checkpoint === null ? { count: 0 } : codec.decode(checkpoint); },
@@ -26,7 +29,8 @@ test("typed guests preserve original contexts, quiesced checkpoint cuts and term
       let count = 0;
       state.with(value => { count = value.count; return undefined; });
       capturing.resolve(); await publish.promise;
-      return { codec: codec.identity, bytes: codec.encode({ count }) };
+      capturedSource = codec.encode({ count });
+      return { codec: codec.identity, bytes: capturedSource };
     },
     async fetch(state, request, current) {
       const path = new URL(request.url).pathname;
@@ -39,7 +43,7 @@ test("typed guests preserve original contexts, quiesced checkpoint cuts and term
       return Response.json({ count, delivery: current.deliveryId });
     },
   });
-  const retained = { codec: codec.identity, bytes: new Uint8Array([7]) };
+  const retained = { codec: codec.identity, bytes: bytes([7]) };
   const activation = new GuestActivation(actor, retained, context);
   retained.bytes[0] = 99;
   const held = activation.fetch(new Request("https://example.test/held"), { ...context, deliveryId: "held" });
@@ -51,7 +55,12 @@ test("typed guests preserve original contexts, quiesced checkpoint cuts and term
   await capturing.promise;
   expect(nextCalls).toBe(0);
   publish.resolve();
-  expect((await capture).bytes).toEqual(new Uint8Array([8]));
+  const checkpoint = await capture;
+  expect(checkpoint.bytes).toEqual(new Uint8Array([8]));
+  capturedSource![0] = 77;
+  expect(checkpoint.bytes).toEqual(new Uint8Array([8]));
+  checkpoint.bytes[0] = 88;
+  expect(capturedSource![0]).toBe(77);
   expect(await (await next).json()).toEqual({ count: 9, delivery: "next" });
   expect(restores).toBe(1);
   expect(() => activation.fetch(new Request("https://example.test/"), {

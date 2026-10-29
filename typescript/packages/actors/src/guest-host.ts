@@ -27,7 +27,7 @@ function reference(actor: ActorRuntime): ActorReference | null {
 
 function checkpointCopy(value: Checkpoint): Checkpoint {
   if (!(value.bytes instanceof Uint8Array)) throw new TypeError("checkpoint bytes must be Uint8Array");
-  return { codec: { ...value.codec }, bytes: value.bytes.slice() };
+  return { codec: { ...value.codec }, bytes: new Uint8Array(value.bytes) };
 }
 
 /** One lazy activation of the SDK's typed guest hooks, on local or hosted JavaScript.
