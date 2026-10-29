@@ -133,16 +133,16 @@ impl FileTool {
 
         let input = decode::<PatchFileInput>(&invocation.arguments, work)?;
         let limits = super::patch::PatchLimits {
-            maximum_bytes: context.effective_scope().limits().file_bytes,
+            maximum_bytes: Some(context.effective_scope().limits().file_bytes),
             maximum_work,
             maximum_hunks,
         };
         if work.is_none() {
             limits.validate()?;
         }
-        if input.0.file.descriptor().byte_length() > limits.maximum_bytes
-            || input.0.diff.len() as u64 > limits.maximum_bytes
-        {
+        if limits.maximum_bytes.is_some_and(|maximum| {
+            input.0.file.descriptor().byte_length() > maximum || input.0.diff.len() as u64 > maximum
+        }) {
             return Err(invalid("patch input exceeds original task file bound"));
         }
         let bytes = context.read_file(&input.0.file, io).await?;
@@ -230,7 +230,7 @@ impl FileTool {
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
         let maximum = context.effective_scope().limits().file_bytes;
         if work.is_none() {
-            super::edit::validate_edit_bound(maximum)?;
+            super::edit::validate_edit_bound(Some(maximum))?;
         }
         let bytes = context.read_file(&input.0.file, io).await?;
         let source = std::str::from_utf8(bytes.as_ref())
@@ -240,7 +240,7 @@ impl FileTool {
             source,
             &input.0.old_text,
             &input.0.new_text,
-            maximum,
+            Some(maximum),
             &mut allocation,
         )?;
         context
