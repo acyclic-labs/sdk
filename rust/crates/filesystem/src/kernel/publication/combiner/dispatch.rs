@@ -436,8 +436,16 @@ fn native_seal(
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
-    let mut index = 0;
-    loop {
+    let count = group
+        .state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .members
+        .len();
+    for index in 0..count {
+        let notified = group.signal.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         let proposal = {
             let state = group
                 .state
@@ -446,10 +454,11 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
             if state.phase != Phase::Appending {
                 return Err(PublicationError::GroupAborted.into());
             }
-            state.selected().nth(index).map(Arc::clone)
-        };
-        let Some(proposal) = proposal else {
-            return Ok(());
+            match state.selected_at(index) {
+                Some((_, true)) => return Err(PublicationError::GroupAborted.into()),
+                Some((proposal, false)) => Arc::clone(proposal),
+                None => continue,
+            }
         };
         let mut seal = proposal
             .prepared
@@ -458,13 +467,35 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
             .seal
             .take()
             .ok_or(crate::FsError::InvalidDiff)?;
-        let result = (seal.callback)().await;
+        let result = {
+            let future = (seal.callback)();
+            tokio::pin!(future);
+            loop {
+                tokio::select! {
+                    biased;
+                    () = notified.as_mut() => {
+                        notified.set(group.signal.notified());
+                        notified.as_mut().enable();
+                        let state = group
+                            .state
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if state.phase != Phase::Appending
+                            || state.selected_at(index).is_some_and(|(_, withdrawn)| withdrawn)
+                        {
+                            break Err(PublicationError::GroupAborted.into());
+                        }
+                    }
+                    result = future.as_mut() => break result,
+                }
+            }
+        };
         proposal
             .prepared
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .seal = Some(seal);
         result?;
-        index += 1;
     }
+    Ok(())
 }
