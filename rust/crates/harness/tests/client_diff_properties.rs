@@ -120,10 +120,13 @@ fn publication_failures_are_atomic_for_arbitrary_text_and_budgets() {
         .enable_all()
         .build()
         .expect("property runtime");
-    let strategy = (text(), text(), 1_usize..4096, 1_usize..512);
+    let strategy = (
+        text(), text(), 1_usize..4096, 1_usize..512,
+        1_usize..6, 4_usize..32,
+    );
     let mut runner = TestRunner::new(ProptestConfig::with_cases(32));
     runner
-        .run(&strategy, |(before, after, work, render_bytes)| {
+        .run(&strategy, |(before, after, work, render_bytes, rows, patch_bytes)| {
             runtime.block_on(async {
                 let fixture = Fixture::new().await.expect("fixture");
                 fixture.put("a.txt", &before, "base").await.expect("base");
@@ -179,6 +182,47 @@ fn publication_failures_are_atomic_for_arbitrary_text_and_budgets() {
                                 .as_ref()
                                 .map_or((0, 0), |diff| (diff.added, diff.removed))
                         );
+                        // Reconstruct the independent full-file patch through
+                        // tiny visible pages, including split Unicode lines.
+                        // The bound counts strict cursor advances, not time.
+                        let mut cursor = None;
+                        let mut patch = String::new();
+                        let mut headers = 0;
+                        let mut complete = false;
+                        for _ in 0..expected.as_ref().map_or(1, |file| file.patch.len() + 2) {
+                            let page = view.page(cursor.as_ref(), rows, patch_bytes)
+                                .expect("visible output credit");
+                            let Some(page) = page else {
+                                prop_assert!(expected.is_none());
+                                complete = true;
+                                break;
+                            };
+                            let file = expected.as_ref().expect("changed file");
+                            prop_assert_eq!(page.path.as_str(), "a.txt");
+                            prop_assert_eq!(page.kind, file.kind);
+                            prop_assert_eq!((page.added, page.removed), (file.added, file.removed));
+                            prop_assert!(page.patch.len() <= patch_bytes);
+                            prop_assert!(page.patch.split_inclusive('\n').count()
+                                + usize::from(!page.continued) <= rows);
+                            headers += usize::from(!page.continued);
+                            patch.push_str(&page.patch);
+                            let Some(next) = page.next else {
+                                complete = true;
+                                break;
+                            };
+                            prop_assert_ne!(cursor.as_ref(), Some(&next));
+                            // A cursor cannot silently resume against the old
+                            // generation even if the path still exists there.
+                            prop_assert!(matches!(
+                                original.page(Some(&next), rows, patch_bytes),
+                                Err(acyclic_harness::Error::Conflict(_))
+                            ));
+                            let wire = serde_json::to_vec(&next).expect("cursor encoding");
+                            cursor = Some(serde_json::from_slice(&wire).expect("cursor decoding"));
+                        }
+                        prop_assert!(complete);
+                        prop_assert_eq!(headers, usize::from(expected.is_some()));
+                        prop_assert_eq!(patch.as_str(), expected.as_ref().map_or("", |file| file.patch.as_str()));
                         let applied = view.clone();
                         let replay = view
                             .apply(

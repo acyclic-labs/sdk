@@ -973,6 +973,95 @@ async fn rejected_publications_leave_the_view_and_cursor_unchanged() -> Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn visible_pages_cross_empty_binary_and_omitted_files_without_new_reads() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let base = fixture.source("absent").await?;
+    let files = [
+        ("a-empty", String::new()),
+        ("b-binary", "\0".into()),
+        ("c-unicode", "λ🙂\n".repeat(4)),
+        ("d-omitted", "x".repeat(2048)),
+    ];
+    for (path, text) in &files {
+        fixture.put(path, text, path).await?;
+    }
+    let current = fixture.source("c-unicode").await?;
+    let publication = DiffPublication {
+        previous: base.generation.clone(),
+        generation: current.generation.clone(),
+        paths: files.iter().map(|(path, text)| DiffPath {
+            path: (*path).into(),
+            base: None,
+            current: Some(PinnedContextPath { path: (*path).into(), ..current.clone() }),
+            largest_file_bytes: Some(text.len() as u64),
+            matches_base: false,
+        }).collect(),
+    };
+    let reader = Reader {
+        inner: fixture.reader.as_ref(),
+        reads: AtomicUsize::new(0),
+        expected_limits: None,
+        pause_first: None,
+    };
+    let mut view = DiffView::new(fixture.root.volume.clone(), base.generation)?;
+    view.apply(&publication, &reader, limits()).await?;
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 3, "large body stays cold");
+    // Page controls refuse before touching the authenticated reader, including
+    // serialized positions that do not name a file or a UTF-8 boundary.
+    assert!(view.page(None, 0, 4).is_err());
+    assert!(view.page(None, 1, 0).is_err());
+    let first = view.page(None, 1, 4)?.expect("empty file header");
+    let cursor_wire = serde_json::to_value(first.next.as_ref().expect("binary file follows"))
+        .expect("cursor encoding");
+    for (path, offset) in [("missing", None), ("c-unicode", Some(usize::MAX))] {
+        let mut wire = cursor_wire.clone();
+        wire["path"] = serde_json::json!(path);
+        wire["offset"] = serde_json::json!(offset);
+        let invalid = serde_json::from_value(wire).expect("well-formed position");
+        assert!(matches!(view.page(Some(&invalid), 2, 4), Err(acyclic_harness::Error::Invalid(_))));
+    }
+    let unicode = view.files().get("c-unicode").expect("Unicode patch");
+    let inside_scalar = unicode.patch.find('λ').expect("added Unicode text") + 1;
+    let mut wire = cursor_wire;
+    wire["path"] = serde_json::json!("c-unicode");
+    wire["offset"] = serde_json::json!(inside_scalar);
+    let invalid = serde_json::from_value(wire).expect("well-formed nonboundary position");
+    assert!(matches!(view.page(Some(&invalid), 2, 4), Err(acyclic_harness::Error::Invalid(_))));
+    let mut cursor = None;
+    let mut headers = Vec::new();
+    let mut rendered = std::collections::BTreeMap::<String, String>::new();
+    let mut complete = false;
+    let maximum_pages = view.files().values().map(|file| file.patch.len() + 2).sum::<usize>();
+    for _ in 0..maximum_pages {
+        let page = view.page(cursor.as_ref(), 1, 4)?.expect("next visible file");
+        if !page.continued {
+            headers.push(page.path.clone());
+        }
+        assert!(page.patch.len() <= 4);
+        assert!(page.patch.split_inclusive('\n').count() + usize::from(!page.continued) <= 1);
+        assert_eq!(page.binary, page.path == "b-binary");
+        assert_eq!(page.omitted_bytes, (page.path == "d-omitted").then_some(2048));
+        rendered.entry(page.path).or_default().push_str(&page.patch);
+        let Some(next) = page.next else {
+            complete = true;
+            break;
+        };
+        assert_ne!(cursor.as_ref(), Some(&next), "every page advances");
+        cursor = Some(next);
+    }
+    assert!(complete);
+    assert_eq!(headers, files.iter().map(|(path, _)| *path).collect::<Vec<_>>());
+    for (path, text) in &files[..3] {
+        let expected = FileDiff::between(None, Some(text.as_bytes()), 8192, 1_048_576)?
+            .expect("an added empty file still differs");
+        assert_eq!(rendered[*path], expected.patch);
+    }
+    assert!(rendered["d-omitted"].is_empty());
+    assert_eq!(reader.reads.load(Ordering::SeqCst), 3, "paging performs no reads");
+    Ok(())
+}
+
 #[path = "../client_diff_data.rs"]
 mod data;
 #[path = "../support/file_diff_case.rs"]

@@ -10,7 +10,9 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 mod compute;
 mod file;
+mod page;
 pub use file::{DiffHunk, DiffKind, FileDiff};
+pub use page::{DiffCursor, DiffFilePage};
 use file::{PatchText, render_bound};
 
 /// Caller-owned bounds for query transfer and retained rendering data.
@@ -243,7 +245,8 @@ impl DiffView {
             }
         }
         let mut hasher = blake3::Hasher::new();
-        serde_json::to_writer(&mut hasher, publication)
+        hasher.update(b"acyclic.client.diff-projection/v1\0");
+        serde_json::to_writer(&mut hasher, &(&self.volume, &self.base, publication))
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let digest = *hasher.finalize().as_bytes();
         Ok(digest)
