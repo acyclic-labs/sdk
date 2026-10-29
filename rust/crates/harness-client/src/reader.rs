@@ -15,11 +15,14 @@
 
 mod backing;
 mod cache;
+mod credential;
 mod driver;
 
 pub use backing::RecordBytes;
 use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
+pub use credential::CredentialStatus;
+use credential::{Access, Credentials};
 pub use driver::Driver;
 
 use acyclic_stream::OwnedBytes;
@@ -386,6 +389,8 @@ const MAX_REFUSED: usize = 64;
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
+    /// One encoded snapshot awaiting source admission, separately bounded.
+    pub snapshot_bytes: usize,
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
     /// Uncached charge, including payload retained by cloned views after eviction.
@@ -409,8 +414,13 @@ pub struct Residency {
 
 /// One client's scheduler and cache.
 pub struct Reader {
+    identity: std::sync::Arc<()>,
+    pub(super) source_generation: u64,
     policy: ReaderPolicy,
     cache: RecordCache,
+    credentials: Option<Credentials>,
+    pending_snapshot: Option<Vec<u8>>,
+    driver: Option<std::sync::Arc<()>>,
     demand: BTreeMap<OpKey, Demand>,
     next_ticket: u64,
     inflight: BTreeMap<u64, InFlight>,
@@ -443,8 +453,13 @@ impl Reader {
     pub fn new(policy: ReaderPolicy) -> Result<Self, StreamError> {
         policy.validate()?;
         Ok(Self {
+            identity: std::sync::Arc::new(()),
+            source_generation: 0,
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
+            credentials: None,
+            pending_snapshot: None,
+            driver: None,
             demand: BTreeMap::new(),
             next_ticket: 0,
             inflight: BTreeMap::new(),
@@ -470,6 +485,79 @@ impl Reader {
         })
     }
 
+    pub(crate) fn configure_source<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        provider: &P,
+        now: u64,
+    ) {
+        self.credentials = provider
+            .credential_provider()
+            .cloned()
+            .map(|provider| Credentials::new(provider, now, self.policy.timeout_ms));
+        self.reset_source();
+    }
+
+    fn reset_source(&mut self) {
+        self.source_generation += 1;
+        self.cancelled.extend(self.inflight.keys().copied());
+        self.inflight.clear();
+        self.keys.clear();
+        self.demand.clear();
+        self.refused.clear();
+        self.issues.clear();
+        self.anchors.clear();
+        self.follows.clear();
+        self.hierarchy = None;
+        self.failures = 0;
+        self.since = None;
+        self.retry_at = 0;
+        self.follow_backoff = false;
+        self.prefetch_paused_until = 0;
+        let access = self
+            .credentials
+            .as_ref()
+            .map_or(Access::Local, Credentials::access);
+        self.cache.reset_access(access);
+        match self.credential_status() {
+            CredentialStatus::Current => {
+                if let Some(snapshot) = self.pending_snapshot.take() {
+                    // A cache miss is harmless; it never authenticates a source
+                    // or changes the requested observation's logical outcome.
+                    let _ = self.cache.restore(&snapshot);
+                }
+            }
+            CredentialStatus::Pending => {}
+            _ => self.pending_snapshot = None,
+        }
+        self.generation += 1;
+    }
+
+    fn advance_credentials(&mut self, now: u64, cx: &mut std::task::Context<'_>) -> bool {
+        let changed = self
+            .credentials
+            .as_mut()
+            .is_some_and(|credentials| credentials.poll(now, cx));
+        if changed {
+            self.reset_source();
+            cx.waker().wake_by_ref();
+        }
+        changed
+    }
+
+    /// Qualification is independent of transport connectivity.
+    #[must_use]
+    pub fn credential_status(&self) -> CredentialStatus {
+        self.credentials
+            .as_ref()
+            .map_or(CredentialStatus::Unqualified, Credentials::status)
+    }
+
+    /// Revalidate custody before using any previously rendered projection.
+    #[must_use]
+    pub fn readable(&self) -> bool {
+        self.cache.access.allows()
+    }
+
     /// Borrow the one cache for rendering.
     #[must_use]
     pub fn cache(&self) -> &RecordCache {
@@ -493,13 +581,22 @@ impl Reader {
         self.cache.snapshot()
     }
 
-    /// Warm start from persisted bytes.
+    /// Warm start from persisted bytes. While the registered source resolves,
+    /// retain one bounded snapshot for atomic validation after lease admission.
     ///
     /// # Errors
     /// Refuses malformed bytes or replacement while reads or follows are active.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
         if !self.inflight.is_empty() || !self.follows.is_empty() || !self.demand.is_empty() {
             return Err(SnapshotError);
+        }
+        if self.credential_status() == CredentialStatus::Pending {
+            if bytes.len() > self.cache.snapshot_limit() {
+                return Err(SnapshotError);
+            }
+            self.pending_snapshot = Some(bytes.to_vec());
+            self.generation += 1;
+            return Ok(());
         }
         self.cache.restore(bytes)?;
         self.generation += 1;
@@ -511,6 +608,14 @@ impl Reader {
         let bytes = bytes.clamp(64 * 1024, 256 << 20);
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
+        if self
+            .pending_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.len() > self.cache.snapshot_limit())
+        {
+            self.pending_snapshot = None;
+            self.generation += 1;
+        }
     }
 
     /// Reads issued since construction.
@@ -546,6 +651,12 @@ impl Reader {
     pub fn network_changed(&mut self, online: bool, now: u64) {
         self.generation += 1;
         if online {
+            if let Some(credentials) = self.credentials.as_mut()
+                && credentials.status() == CredentialStatus::Unavailable
+            {
+                credentials.retry(now);
+                self.reset_source();
+            }
             self.failures = 0;
             self.since = None;
             self.retry_at = now;
@@ -560,6 +671,7 @@ impl Reader {
     #[must_use]
     pub fn residency(&self) -> Residency {
         Residency {
+            snapshot_bytes: self.pending_snapshot.as_ref().map_or(0, Vec::len),
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
             backing_bytes: self.cache.backing_bytes(),
@@ -772,7 +884,7 @@ impl Reader {
     pub fn poll(&mut self, now: u64) -> Vec<Op> {
         self.now = now;
         let mut ops = Vec::new();
-        if now < self.retry_at {
+        if !self.ready(now) {
             return ops;
         }
         let offline = matches!(self.connectivity(), Connectivity::Offline { .. });
@@ -876,8 +988,11 @@ impl Reader {
         let Some(flight) = self.inflight.remove(&id) else {
             return;
         };
-        self.generation += 1;
         self.keys.remove(&flight.key);
+        if !self.readable() {
+            return;
+        }
+        self.generation += 1;
         let rtt = now.saturating_sub(flight.issued);
         self.rtt_ms = if self.rtt_ms == 0 {
             rtt
@@ -1226,12 +1341,15 @@ impl Reader {
     /// driver stops polling follows, so session credit applies backpressure.
     #[must_use]
     pub fn accepting(&self) -> bool {
-        self.delivered < self.policy.deliveries
+        self.readable() && self.delivered < self.policy.deliveries
     }
 
     /// Fold one live record. `accepted` is the stream's tail as the server
     /// reported it; a follow that falls behind it jumps on the next frame.
     pub fn deliver(&mut self, stream: &StreamPath, record: Fetched, accepted: u64) {
+        if !self.readable() {
+            return;
+        }
         self.delivered += 1;
         self.generation += 1;
         self.follow_backoff = false;
@@ -1315,7 +1433,7 @@ impl Reader {
     /// Whether connections may be attempted now (outside a backoff).
     #[must_use]
     pub fn ready(&self, now: u64) -> bool {
-        now >= self.retry_at
+        self.readable() && now >= self.retry_at
     }
 
     /// A follow failed to open or ended with an error: back off like a read.
@@ -1345,10 +1463,8 @@ impl Reader {
         let read = self.inflight.values().map(|flight| flight.deadline).min();
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
-        match (read, retry) {
-            (Some(read), Some(retry)) => Some(read.min(retry)),
-            (read, retry) => read.or(retry),
-        }
+        let credential = self.credentials.as_ref().and_then(Credentials::deadline);
+        [read, retry, credential].into_iter().flatten().min()
     }
 }
 

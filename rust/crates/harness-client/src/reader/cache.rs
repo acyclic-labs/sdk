@@ -21,6 +21,7 @@
 //! replaced, and [`RecordCache::forget`] drops that stream's own entries.
 
 use super::backing::{BackingPool, RecordBytes};
+use acyclic_auth::credential::{CredentialBinding, CredentialRevision};
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkOrigin, OwnedBytesBacking, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
@@ -108,6 +109,7 @@ struct Meta {
 
 /// Bounded immutable record cache shared by every renderer.
 pub struct RecordCache {
+    pub(super) access: super::Access,
     entries: BTreeMap<Key, Entry>,
     lru: BTreeMap<u64, Key>,
     meta: BTreeMap<StreamPath, Meta>,
@@ -131,6 +133,7 @@ impl RecordCache {
     #[must_use]
     pub fn new(max_bytes: usize, max_streams: usize) -> Self {
         Self {
+            access: super::Access::default(),
             entries: BTreeMap::new(),
             lru: BTreeMap::new(),
             meta: BTreeMap::new(),
@@ -145,6 +148,28 @@ impl RecordCache {
             max_bytes,
             max_streams,
         }
+    }
+
+    pub(super) fn reset_access(&mut self, access: super::Access) {
+        self.access = access;
+        self.entries.clear();
+        self.lru.clear();
+        self.meta.clear();
+        self.passed.clear();
+        self.passed_bytes = 0;
+        self.bytes = 0;
+        self.cached_payload = 0;
+        self.resident.clear();
+    }
+
+    pub(super) fn snapshot_limit(&self) -> usize {
+        self.max_bytes
+            .saturating_mul(3)
+            .saturating_add(
+                self.max_streams
+                    .saturating_mul(2 * acyclic_stream::MAX_PATH_BYTES + 192),
+            )
+            .saturating_add(MAGIC.len() + 64)
     }
 
     /// Cached charge under the byte budget: keys, values and bookkeeping of
@@ -227,7 +252,7 @@ impl RecordCache {
     /// Whether a primitive observation has established this path's origin.
     #[must_use]
     pub fn origin_known(&self, stream: &StreamPath) -> bool {
-        self.meta.get(stream).is_some_and(|meta| meta.origin_known)
+        self.access.allows() && self.meta.get(stream).is_some_and(|meta| meta.origin_known)
     }
 
     pub(super) fn observation(&self, stream: &StreamPath) -> Option<(u64, u64)> {
@@ -239,6 +264,9 @@ impl RecordCache {
     /// The fork origin, if learned.
     #[must_use]
     pub fn fork(&self, stream: &StreamPath) -> Option<&ForkOrigin> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta.get(stream).and_then(|meta| meta.fork.as_ref())
     }
 
@@ -262,6 +290,9 @@ impl RecordCache {
     /// The commit at `sequence`, if it is the stream's anchor.
     #[must_use]
     pub fn anchor(&self, stream: &StreamPath, sequence: u64) -> Option<CommitId> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta
             .get(stream)
             .and_then(|meta| {
@@ -388,6 +419,9 @@ impl RecordCache {
     /// Highest observed exclusive tail.
     #[must_use]
     pub fn tail(&self, stream: &StreamPath) -> Option<u64> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta.get(stream).and_then(|meta| meta.tail)
     }
 
@@ -459,6 +493,9 @@ impl RecordCache {
 
     /// A cached or passed-through value.
     fn value(&self, key: &Key) -> Option<&Value> {
+        if !self.access.allows() {
+            return None;
+        }
         self.entries
             .get(key)
             .map(|entry| &entry.value)
@@ -501,6 +538,7 @@ impl RecordCache {
                     .range(range)
                     .map(|(key, (value, _))| (key, value)),
             )
+            .filter(|_| self.access.allows())
             .filter_map(|(key, value)| match (key, value) {
                 (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
                 _ => None,
@@ -615,7 +653,13 @@ impl RecordCache {
 
     fn insert(&mut self, key: Key, mut value: Value, charge: usize, protect: Option<u64>) -> bool {
         self.unpass(&key);
-        if charge <= self.max_bytes {
+        let payload = match &value {
+            Value::Record(value) if !self.resident.contains_key(value.backing()) => {
+                value.backing().capacity()
+            }
+            _ => 0,
+        };
+        if charge.saturating_add(payload) <= self.max_bytes {
             self.retain_backing(&value);
             self.clock += 1;
             let used = self.clock;
@@ -728,8 +772,14 @@ impl RecordCache {
     /// allocation sharing; an older entry is omitted when it cannot fit.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
+        let Ok(binding) = self.access.binding() else {
+            return Vec::new();
+        };
         let mut out = Vec::with_capacity(self.bytes);
         out.extend_from_slice(MAGIC);
+        if put_binding(&mut out, binding.as_ref(), self.max_bytes).is_err() {
+            return Vec::new();
+        }
         put_u64(&mut out, self.meta.len() as u64);
         for (path, meta) in &self.meta {
             put_str(&mut out, path.as_str());
@@ -804,7 +854,11 @@ impl RecordCache {
                 _ => {}
             }
         }
-        out
+        if self.access.binding().as_ref() == Ok(&binding) {
+            out
+        } else {
+            Vec::new()
+        }
     }
 
     /// Replace this cache from persisted bytes under its own budget. Restored
@@ -814,7 +868,12 @@ impl RecordCache {
     /// # Errors
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
+        if bytes.len() > self.snapshot_limit() {
+            return Err(SnapshotError);
+        }
+        let binding = self.access.binding()?;
         let mut restored = Self::new(self.max_bytes, self.max_streams);
+        restored.access = self.access.clone();
         // Views from the old cache remain charged through an atomic restore.
         restored.backings = self.backings.clone();
         restored.clock = self.clock;
@@ -823,6 +882,7 @@ impl RecordCache {
         if input.take(MAGIC.len())? != MAGIC {
             return Err(SnapshotError);
         }
+        input.binding(binding.as_ref())?;
         let count = input.count()?;
         if count > self.max_streams {
             return Err(SnapshotError);
@@ -937,6 +997,11 @@ impl RecordCache {
         if !input.0.is_empty() {
             return Err(SnapshotError);
         }
+        // The exact source and original absolute expiry must still hold after
+        // parsing. A renewed lease cannot extend a persisted lease's lifetime.
+        if self.access.binding()? != binding {
+            return Err(SnapshotError);
+        }
         *self = restored;
         Ok(())
     }
@@ -949,6 +1014,36 @@ fn path_len(key: &Key) -> usize {
 }
 
 const MAGIC: &[u8] = b"acyclic.records.v1\n";
+
+fn put_binding(
+    out: &mut Vec<u8>,
+    binding: Option<&CredentialBinding>,
+    budget: usize,
+) -> Result<(), SnapshotError> {
+    let Some(binding) = binding else {
+        out.push(0);
+        return Ok(());
+    };
+    out.push(1);
+    match &binding.revision {
+        CredentialRevision::Bytes(bytes) => {
+            out.push(0);
+            out.extend_from_slice(bytes);
+        }
+        CredentialRevision::Text(units) => {
+            if units.len().saturating_mul(2) > budget {
+                return Err(SnapshotError);
+            }
+            out.push(1);
+            put_u64(out, units.len() as u64);
+            for unit in units.iter() {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+    }
+    put_u64(out, binding.expires_at_unix_seconds);
+    Ok(())
+}
 
 /// Snapshot input exceeds admission bounds, is malformed, or the reader is active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -980,6 +1075,29 @@ fn put_str(out: &mut Vec<u8>, value: &str) {
 struct Input<'a>(&'a [u8]);
 
 impl<'a> Input<'a> {
+    fn binding(&mut self, expected: Option<&CredentialBinding>) -> Result<(), SnapshotError> {
+        match (self.u8()?, expected) {
+            (0, None) => return Ok(()),
+            (1, Some(binding)) => {
+                match (self.u8()?, &binding.revision) {
+                    (0, CredentialRevision::Bytes(bytes)) if self.take(32)? == bytes => {}
+                    (1, CredentialRevision::Text(units)) if self.count()? == units.len() => {
+                        for unit in units.iter() {
+                            if self.take(2)? != unit.to_le_bytes() {
+                                return Err(SnapshotError);
+                            }
+                        }
+                    }
+                    _ => return Err(SnapshotError),
+                }
+                if self.u64()? == binding.expires_at_unix_seconds {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+        Err(SnapshotError)
+    }
     fn take(&mut self, count: usize) -> Result<&'a [u8], SnapshotError> {
         if self.0.len() < count {
             return Err(SnapshotError);
@@ -1073,11 +1191,27 @@ mod tests {
         let full = OwnedBytes::from(vec![5; 8192]);
         let pointer = full.as_slice().as_ptr();
         let mut cache = RecordCache::new(4096, 16);
-        assert!(!cache.insert_record(&stream, 0, full, Some(0)));
+        assert!(cache.insert_record(&stream, 1, OwnedBytes::from(vec![2]), None));
+        assert!(cache.insert_listing(
+            &stream,
+            0,
+            Listing {
+                after: None,
+                children: vec![StreamPath::new("record/child").unwrap()],
+                next: None,
+                fresh: true,
+                witnessed: None,
+            },
+            None,
+        ));
+        let mark = cache.begin_frame();
+        assert!(!cache.insert_record(&stream, 0, full, Some(mark)));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ptr(), pointer);
-        assert_eq!(cache.backing_bytes(), 8192);
+        assert_eq!(cache.record(&stream, 1).unwrap().as_ref(), &[2]);
+        assert!(cache.listing(&stream, 0).is_some());
+        assert_eq!(cache.backing_bytes(), 8193);
         cache.retain_passed(|_, _| false);
-        assert_eq!(cache.backing_bytes(), 0);
+        assert_eq!(cache.backing_bytes(), 1);
 
         // After memory pressure, a new tiny record must not prolong an old
         // giant view's allocation once that view leaves the viewport.
@@ -1101,7 +1235,7 @@ mod tests {
         }
         assert_eq!(cache.backing_bytes(), 4096);
         let bytes = cache.snapshot();
-        assert!(bytes.len() <= MAGIC.len() + 16 + 2 * 8192);
+        assert!(bytes.len() <= MAGIC.len() + 17 + 2 * 8192);
         let mut restored = RecordCache::new(8192, 16);
         restored.restore(&bytes).unwrap();
         assert!(restored.record(&stream, 31).is_some());

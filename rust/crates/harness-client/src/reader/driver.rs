@@ -30,6 +30,8 @@ type Opening = LocalBoxFuture<'static, Option<Opened>>;
 
 /// Executes one reader's ops and follows on one provider.
 pub struct Driver<P: ?Sized> {
+    identity: Arc<()>,
+    reader: Option<Arc<()>>,
     provider: Arc<P>,
     ops: FuturesUnordered<LocalBoxFuture<'static, Option<(u64, Outcome)>>>,
     aborts: BTreeMap<u64, AbortHandle>,
@@ -43,6 +45,8 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     /// A driver over one provider session.
     pub fn new(provider: Arc<P>) -> Self {
         Self {
+            identity: Arc::new(()),
+            reader: None,
             provider,
             ops: FuturesUnordered::new(),
             aborts: BTreeMap::new(),
@@ -58,16 +62,55 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.follows.len() + self.pending.len()
     }
 
+    /// Register this provider's source before restoring or accessing retained
+    /// state. Repeated attachment of the same pair does no work. Replacing
+    /// either member retires outstanding observations and cached authority.
+    pub fn attach(&mut self, reader: &mut Reader, now: u64) {
+        let attached = self
+            .reader
+            .as_ref()
+            .is_some_and(|identity| Arc::ptr_eq(identity, &reader.identity))
+            && reader
+                .driver
+                .as_ref()
+                .is_some_and(|driver| Arc::ptr_eq(driver, &self.identity));
+        if !attached {
+            reader.configure_source(self.provider.as_ref(), now);
+            reader.driver = Some(self.identity.clone());
+            self.reader = Some(reader.identity.clone());
+            self.clear();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.ops = FuturesUnordered::new();
+        self.aborts.clear();
+        self.opening = FuturesUnordered::new();
+        self.pending.clear();
+        self.follows.clear();
+    }
+
     /// Advance once: start admitted reads, fold completions, reconcile and
     /// drain follows within the frame budget. Wakes `cx` on progress.
     pub fn step(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
+        self.attach(reader, now);
+        let changed = reader.advance_credentials(now, cx);
+        if changed {
+            self.clear();
+        }
+        if !reader.readable() {
+            if !changed {
+                self.clear();
+            }
+            return;
+        }
         for id in reader.take_cancelled() {
             if let Some(abort) = self.aborts.remove(&id) {
                 abort.abort();
             }
         }
         for op in reader.poll(now) {
-            self.start(op);
+            self.start(op, reader.cache.access.clone());
         }
         let mut completed = false;
         while let Poll::Ready(Some(done)) = self.ops.poll_next_unpin(cx) {
@@ -123,14 +166,27 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.drain(reader, now, cx);
     }
 
-    fn start(&mut self, op: Op) {
+    fn start(&mut self, op: Op, access: super::Access) {
         let provider = Arc::clone(&self.provider);
         let id = op.id();
         let (abort, registration) = AbortHandle::new_pair();
         self.aborts.insert(id, abort);
-        let work = async move { (id, execute(provider.as_ref(), op).await) };
+        let work = async move {
+            if !access.check().await {
+                return Some((id, Outcome::Failed(Failure::Unavailable)));
+            }
+            let outcome = execute(provider.as_ref(), op).await;
+            Some((
+                id,
+                if access.check().await {
+                    outcome
+                } else {
+                    Outcome::Failed(Failure::Unavailable)
+                },
+            ))
+        };
         self.ops.push(Box::pin(async move {
-            Abortable::new(work, registration).await.ok()
+            Abortable::new(work, registration).await.ok().flatten()
         }));
     }
 
@@ -162,23 +218,34 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let anchor = reader.follow_anchor(&path, from);
             let observed = reader.cache().observation(&path);
             let provider = Arc::clone(&self.provider);
+            let access = reader.cache.access.clone();
             let open = async move {
                 let opened = async {
-                    let head = provider.head(path.clone()).await?;
+                    if !access.check().await {
+                        return Err(StreamError::Unavailable);
+                    }
+                    let head = provider.head(path.clone()).await;
+                    if !access.check().await {
+                        return Err(StreamError::Unavailable);
+                    }
+                    let head = head?;
                     let records = provider
                         .follow(acyclic_stream::FollowRequest {
                             preceding: anchor,
                             ..acyclic_stream::FollowRequest::new(path.clone(), from)
                         })
                         .await
-                        .map(acyclic_stream::records_only)?;
-                    Ok((head, records))
+                        .map(acyclic_stream::records_only);
+                    if !access.check().await {
+                        return Err(StreamError::Unavailable);
+                    }
+                    records.map(|records| (head, records))
                 }
                 .await;
-                (path, from, observed, opened)
+                Some((path, from, observed, opened))
             };
             self.opening.push(Box::pin(async move {
-                Abortable::new(open, registration).await.ok()
+                Abortable::new(open, registration).await.ok().flatten()
             }));
         }
     }
@@ -311,6 +378,164 @@ mod tests {
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
+    fn lost_check_producer_retires_the_request_without_waiting_for_timeout() {
+        use super::super::{Connectivity, Priority, ReaderPolicy, Want};
+        use acyclic_auth::credential::{
+            CredentialAction, CredentialBinding, CredentialCache, CredentialCacheError,
+            CredentialError, CredentialProvider, CredentialRequest, CredentialRevision,
+            CredentialSnapshot, CredentialValidity, ResolvedCredential,
+        };
+        use futures::channel::oneshot;
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        use std::task::{Wake, Waker};
+
+        struct WakeFlag(AtomicBool);
+        impl Wake for WakeFlag {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct Request {
+            lease: ResolvedCredential,
+            wait_at: usize,
+            calls: Arc<AtomicUsize>,
+            receive: Mutex<Option<oneshot::Receiver<()>>>,
+            revoke_on_loss: bool,
+        }
+        impl CredentialRequest for Request {
+            fn token(&self) -> &str {
+                self.lease.as_str()
+            }
+            fn binding(&self) -> Option<CredentialBinding> {
+                self.lease.binding()
+            }
+            fn check(&self) -> CredentialAction<()> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.wait_at {
+                    let receive = self.receive.lock().unwrap().take().unwrap();
+                    let lease = self.lease.clone();
+                    let revoke_on_loss = self.revoke_on_loss;
+                    CredentialAction::Pending(Box::pin(async move {
+                        if receive.await.is_err() {
+                            if revoke_on_loss {
+                                lease.reject().await?;
+                            }
+                            return Err(CredentialError::Provider(Box::new(
+                                CredentialCacheError::Unavailable,
+                            )));
+                        }
+                        lease.check().await
+                    }))
+                } else {
+                    self.lease.check()
+                }
+            }
+            fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+                self.lease.retained_access()
+            }
+            fn reject(&self) -> CredentialAction<bool> {
+                self.lease.reject()
+            }
+        }
+
+        futures::executor::block_on(async {
+            let stream = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("check/loss").unwrap();
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"committed".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"check loss".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let head = stream.head(path.clone()).await.unwrap();
+            // The first check admits the original request. Lose the producer
+            // at each read or follow boundary on the actual provider.
+            for (follow, wait_at, revoke_on_loss) in [
+                (false, 2, false),
+                (false, 3, false),
+                (true, 2, false),
+                (true, 3, false),
+                (true, 4, false),
+                (false, 2, true),
+                (false, 3, true),
+            ] {
+                let provider: CredentialProvider = CredentialCache::new(
+                    |_| async {
+                        CredentialSnapshot::new(
+                            "credential".into(),
+                            CredentialRevision::from([1; 32]),
+                            20,
+                        )
+                    },
+                    || CredentialValidity {
+                        now_unix_seconds: 10,
+                        revision: Some(CredentialRevision::from([1; 32])),
+                    },
+                )
+                .into();
+                let (send, receive) = oneshot::channel();
+                let calls = Arc::new(AtomicUsize::new(0));
+                let lease = ResolvedCredential::from_custodian(Request {
+                    lease: provider.resolve().await.unwrap(),
+                    wait_at,
+                    calls: calls.clone(),
+                    receive: Mutex::new(Some(receive)),
+                    revoke_on_loss,
+                })
+                .await
+                .unwrap();
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                let mut driver = Driver::new(stream.clone());
+                driver.attach(&mut reader, 0);
+                reader.cache.access = super::super::Access::Lease(lease);
+                if follow {
+                    reader.cache.observe_origin(&path, head.origin.clone());
+                    reader.cache.observe_tail(&path, head.tail);
+                    reader.set_follows([path.clone()]);
+                } else {
+                    reader.plan([(
+                        Want::Range {
+                            stream: path.clone(),
+                            from: 0,
+                            to: 1,
+                        },
+                        Priority::Visible,
+                    )]);
+                }
+                let ready = Arc::new(WakeFlag(AtomicBool::new(false)));
+                let waker = Waker::from(ready.clone());
+                let mut cx = Context::from_waker(&waker);
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(reader.residency().requests, usize::from(!follow));
+                assert_eq!(driver.open_follows(), usize::from(follow));
+                ready.0.store(false, Ordering::SeqCst);
+                drop(send);
+                assert!(ready.0.load(Ordering::SeqCst));
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(reader.residency().requests, 0);
+                assert_eq!(driver.open_follows(), 0);
+                assert_eq!(calls.load(Ordering::SeqCst), wait_at);
+                assert!(driver.aborts.is_empty());
+                assert!(reader.cache().record(&path, 0).is_none());
+                assert!(reader.issues().next().is_none());
+                if revoke_on_loss {
+                    assert!(!reader.readable());
+                } else {
+                    assert!(matches!(
+                        reader.connectivity(),
+                        Connectivity::Degraded { .. }
+                    ));
+                }
+            }
+        });
+    }
+
+    #[test]
     fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
         use super::super::{Priority, ReaderPolicy, Want};
 
@@ -433,6 +658,7 @@ mod tests {
                 .await
                 .unwrap();
             let head = provider.head(path.clone()).await.unwrap();
+            let mut driver = Driver::new(provider);
             let mut reader = Reader::new(ReaderPolicy {
                 requests: 2,
                 prefetch_requests: 1,
@@ -440,6 +666,10 @@ mod tests {
                 ..ReaderPolicy::default()
             })
             .unwrap();
+            let ready = Arc::new(Ready(AtomicBool::new(true)));
+            let waker = Waker::from(Arc::clone(&ready));
+            let mut cx = Context::from_waker(&waker);
+            driver.attach(&mut reader, 0);
             reader.cache_mut().observe_origin(&path, head.origin);
             reader.cache_mut().observe_tail(&path, head.tail);
             reader.plan((0..head.tail).map(|from| {
@@ -452,10 +682,9 @@ mod tests {
                     Priority::Visible,
                 )
             }));
-            let mut driver = Driver::new(provider);
-            let ready = Arc::new(Ready(AtomicBool::new(true)));
-            let waker = Waker::from(Arc::clone(&ready));
-            let mut cx = Context::from_waker(&waker);
+            // An explicit startup attachment and subsequent steps retain the
+            // same plan; attachment must not register/reset the source twice.
+            driver.attach(&mut reader, 0);
             // Drive only actual wakes to quiescence, without another plan.
             while ready.0.swap(false, Ordering::SeqCst) {
                 driver.step(&mut reader, 0, &mut cx);

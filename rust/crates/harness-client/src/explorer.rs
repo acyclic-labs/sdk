@@ -52,9 +52,7 @@ mod tests {
     use super::*;
     use crate::reader::{ListedChild, Listing, Op, Outcome};
     use acyclic_harness_core::agent::AgentId;
-    use acyclic_stream::{
-        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProvider,
-    };
+    use acyclic_stream::{AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream};
 
     /// Directory data comes from the actual provider. Only the first and
     /// late pages remain cached, as after scrolling through a large tree.
@@ -149,6 +147,25 @@ mod tests {
                 explorer.reader.poll(1).as_slice(),
                 [Op::Children { index: 129, .. }]
             ));
+            explorer.frame(2);
+            assert!(
+                explorer
+                    .rows()
+                    .iter()
+                    .any(|(_, row)| matches!(row, Row::Agent { .. }))
+            );
+            let mut replacement =
+                crate::reader::Driver::new(std::sync::Arc::new(MemoryStream::default()));
+            let waker = futures::task::noop_waker();
+            replacement.step(
+                explorer.reader(),
+                2,
+                &mut std::task::Context::from_waker(&waker),
+            );
+            // Previously rendered clones belong to the original observation,
+            // even though this new provider is readable and unqualified.
+            assert!(explorer.reader_ref().readable());
+            assert!(explorer.rows().is_empty());
         });
     }
 }
@@ -211,6 +228,7 @@ pub struct Explorer {
     seen: BTreeMap<StreamPath, (AgentPath, u64)>,
     history: Option<History>,
     rows: Vec<(Pos, Row)>,
+    rows_source: u64,
 }
 
 fn stream(text: &str) -> Option<StreamPath> {
@@ -263,6 +281,7 @@ impl Explorer {
             seen: BTreeMap::new(),
             history: None,
             rows: Vec::new(),
+            rows_source: 0,
         })
     }
 
@@ -877,7 +896,8 @@ impl Explorer {
                 }
             }
         }
-        &self.rows
+        self.rows_source = self.reader.source_generation;
+        self.rows()
     }
 
     /// Listing pages of every expanded ancestor of the visible rows.
@@ -979,7 +999,11 @@ impl Explorer {
     /// Rows of the last frame.
     #[must_use]
     pub fn rows(&self) -> &[(Pos, Row)] {
-        &self.rows
+        if self.reader.readable() && self.rows_source == self.reader.source_generation {
+            &self.rows
+        } else {
+            &[]
+        }
     }
 
     /// Parent stream of the top level.
