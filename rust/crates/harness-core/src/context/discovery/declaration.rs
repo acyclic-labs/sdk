@@ -302,11 +302,12 @@ impl PinnedContextPath {
     pub async fn read(
         &self,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        if maximum_bytes == 0 {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes == Some(0) {
             return Err(Error::Invalid(
-                "context body requires a finite positive byte bound".into(),
+                "context body byte policy must be positive".into(),
             ));
         }
         self.read_remaining(reader, maximum_bytes).await
@@ -318,10 +319,12 @@ impl PinnedContextPath {
     pub async fn read_remaining(
         &self,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let maximum_bytes = maximum_bytes.into();
         self.validate(&mut None)?;
-        if maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+        if maximum_bytes.is_some_and(|maximum| maximum > crate::conversation::MAX_EXACT_JS_INTEGER)
+        {
             return Err(Error::Invalid(
                 "context byte bound exceeds protocol precision".into(),
             ));
@@ -332,13 +335,13 @@ impl PinnedContextPath {
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                Some(maximum_bytes),
+                maximum_bytes,
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
         if file.volume() != &self.root.volume
             || file.path() != self.path
-            || bytes.len() as u64 > maximum_bytes
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
         {
             return Err(Error::Storage(
                 "pinned path reader returned another file".into(),

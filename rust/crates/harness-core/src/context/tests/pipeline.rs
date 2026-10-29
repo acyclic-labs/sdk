@@ -127,7 +127,7 @@ async fn sources_and_joins_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..limits
                 },
                 None

@@ -115,7 +115,15 @@ impl FileTool {
         };
         let encoded = super::value(
             &result,
-            Some(maximum_result_bytes.min(context.effective_scope().limits().file_bytes)),
+            Some(
+                context
+                    .effective_scope()
+                    .limits()
+                    .file_bytes
+                    .map_or(maximum_result_bytes, |maximum| {
+                        maximum_result_bytes.min(maximum)
+                    }),
+            ),
             work,
         )?;
         Ok((ToolResult { value: encoded.0 }, encoded.1))
@@ -133,7 +141,7 @@ impl FileTool {
 
         let input = decode::<PatchFileInput>(&invocation.arguments, work)?;
         let limits = super::patch::PatchLimits {
-            maximum_bytes: Some(context.effective_scope().limits().file_bytes),
+            maximum_bytes: context.effective_scope().limits().file_bytes,
             maximum_work,
             maximum_hunks,
         };
@@ -291,7 +299,7 @@ impl FileTool {
         let input = decode::<EditFileInput>(&invocation.arguments, work)?;
         let maximum = context.effective_scope().limits().file_bytes;
         if work.is_none() {
-            super::edit::validate_edit_bound(Some(maximum))?;
+            super::edit::validate_edit_bound(maximum)?;
         }
         let (file, resolved, _source_custody) = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
@@ -307,7 +315,7 @@ impl FileTool {
             source,
             &input.0.old_text,
             &input.0.new_text,
-            Some(maximum),
+            maximum,
             &mut allocation,
         )?;
         context

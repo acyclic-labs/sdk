@@ -99,7 +99,11 @@ impl DurableContextProvider {
             crate::Error::Unsupported("durable context publisher is not bound".into())
         })?;
         let bytes = crate::contract::canonical_json_bytes(&context)?;
-        if bytes.len() as u64 > self.limits.file_bytes {
+        if self
+            .limits
+            .file_bytes
+            .is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
             return Err(crate::Error::Invalid(
                 "context payload exceeds file limit".into(),
             ));

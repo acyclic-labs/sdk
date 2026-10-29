@@ -101,7 +101,7 @@ async fn payload_bounds_corruption_and_missing_writer_fail_closed() -> Result<()
         .await?;
     for limits in [
         Limits {
-            file_bytes: 128,
+            file_bytes: Some(128),
             ..payload_limits()
         },
         Limits {

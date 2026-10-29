@@ -98,7 +98,7 @@ struct Turn {
     /// What `wait` observes; `None` when the host observes no children.
     observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     /// Open children allowed at once, this turn's spawns included.
     max_children: Option<u32>,
     /// Held from a spawn's limit check through its record, so concurrent
@@ -161,7 +161,11 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                if input.task.is_empty() || input.task.len() as u64 > turn.maximum_bytes {
+                if input.task.is_empty()
+                    || turn
+                        .maximum_bytes
+                        .is_some_and(|maximum| input.task.len() as u64 > maximum)
+                {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = IntentId::try_from(format!(
@@ -210,7 +214,10 @@ impl AgentTool {
                 let Some(to) = self.recipient(&input.agent, true).await? else {
                     return Ok(rejected("send reaches only the parent or an open child"));
                 };
-                if input.message.len() as u64 > turn.maximum_bytes {
+                if turn
+                    .maximum_bytes
+                    .is_some_and(|maximum| input.message.len() as u64 > maximum)
+                {
                     return Ok(rejected("message is too large"));
                 }
                 let body = turn
@@ -569,7 +576,7 @@ pub fn bind_agent_tools(
     agent: &AgentState,
     (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     (names, max_children): (&[String], Option<u32>),
 ) -> Result<()> {
     let turn = Arc::new(Turn {

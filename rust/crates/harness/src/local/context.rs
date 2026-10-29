@@ -129,12 +129,12 @@ impl LocalHarness {
             let limits = ContextDiscoveryLimits::default();
             let maximum = limits
                 .instruction_bytes
-                .map_or(self.limits.file_bytes, |maximum| {
-                    maximum.min(self.limits.file_bytes)
-                });
+                .into_iter()
+                .chain(self.limits.file_bytes)
+                .min();
             let mut work = crate::context::DiscoveryWork {
                 limits: ContextDiscoveryLimits {
-                    instruction_bytes: Some(maximum),
+                    instruction_bytes: maximum,
                     ..limits
                 },
                 ..Default::default()
@@ -338,8 +338,7 @@ impl LocalHarness {
         }
         // The manifest's own encoding bounds it: it lists files already
         // admitted under the content bounds, so it takes no content bound.
-        let publisher =
-            self.input_publisher_with_limit(crate::conversation::MAX_EXACT_JS_INTEGER)?;
+        let publisher = self.input_publisher_with_limit(None)?;
         let operation = publication_operation(b"acyclic.local.mention-manifest/v1\0", key);
         if let Some(manifest) = self.observe_manifest(operation, &*publisher).await? {
             return Ok(Some(manifest));
@@ -686,7 +685,7 @@ mod tests {
         // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
         #[test]
         fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in 0u64..128) {
-            let limits = ContextDiscoveryLimits { instruction_bytes: Some(maximum), ..Default::default() };
+            let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
             let accepted = limits.validate_instruction(&bytes).is_ok();
             prop_assert_eq!(accepted, maximum > 0 && bytes.len() as u64 <= maximum && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
             if accepted {

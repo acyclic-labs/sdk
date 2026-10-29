@@ -21,18 +21,18 @@ impl FileTool {
         })?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = io {
-            io.check_json_byte_bound(&invocation.arguments, Some(scope.limits().file_bytes))?;
+            io.check_json_byte_bound(&invocation.arguments, scope.limits().file_bytes)?;
         } else {
             crate::executor::json::json_byte_length(
                 &invocation.arguments,
-                Some(scope.limits().file_bytes),
+                scope.limits().file_bytes,
                 &mut None,
             )?;
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         crate::executor::json::json_byte_length(
             &invocation.arguments,
-            Some(scope.limits().file_bytes),
+            scope.limits().file_bytes,
             &mut None,
         )?;
         let (file, custody) = self.decode_source(scope, context, invocation, work, io)?;
@@ -105,7 +105,7 @@ impl FileTool {
                     .limits()
                     .render_bytes
                     .into_iter()
-                    .chain(Some(scope.limits().file_bytes))
+                    .chain(scope.limits().file_bytes)
                     .min();
                 let length = match input.0.range {
                     Some(range)
@@ -170,7 +170,12 @@ impl FileTool {
                     || input.0.query.len() as u64 > options.maximum_query_bytes
                     || u64::from(options.maximum_matches)
                         * std::mem::size_of::<super::text::TextRange>() as u64
-                        > maximum_result_bytes.min(scope.limits().file_bytes)
+                        > scope
+                            .limits()
+                            .file_bytes
+                            .map_or(maximum_result_bytes, |maximum| {
+                                maximum_result_bytes.min(maximum)
+                            })
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,

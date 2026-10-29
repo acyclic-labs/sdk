@@ -178,7 +178,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 Arc::new(Grants(Vec::new())),
             )),
             limits: TurnLimits {
-                maximum_bytes: 64 * 1024,
+                maximum_bytes: Some(64 * 1024),
                 max_steps: Some(4),
                 history_turns: Some(8),
             },

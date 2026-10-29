@@ -285,7 +285,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
             &journal,
             std::iter::once(&content),
             Limits {
-                file_bytes: 3,
+                file_bytes: Some(3),
                 ..Limits::default()
             },
             Some(&allowed),
