@@ -555,11 +555,12 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
     // A turn checkpoint past the record limit would make every retry of this
     // step fail its commit; the step instead settles a visible failure.
     let parent = AgentPath::root(&id(1));
-    let (path, state) = child_of(&parent, 2)?;
+    let (path, mut state) = child_of(&parent, 2)?;
+    state.awaited = true;
     let driver = script(vec![TurnStep {
         reserved_children: 0,
         checkpoint: Some(vec![7; MAX_CHECKPOINT_BYTES]),
-        outs: vec![Out::Conversation(b"partial".to_vec())],
+        outs: vec![Out::Conversation(b"partial".to_vec()), Out::Checkpoint],
         wait: Wait::Continue,
         drops: None,
     }]);
@@ -588,6 +589,19 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
     assert_eq!(stepped.state.conversation_tail, 1);
     assert_eq!(stepped.state.status_tail, 2);
     assert!(stepped.state.reported);
+    assert!(!stepped.state.awaited);
+    assert_eq!(stepped.state.checkpoint, Some(0));
+    assert_eq!(
+        stepped
+            .outs
+            .iter()
+            .filter(|out| matches!(out,
+                Out::Send { to, record: InboxRecord::ChildSettled(settled) }
+                if *to == parent && settled.child == path
+            ))
+            .count(),
+        1
+    );
     assert!(stepped.outs.iter().any(|out| matches!(
         out,
         Out::Send { to, record: InboxRecord::ChildDone(done) } if *to == parent && done.outcome == failed
