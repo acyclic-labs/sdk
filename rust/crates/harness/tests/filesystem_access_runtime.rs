@@ -200,7 +200,7 @@ async fn caller_ceiling_and_its_storage_use_the_original_native_ledger()
                     "secrets",
                     "secrets/key",
                     Some(&selected),
-                    4096,
+                    Some(4096),
                     acyclic_harness::conversation::ContentAccess {
                         ceiling: Some(caller.capabilities()),
                         io: Some(&io),
@@ -286,7 +286,7 @@ proptest! {
             let directory = kind == 3 || kind == 5;
             let generation = fixture.generation()?;
             assert_eq!(reader.read_private_prefix(&fixture.volume, "secrets", "secrets/key", &generation, 2, acyclic_harness::conversation::ContentAccess { ceiling: Some(&grants), io: None })?.await.is_ok(), directory && !denied);
-            assert_eq!(reader.read_private_path(&fixture.volume, "secrets", "secrets/key", Some(&generation), 4096, acyclic_harness::conversation::ContentAccess { ceiling: Some(&grants), io: None })?.await.is_ok(), directory && !denied);
+            assert_eq!(reader.read_private_path(&fixture.volume, "secrets", "secrets/key", Some(&generation), Some(4096), acyclic_harness::conversation::ContentAccess { ceiling: Some(&grants), io: None })?.await.is_ok(), directory && !denied);
             assert_eq!(ContentResidencyVerifier::list_private_directory(reader.as_ref(), &fixture.volume, "secrets", "secrets", None, None, 8, Some(&grants), None)?.await.is_ok(), directory);
             Ok::<_, Box<dyn Error>>(())
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;

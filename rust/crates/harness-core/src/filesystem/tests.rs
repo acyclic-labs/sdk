@@ -393,7 +393,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            16,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
@@ -405,7 +405,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await
@@ -460,7 +460,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             "messages",
             "messages/first.txt",
             Some(&listed_generation),
-            u64::MAX,
+            None,
             crate::conversation::ContentAccess::default(),
         )?
         .await
@@ -496,7 +496,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
             &delegated,
             "messages/first.txt",
             None,
-            16,
+            Some(16),
             crate::conversation::ContentAccess::default(),
         )
         .await?;
@@ -541,7 +541,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
                 "messages",
                 "messages/empty.txt",
                 Some(&listed_generation),
-                u64::MAX,
+                None,
                 crate::conversation::ContentAccess::default()
             )?
             .await
