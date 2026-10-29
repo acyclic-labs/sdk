@@ -118,7 +118,7 @@ where
     pub(in crate::filesystem) async fn read(
         &self,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<Vec<u8>>> {
         Self::read_at(
             &self.head().await?,
@@ -132,7 +132,7 @@ where
     async fn read_at(
         head: &acyclic_fs::Generation<A, O>,
         path: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<Vec<u8>>> {
         let read = head
             .read(
@@ -161,8 +161,13 @@ where
         &self,
         path: &str,
         bytes: &[u8],
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Result<Option<Vec<u8>>> {
+        if maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum) {
+            return Err(crate::Error::Invalid(
+                "internal file exceeds its explicit byte policy".into(),
+            ));
+        }
         if let Some(existing) = self.read(path, maximum_bytes).await? {
             return Ok(Some(existing));
         }
@@ -178,7 +183,7 @@ where
                 bytes,
                 "application/json",
                 path.rsplit('/').next().unwrap_or(path),
-                maximum_bytes,
+                bytes.len() as u64,
                 &key,
                 InternalContentClass::Interaction,
                 None,
@@ -283,7 +288,7 @@ where
                 let mut text = Vec::new();
                 for chunk in chunks {
                     if let Some(bytes) =
-                        Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
+                        Self::read_at(&head, &format!("{reply}/{chunk}"), None).await?
                     {
                         text.extend_from_slice(&bytes);
                     }
@@ -304,7 +309,7 @@ where
     fn read<'a>(
         &'a self,
         path: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>> {
         Box::pin(Self::read(self, path, maximum_bytes))
     }
@@ -313,7 +318,7 @@ where
         &'a self,
         path: &'a str,
         bytes: Vec<u8>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>> {
         Box::pin(async move {
             Ok(
