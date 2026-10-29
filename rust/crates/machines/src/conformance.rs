@@ -15,7 +15,7 @@ pub const SUITE: &[u8] = include_bytes!("../conformance/machines.json");
 
 /// Fresh production provider and its dispatch accounting. Retain all temporary
 /// resources in this value for the lifetime of a suite or benchmark invocation.
-pub trait Backend: Send + Sync {
+pub trait Backend: acyclic_stream::ProviderPlatform {
     /// Provider under test.
     fn provider(&self) -> &dyn MachinesProvider;
     /// Ledger measured at the provider or instrumented transport boundary.
