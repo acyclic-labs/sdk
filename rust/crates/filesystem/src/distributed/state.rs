@@ -277,9 +277,27 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             ));
         }
         let mut request = work.copy_commit(commit.request())?;
+        self.fence_observed(&mut request, observations, deadline, work)?;
+        commit.seal_request(request);
+        commit.bind_owner(owner);
+        commit.retain_request_custody(work);
+        Ok(())
+    }
+
+    // Only caller-owned scratch is changed here. Public sealing copies first;
+    // batch preparation already owns a disposable draft of the complete request.
+    pub(super) fn fence_observed(
+        &self,
+        request: &mut CommitRequest,
+        observations: &[AuthorizedObservation],
+        deadline: Option<u64>,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        work.check()?;
+        let owner = self.operation_claims().owner_identity();
         super::composition::grow(&mut request.conditions, observations.len(), work)?;
         for observed in observations {
-            if observed.owner != self.operation_claims().owner_identity() {
+            if observed.owner != owner {
                 return Err(AuthorityStoreError::RejectedStatic(
                     "observation and publication use different Streams owners",
                 ));
@@ -296,11 +314,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             .chain(deadline)
             .min();
         // Use the primitive's one canonical shape/encoded-total admission.
-        acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
-        commit.seal_request(request);
-        commit.bind_owner(owner);
-        commit.retain_request_custody(work);
-        Ok(())
+        acyclic_stream::request::validate_commit(request).map_err(map_stream_error)
     }
 }
 

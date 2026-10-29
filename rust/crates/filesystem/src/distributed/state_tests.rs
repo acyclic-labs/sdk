@@ -765,6 +765,71 @@ async fn failed_state_batch_restores_caller_conditions_and_publishes_nothing() -
 }
 
 #[tokio::test]
+async fn final_state_fence_refusal_preserves_original_request_and_collection_custody() -> TestResult
+{
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let foreign = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let collection = Arc::new(crate::collection::Collection::default());
+    let original_hold = collection.unswept().await.into_hold();
+    let staged_hold = collection.unswept().await.into_hold();
+    let original_path = StreamPath::new("actor/files/original")?;
+    let staged_path = StreamPath::new("actor/files/staged")?;
+    let original_cut = store
+        .observe_record(original_path.clone(), &mut work)
+        .await?;
+    let staged_cut = store.observe_record(staged_path.clone(), &mut work).await?;
+    let foreign_cut = foreign
+        .observe_record(StreamPath::new("actor/policy")?, &mut work)
+        .await?;
+    let mut publication = commit(b"refused-final-fence")?;
+    store.contribute_record(
+        &mut publication,
+        &original_cut.observation,
+        &state(b"original"),
+        original_hold,
+        &mut work,
+    )?;
+    let request = publication.request().clone();
+    let before = work.spent();
+    assert!(
+        store
+            .prepare_records(
+                &mut publication,
+                [(staged_cut.observation, state(b"staged"), staged_hold)],
+                &[foreign_cut.observation],
+                Some(u64::MAX),
+                &mut work,
+            )
+            .is_err()
+    );
+    assert_eq!(publication.request(), &request);
+    assert!(publication.request_mut().is_some());
+    assert_eq!(
+        work.spent().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.spent().backend_write_operations,
+        before.backend_write_operations
+    );
+    assert_eq!(
+        provider.tail(original_path).await,
+        Err(StreamError::NotFound)
+    );
+    assert_eq!(provider.tail(staged_path).await, Err(StreamError::NotFound));
+    let mut collecting = Box::pin(collection.begin());
+    assert!(futures::poll!(collecting.as_mut()).is_pending());
+    // The original owner is the producer of the collection wake. Dropping it
+    // must release both the original hold and the refused draft's temporary hold.
+    drop(publication);
+    assert!(futures::poll!(collecting.as_mut()).is_ready());
+    Ok(())
+}
+
+#[tokio::test]
 async fn inherited_state_is_readable_but_cannot_settle_a_destination_append() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(provider.clone());

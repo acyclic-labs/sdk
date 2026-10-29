@@ -55,6 +55,10 @@ pub enum FilesystemCommitOutcome {
 impl FilesystemCommit {
     pub(super) fn seal_request(&mut self, request: CommitRequest) {
         self.request = request;
+        self.seal_current_request();
+    }
+
+    pub(super) fn seal_current_request(&mut self) {
         self.sealed = true;
     }
     /// Starts from the caller's own conditions, mutations and idempotency key.

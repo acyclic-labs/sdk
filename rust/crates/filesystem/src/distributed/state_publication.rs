@@ -46,7 +46,17 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             self.contribute_record(&mut prepared, &observed, &record, hold, work)?;
         }
         let holds = commit.record_holds(&prepared, work)?;
-        self.seal_observed(&mut prepared, observations, deadline, work)?;
+        self.fence_observed(
+            prepared
+                .request_mut()
+                .ok_or(AuthorityStoreError::RejectedStatic("sealed state draft"))?,
+            observations,
+            deadline,
+            work,
+        )?;
+        prepared.seal_current_request();
+        prepared.bind_owner(self.operation_claims().owner_identity());
+        prepared.retain_request_custody(work);
         // No fallible step follows the final seal/funding transfer.
         commit.install_records(prepared, holds);
         Ok(())
