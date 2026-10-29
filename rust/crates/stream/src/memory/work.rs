@@ -9,7 +9,7 @@ pub(crate) type Allocation = Option<ReadAllocation>;
 pub(crate) type Allocation = Option<()>;
 
 struct RetainedReservation {
-    slot: Arc<RetainedFact>,
+    slot: RetainedFactRef,
     growth: Option<RetainedGrowthReservation>,
 }
 
@@ -47,7 +47,7 @@ impl MemoryStream {
         &self,
         state: &mut State,
         reservation: RetainedReservation,
-    ) -> Result<Arc<RetainedFact>, StreamError> {
+    ) -> Result<RetainedFactRef, StreamError> {
         let RetainedReservation { slot, growth } = reservation;
         if let Some(reservation) = growth {
             #[cfg(not(target_arch = "wasm32"))]

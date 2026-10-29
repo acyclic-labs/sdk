@@ -62,7 +62,7 @@ impl CommitPublication {
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
-        retained: Arc<RetainedFact>,
+        retained: RetainedFactRef,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         install_namespace(state, self.namespace, &self.envelope)?;
         state.decision += 1;

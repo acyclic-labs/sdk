@@ -1,7 +1,7 @@
 //! Canonical snapshot of retained Stream facts.
 use super::{
-    History, MemoryStream, Namespace, Retained, RetainedFact, State, install_namespace, retain,
-    stage_namespace,
+    History, MemoryStream, Namespace, Retained, RetainedFact, RetainedFactRef, State,
+    install_namespace, retain, stage_namespace,
 };
 use crate::wire_codec::{envelope_to_wire, observation_wire};
 use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation, StreamError};
@@ -16,8 +16,8 @@ const RETAINS_COMMIT: u8 = 2;
 
 pub(crate) struct Snapshot {
     paths: Namespace,
-    retained: Option<Arc<RetainedFact>>,
-    first_retained: Option<Arc<RetainedFact>>,
+    retained: Option<RetainedFactRef>,
+    first_retained: Option<RetainedFactRef>,
     retained_len: usize,
     decision: u64,
     last_committed_at_micros: u64,
@@ -28,8 +28,8 @@ impl Snapshot {
     fn capture(state: &State) -> Self {
         Self {
             paths: state.paths.clone(),
-            retained: state.retained.last().map(|entry| Arc::clone(&entry.fact)),
-            first_retained: state.retained.first().map(|entry| Arc::clone(&entry.fact)),
+            retained: state.retained.last().map(|entry| entry.fact.clone()),
+            first_retained: state.retained.first().map(|entry| entry.fact.clone()),
             retained_len: state.retained.len(),
             decision: state.decision,
             last_committed_at_micros: state.last_committed_at_micros,
@@ -197,7 +197,7 @@ impl Snapshot {
             let fact = cursor
                 .take()
                 .unwrap_or_else(|| unreachable!("the cut pins its retained prefix"));
-            let retained = fact.as_ref();
+            let retained = &*fact;
             let replay = retained.replay.as_ref().map(|key| (key, retained));
             let commit = if replay.is_some()
                 && matches!(retained.result, crate::IdempotencyOutcome::Commit(_))
@@ -242,7 +242,7 @@ impl Snapshot {
                     state
                         .retained
                         .as_ref()
-                        .is_some_and(|tail| Arc::ptr_eq(tail, &fact))
+                        .is_some_and(|tail| std::ptr::eq(&**tail, &*fact))
                 );
             }
         }

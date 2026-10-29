@@ -19,6 +19,7 @@ impl std::fmt::Display for NativeDenial {
 impl std::error::Error for NativeDenial {}
 
 pub(crate) struct Meter {
+    pub(crate) release_observer: Option<fn(u64)>,
     pub(crate) check_on_record: bool,
     pub(crate) deny_allocation: AtomicBool,
     pub(crate) deny_durability: AtomicBool,
@@ -60,6 +61,7 @@ pub(crate) struct Meter {
 impl Default for Meter {
     fn default() -> Self {
         Self {
+            release_observer: None,
             check_on_record: false,
             deny_allocation: AtomicBool::new(false),
             deny_durability: AtomicBool::new(false),
@@ -471,6 +473,9 @@ impl NativeReadMeter for Meter {
         self.record_examination(items, 0)
     }
     fn release(&self, bytes: u64) {
+        if let Some(observe) = self.release_observer {
+            observe(bytes);
+        }
         trace::record("release", bytes, 0, 0);
         assert!(self.held.fetch_sub(bytes, Ordering::SeqCst) >= bytes);
     }

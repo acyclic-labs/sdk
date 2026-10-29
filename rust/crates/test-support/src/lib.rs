@@ -124,6 +124,11 @@ pub fn measure(run: impl FnOnce()) -> AllocationInfo {
     drop(scope);
     result
 }
+/// Observe completed allocator operations in this thread's active measurement.
+/// This does not allocate or start another scope.
+pub fn current_allocations() -> Option<AllocationInfo> {
+    COUNTER.get()
+}
 /// Compare independently initialized implementations, including their complete
 /// result/error/trace, and measure each without allocating measurement state.
 pub fn differential<T: Eq + std::fmt::Debug>(
@@ -205,9 +210,9 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAllocator<A> {
         record(record(next, size, true), layout.size(), false)
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        record(pointer, layout.size(), false);
         // SAFETY: the caller supplies the allocation's original pointer/layout.
         unsafe { self.0.dealloc(pointer, layout) };
+        record(pointer, layout.size(), false);
     }
 }
 #[cfg(test)]
