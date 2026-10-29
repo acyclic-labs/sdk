@@ -57,7 +57,7 @@ pub(super) fn restore_gen(args: &[String]) -> Result<(), Failure> {
                 destination: destination.clone(),
                 expected_root_identity: None,
                 maximum_directory_entries: 1_024,
-                maximum_extent_spans: 65_536,
+                maximum_extent_spans: None,
                 transfer_bytes: 8 * 1024 * 1024,
             },
             WorkCounters::UNBOUNDED,
@@ -159,7 +159,7 @@ pub(super) async fn bench_inner(
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source).map_err(engine_err("identity"))?,
         maximum_paths: None,
-        maximum_extent_spans: 65_536,
+        maximum_extent_spans: None,
     };
 
     let started = Instant::now();
@@ -407,7 +407,7 @@ pub(super) async fn capture_and_commit(
         expected_root_identity: capture_root_identity(source)
             .map_err(engine_err("root identity"))?,
         maximum_paths: None,
-        maximum_extent_spans: 65_536,
+        maximum_extent_spans: None,
     };
     let started = Instant::now();
     let receipt = capture_baseline(
@@ -508,7 +508,7 @@ pub(super) async fn materialize(
             destination: destination.to_path_buf(),
             expected_root_identity: None,
             maximum_directory_entries: 1_024,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
             transfer_bytes: 8 * 1024 * 1024,
         },
         WorkCounters::UNBOUNDED,

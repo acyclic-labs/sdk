@@ -351,7 +351,7 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
             source_root: host.path().to_path_buf(),
             expected_root_identity: capture_root_identity(host.path())?,
             maximum_paths: Some(1),
-            maximum_extent_spans: 8,
+            maximum_extent_spans: Some(8),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),

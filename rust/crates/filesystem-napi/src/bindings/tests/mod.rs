@@ -152,7 +152,7 @@ async fn attached_workspace_rescans_and_seals_one_source()
     let options = NativeSourceOptions {
         mode: "tracking".to_owned(),
         maximum_paths: Some(NapiU32(128)),
-        maximum_extent_spans: NapiU32(128),
+        maximum_extent_spans: Some(NapiU32(128)),
         excluded_paths: None,
     };
     let source_path = source.path().to_string_lossy().into_owned();
@@ -241,7 +241,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         cancellation: CancellationToken::new(),
     };
     assert!(
-        Box::pin(watcher.reconcile(Some(NapiU32(64)), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(64)), Some(NapiU32(64))))
             .await
             .is_err()
     );
@@ -249,7 +249,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         .await
         .clear_retained_operation(unresolved);
     assert!(
-        Box::pin(watcher.reconcile(Some(NapiU32(0)), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(0)), Some(NapiU32(64))))
             .await
             .is_err()
     );
@@ -271,7 +271,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         ),
         "failed binding baseline retained scan custody: {polled:?}"
     );
-    Box::pin(watcher.reconcile(Some(NapiU32(64)), NapiU32(64))).await?;
+    Box::pin(watcher.reconcile(Some(NapiU32(64)), Some(NapiU32(64)))).await?;
     Ok(())
 }
 
@@ -313,7 +313,7 @@ async fn materialization_writes_checkout_bytes()
         .materialize(NativeMaterializeOptions {
             destination: destination.path().to_string_lossy().into_owned(),
             maximum_directory_entries: NapiU32(64),
-            maximum_extent_spans: NapiU32(64),
+            maximum_extent_spans: Some(NapiU32(64)),
             transfer_bytes: bigint(4096),
         })
         .await?;
@@ -344,7 +344,7 @@ async fn attachment_never_invents_policy_for_an_existing_workspace()
             NativeSourceOptions {
                 mode: "pinned".into(),
                 maximum_paths: Some(NapiU32(128)),
-                maximum_extent_spans: NapiU32(128),
+                maximum_extent_spans: Some(NapiU32(128)),
                 excluded_paths: None,
             },
         )

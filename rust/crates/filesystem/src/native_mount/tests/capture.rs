@@ -41,7 +41,7 @@ async fn baseline_path_limit_stops_unbounded_traversal() -> Result<(), Box<dyn s
             expected_root_identity: capture_root_identity(host.path())?,
             source_root: host.path().to_path_buf(),
             maximum_paths: Some(2),
-            maximum_extent_spans: 16,
+            maximum_extent_spans: Some(16),
         },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
@@ -80,7 +80,7 @@ async fn check_coalesced_removals(replace_parent: bool) -> Result<(), Box<dyn st
         expected_root_identity: capture_root_identity(&root)?,
         source_root: root.clone(),
         maximum_paths: Some(8),
-        maximum_extent_spans: 8,
+        maximum_extent_spans: Some(8),
     };
     capture_baseline(
         &mut checkout,
@@ -177,7 +177,7 @@ async fn stale_created_hints_for_existing_directory_capture_exactly()
         source_root: temporary.path().to_path_buf(),
         expected_root_identity: capture_root_identity(temporary.path())?,
         maximum_paths: Some(16),
-        maximum_extent_spans: 16,
+        maximum_extent_spans: Some(16),
     };
     capture_baseline(
         &mut checkout,
@@ -265,7 +265,7 @@ async fn windows_created_and_modified_hint_captures_one_new_file()
             source_root: temporary.path().to_path_buf(),
             expected_root_identity: capture_root_identity(temporary.path())?,
             maximum_paths: Some(16),
-            maximum_extent_spans: 16,
+            maximum_extent_spans: Some(16),
         },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,

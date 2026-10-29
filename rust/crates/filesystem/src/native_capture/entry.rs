@@ -461,7 +461,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
     let meter = &scope.native;
     let result = async {
         {
-            if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
+            if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
                 return Err(CaptureError::InvalidOptions);
             }
             cancellation.check()?;
@@ -643,7 +643,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             native.receipt(),
         ));
     }
-    if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
+    if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
         return Err(OperationFailure::new(
             CaptureError::InvalidOptions,
             native.receipt(),
