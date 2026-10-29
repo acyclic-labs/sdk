@@ -314,6 +314,58 @@ contract. Reentrant invalidation completes the returned signal immediately;
 an observation failure removes its registration before propagating. The
 unchanged and closed-watch controls remain unnotified.
 
+## Actors operation budget and injected native channel
+
+`actors::client::Client::from_channel` adopts the caller's existing authenticated
+channel. The channel owner selects Auth's platform, private-CA or member/SVID
+verifier and optional mutual-TLS identity once. The product constructor starts
+no connection, parses no certificate and resolves no bearer. It installs the
+same dispatch guard, interceptor, tracing and message ceilings as the endpoint
+constructor. This is a transport injection boundary, not evidence that a caller
+supplied channel authenticated its peer.
+
+Use the original `auth::operation::Context` for connection as well:
+
+```rust,ignore
+let channel = context.run(acyclic_auth::channel::connect(endpoint, peer, identity)).await??;
+let client = acyclic_actors::client::Client::from_channel(channel, credential)
+    .with_context(context);
+let response = client.invoke_actor(&request).await?;
+```
+
+The context is never reset by a stage. A client bound to that context retains
+its original deadline across subsequent calls. An ended context wins before
+binary request decoding, typed request cloning or credential resolution.
+Transport dispatch and semantic reply admission each check the same stop again.
+Credential resolution, remote-rejection handling and deferred owner checks are
+inside that wait. The exact lease survives semantic conversion and is checked
+before and after it. Tonic still owns protobuf decoding; this change does not
+provide native preallocation admission or a wire-level absolute deadline.
+
+Safety follows from checking the original context before starting work and
+checking the original lease through final admission. Cancellation does not
+establish whether a remote mutation committed. Progress waits on the context's
+original expiry/cancellation event or the maintained transport/credential
+operation. The host maps cancellation-producer loss to cancellation; the real
+HTTP/2 request-path control exercises both explicit signal and producer drop
+during credential resolution. Both end with typed cancellation, with no service
+call. Its unchanged control completes six real exchanges. An expired context
+refuses even malformed input without another credential callback or service
+call. Removing context enforcement must fail that control before any pending
+credential wait starts.
+
+The added stop checks have fixed state and no task, timer, registry or scan.
+One context owns one stop future; stages share it. Protobuf encoding/decoding
+remains proportional to payload size, and foreign credential-owner costs are
+separate. Static counts compared with the preceding Actors implementation:
+
+| Operation | Before | After |
+| --- | --- | --- |
+| Adopt an already authenticated channel | No public constructor | 0 connections, certificate parses or credential callbacks; 1 existing channel moved into the shared guard |
+| Caller budget across one operation | No gRPC context | 1 original stop event shared at 3 boundaries; 0 additional timers, tasks, syscalls, barriers, RPCs, payload allocations or copies |
+| Successful reply admission | 1 lease check before semantic conversion | 2 lease checks, bracketing semantic conversion; 0 added response copies |
+| Ended budget | Could decode input and call the credential source | 0 decodes, credential callbacks or RPCs |
+
 ## Source event progress and operation cost
 
 Native source watches share one one-shot event per current source epoch. A

@@ -23,6 +23,7 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_closed() {
                     inner: crate::wire::actors_service_client::ActorsServiceClient::with_interceptor(
                         crate::grpc::TracedChannel::new(acyclic_auth::channel::guard(channel), crate::grpc::transport_span), BearerAuth(None)),
                     credential: None,
+                    context: None,
                 }.with_credential_provider(CredentialProvider::new(move || {
                     std::future::ready(tokens.get(calls.fetch_add(1, Ordering::Relaxed)).cloned()
                         .ok_or(acyclic_auth::credential::CredentialError::Invalid))

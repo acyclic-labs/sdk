@@ -149,7 +149,10 @@ impl StreamProvider for Remote {
                         idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
                     };
                     let result = self
-                        .call(body, |mut service, request| async move { service.append(request).await }).await?;
+                        .call(body, |mut service, request| async move {
+                            service.append(request).await
+                        })
+                        .await?;
                     let outcome = wire_codec::append_outcome_from_wire(result)?;
                     self.sessions.revisions().appended(&outcome);
                     Ok(outcome)
@@ -171,7 +174,10 @@ impl StreamProvider for Remote {
                         idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
                     };
                     let result = self
-                        .call(body, |mut service, request| async move { service.fork(request).await }).await?;
+                        .call(body, |mut service, request| async move {
+                            service.fork(request).await
+                        })
+                        .await?;
                     let receipt = wire_codec::fork_receipt_from_wire(result)?;
                     self.sessions.revisions().observe(&receipt.revision);
                     Ok(receipt)
@@ -182,7 +188,10 @@ impl StreamProvider for Remote {
                 async move {
                     let body = wire_codec::commit_to_wire(&request);
                     let response = self
-                        .call(body, |mut service, request| async move { service.commit(request).await }).await?;
+                        .call(body, |mut service, request| async move {
+                            service.commit(request).await
+                        })
+                        .await?;
                     let outcome = wire_codec::commit_outcome_from_wire(response)?;
                     self.sessions.revisions().committed(&outcome);
                     Ok(outcome)

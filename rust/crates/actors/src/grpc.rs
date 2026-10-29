@@ -88,14 +88,16 @@ pub(crate) async fn connect_authorized(
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
     let channel = connect_channel(endpoint, ca).await?;
-    Ok(
-        wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            TracedChannel::new(acyclic_auth::channel::guard(channel), transport_span),
-            authorization,
-        )
-        .max_decoding_message_size(16 * 1024 * 1024)
-        .max_encoding_message_size(16 * 1024 * 1024),
+    Ok(over(channel, authorization))
+}
+
+pub(crate) fn over(channel: Channel, authorization: BearerAuth) -> Client {
+    wire::actors_service_client::ActorsServiceClient::with_interceptor(
+        TracedChannel::new(acyclic_auth::channel::guard(channel), transport_span),
+        authorization,
     )
+    .max_decoding_message_size(16 * 1024 * 1024)
+    .max_encoding_message_size(16 * 1024 * 1024)
 }
 
 /// Decode the canonical semantic error carried in gRPC status details.

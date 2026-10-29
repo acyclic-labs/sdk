@@ -74,6 +74,9 @@ pub enum Error {
     /// The caller cancelled the operation before the transport completed.
     #[error("Actors operation cancelled")]
     Cancelled,
+    /// The caller's original absolute budget or cancellation ended the wait.
+    #[error(transparent)]
+    Stopped(#[from] acyclic_auth::operation::Stopped),
 }
 
 /// Lossless Rust-owned diagnostic projection shared by both JavaScript bridges.
@@ -141,6 +144,14 @@ impl Error {
                 metadata.grpc_code = Some(1);
                 metadata.grpc_name = Some(code);
             }
+            Self::Stopped(reason) => {
+                metadata.message = reason.to_string();
+                metadata.grpc_code = Some(match reason {
+                    acyclic_auth::operation::Stopped::Deadline => 4,
+                    acyclic_auth::operation::Stopped::Cancelled => 1,
+                });
+                metadata.grpc_name = Some(code);
+            }
             Self::Semantic(domain::DomainError::Contract(error)) => {
                 metadata.message = error.to_string();
                 metadata.contract_code = Some(code);
@@ -159,6 +170,8 @@ impl Error {
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
             Self::Semantic(error) => error.code_name(),
             Self::Cancelled => "cancelled",
+            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_exceeded",
+            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
             Self::Credential(_) => "unauthenticated",
         }
     }
@@ -235,6 +248,7 @@ async fn request_error(
 /// Connected Actors client whose operation methods are shared by all targets.
 pub struct Client {
     credential: Option<CredentialProvider>,
+    context: Option<acyclic_auth::operation::Context>,
     #[cfg(not(target_arch = "wasm32"))]
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
@@ -244,6 +258,67 @@ pub struct Client {
 }
 
 impl Client {
+    /// Bind all operation stages to the caller's original absolute budget.
+    /// Reusing this client retains that same budget; no stage starts a timer.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Adopt an authenticated member/SVID channel without opening a connection.
+    /// The caller owns peer verification and mutual TLS. Each request still
+    /// resolves and retains its own credential lease through reply admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_channel(
+        channel: tonic::transport::Channel,
+        credential: CredentialProvider,
+    ) -> Self {
+        Self {
+            inner: crate::grpc::over(channel, BearerAuth(None)),
+            credential: Some(credential),
+            context: None,
+        }
+    }
+
+    async fn stage<T>(&self, work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+        match &self.context {
+            Some(context) => context.run(work).await?,
+            None => work.await,
+        }
+    }
+
+    async fn dispatch<T, U, V, R>(
+        &self,
+        body: T,
+        authorization: Option<BearerAuth>,
+        send: impl FnOnce(tonic::Request<T>) -> R,
+        admit: impl FnOnce(U) -> Result<V, Error>,
+    ) -> Result<V, Error>
+    where
+        R: Future<Output = Result<tonic::Response<U>, tonic::Status>>,
+    {
+        let (request, lease) = self.request(body, authorization).await?;
+        let response = self
+            .stage(async {
+                match send(request).await {
+                    Ok(response) => Ok(response.into_inner()),
+                    Err(status) => Err(request_error(status, lease.as_ref()).await),
+                }
+            })
+            .await?;
+        self.stage(async {
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            let result = admit(response)?;
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            Ok(result)
+        })
+        .await
+    }
+
     /// Resolve a current request credential without changing the shared transport.
     pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
         self.credential = Some(credential);
@@ -340,6 +415,7 @@ async fn connect_authorized(
         Ok(Client {
             inner,
             credential: None,
+            context: None,
         })
     }
 
@@ -400,6 +476,7 @@ async fn connect_authorized(
         Ok(Client {
             inner,
             credential: None,
+            context: None,
         })
     }
 }
@@ -445,15 +522,13 @@ macro_rules! client_operations {
             $(
             #[doc = concat!("Executes the semantic ", $name, " operation.")]
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
-                let input = wire::$input::from(request.clone());
-                validate_operation($name, &input)?;
-                let (input, lease) = self.request(input, None).await?;
-                let response = match self.inner.clone().$method(input).await {
-                    Ok(response) => response.into_inner(),
-                    Err(status) => return Err(request_error(status, lease.as_ref()).await),
-                };
-                if let Some(lease) = &lease { lease.check().await?; }
-                Ok(response.try_into()?)
+                self.stage(async {
+                    let input = wire::$input::from(request.clone());
+                    validate_operation($name, &input)?;
+                    self.dispatch(input, None, |input| async move {
+                        self.inner.clone().$method(input).await
+                    }, |response| Ok(response.try_into()?)).await
+                }).await
             }
             )*
 
@@ -464,10 +539,12 @@ macro_rules! client_operations {
 
             /// Dispatches one request with a fresh credential without changing connection state.
             pub async fn call_with_credential(&self, method: &str, bytes: &[u8], token: &str) -> Result<Vec<u8>, Error> {
-                self.call_with_authorization(method, bytes, Some(BearerAuth::new(token)?)).await
+                self.call_with_authorization(method, bytes, Some(token)).await
             }
 
-            async fn call_with_authorization(&self, method: &str, bytes: &[u8], authorization: Option<BearerAuth>) -> Result<Vec<u8>, Error> {
+            async fn call_with_authorization(&self, method: &str, bytes: &[u8], token: Option<&str>) -> Result<Vec<u8>, Error> {
+                self.stage(async {
+                let authorization = token.map(BearerAuth::new).transpose()?;
                 if bytes.len() > MAX_MESSAGE_BYTES {
                     return Err(Error::Configuration("request exceeds message ceiling".into()));
                 }
@@ -479,17 +556,16 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = wire::$input::from(input);
                         validate_operation($name, &input)?;
-                        let (input, lease) = self.request(input, authorization).await?;
-                        let response = match self.inner.clone().$method(input).await {
-                            Ok(response) => response.into_inner(),
-                            Err(status) => return Err(request_error(status, lease.as_ref()).await),
-                        };
-                        if let Some(lease) = &lease { lease.check().await?; }
-                        let output = domain::$output::try_from(response)?;
-                        Ok(wire::$output::from(output).encode_to_vec())
+                        self.dispatch(input, authorization, |input| async move {
+                            self.inner.clone().$method(input).await
+                        }, |response| {
+                            let output = domain::$output::try_from(response)?;
+                            Ok(wire::$output::from(output).encode_to_vec())
+                        }).await
                     }, )*
                     _ => Err(Error::Configuration("unknown Actors service method".into())),
                 }
+                }).await
             }
         }
     };
