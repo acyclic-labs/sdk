@@ -238,7 +238,13 @@ async fn asked(
     };
     let id = vectors::intent("ask")?;
     let body = bound
-        .stage_text(&root, "message", &human, &id, "call the tool")
+        .stage_text(
+            &root,
+            "message",
+            &human,
+            &id,
+            ("call the tool", "call the tool"),
+        )
         .await?;
     bound
         .agents()

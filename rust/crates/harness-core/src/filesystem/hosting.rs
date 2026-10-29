@@ -663,8 +663,8 @@ where
 
     /// Stages `text` once on `agent`'s private volume under the agent's
     /// admitted authority, keyed by the agent, the input `kind`, its sender
-    /// and `intent`,
-    /// so every retry names the same file.
+    /// and `intent`. The original source binds the request before expansion;
+    /// every retry must name that same source, even if a command file changed.
     ///
     /// # Errors
     /// When the admission does not write the agent's private volume, or the
@@ -675,15 +675,15 @@ where
         kind: &str,
         by: &Sender,
         intent: &IntentId,
-        text: &str,
+        (source, text): (&str, &str),
     ) -> Result<FileRef, Error> {
-        self.staged_input(agent, kind, by, intent, Some(text))
+        self.staged_input(agent, kind, by, intent, (source, Some(text)))
             .await?
             .ok_or(Error::Record("a staged input is missing its file"))
     }
 
     /// The text [`Self::stage_text`] already staged for this input, if any:
-    /// a replay answers from it, never from the sender's current text.
+    /// a replay answers from it after checking the original source identity.
     ///
     /// # Errors
     /// As [`Self::stage_text`].
@@ -693,8 +693,10 @@ where
         kind: &str,
         by: &Sender,
         intent: &IntentId,
+        source: &str,
     ) -> Result<Option<FileRef>, Error> {
-        self.staged_input(agent, kind, by, intent, None).await
+        self.staged_input(agent, kind, by, intent, (source, None))
+            .await
     }
 
     /// Stages `text` once, or with `None` only observes what was staged.
@@ -704,7 +706,7 @@ where
         kind: &str,
         by: &Sender,
         intent: &IntentId,
-        text: Option<&str>,
+        (source, text): (&str, Option<&str>),
     ) -> Result<Option<FileRef>, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
@@ -721,6 +723,10 @@ where
         let mut operation = [0; 16];
         operation.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
         let operation = OperationId::from_bytes(operation);
+        // The existing publication owns both the submitted source identity
+        // and expanded bytes; no separate replay record is needed.
+        let source = blake3::hash(source.as_bytes());
+        let path = format!("inputs/{operation}/{source}.txt");
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
             &authority.private.volume,
@@ -736,9 +742,11 @@ where
                 .map_err(turn)?
                 .await
                 .map_err(turn)?;
+            if staged.as_ref().is_some_and(|file| file.path() != path) {
+                return Err(Error::Conflict("input identity reused with changed source"));
+            }
             return Ok(staged);
         };
-        let path = format!("inputs/{operation}.txt");
         let staged = publisher
             .stage_once(
                 operation,
