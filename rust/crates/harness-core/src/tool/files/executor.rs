@@ -61,7 +61,7 @@ impl FileTool {
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 context
-                    .stage_file_once(
+                    .stage_tool_file_once(
                         invocation.operation_id,
                         &input.0.path,
                         input.0.text.as_bytes(),
@@ -369,7 +369,7 @@ impl ToolExecutor for FileTool {
             // Observe uncertain publications without redispatch.
             let io = crate::executor::PreparationIo::from_native_work(work)?;
             let receipt = context
-                .observe_staged_file_once(invocation.operation_id, Some(&io))
+                .observe_tool_file_once(invocation.operation_id, Some(&io))
                 .await?;
             match receipt.0 {
                 Some(file) => {

@@ -14,6 +14,7 @@ mod git;
 #[cfg(any(test, feature = "hooks"))]
 mod hooks;
 mod output;
+pub(super) mod publisher;
 pub(super) mod reconciliation;
 pub(super) mod shell;
 #[cfg(test)]

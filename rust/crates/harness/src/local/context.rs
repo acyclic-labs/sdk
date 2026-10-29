@@ -328,7 +328,10 @@ impl LocalHarness {
             Some(root) => root,
             None => self.project_mentions(base, text, reader).await?,
         };
-        self.resolve_at(&root, text, reader).await
+        self.resolve_at(&root, text, reader, |path| {
+            format!("{}/{}", root.directory, copy_name(path))
+        })
+        .await
     }
 
     /// A volume project's mentioned files, read at its head and copied onto
@@ -344,7 +347,8 @@ impl LocalHarness {
             directory: String::new(),
         };
         let mut copies = std::collections::BTreeMap::new();
-        for file in self.resolve_at(&project, text, reader).await? {
+        let locate = |path: &str| path.to_owned();
+        for file in self.resolve_at(&project, text, reader, locate).await? {
             let bytes = reader
                 .read(&file, file.descriptor().byte_length(), None, None)?
                 .await?;
@@ -357,7 +361,9 @@ impl LocalHarness {
     }
 
     /// Publishes mentioned files' `copies` by path into one content-addressed
-    /// directory below `base` on the private volume and names it.
+    /// directory below `base` on the private volume and names it. Each copy
+    /// is named by [`copy_name`], so its path has the same length however
+    /// long the mentioned path is.
     async fn publish_mention_copies(
         &self,
         base: &str,
@@ -373,23 +379,16 @@ impl LocalHarness {
         // Every copy lands in one generation of the private volume, so a
         // prompt costs one commit however many files it mentions. A retry
         // of the same bytes replays that generation.
-        let mut directories = std::collections::BTreeSet::new();
-        let mut files = Vec::with_capacity(copies.len());
-        for (path, bytes) in copies {
-            let destination = format!("/{directory}/{path}");
-            if let Some((parent, _)) = destination.rsplit_once('/') {
-                directories.insert(parent.to_owned());
-            }
-            files.push(crate::filesystem::WorkspaceMutation::PutFile {
-                path: destination,
+        let mut mutations = Vec::with_capacity(copies.len() + 1);
+        mutations.push(crate::filesystem::WorkspaceMutation::CreateDirectory {
+            path: format!("/{directory}"),
+        });
+        mutations.extend(copies.into_iter().map(|(path, bytes)| {
+            crate::filesystem::WorkspaceMutation::PutFile {
+                path: format!("/{directory}/{}", copy_name(&path)),
                 bytes,
-            });
-        }
-        let mutations = directories
-            .into_iter()
-            .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
-            .chain(files)
-            .collect::<Vec<_>>();
+            }
+        }));
         let journal = crate::filesystem::workspace_ref(
             self.journal.provider().clone(),
             &self.journal.storage_name(&mut None)?,
@@ -415,18 +414,20 @@ impl LocalHarness {
         root: &crate::context::ContextRoot,
         text: &str,
         reader: &dyn ContentResidencyVerifier,
+        locate: impl Fn(&str) -> String,
     ) -> Result<Vec<FileRef>> {
         let workspace = crate::filesystem::workspace_ref(
             root.volume.provider().clone(),
             &root.volume.storage_name(&mut None)?,
         )?;
         let generation = self.files.resolve(&workspace, None).await?.generation;
-        let mentions = crate::client::resolve_file_mentions(
+        let mentions = crate::client::resolve_file_mentions_at(
             text,
             root,
             &generation,
             reader,
             self.limits.file_bytes,
+            locate,
         )
         .await?;
         let content = crate::command_request::CommandResolution::Prompt {
@@ -447,6 +448,13 @@ impl LocalHarness {
             _ => Vec::new(),
         })
     }
+}
+
+/// The name of a mentioned path's copy: 128 bits of its hash, so the copy's
+/// path has a fixed length. A model never sees it; it sees the mentioned
+/// path in the prompt and the copy's bytes.
+pub(in crate::local) fn copy_name(path: &str) -> String {
+    blake3::hash(path.as_bytes()).to_hex()[..32].to_owned()
 }
 
 impl LocalHarness {

@@ -74,9 +74,9 @@
   ],
   "assert": {
     "requests": 4,
-    "absent_files": [
-      "result.txt"
-    ],
+    "files": {
+      "result.txt": "after edit\n"
+    },
     "tool_results": [
       {
         "file": {
@@ -84,7 +84,7 @@
             "byte_length": 12
           },
           "volume": {
-            "class": "agent_private"
+            "class": "project"
           }
         }
       },
@@ -94,7 +94,7 @@
             "byte_length": 11
           },
           "volume": {
-            "class": "agent_private"
+            "class": "project"
           }
         }
       },
