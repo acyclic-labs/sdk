@@ -328,6 +328,14 @@ pub fn validate(route: &str, value: &Value) -> Result {
         }
         Some("heads") => {
             let item = object(value)?;
+            for observation in array(field(item, "retained")?)? {
+                let observation = object(observation)?;
+                path(field(observation, "path")?)?;
+                let record = field(observation, "record")?;
+                if !record.is_null() {
+                    validate_record(record)?;
+                }
+            }
             validate_revision(field(item, "snapshot")?)?;
             let projection = string(field(item, "projection")?)?;
             if !matches!(projection, "history" | "watermarks" | "tail") {

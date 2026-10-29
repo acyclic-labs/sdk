@@ -42,6 +42,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 (
                     cursor,
                     Command::Open(Box::new(OpenCommand {
+                        revisions: Arc::clone(&client.revisions),
                         filter: None,
                         credential: 0,
                         raw: false,
@@ -150,6 +151,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             let cursor = client.cursor(id, Arc::clone(&progress), receiver).unwrap();
             let (ready, opened) = oneshot::channel();
             let command = Command::Open(Box::new(OpenCommand {
+                revisions: Arc::clone(&client.revisions),
                 filter: None,
                 credential: 0,
                 raw: false,
@@ -387,6 +389,7 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open(Box::new(OpenCommand {
+            revisions: Arc::clone(&pool.revisions),
             filter: None,
             credential: 0,
             raw: false,

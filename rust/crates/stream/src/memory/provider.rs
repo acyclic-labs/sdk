@@ -6,6 +6,32 @@ impl MemoryStream {
         request: &crate::HeadsRequest,
     ) -> Result<crate::Heads, StreamError> {
         let state = self.state.read().await;
+        let retained = request
+            .retained
+            .iter()
+            .map(|selected| crate::RetainedRecordObservation {
+                path: selected.path.clone(),
+                record: (|| {
+                    let envelope = state.commit(&selected.commit_id)?;
+                    let index = envelope
+                        .mutations
+                        .binary_search_by(|mutation| {
+                            let destination = match mutation {
+                                CommittedMutation::Append(append) => &append.path,
+                                CommittedMutation::Fork(fork) => &fork.destination,
+                            };
+                            destination.cmp(&selected.path)
+                        })
+                        .ok()?;
+                    let (start, records) = match &envelope.mutations[index] {
+                        CommittedMutation::Append(append) => (append.start, &append.records),
+                        CommittedMutation::Fork(fork) => (fork.forked_at, &fork.records),
+                    };
+                    let offset = usize::try_from(selected.sequence.checked_sub(start)?).ok()?;
+                    records.get(offset).cloned()
+                })(),
+            })
+            .collect();
         let heads = request
             .paths
             .iter()
@@ -15,9 +41,10 @@ impl MemoryStream {
         if let Some(children) = &mut children {
             children.limit = children
                 .limit
-                .min(request.limit - request.paths.len() as u32);
+                .min(request.limit - request.selection_count()?);
         }
         let view = crate::Heads {
+            retained,
             projection: request.projection,
             snapshot: self.revisions.at(state.decision),
             heads,

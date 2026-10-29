@@ -10,6 +10,17 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+Revision refusals never clear a client's requirements, and a new incarnation
+cannot prove the old incarnation's writes. Explicit reset adoption starts a new
+client frontier. A client spanning independent routes can use
+`with_revision_scope` (TypeScript: `revisionScope`) with the scope from an
+authenticated receipt or observation. This selects that route's implicit
+participant without deleting another view's requirements; every explicit
+minimum still travels intact. Views share observations with their original
+tracker. A selected participant has direct, constant-work access; requesting
+the full multi-authority frontier still costs its actual participant count.
+Selection grants no authority and establishes no cross-authority retirement.
+
 An application receipt stream is ordinary retained stream history. Retain its
 terminal outcomes for at least as long as a caller may replay the corresponding
 identity, and publish the receipt in the same Commit as the effects it certifies.
@@ -268,3 +279,25 @@ owned typed guards and pre-funded completion retain their distinct custody.
 Unsupported guarantees return `Unsupported` before work. The portable-success
 negative control verifies that this refusal cannot fall back to a successful
 ordinary write, including zero native allocations and no publication.
+
+`HeadsRequest::retained` selects original records by publication, original
+destination and sequence. Heads, absence, selected records and children share
+one applied snapshot and one result budget. Denial on any selected destination
+refuses the whole view. A missing retained position is not proof that a command
+never executed. Original record bytes, headers, sequence, publication and time
+are returned with the original destination, including for absence. Clients
+validate that destination against the request, so same-publication records at
+equal sequences cannot be exchanged across paths. Selecting original facts makes
+no claim about the path's current ancestry.
+Actors can join an original reply and state publication without substituting the
+latest state or copying a complete multi-path envelope.
+
+Retained selection uses the existing fixed-width commit index, a binary search
+within the bounded original command and direct indexing within its record batch.
+It adds no history scan, journal, query, durability barrier or wait. Selection
+work scales with the caller's requested results and original command width,
+independently of unrelated retained publications. Memory clones only selected
+record owners under the existing snapshot read lock; transports encode only the
+selected bodies. An empty selection does no lookup and allocates no result
+storage. This read projection does not replace a write acknowledgment or remove
+a subsequent reconciliation request by itself.

@@ -1,6 +1,16 @@
 use super::*;
 
 impl Client {
+    /// Selects this route's implicit causal authority from an authenticated
+    /// receipt. Other views retain their floors; explicit multi-authority
+    /// minima are never filtered. Uses the existing channel and credentials.
+    #[must_use]
+    pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Self {
+        let mut client = self.clone();
+        client.revisions = self.revisions.scoped(scope);
+        client
+    }
+
     /// Abandons pending Session handshakes when their credential scope ends.
     /// Existing sessions remain owned by their logical cursors.
     pub fn abandon_session_attempts(&self) -> Result<(), StreamError> {
@@ -21,16 +31,19 @@ impl Client {
         Ok(crate::query_sync::Arc::clone(&self.revisions))
     }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
-        self.sessions.get_or_try_init(|| {
-            crate::session::Client::open(
-                self.channel.clone(),
-                self.authorization.clone(),
-                self.credential.clone(),
-                self.session_ca.clone(),
-                self.session_verifier.clone(),
-                crate::query_sync::Arc::clone(&self.revisions),
-            )
-        })
+        Ok(self
+            .sessions
+            .get_or_try_init(|| {
+                crate::session::Client::open(
+                    self.channel.clone(),
+                    self.authorization.clone(),
+                    self.credential.clone(),
+                    self.session_ca.clone(),
+                    self.session_verifier.clone(),
+                    crate::query_sync::Arc::clone(&self.revisions),
+                )
+            })?
+            .with_revisions(crate::query_sync::Arc::clone(&self.revisions)))
     }
     /// Receives canonical ALL/LATEST data through this client's shared session pool.
     pub async fn follow_data(

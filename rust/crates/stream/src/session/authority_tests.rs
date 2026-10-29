@@ -128,6 +128,7 @@ async fn revision_only_bindings_recheck_credential_context_without_resource_acce
     });
     auth.register(&mut slots, 0, &bytes, 2).await.unwrap();
     let request = crate::HeadsRequest {
+        retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
         paths: Default::default(),

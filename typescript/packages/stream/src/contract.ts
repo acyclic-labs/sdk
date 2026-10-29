@@ -131,11 +131,18 @@ export function wireRequest(request: WireRequest): Uint8Array {
         if (request.projection !== undefined && request.projection !== "history" && request.projection !== "watermarks" && request.projection !== "tail") throw new StreamError("invalid_argument", "invalid head projection");
         if (!Array.isArray(request.paths) || !Number.isInteger(request.limit) || request.limit < 1 || request.limit > 0xffff_ffff) throw new StreamError("invalid_argument", "heads requires paths and a positive uint32 budget");
         request.paths.forEach(requirePathType);
+        if (request.retained !== undefined && !Array.isArray(request.retained)) throw new StreamError("invalid_argument", "retained must be an array");
+        request.retained?.forEach(selected => {
+          requirePathType(selected.path);
+          requireSequenceType(selected.sequence);
+          if (!(selected.commitId instanceof Uint8Array) || selected.commitId.length !== 32) throw new StreamError("invalid_argument", "retained commitId must contain 32 bytes");
+        });
         if (request.durableThrough !== undefined) requireSequenceType(request.durableThrough);
         return toBinary(HeadsRequestSchema, create(HeadsRequestSchema, {
           projection: request.projection === "tail" ? HeadProjection.TAIL : request.projection === "watermarks" ? HeadProjection.WATERMARKS : HeadProjection.HISTORY,
           ...(request.durableThrough === undefined ? {} : { durableThrough: request.durableThrough }),
           paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
+          retained: [...(request.retained ?? [])],
           ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
             ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
             ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),

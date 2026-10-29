@@ -3,6 +3,17 @@ use super::*;
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
     let request = crate::HeadsRequest {
+        retained: value
+            .retained
+            .into_iter()
+            .map(|selected| {
+                Ok(crate::RetainedRecord {
+                    commit_id: commit_id(&selected.commit_id)?,
+                    path: StreamPath::new(selected.path)?,
+                    sequence: selected.sequence,
+                })
+            })
+            .collect::<Result<_, StreamError>>()?,
         durable_through: value.durable_through,
         projection: projection_from_wire(value.projection)
             .map_err(|_| StreamError::InvalidArgument)?,
@@ -22,6 +33,15 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
 /// Encodes one mixed observation without splitting it into separate requests.
 pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
     wire::HeadsRequest {
+        retained: value
+            .retained
+            .into_iter()
+            .map(|selected| wire::RetainedRecord {
+                commit_id: Bytes::copy_from_slice(selected.commit_id.as_bytes()),
+                path: selected.path.to_string(),
+                sequence: selected.sequence,
+            })
+            .collect(),
         durable_through: value.durable_through,
         projection: projection_to_wire(value.projection),
         paths: value
@@ -38,6 +58,14 @@ pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
 /// Encodes the exact authority snapshot and its ordered observations.
 pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
     wire::HeadsResponse {
+        retained: value
+            .retained
+            .into_iter()
+            .map(|selected| wire::RetainedRecordObservation {
+                path: selected.path.to_string(),
+                record: selected.record.map(record_wire),
+            })
+            .collect(),
         projection: projection_to_wire(value.projection),
         snapshot: Some(revision_to_wire(&value.snapshot)),
         heads: value
@@ -55,6 +83,17 @@ pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
 pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, StreamError> {
     let projection = projection_from_wire(value.projection)?;
     Ok(crate::Heads {
+        retained: value
+            .retained
+            .into_iter()
+            .map(|selected| {
+                Ok(crate::RetainedRecordObservation {
+                    path: StreamPath::new(selected.path)
+                        .map_err(|_| StreamError::InvalidResponse)?,
+                    record: selected.record.map(record).transpose()?,
+                })
+            })
+            .collect::<Result<_, _>>()?,
         projection,
         snapshot: issued_from_wire(value.snapshot)?,
         heads: value
@@ -144,5 +183,61 @@ pub fn fork_origin_to_wire(origin: crate::ForkOrigin) -> wire::ForkOrigin {
         source: origin.source.to_string(),
         forked_at: origin.forked_at,
         commit_id: Bytes::copy_from_slice(origin.commit_id.as_bytes()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use prost::Message;
+
+    proptest! {
+        #[test]
+        fn retained_positions_preserve_order_identity_and_sequence(
+            positions in prop::collection::vec((any::<[u8; 32]>(), "[a-z]{1,24}", any::<u64>()), 0..8),
+        ) {
+            let request = crate::HeadsRequest {
+                retained: positions.into_iter().map(|(id, path, sequence)| crate::RetainedRecord {
+                    commit_id: crate::CommitId::from_bytes(id), path: StreamPath::new(path).unwrap(), sequence,
+                }).collect(),
+                paths: Default::default(), children: None, projection: crate::HeadProjection::Tail,
+                durable_through: None, limit: 8, at_least: Default::default(),
+            };
+            let wire = heads_request_to_wire(request.clone());
+            let decoded = wire::HeadsRequest::decode(wire.encode_to_vec().as_slice()).unwrap();
+            prop_assert_eq!(heads_from_wire(decoded).unwrap(), request.clone());
+            let view = crate::Heads {
+                retained: request.retained.iter().map(|selected| crate::RetainedRecordObservation {
+                    path: selected.path.clone(),
+                    record: (selected.sequence % 2 == 0).then(|| crate::Record {
+                        sequence: selected.sequence, value: selected.path.as_str().as_bytes().to_vec().into(),
+                        commit_id: selected.commit_id, committed_at_micros: 1,
+                        headers: Default::default(),
+                    }),
+                }).collect(),
+                projection: request.projection,
+                snapshot: crate::Revision { scope: crate::RevisionScope::new(Vec::new()), incarnation: 1, index: 0 },
+                heads: Default::default(), children: None,
+            };
+            prop_assert_eq!(view.validate_for(&request), Ok(()));
+            let response = heads_to_wire(view.clone());
+            prop_assert_eq!(crate::wire_codec::requests::heads_len(&view), response.encoded_len());
+            let decoded = wire::HeadsResponse::decode(response.encode_to_vec().as_slice()).unwrap();
+            prop_assert_eq!(heads_from_response(decoded).unwrap(), view);
+            if !response.retained.is_empty() {
+                let mut malformed = response;
+                malformed.retained[0].path.clear();
+                prop_assert_eq!(heads_from_response(malformed), Err(StreamError::InvalidResponse));
+            }
+            if !wire.retained.is_empty() {
+                let mut malformed = wire.clone();
+                malformed.retained[0].commit_id = Bytes::new();
+                prop_assert!(heads_from_wire(malformed).is_err());
+                let mut too_small = wire;
+                too_small.limit = too_small.retained.len() as u32 - 1;
+                prop_assert_eq!(heads_from_wire(too_small), Err(StreamError::InvalidArgument));
+            }
+        }
     }
 }

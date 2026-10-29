@@ -57,7 +57,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
         }],
         mutations: vec![CommitMutation::Fork {
             source,
-            destination,
+            destination: destination.clone(),
             at_tail: 1,
             exclude: Vec::new(),
             records: Vec::new(),
@@ -73,6 +73,40 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert_eq!(fork_receipt.committed_at_micros, 9_000);
     let fork_facts = provider.read_commit(fork_receipt.commit_id).await?;
     assert!(fork_receipt.matches_envelope(&fork_facts));
+    let selected = crate::HeadsRequest {
+        retained: [
+            crate::RetainedRecord {
+                commit_id: receipt.commit_id,
+                path: request
+                    .mutations
+                    .first()
+                    .map(crate::request::mutation_path)
+                    .ok_or(StreamError::Unavailable)?
+                    .clone(),
+                sequence: 0,
+            },
+            // The fork did not append this inherited record at its destination.
+            crate::RetainedRecord {
+                commit_id: fork_receipt.commit_id,
+                path: destination,
+                sequence: 0,
+            },
+        ]
+        .into_iter()
+        .collect(),
+        durable_through: None,
+        projection: crate::HeadProjection::Tail,
+        paths: Default::default(),
+        children: None,
+        limit: 2,
+        at_least: Default::default(),
+    };
+    let original_view = provider.heads(selected.clone()).await?;
+    assert_eq!(
+        original_view.retained[0].record,
+        Some(append.records[0].clone())
+    );
+    assert_eq!(original_view.retained[1].record, None);
     let fork_observed = provider
         .inspect_idempotency(fork.idempotency_key.clone())
         .await?
@@ -103,6 +137,7 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
     assert_eq!(reopened.commit(request).await?, written);
     assert_eq!(reopened.commit(fork).await?, forked);
     assert_eq!(reopened.read_commit(receipt.commit_id).await?, facts);
+    assert_eq!(reopened.heads(selected).await?, original_view);
     assert_eq!(
         reopened.read_commit(fork_receipt.commit_id).await?,
         fork_facts

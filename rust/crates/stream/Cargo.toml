@@ -135,6 +135,11 @@ path = "tests/client_pool_loom.rs"
 required-features = ["grpc", "model-checking"]
 
 [[test]]
+name = "revision_frontier_loom"
+path = "tests/revision_frontier_loom.rs"
+required-features = ["model-checking"]
+
+[[test]]
 name = "client_session_loom"
 path = "tests/client_session_loom.rs"
 required-features = ["local", "model-checking"]

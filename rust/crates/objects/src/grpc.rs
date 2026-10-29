@@ -62,6 +62,16 @@ pub struct GrpcObjects {
 }
 
 impl GrpcObjects {
+    /// Selects a route's implicit authority using an authenticated receipt or
+    /// observation. Cloned views still share every observed requirement; this
+    /// selection never retires another account or changes authorization.
+    #[must_use]
+    pub fn with_revision_scope(&self, scope: acyclic_stream::RevisionScope) -> Self {
+        let mut client = self.clone();
+        client.revisions = self.revisions.scoped(scope);
+        client
+    }
+
     /// The last revision observed per authority, shared by every clone and
     /// forwarded as the minimum of each GET, HEAD and LIST. Observing a
     /// revision another client returned makes later reads cover it.
@@ -221,11 +231,6 @@ impl GrpcObjects {
             }
             Err(status) => (status.metadata().clone(), Err(error_from_status(&status))),
         };
-        if let Err(error) = &outcome
-            && error.code == wire::ErrorCode::RevisionForeign
-        {
-            self.revisions.refused(&StreamError::RevisionForeign);
-        }
         let revision = issued(&metadata)?;
         // A server that ignored the minimum reports no revision; its read
         // proves nothing about the floor.
@@ -331,7 +336,10 @@ macro_rules! call {
         call!($self, $rpc, $value, $timeout, None)
     };
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, read) => {{
-        let floor = $self.revisions.floor(&RevisionCut::default());
+        let floor = $self
+            .revisions
+            .floor(&RevisionCut::default())
+            .map_err(|_| Error::from(wire::ErrorCode::RevisionForeign))?;
         call!($self, $rpc, $value, $timeout, Some(&floor))
     }};
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{

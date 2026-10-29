@@ -557,7 +557,11 @@ impl Authority {
         } else {
             let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
             let capability = credential.as_ref().map_err(|error| *error)?;
-            let resource = stream_resource(request.paths.first());
+            let primary = request
+                .paths
+                .first()
+                .or_else(|| request.retained.first().map(|selected| &selected.path));
+            let resource = stream_resource(primary);
             let mut authorization = ResourceAuthorization::new(
                 Arc::clone(self),
                 resource.clone(),
@@ -567,7 +571,7 @@ impl Authority {
             let binding = Binding {
                 credential_revision: *revision,
                 slot,
-                resource: (!request.paths.is_empty()).then_some(resource),
+                resource: primary.map(|_| resource),
                 requested: wire::SessionFilter::default(),
                 filter_digest: [0; 32],
                 resource_authorization: Some(authorization.clone()),
@@ -578,6 +582,7 @@ impl Authority {
         binding.additional = request
             .paths
             .iter()
+            .chain(request.retained.iter().map(|selected| &selected.path))
             // Without a child page, the primary binding already checks path one.
             .skip(usize::from(request.children.is_none()))
             .map(|path| ("streams/read", stream_resource(Some(path))))

@@ -26,6 +26,8 @@ export interface StreamGrpcOptions extends CredentialOptions {
   readonly observer?: AcyclicObserver;
   /** Translating servers acknowledge their own downstream receipt. */
   readonly acknowledgeDeliveries?: boolean;
+  /** Implicit causal authority selected from an authenticated receipt; explicit minima remain intact. */
+  readonly revisionScope?: Uint8Array;
 }
 
 /** Virtual follows support cancellation/deadlines; metadata belongs to the shared session. */
@@ -111,7 +113,7 @@ function streamGrpc(options: StreamGrpcOptions) {
         catch (error) { throw sessionTransportError(error); }
       };
       return { incoming: incoming(), send: (frame, writeSignal) => input.send(frame, writeSignal), close: () => input.end() };
-    }, acknowledgeDeliveries !== false);
+    }, acknowledgeDeliveries !== false, options.revisionScope);
     return { client, sessions };
 }
 
@@ -129,7 +131,6 @@ export class GrpcStreamProvider implements StreamProvider {
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
     try { return await call(); } catch (error) {
       const failure = providerError(error, operation);
-      this.#sessions.refused(failure);
       throw failure;
     }
   }
@@ -231,7 +232,6 @@ export class GrpcStreamProvider implements StreamProvider {
     } catch (error) {
       if (signal?.aborted) return;
       const failure = providerError(error, operation);
-      this.#sessions.refused(failure);
       throw failure;
     }
   }

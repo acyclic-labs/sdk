@@ -11,9 +11,16 @@ impl WasmSession {
     /// Its object exposes `next()`, `send(frameBytes)` and `close()` only.
     #[wasm_bindgen(constructor)]
     #[must_use]
-    pub fn new(connect: js_sys::Function, acknowledge: bool) -> Self {
+    pub fn new(
+        connect: js_sys::Function,
+        acknowledge: bool,
+        revision_scope: Option<Box<[u8]>>,
+    ) -> Self {
         Self {
-            client: session_io::client(connect),
+            client: session_io::client(
+                connect,
+                revision_scope.map(|scope| crate::RevisionScope::new(scope.into_vec())),
+            ),
             acknowledge,
         }
     }
@@ -39,11 +46,12 @@ impl WasmSession {
     /// The pool's read-your-writes floor: one encoded `Revision` per authority
     /// this client has observed. Every request that accepts a minimum carries it.
     #[wasm_bindgen(js_name = revisionFloor)]
-    #[must_use]
-    pub fn revision_floor(&self) -> js_sys::Array {
-        self.client
+    pub fn revision_floor(&self) -> Result<js_sys::Array, JsValue> {
+        Ok(self
+            .client
             .revisions()
             .floor(&crate::RevisionCut::default())
+            .map_err(js_error)?
             .iter()
             .map(|revision| {
                 js_sys::Uint8Array::from(
@@ -52,7 +60,7 @@ impl WasmSession {
                         .as_slice(),
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// Raises the floor with one encoded `Revision` a receipt or response served.
@@ -95,14 +103,6 @@ impl WasmSession {
             .revisions()
             .served(&minimum, applied.as_ref())
             .map_err(js_error)
-    }
-
-    /// Drops the floor after an authority refused it as foreign.
-    #[wasm_bindgen(js_name = revisionRefused)]
-    pub fn revision_refused(&self) {
-        self.client
-            .revisions()
-            .refused(&StreamError::RevisionForeign);
     }
 
     /// Captures a coherent view through the existing credited session pool.

@@ -172,6 +172,7 @@ enum Command {
 }
 struct OpenCommand {
     id: u64,
+    revisions: Arc<crate::RevisionTracker>,
     attempt_epoch: u64,
     acknowledge: bool,
     kind: Kind,
@@ -186,6 +187,7 @@ struct OpenCommand {
 
 struct Route {
     node: String,
+    revisions: Arc<crate::RevisionTracker>,
     attempt_epoch: u64,
     kind: Kind,
     filter: Option<wire::SessionFilter>,
@@ -269,6 +271,18 @@ impl Drop for Link {
     }
 }
 impl Client {
+    /// Selects one implicit authority while sharing this pool, credentials,
+    /// channels and observations. Explicit minima are retained unchanged.
+    #[must_use]
+    pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Self {
+        self.clone().with_revisions(self.revisions.scoped(scope))
+    }
+
+    pub(crate) fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {
+        self.revisions = revisions;
+        self
+    }
+
     /// Shares one protocol pool across platform endpoints and every logical follow.
     pub fn with_transport(
         channel: Endpoint,
@@ -280,7 +294,7 @@ impl Client {
 
     /// Like [`Self::with_transport`], raising `revisions`, which outlives this
     /// pool: a credential change opens a new pool but keeps read-your-writes.
-    pub(crate) fn tracking(
+    pub fn tracking(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
@@ -688,6 +702,7 @@ impl Client {
         let registration = async {
             self.commands
                 .send(Command::Open(Box::new(OpenCommand {
+                    revisions: Arc::clone(&self.revisions),
                     id,
                     attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
                     acknowledge,

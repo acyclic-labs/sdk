@@ -154,7 +154,13 @@ impl Pool {
             // checked against exactly that cut. Only a Streams source carries
             // the stream floor; another source keeps its explicit minimum.
             if wire_codec::session::tracks_revisions(follow) {
-                self.revisions.raise_uncovered(&mut follow.at_least, served);
+                if let Err(error) = route
+                    .revisions
+                    .raise_uncovered(&mut follow.at_least, served)
+                {
+                    self.reject(id, error);
+                    return Ok(());
+                }
             }
         }
         route.received = next;

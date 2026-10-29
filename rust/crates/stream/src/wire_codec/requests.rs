@@ -119,6 +119,21 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
         )
     });
     block_len(snapshot)
+        .saturating_add(
+            view.retained
+                .iter()
+                .map(|observation| {
+                    block_len(
+                        block_len(observation.path.as_str().len()).saturating_add(
+                            observation
+                                .record
+                                .as_ref()
+                                .map_or(0, |record| block_len(record_len(record))),
+                        ),
+                    )
+                })
+                .fold(0usize, usize::saturating_add),
+        )
         .saturating_add(named)
         .saturating_add(children)
         .saturating_add(uint_len(match view.projection {

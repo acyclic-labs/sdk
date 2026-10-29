@@ -672,6 +672,24 @@ mod http {
                 let result = Object::new();
                 set(
                     &result,
+                    "retained",
+                    &array_js(field(item, "retained")?, |observation| {
+                        let observation = object(observation)?;
+                        let selected = Object::new();
+                        set(
+                            &selected,
+                            "path",
+                            &JsValue::from_str(string(field(observation, "path")?)?),
+                        )?;
+                        let record = field(observation, "record")?;
+                        if !record.is_null() {
+                            set(&selected, "record", &record_js(record)?)?;
+                        }
+                        Ok(selected.into())
+                    })?,
+                )?;
+                set(
+                    &result,
                     "projection",
                     &JsValue::from_str(string(field(item, "projection")?)?),
                 )?;

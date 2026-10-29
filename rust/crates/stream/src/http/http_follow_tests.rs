@@ -163,6 +163,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = MemoryStream::default()
         .heads(HeadsRequest {
+            retained: Default::default(),
             durable_through: None,
             projection: Default::default(),
             paths: Default::default(),

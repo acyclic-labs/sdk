@@ -246,6 +246,7 @@ async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Resu
     // Retention is an explicit proof, never a crash-persistence watermark.
     assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
     let request = HeadsRequest {
+        retained: Default::default(),
         durable_through: Some(1),
         projection: HeadProjection::Watermarks,
         paths: [path].into(),

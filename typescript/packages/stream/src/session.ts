@@ -29,7 +29,7 @@ function validateCredentialSlot(slot: number): void {
 /** Platform I/O adapter; all session state and recovery belong to Rust. */
 export class StreamSessions {
   readonly #inner: WasmSession;
-  constructor(connect: SessionConnect, acknowledge = true) {
+  constructor(connect: SessionConnect, acknowledge = true, revisionScope?: Uint8Array) {
     this.#inner = new WasmSession(async (bytes: Uint8Array | null, signal: AbortSignal) => {
       const transport = await connect(bytes === null ? undefined : fromBinary(wire.SessionNodeSchema, bytes), signal);
       if (signal.aborted) { transport.close(); throw signal.reason; }
@@ -42,12 +42,13 @@ export class StreamSessions {
         send(bytes: Uint8Array, writeSignal: AbortSignal) { return transport.send(fromBinary(wire.SessionFrameSchema, bytes), writeSignal); },
         close() { transport.close(); },
       };
-    }, acknowledge);
+    }, acknowledge, revisionScope);
   }
 
   /** The pool's read-your-writes floor: one revision per observed authority, never a max. */
   revisionFloor(): Revision[] {
-    return (this.#inner.revisionFloor() as Uint8Array[]).map(bytes => fromBinary(RevisionSchema, bytes));
+    try { return (this.#inner.revisionFloor() as Uint8Array[]).map(bytes => fromBinary(RevisionSchema, bytes)); }
+    catch (error) { throw streamError(error, "session"); }
   }
 
   /** Raises the floor with a revision a receipt or response served; lower revisions never lower it. */
@@ -60,11 +61,6 @@ export class StreamSessions {
     const encode = (revision: Revision) => toBinary(RevisionSchema, create(RevisionSchema, revision));
     try { this.#inner.servedRevision(minimum.map(encode), applied === undefined ? undefined : encode(applied)); }
     catch (error) { throw streamError(error, "session"); }
-  }
-
-  /** Drops the floor after an authority refused it as foreign. */
-  refused(error: unknown): void {
-    if (error instanceof StreamError && error.code === "revision_foreign") this.#inner.revisionRefused();
   }
 
   async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {

@@ -173,6 +173,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     {
         async move {
             let request = HeadsRequest {
+                retained: Default::default(),
                 durable_through: Some(through),
                 projection: HeadProjection::Watermarks,
                 paths: [path.clone()].into(),
@@ -225,6 +226,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let limit = request.limit;
             let view = self
                 .heads(HeadsRequest {
+                    retained: Default::default(),
                     durable_through: None,
                     projection: HeadProjection::Watermarks,
                     paths: Default::default(),
@@ -251,6 +253,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         async move {
             let view = self
                 .heads(HeadsRequest {
+                    retained: Default::default(),
                     durable_through: None,
                     projection: Default::default(),
                     paths: Default::default(),
@@ -277,6 +280,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
     projection: HeadProjection,
 ) -> Result<PathHead, StreamError> {
     let request = HeadsRequest {
+        retained: Default::default(),
         durable_through: None,
         projection,
         paths: [path].into(),

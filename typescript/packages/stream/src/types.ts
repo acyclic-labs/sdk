@@ -80,8 +80,11 @@ export type ForkOrigin = PublicWire<WireForkOrigin, { readonly commitId: CommitI
 export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord; readonly origin?: ForkOrigin }>;
 /** Named paths and an optional children page at one authority snapshot. */
 export type HeadProjection = "history" | "watermarks" | "tail";
-export interface HeadsRequest { readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
-export interface Heads { readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
+/** Original publication destination and sequence; independent of current ancestry. */
+export interface RetainedRecord { readonly commitId: Uint8Array; readonly path: string; readonly sequence: bigint }
+export interface HeadsRequest { readonly retained?: readonly RetainedRecord[]; readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
+export interface RetainedRecordObservation { readonly path: string; readonly record?: Record }
+export interface Heads { readonly retained: readonly RetainedRecordObservation[]; readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });

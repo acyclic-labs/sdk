@@ -232,8 +232,12 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 .children
                 .map(|children| request_json("children/page", &children.encode_to_vec()))
                 .transpose()?;
+            let retained: Vec<_> = request.retained.iter().map(|selected| json!({
+                "commitId": STANDARD.encode(selected.commit_id.as_bytes()),
+                "path": selected.path.to_string(), "sequence": selected.sequence.to_string(),
+            })).collect();
             Ok(with_at_least(
-                json!({ "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } }),
+                json!({ "retained": retained, "durableThrough": request.durable_through.map(|through| through.to_string()), "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks", crate::HeadProjection::Tail => "tail" } }),
                 &wire.at_least,
             ))
         }
