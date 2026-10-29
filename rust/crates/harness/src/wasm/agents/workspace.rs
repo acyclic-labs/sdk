@@ -40,30 +40,45 @@ impl WasmMachinesWorkspace {
         use acyclic_machines::{MachineObservation, MachinesProvider, grpc, wire};
         use prost::Message as _;
 
+        fn field<T: JsCast>(source: &JsValue, name: &str) -> Result<T, JsValue> {
+            js_sys::Reflect::get(source, &JsValue::from_str(name))?
+                .dyn_into()
+                .map_err(|_| super::js_error(crate::Error::Invalid(format!(
+                    "Machines workspace source field {name} has the wrong type; recovery: retain the original admitted platform source"
+                ))))
+        }
+
         // Observe the original owner before accessing the admitted source.
         let verifier = owner.issuer.verifier(&mut None).map_err(super::js_error)?;
         let (_, scope) = owner
             .issuer
             .caller()
-            .ok_or_else(|| JsValue::from_str("Machines workspace requires platform admission"))?;
-        let field = |name: &str| js_sys::Reflect::get(&source, &JsValue::from_str(name));
-        let provider = field("provider")?.dyn_into::<js_sys::Uint8Array>()?;
+            .ok_or_else(|| super::js_error(crate::Error::Unauthorized(
+                "Machines workspace requires platform admission; recovery: use the server's original admitted authority".into(),
+            )))?;
+        let provider: js_sys::Uint8Array = field(&source, "provider")?;
         let provider = crate::wire::ProviderRef::decode(provider.to_vec().as_slice())
-            .map_err(|_| JsValue::from_str("invalid Machines provider reference protobuf"))?;
+            .map_err(|_| super::js_error(crate::Error::Invalid(
+                "invalid Machines provider reference protobuf; recovery: retain the original canonical ProviderRef".into(),
+            )))?;
         let provider_ref = ProviderRef::try_from(provider).map_err(super::js_error)?;
-        let observation = field("observation")?.dyn_into::<js_sys::Uint8Array>()?;
+        let observation: js_sys::Uint8Array = field(&source, "observation")?;
         let observation = wire::MachineState::decode(observation.to_vec().as_slice())
-            .map_err(|_| JsValue::from_str("invalid admitted Machine observation protobuf"))?;
+            .map_err(|_| super::js_error(crate::Error::Invalid(
+                "invalid admitted Machine observation protobuf; recovery: retain the original settled MachineState".into(),
+            )))?;
         let observation = MachineObservation::try_from(observation)
             .map_err(|error| super::js_error(crate::Error::Machines(error)))?;
         let volume = observation
             .contract
             .selected_volume_ref
             .clone()
-            .ok_or_else(|| JsValue::from_str("admitted Machine has no selected volume"))?;
+            .ok_or_else(|| super::js_error(crate::Error::Unauthorized(
+                "admitted Machine has no selected volume; recovery: retain the original selected-volume admission".into(),
+            )))?;
         let volume = VolumeRef::try_from(volume).map_err(super::js_error)?;
-        let open = field("open")?.dyn_into::<js_sys::Function>()?;
-        let budget = field("budget")?.dyn_into::<js_sys::Function>()?;
+        let open = field::<js_sys::Function>(&source, "open")?;
+        let budget = field::<js_sys::Function>(&source, "budget")?;
         let authority = owner.issuer.clone();
         let context = owner.context.clone();
         let endpoint = grpc::javascript::Endpoint::new(open, move |timeout, expiry| {
@@ -219,7 +234,8 @@ export interface WasmMachinesWorkspaceSource {
         /** Synchronous original-clock observation; zero on stop/producer loss.
          * Throwing or invalid output is closed, including in a completing poll. */
         remainingMilliseconds(): bigint;
-        /** Original earlier-deadline/caller-stop event; rejection means loss. */
+        /** Original earlier-deadline/caller-stop event. Producer loss must
+         * settle or reject this promise, waking every pending observer. */
         readonly stopped: Promise<"deadline" | "cancelled">;
     };
 }
