@@ -93,6 +93,7 @@ async fn pi_native_session_lifecycle() -> Result<()> {
 /// interruption and merge: every turn is the child agent's own commit.
 async fn native_session_lifecycle(host: &str) -> Result<()> {
     let mut fixture = Fixture::for_host(host).await?;
+    let reference = "child".repeat(205);
     std::fs::write(
         fixture.checkout.path().join("instructions.md"),
         b"discovered in child view",
@@ -100,7 +101,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     .map_err(storage)?;
     let spawned = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Spawn {
                 prompt: "initial".into(),
             },
@@ -112,19 +113,24 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(child.parent().as_ref(), Some(&fixture.parent));
     let sent = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Send {
                 prompt: "follow-up".into(),
             },
         )
         .await?;
     assert_eq!(sent["pending"], 2);
-    let first = fixture.session("child", SessionAction::Next).await?;
+    let first = fixture.session(&reference, SessionAction::Next).await?;
     assert_eq!(first["prompt"], "initial");
     assert_eq!(first["turn"], 1);
-    assert!(fixture.session("child", SessionAction::Next).await.is_err());
     assert!(
-        fixture.merge("child").await.is_err(),
+        fixture
+            .session(&reference, SessionAction::Next)
+            .await
+            .is_err()
+    );
+    assert!(
+        fixture.merge(&reference).await.is_err(),
         "a running session cannot merge"
     );
     let view = cwd(&first)?;
@@ -134,7 +140,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     );
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::SaveSession {
                 id: "opaque-native-resume-id".into(),
             },
@@ -143,7 +149,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     native_write(&view.join("child.txt"), b"native")?;
     let failed = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: claim(&first)?,
                 outcome: crate::Outcome::Failed {
@@ -166,7 +172,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
             },
         )
         .await?;
-    let next = fixture.session("child", SessionAction::Next).await?;
+    let next = fixture.session(&reference, SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
     assert_eq!(
@@ -179,7 +185,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     );
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Control {
                 control: Control::Interrupt,
             },
@@ -187,7 +193,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         .await?;
     let settled = fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Complete {
                 claim: claim(&next)?,
                 outcome: crate::Outcome::Cancelled,
@@ -198,7 +204,7 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
     assert_eq!(settled["control"], "interrupt");
     fixture
         .session(
-            "child",
+            &reference,
             SessionAction::Control {
                 control: Control::Resume,
             },
@@ -206,11 +212,11 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         .await?;
     assert!(
         fixture
-            .session("child", SessionAction::Next)
+            .session(&reference, SessionAction::Next)
             .await?
             .is_null()
     );
-    fixture.merge("child").await?;
+    fixture.merge(&reference).await?;
     assert_eq!(
         std::fs::read(fixture.checkout.path().join("child.txt")).map_err(storage)?,
         b"native"
