@@ -22,7 +22,8 @@ pub use control::{
 mod command;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use command::{
-    AgentCommand, AgentPageRequest, CommandError, MAX_READ_BYTES, PreparedCommand, ReadTarget,
+    AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
+    MAX_READ_BYTES, PreparedCommand, ReadTarget,
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]
 mod reply;

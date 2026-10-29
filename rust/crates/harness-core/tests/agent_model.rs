@@ -499,7 +499,7 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
     let foreign = AgentPath::root(&id(3)).child(&id(2))?;
     for any in [false, true] {
         for done in [false, true] {
-            let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+            let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
             state.open_children.insert(child.clone()).await?;
             let driver = script(vec![
                 TurnStep {
@@ -575,7 +575,7 @@ async fn awaited_children_are_scoped_to_their_parent() -> Result {
             assert_eq!(settled.state.open_children.contains(&child).await?, !done);
         }
         // A foreign path is not an open child even when its final ID matches.
-        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
         state.open_children.insert(child.clone()).await?;
         let driver = script(vec![TurnStep {
             checkpoint: Some(b"foreign".to_vec()),
