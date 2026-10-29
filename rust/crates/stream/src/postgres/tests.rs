@@ -62,7 +62,7 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
             client,
             publish,
             read,
-            namespace: &namespace,
+            namespace: &follower.inner.namespace,
             wakes,
             head: observed_head,
         },
@@ -93,7 +93,7 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
         client,
         publish,
         read,
-        namespace: &namespace,
+        namespace: &follower.inner.namespace,
         wakes,
         head: &mut forgotten,
     };

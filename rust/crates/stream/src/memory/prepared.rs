@@ -93,7 +93,18 @@ impl MemoryStream {
                 .map_or(0, |parent| parent.keys().height() as usize),
             _ => return Err(StreamError::Unavailable),
         };
-        let nodes = crate::MAX_RECORD_KEYS * (parent_height + crate::MAX_RECORD_KEYS + 3);
+        // N new AVL keys can add at most twice their binary height. Reserve
+        // copied insertion paths and rotations without quadratic N-by-N space.
+        let growth = (usize::BITS - capacity.keys.leading_zeros()) as usize * 2;
+        let nodes = capacity
+            .keys
+            .checked_mul(
+                parent_height
+                    .checked_add(growth)
+                    .and_then(|height| height.checked_add(3))
+                    .ok_or(StreamError::Capacity)?,
+            )
+            .ok_or(StreamError::Capacity)?;
         let key_nodes = self.allocate(
             nodes
                 .checked_mul(key_node_bytes())

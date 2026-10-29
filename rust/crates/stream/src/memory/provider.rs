@@ -286,9 +286,6 @@ impl StreamProvider for MemoryStream {
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         let limit = page_limit(request.limit)?;
-        if let Some(key) = &request.key {
-            key.validate()?;
-        }
         self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
         let path = state
@@ -362,11 +359,6 @@ impl crate::NativeStreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             if let Err(error) = validate_limit(request.limit) {
-                return Ok(Err(error));
-            }
-            if let Some(key) = &request.key
-                && let Err(error) = key.validate()
-            {
                 return Ok(Err(error));
             }
             if let Err(error) = self.revisions.wait(&request.at_least).await {

@@ -342,6 +342,7 @@ async fn verify_wide_append<P: StreamProvider + ?Sized>(provider: &P) -> Result<
             path: request.path,
             from: 0,
             limit: 2_049,
+            key: None,
             at_least: Default::default(),
         })
         .await?;

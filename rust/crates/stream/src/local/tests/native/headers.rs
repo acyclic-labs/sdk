@@ -94,7 +94,7 @@ async fn prepared_recovery_refuses_unreserved_header_counts_before_codec_work()
     for local in [false, true] {
         for attributes in [false, true] {
             let directory = tempfile::tempdir()?;
-            let provider: Arc<dyn StreamProvider> = if local {
+            let provider: Arc<dyn crate::NativeStreamProvider> = if local {
                 Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
             } else {
                 Arc::new(MemoryStream::new(MemoryLimits::default()))
