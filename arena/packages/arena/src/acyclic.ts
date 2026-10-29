@@ -13,7 +13,7 @@ export class Acyclic {
   constructor(readonly repo: string, readonly binary = process.env.ACYCLIC_BIN ?? "acyclic") {}
 
   run(...args: string[]): string {
-    const p = spawnSync(this.binary, ["--repo", this.repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
+    const p = spawnSync(this.binary, ["--repo", this.repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
     if (p.error) throw p.error;
     if (p.status !== 0) throw new Error(`acyclic ${args.join(" ")} failed (${p.status}): ${(p.stderr || p.stdout).trim()}`);
     return p.stdout;

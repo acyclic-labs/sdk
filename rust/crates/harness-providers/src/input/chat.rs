@@ -44,7 +44,6 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
     }
     check(pending.is_empty(), "OAC-TOOL-01", errors);
     if let Some(tools) = body["tools"].as_array() {
-        check(tools.len() <= 128, "OAC-TOOL-03", errors);
         for tool in tools {
             check(
                 tool["type"] == "function" && name(&tool["function"]["name"], 64, false, b"_-"),
@@ -52,8 +51,5 @@ pub(super) fn validate(body: &Value, errors: &mut Vec<&'static str>) {
                 errors,
             );
         }
-    }
-    if let Some(stop) = body["stop"].as_array() {
-        check(stop.len() <= 4, "OAC-TOOL-03", errors);
     }
 }

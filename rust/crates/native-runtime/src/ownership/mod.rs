@@ -15,18 +15,64 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-struct ReleaseSignal {
-    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
+struct ReleaseState<T> {
+    complete: Mutex<bool>,
+    synchronous: Condvar,
+    asynchronous: tokio::sync::Notify,
+    value: T,
 }
 
-impl Drop for ReleaseSignal {
+/// Publishes retirement when dropped. Place this field after the resources
+/// whose destruction must precede completion.
+pub struct OwnershipReleaseSignal<T = ()>(Arc<ReleaseState<T>>);
+
+impl<T> OwnershipReleaseSignal<T> {
+    /// Complete shared-state allocation, including Arc counters, for callers
+    /// that admit native control storage before construction.
+    #[must_use]
+    pub const fn allocation_bytes() -> usize {
+        crate::arc_allocation_bytes::<ReleaseState<T>>()
+    }
+
+    /// Creates one retirement condition and its retained state. The caller
+    /// supplies any allocation guard as part of the state.
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(ReleaseState {
+            complete: Mutex::new(false),
+            synchronous: Condvar::new(),
+            asynchronous: tokio::sync::Notify::new(),
+            value,
+        }))
+    }
+
+    /// State that remains available to observers after retirement.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.0.value
+    }
+
+    /// Observes this exact retirement condition without retaining its owner.
+    #[must_use]
+    pub fn release_barrier(&self) -> OwnershipReleaseBarrier<T> {
+        OwnershipReleaseBarrier {
+            released: Arc::clone(&self.0),
+        }
+    }
+}
+
+impl<T> Drop for OwnershipReleaseSignal<T> {
     fn drop(&mut self) {
-        let (lock, released) = &*self.released;
-        let mut complete = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *complete = true;
-        released.notify_all();
+        {
+            let mut complete = self
+                .0
+                .complete
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *complete = true;
+        }
+        self.0.synchronous.notify_all();
+        self.0.asynchronous.notify_waiters();
     }
 }
 
@@ -36,8 +82,8 @@ impl Drop for ReleaseSignal {
 struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
-    // Final field: signal only after physical cleanup and every retained fence.
-    release: ReleaseSignal,
+    // Last: observers learn completion only after payload and fences retire.
+    released: OwnershipReleaseSignal,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -45,9 +91,7 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
-            release: ReleaseSignal {
-                released: Arc::new((crate::sync::Mutex::new(false), crate::sync::Condvar::new())),
-            },
+            released: OwnershipReleaseSignal::new(()),
         }
     }
 
@@ -97,9 +141,11 @@ impl OwnershipAnchor {
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
         let owner = SharedOwner::<_, Box<dyn Send + Sync>>::new(owner);
-        let released = Arc::clone(&owner.release.released);
+        let release = OwnershipReleaseBarrier {
+            released: Arc::clone(&owner.released.0),
+        };
         Self {
-            release: OwnershipReleaseBarrier { released },
+            release,
             _owner: Arc::new(owner),
         }
     }
@@ -114,28 +160,33 @@ impl OwnershipAnchor {
 }
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
-pub struct OwnershipReleaseBarrier {
-    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
+pub struct OwnershipReleaseBarrier<T = ()> {
+    released: Arc<ReleaseState<T>>,
 }
 
-impl OwnershipReleaseBarrier {
-    /// Returns whether the final owner's cleanup and retained fences completed.
+impl<T> OwnershipReleaseBarrier<T> {
+    /// State retained through the final owner's retirement.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.released.value
+    }
+
+    /// Returns whether every ownership-anchor clone has released the owner.
     #[must_use]
     pub fn is_released(&self) -> bool {
         *self
             .released
-            .0
+            .complete
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Blocks until the final owner's cleanup and retained fences complete.
-    pub fn wait(self) {
+    /// Blocks until final payload and fence retirement.
+    pub fn wait(&self) {
         self.wait_for(None);
     }
 
-    /// Waits for owner release, refusing at the absolute deadline.
-    /// A deadline bounds this blocking wait itself, including worker shutdown.
+    /// Waits for actual retirement, refusing at the original absolute deadline.
     pub fn wait_until(self, deadline: std::time::Instant) -> std::io::Result<()> {
         if self.wait_for(Some(deadline)) {
             Ok(())
@@ -147,15 +198,18 @@ impl OwnershipReleaseBarrier {
         }
     }
 
-    fn wait_for(self, deadline: Option<std::time::Instant>) -> bool {
-        let (lock, released) = &*self.released;
-        let mut guard = lock
+    fn wait_for(&self, deadline: Option<std::time::Instant>) -> bool {
+        let mut complete = self
+            .released
+            .complete
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !*guard {
-            guard = match deadline {
-                None => released
-                    .wait(guard)
+        while !*complete {
+            complete = match deadline {
+                None => self
+                    .released
+                    .synchronous
+                    .wait(complete)
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
                 Some(deadline) => {
                     let Some(remaining) =
@@ -163,14 +217,29 @@ impl OwnershipReleaseBarrier {
                     else {
                         return false;
                     };
-                    released
-                        .wait_timeout(guard, remaining)
+                    self.released
+                        .synchronous
+                        .wait_timeout(complete, remaining)
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .0
                 }
             };
         }
         true
+    }
+
+    /// Awaits final payload and fence retirement without blocking an executor.
+    /// Dropping this future removes its notification registration.
+    pub async fn wait_async(self) {
+        loop {
+            let changed = self.released.asynchronous.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_released() {
+                return;
+            }
+            changed.await;
+        }
     }
 }
 

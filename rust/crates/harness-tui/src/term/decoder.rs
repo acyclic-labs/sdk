@@ -1,6 +1,6 @@
 use std::io;
 
-use super::{PROBE_LIMIT, Probe, ProbeReplies};
+use super::{Probe, ProbeReplies};
 use crate::key_event::{
     InputEvent, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
@@ -22,26 +22,17 @@ pub struct Decoder {
 struct Paste {
     bytes: Vec<u8>,
     ending: usize,
-    rejected: bool,
 }
 
 impl Paste {
     fn push(&mut self, byte: u8) -> bool {
         const END: &[u8] = b"\x1b[201~";
-        if !self.rejected {
-            self.bytes.push(byte);
-        }
+        self.bytes.push(byte);
         self.ending = if END.get(self.ending) == Some(&byte) {
             self.ending + 1
         } else {
             usize::from(byte == 0x1b)
         };
-        // A candidate terminator is not part of the payload. Hold at most the
-        // limit plus six candidate bytes, then drain without retaining bytes.
-        if !self.rejected && self.bytes.len().saturating_sub(self.ending) > PROBE_LIMIT {
-            self.rejected = true;
-            self.bytes.clear();
-        }
         self.ending == END.len()
     }
 }
@@ -65,18 +56,12 @@ impl Decoder {
         failure.map_or(Ok(()), Err)
     }
 
-    // A rejected unit is consumed completely before returning its error. The
+    // A malformed unit is consumed completely before returning its error. The
     // rest of this transport chunk is still classified and retained as events.
     fn byte(&mut self, byte: u8) -> io::Result<()> {
         if let Some(paste) = &mut self.paste {
             if paste.push(byte) {
                 let mut paste = self.paste.take().ok_or(io::ErrorKind::InvalidData)?;
-                if paste.rejected {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "bracketed paste exceeds input limit",
-                    ));
-                }
                 paste.bytes.truncate(paste.bytes.len() - 6);
                 let text =
                     String::from_utf8(paste.bytes).map_err(|_| io::ErrorKind::InvalidData)?;
@@ -93,9 +78,13 @@ impl Decoder {
         Ok(())
     }
 
-    pub(crate) fn input_deadline(&self, deadline: std::time::Instant) -> std::time::Instant {
+    pub(crate) fn input_deadline(
+        &self,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<std::time::Instant> {
         if self.probe.pending_escape() {
-            deadline.min(std::time::Instant::now() + std::time::Duration::from_millis(30))
+            let escape = std::time::Instant::now() + std::time::Duration::from_millis(30);
+            Some(deadline.map_or(escape, |deadline| deadline.min(escape)))
         } else {
             deadline
         }

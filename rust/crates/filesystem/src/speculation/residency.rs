@@ -1,11 +1,12 @@
 //! Generation-fenced prediction and admission for immutable-object residency.
 
+use super::active::Active;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, OperationId, VolumeId};
 use crate::performance::WorkBudget;
 use crate::storage::{ObjectReadRequest, ObjectResult};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use thiserror::Error;
 
 const BASIS_POINTS: u128 = 10_000;
@@ -67,13 +68,9 @@ impl ResidencyCandidate {
     }
 }
 
-/// Hard bounds and adaptive admission policy for one residency engine.
+/// Adaptive admission and feedback policy for one residency engine.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResidencySpeculatorOptions {
-    /// Maximum concurrently admitted predictions.
-    pub maximum_active_operations: u32,
-    /// Maximum estimated bytes across active predictions.
-    pub maximum_active_bytes: u64,
     /// Number of recent terminal outcomes retained for usefulness feedback.
     pub outcome_window: u32,
     /// Number of recent foreground/speculative byte samples retained.
@@ -89,8 +86,6 @@ pub struct ResidencySpeculatorOptions {
 impl Default for ResidencySpeculatorOptions {
     fn default() -> Self {
         Self {
-            maximum_active_operations: 4,
-            maximum_active_bytes: 4 * 1024 * 1024,
             outcome_window: 32,
             traffic_window: 64,
             speculative_cost_basis_points: 1_000,
@@ -102,9 +97,7 @@ impl Default for ResidencySpeculatorOptions {
 
 impl ResidencySpeculatorOptions {
     fn validate(self) -> Result<Self, ResidencySpeculatorError> {
-        if self.maximum_active_operations == 0
-            || self.maximum_active_bytes == 0
-            || self.outcome_window == 0
+        if self.outcome_window == 0
             || self.traffic_window == 0
             || self.minimum_usefulness_samples == 0
         {
@@ -155,10 +148,6 @@ pub enum ResidencyRejection {
     DuplicateObject,
     /// The same idempotency identity already names an active prediction.
     DuplicateOperation,
-    /// Concurrent operation capacity is exhausted.
-    OperationCapacity,
-    /// Concurrent predicted-byte capacity is exhausted.
-    ByteCapacity,
     /// Recent speculation exceeds the configured foreground-cost ratio.
     CostBudget,
     /// Recent predictions have not been useful enough.
@@ -207,8 +196,8 @@ pub struct ResidencyMetrics {
     pub rejected_fence: u64,
     /// Candidates rejected as duplicate active objects.
     pub rejected_duplicate: u64,
-    /// Candidates rejected by operation or byte capacity.
-    pub rejected_capacity: u64,
+    /// Candidates rejected as invalid requests.
+    pub rejected_invalid: u64,
     /// Candidates rejected by the foreground-cost budget.
     pub rejected_cost: u64,
     /// Candidates rejected by adaptive usefulness feedback.
@@ -227,7 +216,7 @@ pub struct ResidencySpeculator {
     options: ResidencySpeculatorOptions,
     volume_id: VolumeId,
     generation_id: GenerationId,
-    active: BTreeMap<OperationId, ResidencyCandidate>,
+    active: Active<ResidencyCandidate>,
     outcomes: VecDeque<bool>,
     traffic: VecDeque<TrafficSample>,
     metrics: ResidencyMetrics,
@@ -248,7 +237,7 @@ impl ResidencySpeculator {
             options: options.validate()?,
             volume_id,
             generation_id,
-            active: BTreeMap::new(),
+            active: Active::default(),
             outcomes: VecDeque::new(),
             traffic: VecDeque::new(),
             metrics: ResidencyMetrics::default(),
@@ -321,7 +310,7 @@ impl ResidencySpeculator {
                 speculative: true,
                 bytes: candidate.request.maximum_bytes,
             });
-            self.active.insert(candidate.operation_id, candidate);
+            self.active.insert(candidate);
         }
         Ok(admission)
     }
@@ -455,26 +444,11 @@ impl ResidencySpeculator {
         if candidate.request.maximum_bytes == 0 {
             return Ok(Some(ResidencyRejection::InvalidRequest));
         }
-        if self
-            .active
-            .values()
-            .any(|active| active.request.object_id == candidate.request.object_id)
-        {
+        if self.active.contains_object(&candidate.request.object_id) {
             return Ok(Some(ResidencyRejection::DuplicateObject));
         }
         if self.active.contains_key(&candidate.operation_id) {
             return Ok(Some(ResidencyRejection::DuplicateOperation));
-        }
-        if self.active.len() >= self.options.maximum_active_operations as usize {
-            return Ok(Some(ResidencyRejection::OperationCapacity));
-        }
-        if self
-            .metrics
-            .active_bytes
-            .checked_add(candidate.request.maximum_bytes)
-            .is_none_or(|bytes| bytes > self.options.maximum_active_bytes)
-        {
-            return Ok(Some(ResidencyRejection::ByteCapacity));
         }
         if !self.useful_enough() {
             return Ok(Some(ResidencyRejection::LowUsefulness));
@@ -555,9 +529,7 @@ impl ResidencySpeculator {
             ResidencyRejection::WrongVolume | ResidencyRejection::StaleGeneration => {
                 &mut metrics.rejected_fence
             }
-            ResidencyRejection::InvalidRequest
-            | ResidencyRejection::OperationCapacity
-            | ResidencyRejection::ByteCapacity => &mut metrics.rejected_capacity,
+            ResidencyRejection::InvalidRequest => &mut metrics.rejected_invalid,
             ResidencyRejection::DuplicateObject | ResidencyRejection::DuplicateOperation => {
                 &mut metrics.rejected_duplicate
             }

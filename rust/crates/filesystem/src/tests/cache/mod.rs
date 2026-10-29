@@ -2,6 +2,7 @@ use super::*;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::task::{Context, Waker};
 
 fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from_static(value);
@@ -19,8 +20,6 @@ fn options(entries: u32, bytes: u64) -> ObjectCacheOptions {
     ObjectCacheOptions {
         maximum_entries: entries,
         maximum_bytes: bytes,
-        maximum_in_flight: 8,
-        maximum_waiters_per_object: 8,
     }
 }
 

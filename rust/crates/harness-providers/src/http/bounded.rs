@@ -22,7 +22,7 @@ fn boundary(work: NativeWork<'_>, reason: &'static str) -> Error {
 
 pub(crate) async fn read(
     mut body: acyclic_stream::BoxProviderStream<'static, Result<bytes::Bytes>>,
-    maximum: usize,
+    maximum: Option<usize>,
     work: NativeWork<'_>,
 ) -> Result<Body> {
     #[cfg(not(target_arch = "wasm32"))]
@@ -30,23 +30,16 @@ pub(crate) async fn read(
         .map(|work| work.claim(64, 1, acyclic_fs::WorkCounters::UNCHARGED))
         .transpose()?;
     let mut bytes = Vec::new();
-    let mut chunks = 0usize;
     while let Some(chunk) = body.next().await {
         let chunk = chunk?;
-        chunks = chunks
-            .checked_add(1)
-            .filter(|count| *count <= maximum)
-            .ok_or_else(|| boundary(work, "HTTP JSON response exceeds item limit"))?;
         let next = bytes
             .len()
             .checked_add(chunk.len())
-            .filter(|n| *n <= maximum)
+            .filter(|n| maximum.is_none_or(|maximum| *n <= maximum))
             .ok_or_else(|| boundary(work, "HTTP JSON response exceeds byte limit"))?;
         if next > bytes.capacity() {
-            let capacity = next
-                .checked_next_power_of_two()
-                .unwrap_or(maximum)
-                .min(maximum);
+            let capacity = next.checked_next_power_of_two().unwrap_or(next);
+            let capacity = maximum.map_or(capacity, |maximum| capacity.min(maximum));
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(work), Some(hold)) = (work, custody.as_mut()) {
                 let mut growth = work.claim(

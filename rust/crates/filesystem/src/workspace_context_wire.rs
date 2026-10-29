@@ -1,4 +1,4 @@
-//! One typed, bounded wire boundary for native and browser context adapters.
+//! One typed wire boundary for native and browser context adapters.
 
 use crate::workspace_context::{is_canonical, record_is_valid};
 use crate::{
@@ -11,15 +11,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// Maximum encoded context-control record accepted across either binding.
-pub const MAXIMUM_CONTEXT_WIRE_BYTES: usize = 4 * 1024 * 1024;
-
 /// A malformed or unrepresentable context-control record.
 #[derive(Debug, Error)]
 pub enum WorkspaceContextWireError {
-    /// A record exceeds the bounded control-plane limit.
-    #[error("workspace context record exceeds the wire limit")]
-    TooLarge,
     /// The protobuf payload is malformed or noncanonical.
     #[error("invalid workspace context protobuf")]
     InvalidProtobuf,
@@ -48,9 +42,6 @@ fn path(value: &Path) -> Result<String, WorkspaceContextWireError> {
 }
 
 fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, WorkspaceContextWireError> {
-    if bytes.len() > MAXIMUM_CONTEXT_WIRE_BYTES {
-        return Err(WorkspaceContextWireError::TooLarge);
-    }
     let value = M::decode(bytes).map_err(|_| WorkspaceContextWireError::InvalidProtobuf)?;
     if value.encode_to_vec() != bytes {
         return Err(WorkspaceContextWireError::InvalidProtobuf);
@@ -60,9 +51,6 @@ fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, WorkspaceContextWireE
 
 fn encode<M: Message>(value: &M) -> Result<Vec<u8>, WorkspaceContextWireError> {
     let bytes = value.encode_to_vec();
-    if bytes.len() > MAXIMUM_CONTEXT_WIRE_BYTES {
-        return Err(WorkspaceContextWireError::TooLarge);
-    }
     Ok(bytes)
 }
 
