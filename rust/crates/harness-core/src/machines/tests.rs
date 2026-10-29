@@ -233,7 +233,7 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                     cwd: None,
                     timeout: None
                 },
-                1024
+                Some(1024)
             )
             .await,
         Err(Error::Unauthorized(_))
