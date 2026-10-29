@@ -347,26 +347,42 @@ impl LocalStream {
 
     /// The caller retains publication for the entire ordered proposal. The
     /// worker owns every original frame and its reservations until terminal I/O.
-    async fn persist_frames(
-        &self,
-        frames: impl Iterator<Item = PreparedFrame> + Send + 'static,
-    ) -> Result<(), StreamError> {
+    async fn persist_frames<I>(&self, frames: I) -> Result<(), StreamError>
+    where
+        I: Iterator<Item = PreparedFrame> + Send + 'static,
+    {
         #[cfg(feature = "test-support")]
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]
         let fail_cut_truncation = FAIL_CUT_TRUNCATION.with(std::cell::Cell::get);
         let required = !deferred(self);
         let stream = self.worker();
-        spawn_blocking(move || {
+        let acquire = move || {
+            let file = stream
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| stream.inner.poison())?
+                .file
+                .lease()
+                .map_err(|error| {
+                    stream
+                        .inner
+                        .fail(LocalStreamFailure::io("begin_append", &error))
+                })?;
+            Ok((file, (stream, frames)))
+        };
+        let write = move |file: &acyclic_native_runtime::FileLease,
+                          (stream, frames): &mut (Self, I)| {
             let mut written = false;
-            for mut frame in frames {
+            for mut frame in frames.by_ref() {
                 #[cfg(feature = "test-support")]
                 if let Some(cut) = &cut
                     && !cut.admit()
                 {
                     return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
                 }
-                let (file, offset) = {
+                let offset = {
                     let mut journal = stream
                         .inner
                         .journal
@@ -423,9 +439,12 @@ impl LocalStream {
                 stream.inner.published();
             }
             Ok(())
-        })
-        .await
-        .map_err(|_| {
+        };
+        #[cfg(not(loom))]
+        let submitted = acyclic_native_runtime::FileLease::submit(acquire, write);
+        #[cfg(loom)]
+        let submitted = query_model::submit_file(acquire, write);
+        submitted.await.map_err(|_| {
             self.inner
                 .fail(LocalStreamFailure::new("write", "executor"))
         })?
@@ -610,14 +629,22 @@ impl LocalStream {
                 Some((file, durability)) => {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
-                    let flushed = spawn_blocking(move || {
-                        inner.flush_through(&file, durability, work.as_deref())
-                    })
-                    .await
-                    .map_err(|_| {
+                    let acquire = move || Ok::<_, StreamError>((file, (inner, work)));
+                    let flush = move |file: &acyclic_native_runtime::FileLease,
+                                      (inner, work): &mut (
+                        Arc<LocalInner>,
+                        Option<Arc<crate::native::Work>>,
+                    )| {
+                        Ok(inner.flush_through(file, durability, work.as_deref()))
+                    };
+                    #[cfg(not(loom))]
+                    let submitted = acyclic_native_runtime::FileLease::submit(acquire, flush);
+                    #[cfg(loom)]
+                    let submitted = query_model::submit_file(acquire, flush);
+                    let flushed = submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))
-                    })?;
+                    })??;
                     // Group commit: one fsync covers every frame written since the last one.
                     if let Some((target, synced_before, journal_bytes)) = flushed {
                         tracing::debug!(

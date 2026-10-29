@@ -10,7 +10,7 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        for lose_completion in [false, true] {
+        for (lose_completion, lose_caller) in [(false, false), (true, false), (false, true)] {
             let root = tempfile::tempdir()?;
             let provider = LocalStream::open(root.path(), Default::default()).await?;
             let first = keyed_commit("write-cut", 0)?;
@@ -33,9 +33,17 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
             ));
             let visibility = provider.inner.visibility.write().await;
             let publication = provider.inner.publication.write().await;
+            let (retired, retirement) = tokio::sync::oneshot::channel();
             let writing = tokio::spawn({
                 let provider = provider.clone();
-                async move { provider.persist(pending).await }
+                async move {
+                    let mut retired = Some(retired);
+                    let frames = std::iter::once(pending).chain(std::iter::from_fn(move || {
+                        let _ = retired.take().unwrap().send(());
+                        None
+                    }));
+                    provider.persist_frames(frames).await
+                }
             });
             // The physical worker produces this event; dropping either side
             // closes the wait instead of requiring a readiness probe.
@@ -73,8 +81,24 @@ fn a_pending_write_releases_metadata_and_cannot_borrow_an_earlier_flush()
                     before
                 );
             } else {
-                release.send(())?;
-                writing.await??;
+                if lose_caller {
+                    writing.abort();
+                    assert!(writing.await.unwrap_err().is_cancelled());
+                    // The original physical owner still holds every frame
+                    // allocation and unspent ticket after its caller is gone.
+                    assert!(meter.held.load(std::sync::atomic::Ordering::SeqCst) > 0);
+                    assert_eq!(
+                        meter
+                            .pending_write_operations
+                            .load(std::sync::atomic::Ordering::SeqCst),
+                        1
+                    );
+                    release.send(())?;
+                    retirement.await?;
+                } else {
+                    release.send(())?;
+                    writing.await??;
+                }
                 let journal = provider.inner.journal.lock().unwrap();
                 assert_eq!((journal.appended, journal.bytes), (2, before + bytes));
                 assert_eq!(journal.flushed_sequence, Some(1));
@@ -110,7 +134,8 @@ async fn negative_control_physical_write_under_metadata_prevents_cut_observation
     // be observed until the file operation and publication have both ended.
     {
         let mut journal = provider.inner.journal.lock().unwrap();
-        let (file, offset) = journal.begin_append(true)?;
+        let file = journal.file.lease()?;
+        let offset = journal.begin_append(true)?;
         file.write(|file| {
             assert!(provider.inner.journal.try_lock().is_err());
             Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))

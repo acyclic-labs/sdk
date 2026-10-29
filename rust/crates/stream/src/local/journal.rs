@@ -308,16 +308,13 @@ impl Journal {
         Ok(())
     }
 
-    /// Pins the next offset and descriptor under the caller's publication fence.
-    fn begin_append(
-        &mut self,
-        required: bool,
-    ) -> Result<(acyclic_native_runtime::FileLease, u64), LocalStreamError> {
+    /// Pins the next offset under the caller's publication fence and batch lease.
+    fn begin_append(&mut self, required: bool) -> Result<u64, LocalStreamError> {
         if !self.volatile && (!required || self.limits.durability == LocalDurability::Barrier) {
             forget_incarnation(&self.root)?;
             self.volatile = true;
         }
-        Ok((self.file.lease()?, self.bytes))
+        Ok(self.bytes)
     }
 
     /// Only completed physical writes advance the observable journal cut.
