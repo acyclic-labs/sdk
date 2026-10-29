@@ -150,7 +150,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
             .load(
                 &input,
                 Limits {
-                    file_bytes: 1,
+                    file_bytes: Some(1),
                     ..limits
                 },
                 None
@@ -174,7 +174,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
         limits,
     )?;
     let admitted = Limits {
-        file_bytes: 9,
+        file_bytes: Some(9),
         render_bytes: Some(4096),
         ..limits
     };
@@ -187,7 +187,7 @@ async fn sources_joins_and_selection_narrow_admitted_limits() -> Result<()> {
     );
     assert!(renderer.0.lock().unwrap().is_empty());
     let admitted = Limits {
-        file_bytes: 10,
+        file_bytes: Some(10),
         ..admitted
     };
     stage.apply(&input, base, admitted, None)?.await?;
