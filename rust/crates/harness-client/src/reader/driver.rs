@@ -173,10 +173,17 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.aborts.insert(id, abort);
         let work = async move {
             if !access.check().await {
-                return None;
+                return Some((id, Outcome::Failed(Failure::Unavailable)));
             }
             let outcome = execute(provider.as_ref(), op).await;
-            access.check().await.then_some((id, outcome))
+            Some((
+                id,
+                if access.check().await {
+                    outcome
+                } else {
+                    Outcome::Failed(Failure::Unavailable)
+                },
+            ))
         };
         self.ops.push(Box::pin(async move {
             Abortable::new(work, registration).await.ok().flatten()
@@ -215,11 +222,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let open = async move {
                 let opened = async {
                     if !access.check().await {
-                        return Err(StreamError::AccessDenied);
+                        return Err(StreamError::Unavailable);
                     }
                     let head = provider.head(path.clone()).await?;
                     if !access.check().await {
-                        return Err(StreamError::AccessDenied);
+                        return Err(StreamError::Unavailable);
                     }
                     let records = provider
                         .follow(acyclic_stream::FollowRequest {
@@ -231,10 +238,16 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     Ok((head, records))
                 }
                 .await;
-                access
-                    .check()
-                    .await
-                    .then_some((path, from, observed, opened))
+                Some((
+                    path,
+                    from,
+                    observed,
+                    if access.check().await {
+                        opened
+                    } else {
+                        Err(StreamError::Unavailable)
+                    },
+                ))
             };
             self.opening.push(Box::pin(async move {
                 Abortable::new(open, registration).await.ok().flatten()
@@ -368,6 +381,133 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn lost_check_producer_retires_the_request_without_waiting_for_timeout() {
+        use super::super::{Connectivity, Priority, ReaderPolicy, Want};
+        use acyclic_auth::credential::{
+            CredentialAction, CredentialBinding, CredentialCache, CredentialCacheError,
+            CredentialError, CredentialProvider, CredentialRequest, CredentialRevision,
+            CredentialSnapshot, CredentialValidity, ResolvedCredential,
+        };
+        use futures::channel::oneshot;
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        use std::task::{Wake, Waker};
+
+        struct WakeFlag(AtomicBool);
+        impl Wake for WakeFlag {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        struct Request {
+            lease: ResolvedCredential,
+            wait_at: usize,
+            calls: AtomicUsize,
+            receive: Mutex<Option<oneshot::Receiver<()>>>,
+        }
+        impl CredentialRequest for Request {
+            fn token(&self) -> &str {
+                self.lease.as_str()
+            }
+            fn binding(&self) -> Option<CredentialBinding> {
+                self.lease.binding()
+            }
+            fn check(&self) -> CredentialAction<()> {
+                if self.calls.fetch_add(1, Ordering::SeqCst) + 1 == self.wait_at {
+                    let receive = self.receive.lock().unwrap().take().unwrap();
+                    let lease = self.lease.clone();
+                    CredentialAction::Pending(Box::pin(async move {
+                        receive.await.map_err(|_| {
+                            CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
+                        })?;
+                        lease.check().await
+                    }))
+                } else {
+                    self.lease.check()
+                }
+            }
+            fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+                self.lease.retained_access()
+            }
+            fn reject(&self) -> CredentialAction<bool> {
+                self.lease.reject()
+            }
+        }
+
+        futures::executor::block_on(async {
+            let stream = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("check/loss").unwrap();
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"committed".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"check loss".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            // The first check admits the original request. Lose the producer
+            // at dispatch or after the real provider has returned its record.
+            for wait_at in [2, 3] {
+                let provider: CredentialProvider = CredentialCache::new(
+                    |_| async {
+                        CredentialSnapshot::new(
+                            "credential".into(),
+                            CredentialRevision::from([1; 32]),
+                            20,
+                        )
+                    },
+                    || CredentialValidity {
+                        now_unix_seconds: 10,
+                        revision: Some(CredentialRevision::from([1; 32])),
+                    },
+                )
+                .into();
+                let (send, receive) = oneshot::channel();
+                let lease = ResolvedCredential::from_custodian(Request {
+                    lease: provider.resolve().await.unwrap(),
+                    wait_at,
+                    calls: AtomicUsize::new(0),
+                    receive: Mutex::new(Some(receive)),
+                })
+                .await
+                .unwrap();
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                let mut driver = Driver::new(stream.clone());
+                driver.attach(&mut reader, 0);
+                reader.cache.access = super::super::Access::Lease(lease);
+                reader.plan([(
+                    Want::Range {
+                        stream: path.clone(),
+                        from: 0,
+                        to: 1,
+                    },
+                    Priority::Visible,
+                )]);
+                let ready = Arc::new(WakeFlag(AtomicBool::new(false)));
+                let waker = Waker::from(ready.clone());
+                let mut cx = Context::from_waker(&waker);
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(reader.residency().requests, 1);
+                ready.0.store(false, Ordering::SeqCst);
+                drop(send);
+                assert!(ready.0.load(Ordering::SeqCst));
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(reader.residency().requests, 0);
+                assert!(driver.aborts.is_empty());
+                assert!(reader.cache().record(&path, 0).is_none());
+                assert!(reader.issues().next().is_none());
+                assert!(matches!(
+                    reader.connectivity(),
+                    Connectivity::Degraded { .. }
+                ));
+            }
+        });
+    }
 
     #[test]
     fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
