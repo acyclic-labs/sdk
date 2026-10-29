@@ -75,7 +75,7 @@ pub(super) struct Credentials {
     watch: Option<CredentialWatch>,
     resolving: Option<Resolution>,
     lease: Option<ResolvedCredential>,
-    registered_at: u64,
+    watch_ready_at: u64,
     timeout_ms: u64,
     deadline: Option<u64>,
     status: CredentialStatus,
@@ -89,7 +89,7 @@ impl Credentials {
             watch: None,
             resolving: None,
             lease: None,
-            registered_at: now,
+            watch_ready_at: 0,
             timeout_ms,
             deadline: None,
             status: CredentialStatus::Pending,
@@ -104,7 +104,6 @@ impl Credentials {
         self.resolving = None;
         self.lease = None;
         self.deadline = Some(now.saturating_add(self.timeout_ms));
-        self.registered_at = now;
         // Registration precedes both resolution and any retained-data access.
         self.registering = Some(self.provider.watch());
         self.status = CredentialStatus::Pending;
@@ -113,6 +112,7 @@ impl Credentials {
     fn registered(
         &mut self,
         result: Result<Option<CredentialWatch>, acyclic_auth::credential::CredentialError>,
+        now: u64,
     ) {
         self.registering = None;
         self.watch = match result {
@@ -137,6 +137,10 @@ impl Credentials {
             self.status = CredentialStatus::Unavailable;
             return;
         }
+        // An awaited owner can observe its source clock after registration
+        // starts. Anchor its remaining lifetime when that observation arrives;
+        // retained_access still enforces the original absolute expiry.
+        self.watch_ready_at = now;
         self.status = CredentialStatus::Pending;
         let provider = self.provider.clone();
         self.resolving = Some(Box::pin(async move {
@@ -222,7 +226,7 @@ impl Credentials {
         if let Some(registering) = &mut self.registering {
             match Pin::new(registering).poll(cx) {
                 Poll::Ready(result) => {
-                    self.registered(result);
+                    self.registered(result, now);
                     reset |= self.status != CredentialStatus::Pending;
                     // Registration can observe a source which already changed
                     // or lost its producer. Never resolve against that cut.
@@ -261,7 +265,7 @@ impl Credentials {
                             .expires_at_unix_seconds
                             .saturating_sub(watch.validity().now_unix_seconds);
                         self.deadline = Some(
-                            self.registered_at
+                            self.watch_ready_at
                                 .saturating_add(remaining.saturating_mul(1000)),
                         );
                         self.lease = Some(lease);
@@ -464,7 +468,7 @@ mod tests {
 
         // Complete registration, lose its producer, cancel at the original
         // deadline, or deliver a cut invalidated while registration awaited.
-        for case in 0..4 {
+        for case in 0..5 {
             let validity = Arc::new(Mutex::new(CredentialValidity {
                 now_unix_seconds: 10,
                 revision: Some(CredentialRevision::from([1; 32])),
@@ -478,7 +482,7 @@ mod tests {
                 },
                 move || observed.lock().unwrap().clone(),
             );
-            let watch = cache.watch().unwrap();
+            let watch = (case != 4).then(|| cache.watch().unwrap());
             let (send, receive) = oneshot::channel();
             let registrations = Arc::new(AtomicUsize::new(0));
             let resolutions = Arc::new(AtomicUsize::new(0));
@@ -488,17 +492,39 @@ mod tests {
                 registrations: registrations.clone(),
                 resolutions: resolutions.clone(),
             });
-            let mut state = Credentials::new(provider, 10, 25);
+            let timeout = if case == 4 {
+                ReaderPolicy::default().timeout_ms
+            } else {
+                25
+            };
+            let mut state = Credentials::new(provider, 10, timeout);
             let ready = Arc::new(Ready(AtomicBool::new(false)));
             let waker = Waker::from(ready.clone());
             let mut cx = Context::from_waker(&waker);
             assert!(!state.poll(10, &mut cx));
             assert_eq!(state.status(), CredentialStatus::Pending);
             assert!(!state.access().allows());
-            assert_eq!(state.deadline(), Some(35));
+            assert_eq!(state.deadline(), Some(10 + timeout));
             assert_eq!(resolutions.load(Ordering::SeqCst), 0);
 
             match case {
+                4 => {
+                    // The owner captures its clock after awaiting registration,
+                    // with one second left on a still-valid original lease.
+                    validity.lock().unwrap().now_unix_seconds = 19;
+                    assert!(send.send(cache.watch().unwrap()).is_ok());
+                    assert!(ready.0.load(Ordering::SeqCst));
+                    assert!(state.poll(2_010, &mut cx));
+                    assert_eq!(state.status(), CredentialStatus::Current);
+                    assert_eq!(state.deadline(), Some(3_010));
+                    assert!(!state.poll(2_010, &mut cx));
+                    assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+                    // The wakeup estimate cannot extend exact owner custody,
+                    // even when the source clock advances before that wakeup.
+                    validity.lock().unwrap().now_unix_seconds = 20;
+                    assert!(!state.access().allows());
+                    assert_eq!(state.status(), CredentialStatus::Unavailable);
+                }
                 1 => {
                     drop(send);
                     assert!(ready.0.load(Ordering::SeqCst));
@@ -520,7 +546,7 @@ mod tests {
                         validity.lock().unwrap().revision = Some(CredentialRevision::from([2; 32]));
                         cache.invalidate().unwrap();
                     }
-                    assert!(send.send(watch).is_ok());
+                    assert!(send.send(watch.unwrap()).is_ok());
                     assert!(ready.0.load(Ordering::SeqCst));
                     assert!(state.poll(34, &mut cx));
                     if case == 3 {
