@@ -142,13 +142,17 @@ impl Preset {
 
     /// This preset's tools, the one construction every host takes them from:
     /// the catalog tools it selects that the host can back (the volume tools
-    /// always; the workspace tools, the shell among them, only with
-    /// `workspace`), then the host's own `tools`. Its agent tools are bound
+    /// always; each workspace tool only when `workspace` admits its name),
+    /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
     ///
     /// # Errors
     /// When the preset names an unknown tool, or two tools share a name.
-    pub fn tools(&self, workspace: bool, tools: Vec<crate::tool::Tool>) -> Result<ToolRegistry> {
+    pub fn tools(
+        &self,
+        workspace: impl Fn(&str) -> bool,
+        tools: Vec<crate::tool::Tool>,
+    ) -> Result<ToolRegistry> {
         let mut registry = ToolRegistry::default();
         crate::tools::bind_defaults(
             &mut registry,

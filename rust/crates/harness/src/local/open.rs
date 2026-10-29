@@ -552,7 +552,7 @@ fn configure_tools(
     config: &mut LocalHarnessConfig,
 ) -> Result<ToolRegistry> {
     let tools = preset.tools(
-        cfg!(any(test, feature = "native-execution")),
+        |_| cfg!(any(test, feature = "native-execution")),
         std::mem::take(&mut config.tools),
     )?;
     #[cfg(feature = "search-http")]

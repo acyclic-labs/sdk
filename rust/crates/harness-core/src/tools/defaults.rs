@@ -3,7 +3,9 @@ use crate::{Result, runtime::RuntimeScope, tool::ToolRegistry};
 /// The standard coding toolset. Custom tools can be added to this registry.
 pub fn defaults() -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::default();
-    bind_defaults(&mut registry, &mut Vec::new(), None, &names(), true, true)?;
+    bind_defaults(&mut registry, &mut Vec::new(), None, &names(), true, |_| {
+        true
+    })?;
     Ok(registry)
 }
 
@@ -27,7 +29,7 @@ pub fn bind_defaults(
     bound: Option<&RuntimeScope>,
     names: &[String],
     volume: bool,
-    workspace: bool,
+    workspace: impl Fn(&str) -> bool,
 ) -> Result<()> {
     if let Some(unknown) = names.iter().find(|name| {
         !super::catalog().any(|spec| spec.name == name.as_str())
@@ -41,7 +43,7 @@ pub fn bind_defaults(
         }
         let available = match spec.binding {
             super::ToolBinding::Volume => volume,
-            super::ToolBinding::Workspace => workspace,
+            super::ToolBinding::Workspace => workspace(spec.name),
         };
         if !available {
             continue;

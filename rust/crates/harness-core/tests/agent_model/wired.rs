@@ -123,6 +123,26 @@ fn requested(id: &str, child: &AgentPath) -> Wake {
     }
 }
 
+#[test]
+fn workspace_admission_does_not_offer_or_grant_unimplemented_tools() -> Result {
+    let preset = acyclic_harness_core::preset::Preset::graphcoder();
+    let shell = preset.tools(|name| name == "shell", Vec::new())?;
+    let all = preset.tools(|_| true, Vec::new())?;
+    let selected = shell.definitions(None)?;
+    let full = all.definitions(None)?;
+    assert!(selected.iter().any(|tool| tool.name == "shell"));
+    assert!(!selected.iter().any(|tool| tool.name == "fs"));
+    // The former all-workspace admission exposes this additional command.
+    assert!(full.iter().any(|tool| tool.name == "fs"));
+    let fs = acyclic_harness_core::tools::catalog()
+        .find(|tool| tool.name == "fs")
+        .expect("stock filesystem tool")
+        .capability();
+    assert!(!preset.tool_grants(&shell)?.contains(&fs));
+    assert!(preset.tool_grants(&all)?.contains(&fs));
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -> Result {
     let parent = AgentPath::root(&id(1));

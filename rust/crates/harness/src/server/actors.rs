@@ -157,7 +157,9 @@ where
     ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
         Box::pin(async move {
             let execution = self.execution;
-            let tools = self.preset.tools(execution.workspace, execution.tools)?;
+            let tools = self
+                .preset
+                .tools(|_| execution.workspace, execution.tools)?;
             let context = match execution.context {
                 Some(context) => context,
                 None => Arc::new(Grants(self.preset.tool_grants(&tools)?)),

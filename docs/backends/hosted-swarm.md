@@ -19,6 +19,9 @@ context. It binds each turn's original volume grants, content access, execution
 journal and approval policy to that turn's operation. Native context manifests
 and hooks use the same `Tasks::bind` operation. The workspace executor therefore
 receives the original task context rather than an unrelated tool callback.
+Workspace availability is selected per tool name: a Machines shell binding
+declares `shell`, without also advertising the separate `fs` workspace command.
+Unimplemented tools receive neither model definitions nor call grants.
 
 Keep the same root intent when reopening storage. An uncertain root publication
 returns `ActorsError::Unknown` with its `PendingActors` composition. Retain that

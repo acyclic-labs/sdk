@@ -322,14 +322,22 @@ impl Providers {
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
         let mut tools = options
             .preset
-            .tools(registry.workspace.is_some(), Vec::new())
+            .tools(
+                |name| {
+                    registry
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.tools.contains(&name))
+                },
+                Vec::new(),
+            )
             .map_err(js_error)?;
         tools.extend(registry.tools.clone()).map_err(js_error)?;
         let grants = options.preset.tool_grants(&tools).map_err(js_error)?;
         let context: Arc<dyn TurnContext> = match &registry.workspace {
             Some(workspace) => Arc::new(Tasks(
                 crate::runtime::Bindings {
-                    workspace_tools: Some(Arc::clone(workspace)),
+                    workspace_tools: Some(Arc::clone(&workspace.executor)),
                     scope: crate::runtime::RuntimeScope::new(
                         crate::Capabilities::new(
                             grants
