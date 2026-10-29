@@ -62,7 +62,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         self.cancellation
             .check()
             .map_err(|_| MountSourceError::Cancelled)?;
-        let _producer = self.capture_producer(self.reserve_capture_poll()?)?;
+        let _producer = self.capture_producer()?;
         loop {
             let mut carrier = NativeDemandCarrier::Native(work);
             let mut candidate = self
