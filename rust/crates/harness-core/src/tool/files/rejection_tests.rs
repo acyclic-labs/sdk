@@ -62,12 +62,12 @@ proptest! {
         source in "[abé\n]{0,24}", needle in "[abé]{0,6}", diff in ".{0,40}",
     ) {
         let original = work();
-        let limits = super::patch::PatchLimits { maximum_bytes: 256, maximum_work: 4096, maximum_hunks: 8 };
+        let limits = super::patch::PatchLimits { maximum_bytes: Some(256), maximum_work: 4096, maximum_hunks: 8 };
         let options = super::text::SearchOptions { maximum_input_bytes:256, maximum_query_bytes:8, maximum_work:4096, maximum_matches:8 };
         for kind in 0..3 {
             let execute = |custody: &mut crate::NativeCustody| -> Result<()> {
                 match kind {
-                    0 => super::edit::exact_replace(&source, &needle, "x", 256, custody).map(|_| ()),
+                    0 => super::edit::exact_replace(&source, &needle, "x", Some(256), custody).map(|_| ()),
                     1 => super::patch::apply_update(&source, &diff, limits, custody).map(|_| ()),
                     _ => super::text::literal_search(&source, &needle, options, custody).map(|_| ()),
                 }
