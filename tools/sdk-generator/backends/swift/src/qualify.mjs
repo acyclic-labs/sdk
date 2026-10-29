@@ -1,5 +1,5 @@
 import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,8 +18,8 @@ const markers = [
 const negatives = { InvalidActorBytes: "Data", InvalidOptionalInteger: "UInt64" };
 
 // Command/pin injection supports offline controls. The CLI always uses real tools.
-export async function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
-  if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("Swift installed qualification requires the admitted Linux x86_64 runtime");
+export async function qualify(args, { command = captureCommand, toolchain = pinned, onProgress = () => {} } = {}) {
+  if (command === captureCommand && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("Swift installed qualification requires the admitted Linux x86_64 runtime");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "swift-home", "sdk-inventory", "dependencies", "git"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer inputs");
@@ -44,7 +44,7 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned, o
     GIT_CONFIG_KEY_1: "protocol.http.allow", GIT_CONFIG_VALUE_1: "never",
     GIT_CONFIG_KEY_2: "protocol.https.allow", GIT_CONFIG_VALUE_2: "never",
   });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 45 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 45 * 60_000 });
   const git = (root, argv) => {
     const result = execute(inputs.git, ["-C", root, ...argv], directory);
     if (result.error || result.status !== 0) throw new Error("Git source verification failed: " + (result.stderr ?? ""));
