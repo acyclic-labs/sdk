@@ -51,11 +51,12 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
     let Some(barrier) = std::env::var_os("COMPILE_BARRIER") else { return };
     let barrier = std::path::PathBuf::from(barrier);
     std::fs::write(barrier.join("${name}"), b"ready").unwrap();
-    let started = std::time::Instant::now();
-    while !barrier.join("${name === "first" ? "second" : "first"}").exists() {
-        assert!(started.elapsed() < std::time::Duration::from_secs(2), "compilations did not overlap");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    let status = std::process::Command::new(std::env::var_os("COMPILE_BARRIER_NODE").unwrap())
+        .arg(std::env::var_os("COMPILE_BARRIER_WATCH").unwrap())
+        .arg(barrier.join("${name === "first" ? "second" : "first"}"))
+        .arg("2")
+        .status().unwrap();
+    assert!(status.success(), "compilations did not overlap");
 }
 `);
       }
@@ -65,7 +66,11 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
         const env = { ...process.env, CODEX_HOME: join(fixture, "codex"),
           CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
         delete env.COMPILE_BARRIER;
-        if (measure) env.COMPILE_BARRIER = barrier;
+        if (measure) {
+          env.COMPILE_BARRIER = barrier;
+          env.COMPILE_BARRIER_NODE = process.execPath;
+          env.COMPILE_BARRIER_WATCH = resolve("scripts/graphcoder-e2e/wait-path.mjs");
+        }
         const child = spawn("cargo", args, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
           env,
