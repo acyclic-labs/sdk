@@ -24,22 +24,32 @@ test("gRPC sessions refuse stale outgoing frames and end idle reads on source no
       refreshes++;
       return new CredentialSnapshot("fixture", revision!, 100);
     }, () => ({ nowUnixSeconds: now, revision }));
+    let watches = 0;
+    const credential = Object.assign((signal?: AbortSignal) => cache.provider(signal), {
+      resolveRequest: cache.provider.resolveRequest!,
+      watch: () => {
+        const watch = cache.provider.watch!();
+        watches++;
+        return { ...watch, close() { watches--; watch.close(); } };
+      },
+    });
     const controller = new AbortController();
     try {
       const { token: _token, ...endpoint } = options;
-      const provider = new GrpcStreamProvider({ ...endpoint, credential: cache.provider });
+      const provider = new GrpcStreamProvider({ ...endpoint, credential });
       const incoming = provider.follow("custody", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]();
       const first = incoming.next();
       await node.until(() => node.active === 1);
       node.append("custody");
       expect((await first).value?.sequence).toBe(0n);
+      expect(watches).toBe(1);
       // Observe failure before the source can synchronously close the call.
       const pending = incoming.next().then(value => ({ value }), error => ({ error }));
       switch (change) {
         case "account": revision = "other-account/audience/2"; break;
         case "unavailable": revision = undefined; break;
         case "expiry": now = 100; break;
-        case "invalidate": cache.invalidate(); break;
+        case "invalidate": cache.invalidate(); expect(watches).toBe(0); break;
       }
       if (change !== "invalidate") await provider.registerCredential(1, new Uint8Array([4]));
       if (change === "unchanged") {
@@ -49,6 +59,7 @@ test("gRPC sessions refuse stale outgoing frames and end idle reads on source no
       } else {
         expect(await pending).toHaveProperty("error.code", "access_denied");
         expect(node.received.some(frame => frame.body.case === "credential")).toBe(false);
+        expect(watches).toBe(0);
       }
       controller.abort();
       await incoming.return?.();

@@ -70,12 +70,22 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     // Subscribe before resolution so a quiet physical session cannot miss a
     // source event between admitting its lease and starting the HTTP/2 call.
     const watch = request.stream ? credential.watch?.() : undefined;
-    const controller = request.stream ? createLinkedAbortController(request.signal) : undefined;
+    const controller = watch ? createLinkedAbortController(request.signal) : undefined;
     const signal = controller?.signal ?? request.signal;
     const sourceChanged = () => controller?.abort(new ConnectError("credential source changed or unavailable", Code.PermissionDenied));
-    const cleanup = () => { watch?.changed.removeEventListener("abort", sourceChanged); watch?.close(); controller?.abort(); };
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      controller?.signal.removeEventListener("abort", cleanup);
+      watch?.changed.removeEventListener("abort", sourceChanged);
+      watch?.close();
+      controller?.abort();
+    };
+    controller?.signal.addEventListener("abort", cleanup, { once: true });
     watch?.changed.addEventListener("abort", sourceChanged, { once: true });
     if (watch?.changed.aborted) sourceChanged();
+    if (signal.aborted) cleanup();
     const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
     const failure = (error: unknown) => watch?.changed.aborted && !request.signal.aborted
       ? new ConnectError("credential source changed or unavailable", Code.PermissionDenied) : error;
