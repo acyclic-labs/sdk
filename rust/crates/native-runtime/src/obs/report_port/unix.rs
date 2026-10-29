@@ -39,6 +39,12 @@ pub(super) fn open() -> io::Result<Option<ReportPort>> {
         if flags < 0 {
             return Err(io::Error::last_os_error());
         }
+        if flags & libc::FD_CLOEXEC != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "report descriptor was not inherited by this launch",
+            ));
+        }
         let mut kind: libc::c_int = 0;
         let mut length = std::mem::size_of_val(&kind) as libc::socklen_t;
         if libc::getsockopt(
