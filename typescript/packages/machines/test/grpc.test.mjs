@@ -16,6 +16,7 @@ const protocol = { major: 1, minor: 2 };
 const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);
+const channelData = (bytes, stream = wire.ExecStream.STDOUT) => ({ case: "data", value: create(wire.ExecDataSchema, { stream, bytes }) });
 
 async function fixture(t, implementation, rawExec = false) {
   const server = createSecureServer({ cert: caCertificate, key }, connectNodeAdapter({
@@ -160,7 +161,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
       assert.deepEqual(query, commandRequest({ protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
       assert.ok(context.timeoutMs() > 30000);
       calls.push("exec");
-      yield { machine, output: { case: "data", value: new TextEncoder().encode("sdk-token\n") } };
+      yield { machine, output: channelData(new TextEncoder().encode("sdk-token\n")) };
       yield { machine, output: { case: "exitCode", value: 0 } };
     },
     readOutput(query, context) {
@@ -231,14 +232,14 @@ test("exec yields output before the command completes", async t => {
   const { machines } = await fixture(t, {
     async *exec(_query, context) {
       authenticate(context);
-      yield { machine, output: { case: "data", value: new Uint8Array([0, 255]) } };
+      yield { machine, output: channelData(new Uint8Array([0, 255])) };
       await completion;
       yield { machine, output: { case: "exitCode", value: 0 } };
     },
   });
   const iterator = machines.exec({ protocol, machine, argv: ["echo"], timeoutMs: 1000 });
   const first = await iterator.next();
-  assert.deepEqual(first.value.output, { case: "data", value: new Uint8Array([0, 255]) });
+  assert.deepEqual(first.value.output, channelData(new Uint8Array([0, 255])));
   finish();
   assert.deepEqual((await iterator.next()).value.output, { case: "exitCode", value: 0 });
   assert.equal((await iterator.next()).done, true);
@@ -258,8 +259,8 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
       authenticate(context);
       assert.deepEqual(query, commandRequest(request));
       context.signal.addEventListener("abort", cancelled, { once: true });
-      yield { machine, output: { case: "data", value: new Uint8Array([0, 255]) } };
-      yield { machine, output: { case: "stderr", value: new Uint8Array([254, 10]) } };
+      yield { machine, output: channelData(new Uint8Array([0, 255])) };
+      yield { machine, output: channelData(new Uint8Array([254, 10]), wire.ExecStream.STDERR) };
       yield { machine, output: { case: "stopped", value: stopped } };
       await cancellation;
     },
@@ -267,8 +268,8 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
   const frames = [];
   for await (const frame of machines.exec(request)) frames.push(frame.output);
   assert.deepEqual(frames, [
-    { case: "data", value: new Uint8Array([0, 255]) },
-    { case: "stderr", value: new Uint8Array([254, 10]) },
+    channelData(new Uint8Array([0, 255])),
+    channelData(new Uint8Array([254, 10]), wire.ExecStream.STDERR),
     { case: "stopped", value: create(wire.ExecStopSchema, stopped) },
   ]);
   await cancellation;
@@ -284,13 +285,13 @@ test("exec delivers output while command input is backpressured and drop cancels
       const reader = input[Symbol.asyncIterator]();
       assert.equal((await reader.next()).value.input.case, "start");
       // Do not grant input progress. Output must remain independently readable.
-      yield { machine, output: { case: "data", value: new Uint8Array([7]) } };
+      yield { machine, output: channelData(new Uint8Array([7])) };
       await cancellation.promise;
       complete = true;
     },
   }, true);
   const output = machines.exec({ protocol, machine, argv: ["bash", "-c", "#".repeat(200000)], stdin: new Uint8Array(200000), timeoutMs: 300000 });
-  assert.deepEqual((await output.next()).value.output, { case: "data", value: new Uint8Array([7]) });
+  assert.deepEqual((await output.next()).value.output, channelData(new Uint8Array([7])));
   assert.equal(complete, false);
   await output.return();
   await cancellation.promise;
@@ -307,7 +308,7 @@ for (const mode of ["early-exit", "malformed"]) {
       async *exec(_query, context) {
         authenticate(context);
         context.signal.addEventListener("abort", cancelled, { once: true });
-        yield { machine, output: { case: "data", value: new Uint8Array(mode === "malformed" ? 0 : 1) } };
+        yield { machine, output: channelData(new Uint8Array(mode === "malformed" ? 0 : 1)) };
         await cancellation;
       },
       async *watchOperation(_query, context) {
@@ -343,19 +344,23 @@ test("exec rejects incomplete and malformed streams and completes at its termina
       const mode = query.argv[0];
       if (mode === "missing") return;
       if (mode === "unknown") { yield { machine }; return; }
+      if (mode === "unspecified-channel" || mode === "unknown-channel") {
+        yield { machine, output: channelData(new Uint8Array([1]), mode === "unspecified-channel" ? 0 : 99) };
+        return;
+      }
       if (mode === "empty" || mode === "oversized") {
-        yield { machine, output: { case: "data", value: new Uint8Array(mode === "empty" ? 0 : 65537) } };
+        yield { machine, output: channelData(new Uint8Array(mode === "empty" ? 0 : 65537)) };
         return;
       }
       if (mode === "partial-error") {
-        yield { machine, output: { case: "data", value: new Uint8Array([1]) } };
+        yield { machine, output: channelData(new Uint8Array([1])) };
         throw new ConnectError("guest owner lost", Code.Unavailable);
       }
       yield { machine, output: { case: "exitCode", value: 0 } };
-      yield { machine, output: mode === "duplicate" ? { case: "exitCode", value: 1 } : { case: "data", value: new Uint8Array([1]) } };
+      yield { machine, output: mode === "duplicate" ? { case: "exitCode", value: 1 } : channelData(new Uint8Array([1])) };
     },
   });
-  for (const mode of ["missing", "unknown", "empty", "oversized", "partial-error"]) {
+  for (const mode of ["missing", "unknown", "unspecified-channel", "unknown-channel", "empty", "oversized", "partial-error"]) {
     await assert.rejects(exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000 }), error => error.code === (mode === "partial-error" ? Code.Unavailable : Code.DataLoss));
   }
   for (const mode of ["duplicate", "tail"]) {
@@ -457,7 +462,7 @@ test("return interrupts a pending stream pull and terminal watch needs no EOF", 
   const { machines } = await fixture(t, {
     async *exec(_query, context) {
       context.signal.addEventListener("abort", execCancelled.resolve, { once: true });
-      yield { machine, output: { case: "data", value: new Uint8Array([1]) } };
+      yield { machine, output: channelData(new Uint8Array([1])) };
       await execCancelled.promise;
     },
     async *watchOperation(_query, context) {

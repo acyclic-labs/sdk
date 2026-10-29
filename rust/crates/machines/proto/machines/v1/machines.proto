@@ -424,16 +424,27 @@ message ExecStop {
   // False preserves uncertainty about surviving guest processes.
   bool cleanup_completed = 3;
 }
+enum ExecStream {
+  EXEC_STREAM_UNSPECIFIED = 0;
+  EXEC_STREAM_STDOUT = 1;
+  EXEC_STREAM_STDERR = 2;
+}
+message ExecData {
+  ExecStream stream = 1;
+  // Exact binary channel bytes, 1..65536 per frame.
+  bytes bytes = 2;
+}
 message ExecOutput {
   MachineId machine = 1;
-  // Protocol 1.2 separates stdout (data) and stderr. Each frame has 1..65536
-  // bytes and preserves its channel's exact order. Earlier protocol revisions
-  // must be refused before execution, not interpreted as separate channels.
+  reserved 2, 4;
+  reserved "stderr";
+  // Protocol 1.2 tags each Data frame as STDOUT or STDERR and preserves its
+  // channel's exact order. Earlier protocol revisions must be refused before
+  // execution, not interpreted as tagged channels.
   // Exactly one exit-code or stopped frame terminates the stream.
   oneof output {
-    bytes data = 2;
+    ExecData data = 6;
     int32 exit_code = 3;
-    bytes stderr = 4;
     ExecStop stopped = 5;
   }
 }

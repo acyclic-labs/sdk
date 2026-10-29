@@ -57,7 +57,7 @@ export function createMachinesClient(transport: Transport) {
             checkIdentity(query.machine, frame.machine, "machine");
             if (frame.output.case === "stopped") {
               if (![wire.ExecStopKind.TIMEOUT, wire.ExecStopKind.EXPIRED, wire.ExecStopKind.OUTPUT_LIMIT, wire.ExecStopKind.CONTROL_STOPPED, wire.ExecStopKind.CAPTURE_FAILED].includes(frame.output.value.kind)) throw new ConnectError("invalid exec stop kind", Code.DataLoss);
-            } else if (frame.output.case !== "exitCode" && ((frame.output.case !== "data" && frame.output.case !== "stderr") || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES)) throw new ConnectError("invalid exec output frame", Code.DataLoss);
+            } else if (frame.output.case !== "exitCode" && (frame.output.case !== "data" || ![wire.ExecStream.STDOUT, wire.ExecStream.STDERR].includes(frame.output.value.stream) || frame.output.value.bytes.byteLength < 1 || frame.output.value.bytes.byteLength > MAX_OUTPUT_READ_BYTES)) throw new ConnectError("invalid exec output frame", Code.DataLoss);
             yield frame;
           }
           throw new ConnectError("exec stream ended without exit code", Code.DataLoss);

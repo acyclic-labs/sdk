@@ -38,18 +38,17 @@ pub(super) fn decode_exec_output(
     }
     match value.output {
         Some(wire::exec_output::Output::Data(data))
-            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
+            if !data.bytes.is_empty() && data.bytes.len() <= MAX_OUTPUT_READ_BYTES as usize =>
         {
-            Ok(ExecOutput::Data(data))
+            match wire::ExecStream::try_from(data.stream) {
+                Ok(wire::ExecStream::Stdout) => Ok(ExecOutput::Data(data.bytes)),
+                Ok(wire::ExecStream::Stderr) => Ok(ExecOutput::Stderr(data.bytes)),
+                _ => Err(ProviderError::Rejected("exec output channel is invalid; recovery: return STDOUT or STDERR on the original stream".into())),
+            }
         }
         Some(wire::exec_output::Output::ExitCode(code)) => {
             *exited = true;
             Ok(ExecOutput::ExitCode(code))
-        }
-        Some(wire::exec_output::Output::Stderr(data))
-            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
-        {
-            Ok(ExecOutput::Stderr(data))
         }
         Some(wire::exec_output::Output::Stopped(stop)) => {
             let kind =

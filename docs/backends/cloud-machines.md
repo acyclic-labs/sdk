@@ -43,7 +43,7 @@ and content bindings. The standard `fs` history facade is not supplied by this
 shell binding. Commands use the shared bash invocation and original input schema.
 
 Protocol 1.2 adds native binary file IO, stdin, cwd, absolute expiry, output
-allowance, stderr and typed stopped capture. The service must support that revision before dispatch. Each
+allowance, tagged `Data { stream: STDOUT | STDERR, bytes }` and typed stopped capture. The service must support that revision before dispatch. Each
 stream completes at its terminal event; no inspection or reopen occurs during
 silence. Dropping exec cancels that RPC. Physical command termination and reaping
 belong to the service producer; only its cleanup receipt confirms completion.

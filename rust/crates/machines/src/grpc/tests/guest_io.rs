@@ -286,8 +286,14 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     let output = machine.exec(command).await.unwrap();
     let sender = io.sender();
     for value in [
-        wire::exec_output::Output::Data(vec![0, 255]),
-        wire::exec_output::Output::Stderr(vec![254, 10]),
+        wire::exec_output::Output::Data(wire::ExecData {
+            stream: wire::ExecStream::Stdout as i32,
+            bytes: vec![0, 255],
+        }),
+        wire::exec_output::Output::Data(wire::ExecData {
+            stream: wire::ExecStream::Stderr as i32,
+            bytes: vec![254, 10],
+        }),
         wire::exec_output::Output::ExitCode(7),
     ] {
         sender.send(Ok(frame(machine.id(), value))).await.unwrap();
@@ -520,14 +526,20 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
     sender
         .send(Ok(frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![1]),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![1],
+            }),
         )))
         .await
         .unwrap();
     sender
         .send(Ok(frame(
             machine.id(),
-            wire::exec_output::Output::Stderr(vec![2]),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stderr as i32,
+                bytes: vec![2],
+            }),
         )))
         .await
         .unwrap();
@@ -550,7 +562,10 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     sender
         .send(Ok(frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![0, 255]),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![0, 255],
+            }),
         )))
         .await
         .unwrap();
@@ -605,15 +620,44 @@ async fn exec_drop_and_bad_frame_release_only_their_rpc() {
             machine: Some(encode_machine(machine.id())),
             output: None,
         },
-        frame(machine.id(), wire::exec_output::Output::Data(vec![])),
-        frame(machine.id(), wire::exec_output::Output::Stderr(vec![])),
+        frame(
+            machine.id(),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: 0,
+                bytes: vec![1],
+            }),
+        ),
+        frame(
+            machine.id(),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: 99,
+                bytes: vec![1],
+            }),
+        ),
+        frame(
+            machine.id(),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![],
+            }),
+        ),
+        frame(
+            machine.id(),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stderr as i32,
+                bytes: vec![],
+            }),
+        ),
         frame(
             machine.id(),
             wire::exec_output::Output::Stopped(wire::ExecStop::default()),
         ),
         frame(
             machine.id(),
-            wire::exec_output::Output::Data(vec![0; 65_537]),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![0; 65_537],
+            }),
         ),
         frame(
             MachineId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
@@ -660,7 +704,13 @@ async fn exec_terminal_event_completes_without_waiting_for_eof_and_lost_outcomes
     let mut exited = true;
     assert!(matches!(
         decode_exec_output(
-            frame(machine.id(), wire::exec_output::Output::Data(vec![1])),
+            frame(
+                machine.id(),
+                wire::exec_output::Output::Data(wire::ExecData {
+                    stream: wire::ExecStream::Stdout as i32,
+                    bytes: vec![1]
+                })
+            ),
             machine.id(),
             &mut exited
         ),
@@ -711,7 +761,10 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
                 )
             } else {
                 (
-                    wire::exec_output::Output::Data(vec![1]),
+                    wire::exec_output::Output::Data(wire::ExecData {
+                        stream: wire::ExecStream::Stdout as i32,
+                        bytes: vec![1],
+                    }),
                     ExecOutput::Data(vec![1]),
                 )
             };
