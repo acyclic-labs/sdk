@@ -23,7 +23,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         if expected_generation.is_some() {
-            crate::tool::edit::validate_edit_bound(maximum_bytes)?;
+            crate::tool::edit::validate_edit_bound(Some(maximum_bytes))?;
         }
         self.put_content_impl(
             volume,
