@@ -68,16 +68,20 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     let revision = CredentialRevision::from(vec![0xd800; 257]);
     assert_eq!(old.binding().unwrap().revision, revision);
     assert_eq!(watch.validity().revision, Some(revision));
+    assert!(old.retained_access().unwrap().is_ok());
     old.check().await.unwrap();
     assert!(old.reject().await.unwrap());
     watch.await.unwrap();
     assert_eq!(call(&source, "closed").as_f64(), Some(1.0));
     let current = provider.resolve().await.unwrap();
+    assert!(old.retained_access().unwrap().is_err());
+    assert!(current.retained_access().unwrap().is_ok());
     let watch = provider.watch().await.unwrap().unwrap();
     assert!(!old.reject().await.unwrap());
     current.check().await.unwrap();
     assert_eq!(call(&source, "calls").as_f64(), Some(2.0));
     call(&source, "replace");
+    assert!(current.retained_access().unwrap().is_err());
     watch.await.unwrap();
     assert!(current.check().await.is_err());
     let replacement = provider.resolve().await.unwrap();
@@ -85,6 +89,7 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     drop(provider.watch().await.unwrap());
     assert_eq!(call(&source, "closed").as_f64(), Some(3.0));
     call(&source, "expire");
+    assert!(replacement.retained_access().unwrap().is_err());
     assert!(replacement.check().await.is_err());
 
     let raw = javascript::provider(function(&source, "raw"));
@@ -92,6 +97,7 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     let request = raw.resolve().await.unwrap();
     request.check().await.unwrap();
     assert!(request.binding().is_none());
+    assert!(request.retained_access().is_none());
     assert!(!request.reject().await.unwrap());
 
     call(&source, "block");
