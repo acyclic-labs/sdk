@@ -79,6 +79,19 @@ struct PersistenceJob {
     predecessor: u64,
 }
 
+impl PersistenceJob {
+    fn observe(&mut self, stage: u64, predecessor: u64) {
+        if self.predecessor != predecessor {
+            self.predecessor = predecessor;
+            self.progress.record("predecessor", predecessor);
+        }
+        if self.stage != stage {
+            self.stage = stage;
+            self.progress.record("stage", stage);
+        }
+    }
+}
+
 pub(crate) struct PersistenceTurn(Option<Option<PersistenceJob>>);
 
 impl PersistenceTurn {
@@ -120,10 +133,7 @@ fn persistence_stage<T>(stage: u64, predecessor: u64, call: impl FnOnce() -> T) 
                 if let Some(job) = job.borrow_mut().as_mut()
                     && let Some((stage, predecessor)) = self.0
                 {
-                    job.stage = stage;
-                    job.predecessor = predecessor;
-                    job.progress.record("predecessor", predecessor);
-                    job.progress.record("stage", stage);
+                    job.observe(stage, predecessor);
                 }
             });
         }
@@ -131,10 +141,7 @@ fn persistence_stage<T>(stage: u64, predecessor: u64, call: impl FnOnce() -> T) 
     let previous = PERSISTENCE_JOB.with(|job| {
         job.borrow_mut().as_mut().map(|job| {
             let previous = (job.stage, job.predecessor);
-            job.stage = stage;
-            job.predecessor = predecessor;
-            job.progress.record("predecessor", predecessor);
-            job.progress.record("stage", stage);
+            job.observe(stage, predecessor);
             previous
         })
     });
