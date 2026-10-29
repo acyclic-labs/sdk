@@ -69,8 +69,8 @@ pub(crate) fn open<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Unop
 }
 
 /// The record of any agent stream as `T`, such as a JSON value for a
-/// reader of every record kind: records of any
-/// version but [`RECORD_VERSION`] refused whole.
+/// reader of every record kind. Versions other than [`RECORD_VERSION`]
+/// are refused whole.
 pub fn decode_record<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, Error> {
     open(bytes).map_err(|unopened| match unopened {
         Unopened::Version(version) => Error::UnsupportedRecordVersion(version),
