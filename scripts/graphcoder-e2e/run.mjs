@@ -77,7 +77,7 @@ function outcome(input, result) {
 const requestKey = (id, { path, step }) => JSON.stringify(path === undefined ? [id, step] : [id, path, step]);
 async function checkTree(test) {
   if (test.assert.dead_tree) {
-    const records = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), await events.history());
+    const records = await recordedRequests(events, join(output, "requests.jsonl"));
     fenced(records.filter(record => record.case === test.id), test.assert.dead_tree);
   }
 }
@@ -208,7 +208,7 @@ const execution = await withOwnedCase({ processes, run: async () => {
 } });
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
-const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), await events.history());
+const allRecords = await recordedRequests(events, join(output, "requests.jsonl"));
 results = await Promise.all(results.map(result => verify(result, allRecords)));
 results = results.map(result => ({ ...result, ...(execution.expired ? { timeout: true } : {}), evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));

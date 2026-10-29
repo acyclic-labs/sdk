@@ -3,7 +3,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { Spool, SpoolEnded, OutputWatch, Processes } from "./process.mjs";
@@ -154,8 +154,9 @@ test("a spool ends with the exact typed cause", async t => {
     assert.ok(error instanceof SpoolEnded); assert.equal(error.kind, "malformed"); assert.match(error.message, /broken JSON/);
   });
   await t.test("source EOF carries the source result", async () => {
+    const stream = new PassThrough();
     let close; const closed = new Promise(resolve => { close = resolve; });
-    const error = await ended(new Spool(new PassThrough(), closed), () => close({ code: 3, signal: null }));
+    const error = await ended(new Spool(stream, closed), () => { stream.end(); close({ code: 3, signal: null }); });
     assert.equal(error.kind, "eof"); assert.equal(error.detail.code, 3);
   });
   await t.test("duplicate unique key", async () => {
@@ -172,7 +173,7 @@ test("a spool ends with the exact typed cause", async t => {
     stream.write('{"ready":true}\n');
     await new Promise(resolve => setImmediate(resolve));
     const late = events.next(event => event.ready);
-    close({ code: 0, signal: null });
+    stream.end(); close({ code: 0, signal: null });
     await assert.rejects(late, error => error.kind === "eof");
   });
   await t.test("transcript failure", async () => {
@@ -180,6 +181,46 @@ test("a spool ends with the exact typed cause", async t => {
     const error = await ended(new Spool(stream, new Promise(() => {}), { transcript: join(tmpdir(), "missing-directory-" + process.pid, "events.jsonl") }), () => {});
     assert.equal(error.kind, "spool");
   });
+});
+
+test("a transcript failure while the child runs ends it with the spool cause and reaps the child", async () => {
+  const processes = new Processes({ transcripts: join(tmpdir(), `missing-transcripts-${process.pid}`, "nested") });
+  // The child would run until its stdin ends; nothing here ends it.
+  const running = processes.start(process.execPath, ["-e", "process.stdin.resume()"]);
+  await assert.rejects(running.closed, error => error instanceof SpoolEnded && error.kind === "spool" && error.detail.code === "ENOENT");
+  await processes.close();
+  assert.equal(processes.children.size, 0);
+  assert.ok(running.child.exitCode !== null || running.child.signalCode !== null, "the child was reaped");
+});
+
+test("a slow transcript holds the source back, so queued bytes stay bounded by a chunk", async () => {
+  const lines = 64, chunks = 200;
+  const chunk = index => Array.from({ length: lines }, (_, line) => JSON.stringify({ n: index * lines + line, pad: "x".repeat(100) }) + "\n").join("");
+  const size = chunk(chunks - 1).length;
+  // The sink completes one write per turn. Negative control: a spool that
+  // ignored write()'s return queues the whole burst in the sink.
+  const peak = async honest => {
+    let queued = 0;
+    const sink = new Writable({ highWaterMark: 1024, write(_bytes, _encoding, done) { setImmediate(done); } });
+    const write = sink.write.bind(sink);
+    sink.write = (...args) => {
+      const room = write(...args);
+      queued = Math.max(queued, sink.writableLength);
+      return honest ? room : true;
+    };
+    const source = new PassThrough();
+    const events = new Spool(source, new Promise(() => {}), { transcript: sink });
+    const last = events.next(event => event.n === lines * chunks - 1);
+    let held = false;
+    for (let index = 0; index < chunks; index++) if (!source.write(chunk(index))) held = true;
+    await last;
+    // With backpressure the producer is held; the control never holds it.
+    assert.equal(held, honest, "backpressure reaches the producer only through write()'s return");
+    return queued;
+  };
+  const bounded = await peak(true), burst = await peak(false);
+  assert.ok(bounded <= size + 1024, `queued ${bounded} bytes, more than one ${size}-byte chunk`);
+  assert.ok(burst > size * chunks / 2, `the ignore-write-return control queued only ${burst} bytes`);
 });
 
 test("spool cost is per event and waiter, not per event retained", async () => {

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createInterface } from "node:readline";
+import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { stripVTControlCharacters } from "node:util";
 import assert from "node:assert/strict";
@@ -39,7 +39,7 @@ export class Processes {
     let reportRequested = false;
     const index = this.started++;
     const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
-    const written = [transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)];
+    const written = Promise.all([transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)]);
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
@@ -47,24 +47,34 @@ export class Processes {
       child.once("exit", (code, signal) => resolve({ code, signal }));
     });
     exited.catch(() => {});
+    // Reaped once the child and its pipes are gone, however `closed` settles.
+    const reaped = new Promise(resolve => {
+      child.once("error", resolve);
+      child.once("close", () => { this.children.delete(child); resolve(); });
+    });
     const closed = new Promise((resolve, reject) => {
+      // A transcript that cannot be opened or written ends the run now, with
+      // the typed cause, instead of an unhandled rejection at exit.
+      written.catch(error => {
+        kill();
+        reject(new SpoolEnded("spool", `transcript: ${error.message}`, error));
+      });
       child.on("error", reject);
       child.on("close", (code, signal) => {
-        this.children.delete(child);
         // Settle only after both transcripts are complete on disk.
-        Promise.all(written).then(() => {
+        written.then(() => {
           const result = settled(code, signal, stdoutPath, stderrPath);
           if (reportRequested) {
             const stuck_on = waitDetails(result.stderr + "\n" + result.stdout);
             result.termination = { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 };
           }
           resolve(result);
-        }, reject);
+        }, () => {});
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    this.children.set(child, { kill, closed, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
+    this.children.set(child, { kill, reaped, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
     return { child, exited, closed, killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
@@ -113,11 +123,11 @@ export class Processes {
       let force;
       const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
       for (const child of reporting) child.report();
-      try { await Promise.race([Promise.all(reporting.map(child => child.closed)), forced]); }
+      try { await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]); }
       finally { clearTimeout(force); }
     }
     for (const child of children) child.kill();
-    await Promise.all(children.map(child => child.closed));
+    await Promise.all(children.map(child => child.reaped));
   }
 }
 
@@ -139,13 +149,14 @@ export function conptyArgs(binary, args) {
 }
 
 // A stream's bytes go straight to its transcript file; nothing is decoded or
-// kept in memory. Resolves once the file holds every byte.
+// kept in memory. Resolves once the file holds every byte. On a file failure
+// the source keeps draining so the child is never blocked on a full pipe.
 function transcript(stream, path) {
   const file = createWriteStream(path);
   stream.pipe(file);
   return new Promise((resolve, reject) => {
     file.once("finish", resolve);
-    file.once("error", reject);
+    file.once("error", error => { stream.unpipe(file); stream.resume(); reject(error); });
     stream.once("error", reject);
   });
 }
@@ -178,6 +189,11 @@ export class SpoolEnded extends Error {
 // also answers from the index of the keys an event was recorded under. Each
 // event costs one comparison per pending `next` and one index entry per
 // key. `history` is the explicit scan of the transcript.
+//
+// The spool is a pipe destination: it takes the next chunk only once the
+// transcript has drained, so queued bytes are bounded by one source chunk
+// plus the stream buffers, not by the size of a burst. The transcript is a
+// path, or any writable sink (then without `history`).
 export class Spool {
   sequence = 0;
   ended;
@@ -190,32 +206,53 @@ export class Spool {
   #file;
   #path;
   #written = Promise.resolve();
-  constructor(stream, closed, { transcript: path, key, unique = false } = {}) {
-    this.#key = key; this.#unique = unique; this.#path = path;
-    if (path) {
-      this.#file = createWriteStream(path);
-      this.#file.on("error", error => this.fail(new SpoolEnded("spool", `transcript ${path}: ${error.message}`, error)));
-    }
-    createInterface({ input: stream }).on("line", line => this.#line(line));
+  #blocked;
+  constructor(stream, closed, { transcript, key, unique = false } = {}) {
+    this.#key = key; this.#unique = unique;
+    if (typeof transcript === "string") { this.#path = transcript; this.#file = createWriteStream(transcript); }
+    else this.#file = transcript;
+    this.#file?.on("error", error => this.fail(new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error)));
+    const decoder = new StringDecoder("utf8");
+    let partial = "";
+    const lines = (text, done) => {
+      const parts = (partial + text).split("\n");
+      partial = parts.pop();
+      let full = false;
+      for (const line of parts) if (!this.#line(line.endsWith("\r") ? line.slice(0, -1) : line)) full = true;
+      if (!full || this.ended) { done(); return; }
+      // Lines already in this chunk are written; the next chunk waits for drain.
+      let released = false;
+      this.#blocked = () => { if (!released) { released = true; this.#blocked = undefined; done(); } };
+      this.#file.once("drain", this.#blocked);
+    };
+    const sink = new Writable({
+      write: (chunk, _encoding, done) => lines(decoder.write(chunk), done),
+      final: done => { const rest = partial + decoder.end(); partial = ""; rest ? lines(rest + "\n", done) : done(); },
+    });
+    const drained = new Promise(resolve => sink.once("finish", resolve));
+    stream.pipe(sink);
     stream.once("error", error => this.fail(new SpoolEnded("source", error.message, error)));
-    closed.then(result => this.fail(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result)),
+    // EOF only after every line the source produced has been taken.
+    closed.then(result => drained.then(() => this.fail(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result))),
       error => this.fail(new SpoolEnded("source", error.message, error)));
   }
+  // Takes one line; false when the transcript asks the source to wait.
   #line(line) {
-    if (this.ended) return;
+    if (this.ended) return true;
     let event;
     try { event = JSON.parse(line); } catch (error) {
       this.fail(new SpoolEnded("malformed", `line ${this.sequence + 1} is not JSON: ${line.slice(0, 200)}`, error));
-      return;
+      return true;
     }
     this.sequence++;
+    let room = true;
     if (this.#file) {
       const file = this.#file;
-      this.#written = new Promise(resolve => file.write(line + "\n", resolve));
+      this.#written = new Promise(resolve => { room = file.write(line + "\n", resolve); });
     }
     for (const key of this.#key?.(event) ?? []) {
       if (this.#index.has(key)) {
-        if (this.#unique) { this.fail(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return; }
+        if (this.#unique) { this.fail(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
         continue;
       }
       this.#index.set(key, event);
@@ -226,6 +263,7 @@ export class Spool {
     for (const wait of this.#pending) if (wait.match(event)) {
       this.#pending.delete(wait); wait.resolve(event);
     }
+    return room;
   }
   fail(error) {
     if (this.ended) return;
@@ -235,6 +273,8 @@ export class Spool {
     for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(error);
     this.#waiting.clear();
     this.#file?.end();
+    // An ended spool discards, so the source is never held on a dead sink.
+    this.#blocked?.();
   }
   // The first event after this call that `match` accepts.
   next(match) {

@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 // A request notification is the mock's commit boundary: append and flush precede
 // it, and the HTTP reply follows it. Killing the server can leave an unpublished
 // tail, but cannot truncate an acknowledged record. Case assertions still require
 // every expected generation and step, so interrupted conversations fail normally.
-export function recordedRequests(text, events) {
-  const acknowledged = events.filter(event => event.event === "request");
+//
+// The events are read before the records: every event in that history then
+// has its record in the file read after it.
+export async function recordedRequests(spool, path) {
+  const acknowledged = await spool.history(event => event.event === "request");
+  const text = readFileSync(path, "utf8");
   const lines = text.split("\n");
   assert.ok(lines.length > acknowledged.length, "acknowledged request lacks a complete JSONL record");
   return acknowledged.map((event, index) => {
