@@ -454,6 +454,7 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
+    #[tsify(optional)]
     image: Option<ImageIn>,
     compatibility: CompatibilityIn,
     suspension: SuspensionIn,
