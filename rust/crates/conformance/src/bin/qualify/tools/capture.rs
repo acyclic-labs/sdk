@@ -145,12 +145,20 @@ pub(super) async fn bench_inner(
         .map_err(engine_err("checkout"))?
         .value;
 
-    let mut watch = NativeWatch::open(
+    let watch_work = acyclic_fs::NativeMaterializationWork::new(WorkCounters::UNBOUNDED, &cancel)
+        .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
         source,
+        if cfg!(windows) {
+            FilesystemProfile::Windows
+        } else {
+            FilesystemProfile::Posix
+        },
         NativeWatchOptions {
             limits: VolumeLimits::default(),
             recursive: true,
         },
+        &watch_work,
     )
     .map_err(engine_err("watch open"))?;
     let rescan = watch.begin_rescan().map_err(engine_err("begin_rescan"))?;
@@ -207,10 +215,14 @@ pub(super) async fn bench_inner(
     let mut capture_commit = Vec::with_capacity(rounds);
     for round in 0..rounds {
         let target = source.join(format!("bench-mutation-{}.txt", round % 5));
+        let changed = watch.changed_with_native_work(&watch_work);
         let mutated_at = Instant::now();
         fs::write(&target, format!("round {round} at {mutated_at:?}\n"))?;
 
-        // Poll until the watcher reports the change (event-arrival latency).
+        // Read retained hints only after the watch's actual readiness event.
+        // Early delivery remains queued, so creating the future before the
+        // mutation and polling it later cannot miss the event.
+        changed.await.map_err(engine_err("watch changed"))?;
         let batch = loop {
             let batch = watch
                 .poll(4_096, WorkCounters::UNBOUNDED, &cancel)
@@ -219,7 +231,10 @@ pub(super) async fn bench_inner(
             match &batch {
                 WatchBatch::Changes { changes, .. } if !changes.is_empty() => break batch,
                 WatchBatch::Changes { .. } => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    watch
+                        .changed_with_native_work(&watch_work)
+                        .await
+                        .map_err(engine_err("watch changed"))?;
                 }
                 WatchBatch::RescanRequired { reason, .. } => {
                     return Err(format!("rescan required mid-bench: {reason:?}").into());
