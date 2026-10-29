@@ -6,7 +6,7 @@ impl MemoryStream {
     ) -> Result<
         Decision<
             ForkReceipt,
-            impl FnOnce(&mut State, bool) -> Result<ForkReceipt, StreamError> + use<'a>,
+            impl FnOnce(&mut State, bool, Option<u64>) -> Result<ForkReceipt, StreamError> + use<'a>,
         >,
         StreamError,
     > {
@@ -55,7 +55,7 @@ impl MemoryStream {
             self.commit_clock.now_unix_millis(),
         );
         bind_envelope(&mut envelope, commit_id, time);
-        let namespace = stage_namespace(
+        let mut namespace = stage_namespace(
             state,
             paths,
             histories,
@@ -64,8 +64,9 @@ impl MemoryStream {
         )?;
         Ok(Decision::Accepted {
             bytes: 0,
-            install: move |state: &mut State, _durable| {
+            install: move |state: &mut State, _durable, at_millis| {
                 let _holds = (_histories, _paths);
+                let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
                 let retained = self.install_retained(state, retained)?;
                 install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;

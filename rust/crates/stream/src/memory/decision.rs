@@ -5,17 +5,27 @@ enum Decision<T, F> {
     Accepted { bytes: usize, install: F },
 }
 
-impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
+impl<T, F: FnOnce(&mut State, bool, Option<u64>) -> Result<T, StreamError>> Decision<T, F> {
     fn install(
         self,
         core: &MemoryStream,
         state: &mut State,
         durable: bool,
     ) -> Result<T, StreamError> {
+        self.install_at(core, state, durable, None)
+    }
+
+    fn install_at(
+        self,
+        core: &MemoryStream,
+        state: &mut State,
+        durable: bool,
+        at_millis: Option<u64>,
+    ) -> Result<T, StreamError> {
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
-                let result = core.publish(bytes, || install(state, durable))?;
+                let result = core.publish(bytes, || install(state, durable, at_millis))?;
                 core.applied(state);
                 Ok(result)
             }
@@ -26,7 +36,7 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
         self,
         core: &MemoryStream,
         mut state: impl std::ops::DerefMut<Target = State>,
-        mut persist: std::pin::Pin<&mut impl Future<Output = Result<(), StreamError>>>,
+        mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> impl Future<Output = Result<T, StreamError>> {
         async move {
             if matches!(&self, Self::Returned(_)) {
@@ -34,8 +44,7 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
             }
             // An immediate acknowledgement needs no second state acquisition.
             if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
-                result?;
-                return self.install(core, &mut state, true);
+                return self.install_at(core, &mut state, true, result?);
             }
             // The publication owner excludes competing state transitions.
             // Readers can keep using the last accepted state during I/O.
@@ -48,11 +57,11 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
             .then_some(state);
             // Failure or cancellation drops the uninstalled plan. There is
             // no visible mutation or notification before this succeeds.
-            persist.await?;
+            let at_millis = persist.await?;
             #[cfg(loom)]
             drop(state);
             let mut state = core.state.write().await;
-            self.install(core, &mut state, true)
+            self.install_at(core, &mut state, true, at_millis)
         }
     }
 }
@@ -84,7 +93,7 @@ impl MemoryStream {
         &self,
         canonical: &crate::journal::CanonicalCommand,
         deadline: Option<u64>,
-        mut persist: std::pin::Pin<&mut impl Future<Output = Result<(), StreamError>>>,
+        mut persist: std::pin::Pin<&mut impl Future<Output = Result<Option<u64>, StreamError>>>,
     ) -> impl Future<Output = Result<crate::replicated::Execution, StreamError>> {
         async move {
             use crate::replicated::Execution;

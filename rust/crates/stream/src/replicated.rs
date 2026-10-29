@@ -41,8 +41,8 @@ pub(crate) struct JournalPage {
 
 pub(crate) struct JournalFrame<'a> {
     pub(crate) command: &'a WriteRequest,
-    /// Trusted proposal clock sampled by the journal read. Installation and
-    /// recovery use this same stamp; the port checks deadlines at acceptance.
+    /// Trusted proposal clock. A journal that owns the acceptance clock may
+    /// replace it; installation binds that returned stamp to the original plan.
     pub(crate) at_millis: u64,
     pub(crate) deadline: Option<u64>,
     #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
@@ -78,20 +78,19 @@ impl Attempt {
         journal: &mut impl CommandJournal,
         expected: u64,
         frame: JournalFrame<'_>,
-    ) -> impl Future<Output = Result<(), StreamError>> {
+    ) -> impl Future<Output = Result<Option<u64>, StreamError>> {
         async move {
             self.started = true;
-            let stamp = frame.at_millis;
             let result = journal.append_if(expected, &[frame]).await?;
             let outcome = match &result {
                 AppendIf::Accepted {
                     sequence,
                     at_millis,
                 } => {
-                    if *sequence <= expected || *at_millis != stamp {
+                    if *sequence <= expected {
                         return Err(StreamError::InvalidResponse);
                     }
-                    Ok(())
+                    Ok(Some(*at_millis))
                 }
                 AppendIf::Stale { .. } => Err(StreamError::Unavailable),
                 AppendIf::Refused(error) => Err(error.clone()),
@@ -155,6 +154,7 @@ pub(crate) struct Replicated<J> {
     pub(crate) cursor: u64,
     clock: Arc<ReplicaClock>,
     failed: bool,
+    acceptance_clock: bool,
 }
 
 impl<J: CommandJournal> Replicated<J> {
@@ -170,7 +170,16 @@ impl<J: CommandJournal> Replicated<J> {
             clock,
             cursor,
             failed: false,
+            acceptance_clock: false,
         }
+    }
+
+    /// The port samples and persists its own clock under the append CAS. Its
+    /// accepted stamp can bind an original plan without a preceding clock read.
+    #[cfg(feature = "postgres")]
+    pub(crate) fn with_acceptance_clock(mut self) -> Self {
+        self.acceptance_clock = true;
+        self
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -194,7 +203,13 @@ impl<J: CommandJournal> Replicated<J> {
     fn complete<T>(&mut self, attempt: Attempt, result: &Result<T, StreamError>) -> bool {
         match attempt.appended {
             Some(AppendIf::Stale { head }) if head > self.cursor => return false,
-            Some(AppendIf::Accepted { sequence, .. }) if result.is_ok() => self.cursor = sequence,
+            Some(AppendIf::Accepted {
+                sequence,
+                at_millis,
+            }) if result.is_ok() => {
+                self.cursor = sequence;
+                self.clock.set(at_millis);
+            }
             Some(AppendIf::Refused(_)) => {}
             Some(_) => self.fail(),
             None if attempt.started
@@ -337,6 +352,10 @@ impl<J: CommandJournal> Replicated<J> {
         mut observe: impl ReplayObserver,
     ) -> impl Future<Output = Result<Execution, StreamError>> {
         async move {
+            self.check()?;
+            if page == 0 {
+                return Err(StreamError::InvalidArgument);
+            }
             let canonical = self.provider.canonicalize(command)?;
             let command = &canonical.command;
             let deadline = deadline
@@ -361,8 +380,12 @@ impl<J: CommandJournal> Replicated<J> {
                     })
                     .collect(),
             };
-            loop {
+            let mut fresh = false;
+            if !self.acceptance_clock {
                 self.refresh_with(page, &mut observe).await?;
+                fresh = true;
+            }
+            loop {
                 observe.observe(&self.provider, command, false).await?;
                 let expected = self.cursor;
                 let mut attempt = Attempt::default();
@@ -380,10 +403,36 @@ impl<J: CommandJournal> Replicated<J> {
                         .apply_durable(&canonical, deadline, persist)
                         .await
                 };
+                // Successful replay and a changed request's immutable key
+                // binding are authoritative at the retained cut. Every other
+                // local refusal needs one current observation before returning.
+                let immutable = !attempt.started
+                    && matches!(
+                        &result,
+                        Ok(Execution {
+                            outcome: WriteOutcome::Append(AppendOutcome::Committed(_))
+                                | WriteOutcome::Fork(_)
+                                | WriteOutcome::Commit(CommitOutcome::Committed(_)),
+                            ..
+                        }) | Err(StreamError::IdempotencyMismatch)
+                    );
+                if !attempt.started && !fresh && !immutable {
+                    self.refresh_with(page, &mut observe).await?;
+                    fresh = true;
+                    // An unchanged monotonic cut confirms the original refusal;
+                    // only a changed state or clock-dependent refusal replans.
+                    if self.cursor != expected
+                        || matches!(&result, Err(StreamError::DeadlineElapsed))
+                    {
+                        continue;
+                    }
+                }
                 if !self.complete(attempt, &result) {
                     // This is the conditional journal's losing proposal. Its
                     // uninstalled plan was dropped; catch up and decide again
                     // under the same exact request identity and deadline.
+                    self.refresh_with(page, &mut observe).await?;
+                    fresh = true;
                     continue;
                 }
                 if self.cursor > expected {

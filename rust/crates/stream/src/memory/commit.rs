@@ -55,6 +55,18 @@ impl CommitPlan {
 }
 
 impl CommitPublication {
+    fn bind_acceptance(
+        &mut self,
+        state: &State,
+        at_millis: Option<u64>,
+    ) -> Result<u64, StreamError> {
+        let time = bind_acceptance(&mut self.namespace, &mut self.envelope, state, at_millis)?;
+        if let CommitOutcome::Committed(receipt) = &mut self.result {
+            receipt.committed_at_micros = time;
+        }
+        Ok(time)
+    }
+
     fn publish(
         self,
         state: &mut State,
@@ -460,7 +472,12 @@ impl MemoryStream {
     ) -> Result<
         Decision<
             (CommitOutcome, Allocation),
-            impl FnOnce(&mut State, bool) -> Result<(CommitOutcome, Allocation), StreamError> + use<'a>,
+            impl FnOnce(
+                &mut State,
+                bool,
+                Option<u64>,
+            ) -> Result<(CommitOutcome, Allocation), StreamError>
+            + use<'a>,
         >,
         StreamError,
     > {
@@ -541,16 +558,17 @@ impl MemoryStream {
         let mut plan = self.plan_commit(state, &request, commit_id, time)?;
         plan.bind(commit_id, time, &self.revisions.at(decision))?;
         let bytes = envelope_payload_bytes(&plan.envelope);
-        let publication = plan.stage(
+        let mut publication = plan.stage(
             state,
             &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
         )?;
         Ok(Decision::Accepted {
             bytes,
-            install: move |state: &mut State, durable: bool| {
+            install: move |state: &mut State, durable: bool, at_millis| {
                 if !durable {
                     check_deadline()?;
                 }
+                let time = publication.bind_acceptance(state, at_millis)?;
                 let retained = self.install_retained(state, retained)?;
                 publication.publish(
                     state,
@@ -653,6 +671,98 @@ fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u6
             record.commit_id = commit_id;
             record.committed_at_micros = time;
         }
+    }
+}
+
+// Only the unpublished COW spines and the new record batches are mutable here.
+// No old history, namespace node, payload or reservation is copied or rebuilt.
+fn bind_acceptance(
+    namespace: &mut Namespace,
+    envelope: &mut CommittedEnvelope,
+    state: &State,
+    at_millis: Option<u64>,
+) -> Result<u64, StreamError> {
+    let Some(at_millis) = at_millis else {
+        return Ok(envelope.committed_at_micros);
+    };
+    let time = crate::preparation::committed_time(state.last_committed_at_micros, at_millis);
+    if time == envelope.committed_at_micros {
+        return Ok(time);
+    }
+    for fact in &envelope.mutations {
+        if fact_records(fact).is_empty() {
+            continue;
+        }
+        let path = match fact {
+            CommittedMutation::Append(append) => &append.path,
+            CommittedMutation::Fork(fork) => &fork.destination,
+        };
+        let data = namespace.unpublished_path(path)?;
+        let History::Batch { records, .. } =
+            Arc::get_mut(data.history.as_mut().ok_or(StreamError::Unavailable)?)
+                .ok_or(StreamError::Unavailable)?
+        else {
+            return Err(StreamError::Unavailable);
+        };
+        // These two bounded prefix windows are the only aliases of this new
+        // batch. Retain their ranges while borrowing its original allocation.
+        let windows = data.prefix.each_mut().map(|slot| {
+            if slot
+                .as_ref()
+                .is_some_and(|window| Arc::ptr_eq(&window.records, records))
+            {
+                slot.take().map(|window| (window.start, window.end))
+            } else {
+                None
+            }
+        });
+        for record in &mut Arc::get_mut(records)
+            .ok_or(StreamError::Unavailable)?
+            .records
+        {
+            record.committed_at_micros = time;
+        }
+        for (slot, window) in data.prefix.iter_mut().zip(windows) {
+            if let Some((start, end)) = window {
+                *slot = Some(HistoryWindow {
+                    records: Arc::clone(records),
+                    start,
+                    end,
+                });
+            }
+        }
+    }
+    bind_envelope(envelope, envelope.commit_id, time);
+    Ok(time)
+}
+
+impl Namespace {
+    fn unpublished_path(&mut self, path: &StreamPath) -> Result<&mut PathState, StreamError> {
+        fn select<'a>(
+            mut index: &'a mut Index,
+            name: &str,
+        ) -> Result<&'a mut NamespaceNode, StreamError> {
+            loop {
+                let edge = Arc::get_mut(index.as_mut().ok_or(StreamError::Unavailable)?)
+                    .ok_or(StreamError::Unavailable)?;
+                match name.cmp(edge.name.text.as_str()) {
+                    std::cmp::Ordering::Less => index = &mut edge.left,
+                    std::cmp::Ordering::Greater => index = &mut edge.right,
+                    std::cmp::Ordering::Equal => {
+                        return Arc::get_mut(&mut edge.node).ok_or(StreamError::Unavailable);
+                    }
+                }
+            }
+        }
+        let mut parts = path.as_str().split('/');
+        let mut node = select(
+            &mut self.roots,
+            parts.next().ok_or(StreamError::InvalidArgument)?,
+        )?;
+        for part in parts {
+            node = select(&mut node.children, part)?;
+        }
+        Ok(&mut node.data)
     }
 }
 

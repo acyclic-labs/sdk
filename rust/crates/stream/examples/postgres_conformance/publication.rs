@@ -3,21 +3,17 @@ use acyclic_stream::postgres::PostgresStream;
 use tokio_postgres::{Client, NoTls, Row};
 
 const PUBLISH: &str = "SELECT revision,at_millis,accepted FROM acyclic_stream_publish(\
-    $1,$2,$3::bytea[],$4::bigint[],$5::bigint[])";
+    $1,$2,$3::bytea[],$4::bigint[])";
 
 async fn publish(
     client: &Client,
     namespace: &str,
     expected: i64,
     commands: &[Vec<u8>],
-    stamps: &[i64],
     deadlines: &[Option<i64>],
 ) -> Result<Row, tokio_postgres::Error> {
     client
-        .query_one(
-            PUBLISH,
-            &[&namespace, &expected, &commands, &stamps, &deadlines],
-        )
+        .query_one(PUBLISH, &[&namespace, &expected, &commands, &deadlines])
         .await
 }
 
@@ -50,45 +46,54 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
             )
             .await?;
         let commands: Vec<Vec<u8>> = (0..width).map(|i| i.to_le_bytes().to_vec()).collect();
-        let stamps: Vec<i64> = (1..=width).collect();
         let deadlines = vec![None; commands.len()];
-        let accepted = publish(&client, &namespace, 0, &commands, &stamps, &deadlines).await?;
+        let before: i64 = client
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+                &[],
+            )
+            .await?
+            .get(0);
+        let accepted = publish(&client, &namespace, 0, &commands, &deadlines).await?;
+        let after: i64 = client
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+                &[],
+            )
+            .await?
+            .get(0);
         let head: i64 = accepted.get(0);
         assert!(accepted.get::<_, bool>(2));
-        assert_eq!(accepted.get::<_, i64>(1), width);
+        let accepted_millis = accepted.get::<_, i64>(1);
+        assert!((before..=after).contains(&accepted_millis));
         let retained = rows(&client, &namespace).await?;
         assert_eq!(retained.len(), commands.len());
         assert_eq!(retained.last().unwrap().get::<_, i64>(0), head);
         assert!(retained.first().unwrap().get::<_, i64>(0) > 1);
         for (i, row) in retained.iter().enumerate() {
-            assert_eq!(row.get::<_, i64>(1), stamps[i]);
+            assert_eq!(row.get::<_, i64>(1), accepted_millis);
             assert_eq!(row.get::<_, Vec<u8>>(2), commands[i]);
         }
         // Negative control: stale publication adds no frames and returns the
         // storage cursor, rather than a canonical Stream sequence or batch size.
-        let stale = publish(&client, &namespace, 0, &commands, &stamps, &deadlines).await?;
+        let stale = publish(&client, &namespace, 0, &commands, &deadlines).await?;
         assert!(!stale.get::<_, bool>(2));
         assert_eq!(stale.get::<_, i64>(0), head);
         assert_eq!(rows(&client, &namespace).await?.len(), commands.len());
         // The second frame refuses after the first INSERT. Both roll back.
         let refused = vec![b"first".to_vec(), b"second".to_vec()];
-        for (times, deadlines) in [
-            ([1, 2], [None, Some(2)]),
-            // Planning time passes; the actual database acceptance clock fails.
-            ([0, 1], [Some(2), None]),
-        ] {
-            let error = publish(&client, &namespace, head, &refused, &times, &deadlines)
+        for deadlines in [[None, Some(2)], [Some(2), None]] {
+            let error = publish(&client, &namespace, head, &refused, &deadlines)
                 .await
                 .unwrap_err();
             assert_eq!(error.as_db_error().unwrap().code().code(), "PST01");
             assert_eq!(rows(&client, &namespace).await?.len(), commands.len());
         }
-        let error = publish(&client, &namespace, head, &refused, &[], &[None, None])
+        let error = publish(&client, &namespace, head, &refused, &[])
             .await
             .unwrap_err();
         assert_eq!(error.as_db_error().unwrap().code().code(), "PST03");
-        let corrected =
-            publish(&client, &namespace, head, &refused, &[3, 4], &[None, None]).await?;
+        let corrected = publish(&client, &namespace, head, &refused, &[None, None]).await?;
         assert!(corrected.get::<_, bool>(2));
         assert!(corrected.get::<_, i64>(0) > head + 2);
         assert_eq!(rows(&client, &namespace).await?.len(), commands.len() + 2);
@@ -108,7 +113,6 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         "commit-failure-control",
         0,
         &[b"aborted".to_vec()],
-        &[0],
         &[None],
     )
     .await
@@ -120,7 +124,7 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     // request. No timer, readiness probe or replacement connection produces it.
     let namespace = uuid::Uuid::new_v4().to_string();
     let commands = [b"disconnected".to_vec()];
-    let request = publish(&client, &namespace, 0, &commands, &[0], &[None]);
+    let request = publish(&client, &namespace, 0, &commands, &[None]);
     tokio::pin!(request);
     assert!(futures::poll!(&mut request).is_pending());
     driver.abort();

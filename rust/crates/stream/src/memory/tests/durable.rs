@@ -1,7 +1,7 @@
 use super::super::*;
 use super::TestClock;
 use crate::{WriteOutcome, WriteRequest};
-use futures::{FutureExt as _, TryFutureExt as _};
+use futures::{FutureExt as _, TryFutureExt as _, TryStreamExt as _};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn apply(
@@ -11,7 +11,7 @@ async fn apply(
     persist: impl Future<Output = Result<(), StreamError>>,
 ) -> Result<WriteOutcome, StreamError> {
     let canonical = core.canonicalize(command)?;
-    let persist = std::pin::pin!(persist);
+    let persist = std::pin::pin!(persist.map_ok(|()| None));
     core.apply_durable(&canonical, deadline, persist)
         .await
         .map(|execution| execution.outcome)
@@ -278,11 +278,17 @@ async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_dea
 #[tokio::test]
 async fn funded_publications_need_no_allocation_admission_after_durability()
 -> Result<(), Box<dyn std::error::Error>> {
-    for family in 0..3 {
+    for (family, at_millis) in
+        (0..3).flat_map(|family| [None, Some(7)].map(|stamp| (family, stamp)))
+    {
         let meter = Arc::new(crate::test_meter::Meter::default());
         let work = Work::new(meter.original())?;
-        work.reserve_write(8)?;
-        let core = MemoryStream::default();
+        work.reserve_write(if family == 2 { 21 } else { 8 })?;
+        let core = MemoryStream::new_with_commit_clock(
+            MemoryLimits::default(),
+            Arc::new(TestClock::default()),
+            Arc::new(TestClock::default()),
+        );
         let source = request(0)?;
         core.append(source.clone()).await?;
         let destination = StreamPath::new("new/parents/destination")?;
@@ -301,23 +307,74 @@ async fn funded_publications_need_no_allocation_admission_after_durability()
             }),
             _ => WriteRequest::Commit(CommitRequest {
                 deadline_unix_millis: None,
-                conditions: Vec::new(),
-                mutations: vec![CommitMutation::Append {
-                    path: destination.clone(),
-                    records: vec![Bytes::from_static(b"accepted").into()],
+                conditions: vec![CommitCondition::Absent {
+                    path: StreamPath::new("forked")?,
                 }],
+                mutations: vec![
+                    CommitMutation::Append {
+                        path: destination.clone(),
+                        records: vec![Bytes::from_static(b"accepted").into()],
+                    },
+                    CommitMutation::Append {
+                        path: StreamPath::new("new/parents")?,
+                        records: vec![Bytes::from_static(b"parent").into()],
+                    },
+                    CommitMutation::Fork {
+                        source: source.path,
+                        destination: StreamPath::new("forked")?,
+                        at_tail: 1,
+                        exclude: Vec::new(),
+                        records: vec![Bytes::from_static(b"private").into()],
+                    },
+                ],
                 idempotency_key: IdempotencyKey::unique(),
             }),
         };
         let core = core.with_context(work);
-        apply(&core, command, None, async {
+        let canonical = core.canonicalize(command)?;
+        let persist = std::pin::pin!(async {
             // A completed durable action owns its completion. New allocation
             // admission must not determine whether its state can be installed.
             meter.deny_allocation.store(true, Ordering::SeqCst);
-            Ok(())
-        })
-        .await?;
+            Ok(at_millis)
+        });
+        let execution = core.apply_durable(&canonical, None, persist).await?;
+        meter.deny_allocation.store(false, Ordering::SeqCst);
         assert_eq!(core.tail(destination).await?, 1);
+        if let Some(at_millis) = at_millis {
+            let commit_id = match execution.outcome {
+                WriteOutcome::Append(AppendOutcome::Committed(receipt)) => receipt.commit_id,
+                WriteOutcome::Fork(receipt) => receipt.commit_id,
+                WriteOutcome::Commit(CommitOutcome::Committed(receipt)) => {
+                    assert_eq!(receipt.committed_at_micros, at_millis * 1000);
+                    receipt.commit_id
+                }
+                _ => return Err(StreamError::InvalidResponse.into()),
+            };
+            let retained = core.read_commit(commit_id).await?;
+            assert_eq!(retained.committed_at_micros, at_millis * 1000);
+            for fact in &retained.mutations {
+                let path = match fact {
+                    CommittedMutation::Append(append) => &append.path,
+                    CommittedMutation::Fork(fork) => &fork.destination,
+                };
+                let records: Vec<_> = core
+                    .read(ReadRequest {
+                        path: path.clone(),
+                        key: None,
+                        from: 0,
+                        limit: 16,
+                        at_least: Default::default(),
+                    })
+                    .await?
+                    .try_collect()
+                    .await?;
+                for record in fact_records(fact) {
+                    assert_eq!(record.committed_at_micros, at_millis * 1000);
+                    assert_eq!(records[record.sequence as usize], *record);
+                }
+            }
+        }
     }
     Ok(())
 }

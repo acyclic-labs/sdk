@@ -16,7 +16,12 @@ impl MemoryStream {
     ) -> Result<
         Decision<
             (AppendOutcome, Allocation),
-            impl FnOnce(&mut State, bool) -> Result<(AppendOutcome, Allocation), StreamError> + use<'a>,
+            impl FnOnce(
+                &mut State,
+                bool,
+                Option<u64>,
+            ) -> Result<(AppendOutcome, Allocation), StreamError>
+            + use<'a>,
         >,
         StreamError,
     > {
@@ -84,7 +89,7 @@ impl MemoryStream {
         };
         bind_envelope(&mut envelope, commit_id, time);
         bind_histories(&mut histories, commit_id, time)?;
-        let namespace = stage_namespace(
+        let mut namespace = stage_namespace(
             state,
             paths,
             histories,
@@ -93,10 +98,11 @@ impl MemoryStream {
         )?;
         Ok(Decision::Accepted {
             bytes,
-            install: move |state: &mut State, _durable| {
+            install: move |state: &mut State, _durable, at_millis| {
                 #[cfg(not(target_arch = "wasm32"))]
                 let _input = _input;
                 let _holds = (_histories, _paths);
+                let time = bind_acceptance(&mut namespace, &mut envelope, state, at_millis)?;
                 let retained = self.install_retained(state, retained)?;
                 install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;

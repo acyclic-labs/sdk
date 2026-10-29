@@ -22,13 +22,12 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
 -- Physical append-if-revision only. The canonical Stream core decides paths,
 -- conditions and retry identity; SQL never decodes a command. VOLATILE keeps
 -- the head query's READ COMMITTED snapshot after the namespace lock wait.
--- The core plans at the journal-read database clock; the row records exactly
--- that time so replay reproduces the same decision.
+-- The core binds the returned database clock to its original accepted plan;
+-- replay uses the same persisted stamp, without a preceding clock read.
 CREATE OR REPLACE FUNCTION acyclic_stream_publish(
     stream_namespace text,
     expected_revision bigint,
     command_bytes bytea[],
-    planned_millis bigint[],
     deadline_millis bigint[]
 ) RETURNS TABLE (revision bigint, at_millis bigint, accepted boolean)
 LANGUAGE plpgsql VOLATILE AS $$
@@ -45,7 +44,6 @@ BEGIN
             HINT = 'Recovery: reopen PostgresStream::connect with the same database and namespace';
     END IF;
     IF cardinality(command_bytes) IS NULL OR cardinality(command_bytes) = 0 OR
-        cardinality(command_bytes) IS DISTINCT FROM cardinality(planned_millis) OR
         cardinality(command_bytes) IS DISTINCT FROM cardinality(deadline_millis) THEN
         RAISE EXCEPTION USING ERRCODE = 'PST03',
             MESSAGE = 'STEP stream-publication refused: empty or mismatched frame arrays',
@@ -60,10 +58,10 @@ BEGIN
     END IF;
     -- Array order is publication order. Identity values may have gaps; only
     -- RETURNING supplies the new opaque cursor, never expected_revision + count.
-    FOR frame IN SELECT * FROM unnest(command_bytes, planned_millis, deadline_millis)
-        AS f(command, stamp, deadline)
+    accepted_millis := floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+    FOR frame IN SELECT * FROM unnest(command_bytes, deadline_millis)
+        AS f(command, deadline)
     LOOP
-        accepted_millis := frame.stamp;
         IF frame.deadline IS NOT NULL AND accepted_millis >= frame.deadline THEN
             RAISE EXCEPTION USING ERRCODE = 'PST01',
                 MESSAGE = 'STEP stream-publication refused: acceptance deadline elapsed',

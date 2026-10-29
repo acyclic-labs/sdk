@@ -14,6 +14,185 @@ async fn append(provider: &PostgresStream, path: &str) -> Result<(), StreamError
     Ok(())
 }
 
+async fn sql_case(replica: &Replicated<PgJournal>, case: &str) -> Result<(), StreamError> {
+    replica
+        .journal
+        .client
+        .query_one(
+            "SELECT set_config('application_name',$1,false)",
+            &[&format!("publication-count-{case}")],
+        )
+        .await
+        .map_err(unavailable)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a disposable PostgreSQL database through STORAGE_POSTGRES_URL"]
+async fn publication_uses_only_required_sql_observations()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let database = std::env::var("STORAGE_POSTGRES_URL")?;
+    let namespace = format!("publication-count-{}", uuid::Uuid::new_v4());
+    let provider = PostgresStream::connect(&database, &namespace).await?;
+    let writer = PostgresStream::connect(&database, &namespace).await?;
+    // The held session excludes its background refresh. Server statement logs
+    // distinguish each real operation without a proxy port or timing inference.
+    let mut replica = provider.inner.session.lock().await;
+    let original = AppendRequest {
+        path: StreamPath::new("accepted")?,
+        records: vec!["original".into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    sql_case(&replica, "accepted").await?;
+    let accepted = replica
+        .execute(WriteRequest::Append(original.clone()), None, PAGE)
+        .await?
+        .outcome;
+    let WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &accepted else {
+        return Err(StreamError::InvalidResponse.into());
+    };
+    let envelope = provider.read_commit(receipt.commit_id).await?;
+    assert!(envelope.committed_at_micros > 0);
+    sql_case(&replica, "replay").await?;
+    assert_eq!(
+        replica
+            .execute(WriteRequest::Append(original.clone()), None, PAGE)
+            .await?
+            .outcome,
+        accepted
+    );
+    sql_case(&replica, "mismatch").await?;
+    let changed = AppendRequest {
+        records: vec!["changed".into()],
+        ..original.clone()
+    };
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(changed), None, PAGE)
+            .await,
+        Err(StreamError::IdempotencyMismatch)
+    ));
+    sql_case(&replica, "refusal").await?;
+    let refused = AppendRequest {
+        if_tail: Some(99),
+        idempotency_key: IdempotencyKey::unique(),
+        ..original.clone()
+    };
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(refused.clone()), None, PAGE)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 1 })
+    ));
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(refused.idempotency_key)
+            .await?
+            .is_none()
+    );
+
+    // Negative control: the cached refusal is false at the server. No LISTEN
+    // delivery or background task is allowed to repair the cache for this call.
+    append(&writer, "remote").await?;
+    let remote = AppendRequest {
+        path: StreamPath::new("remote")?,
+        if_tail: Some(1),
+        idempotency_key: IdempotencyKey::unique(),
+        ..original.clone()
+    };
+    sql_case(&replica, "stale-refusal").await?;
+    assert_eq!(
+        replica.provider.tail(remote.path.clone()).await,
+        Err(StreamError::NotFound)
+    );
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(remote), None, PAGE)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::Committed(AppendReceipt {
+            start: 1,
+            tail: 2,
+            ..
+        }))
+    ));
+    append(&writer, "other").await?;
+    sql_case(&replica, "stale-cas").await?;
+    let competing = AppendRequest {
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+        ..original.clone()
+    };
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(competing), None, PAGE)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::Committed(AppendReceipt {
+            start: 1,
+            tail: 2,
+            ..
+        }))
+    ));
+    sql_case(&replica, "late-deadline").await?;
+    let expired = AppendRequest {
+        if_tail: None,
+        idempotency_key: IdempotencyKey::unique(),
+        ..original.clone()
+    };
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(expired.clone()), Some(1), PAGE)
+            .await,
+        Err(StreamError::DeadlineElapsed)
+    ));
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(expired.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    sql_case(&replica, "retry-refused").await?;
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Append(expired), None, PAGE)
+            .await?
+            .outcome,
+        WriteOutcome::Append(AppendOutcome::Committed(AppendReceipt {
+            start: 2,
+            tail: 3,
+            ..
+        }))
+    ));
+    sql_case(&replica, "done").await?;
+    let rows = replica
+        .journal
+        .client
+        .query_one(
+            "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
+            &[&namespace],
+        )
+        .await?;
+    assert_eq!(rows.get::<_, i64>(0), 6);
+    drop(replica);
+    drop(provider);
+    drop(writer);
+    let reopened = PostgresStream::connect(&database, &namespace).await?;
+    assert_eq!(reopened.read_commit(receipt.commit_id).await?, envelope);
+    assert_eq!(
+        reopened.append(original).await?,
+        match accepted {
+            WriteOutcome::Append(outcome) => outcome,
+            _ => return Err(StreamError::InvalidResponse.into()),
+        }
+    );
+    Ok(())
+}
+
 struct AppendDuringReplay<'a> {
     writer: &'a PostgresStream,
     appended: bool,

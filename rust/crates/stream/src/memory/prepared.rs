@@ -287,7 +287,8 @@ impl PreparedCommit {
         self,
         body: crate::AppendRecord,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        self.settle_durable(body, std::future::ready(Ok(()))).await
+        self.settle_durable(body, std::future::ready(Ok(None)))
+            .await
     }
 
     #[cfg(feature = "local")]
@@ -299,7 +300,7 @@ impl PreparedCommit {
     pub(crate) async fn settle_durable(
         mut self,
         mut body: crate::AppendRecord,
-        persist: impl Future<Output = Result<(), StreamError>>,
+        persist: impl Future<Output = Result<Option<u64>, StreamError>>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let work = Arc::clone(
             self.provider
@@ -391,7 +392,7 @@ impl PreparedCommit {
                 2 * std::mem::size_of::<Record>() as u64,
                 identity_bytes(),
             ));
-            let publication = self.plan.stage(
+            let mut publication = self.plan.stage(
                 &state,
                 &mut NamespaceBuilder {
                     allocate: &|_| Err(StreamError::Capacity),
@@ -401,7 +402,8 @@ impl PreparedCommit {
             let mut persist = std::pin::pin!(persist);
             Decision::Accepted {
                 bytes,
-                install: |state: &mut State, _durable| {
+                install: |state: &mut State, _durable, at_millis| {
+                    let time = publication.bind_acceptance(state, at_millis)?;
                     let retained = self.provider.install_retained(state, self.retained)?;
                     publication.publish(
                         state,
