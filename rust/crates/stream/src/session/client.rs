@@ -562,13 +562,14 @@ impl Client {
         impl futures::Stream<Item = Result<wire::SessionData, StreamError>> + 'static + use<>,
         StreamError,
     > {
-        wire_codec::session::validate_resource(&follow.resource)?;
-        if !matches!(
-            wire::SessionDelivery::try_from(follow.delivery),
-            Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
-        ) {
-            return Err(StreamError::InvalidArgument);
-        }
+        wire_codec::session::validate_follow(
+            &follow,
+            &wire::SessionCursor {
+                next: from,
+                opaque: Bytes::new(),
+            },
+        )?;
+        wire_codec::cut_from_wire(follow.at_least.clone())?;
         Ok(data::Data::new(
             self.open_kind(
                 Kind::Follow(follow),

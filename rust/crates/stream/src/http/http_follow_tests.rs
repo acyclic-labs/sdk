@@ -40,7 +40,7 @@ impl Server {
         Self::with_body_mode(replies, None).await
     }
     async fn with_body_mode(replies: Vec<Reply>, mode: Option<BodyMode>) -> Self {
-        Self::with_body_mode_at(replies, mode, "/v1/stream/tail").await
+        Self::with_body_mode_at(replies, mode, "/v1/stream/idempotency/inspect").await
     }
     async fn with_body_mode_at(
         replies: Vec<Reply>,
@@ -154,27 +154,43 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
 fn path() -> StreamPath {
     StreamPath::new("follow/test").unwrap()
 }
-fn record(sequence: u64) -> Value {
-    json!({"sequence":sequence.to_string(),"value":"eA==", "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "committedAtMicros":"1", "keys":[], "attributes":[]})
-}
-
 #[tokio::test]
-async fn head_refuses_incoherent_cuts_without_another_provider_request()
+async fn json_heads_refuses_incoherent_cuts_without_another_provider_request()
 -> Result<(), Box<dyn std::error::Error>> {
-    let snapshot = MemoryStream::default()
-        .heads(HeadsRequest {
-            retained: Default::default(),
-            durable_through: None,
-            projection: Default::default(),
-            paths: Default::default(),
-            children: None,
-            limit: 1,
-            at_least: RevisionCut::default(),
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("head/source")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![OwnedBytes::from_static(b"x").into()],
+            if_tail: None,
+            idempotency_key: IdempotencyKey::unique(),
         })
-        .await?
-        .snapshot;
-    let snapshot =
-        crate::http_response::revision_json(Some(&crate::wire_codec::revision_to_wire(&snapshot)));
+        .await?;
+    provider
+        .fork(ForkRequest {
+            source,
+            destination: StreamPath::new("head/child")?,
+            at_tail: None,
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        })
+        .await?;
+    let request = HeadsRequest {
+        retained: Default::default(),
+        durable_through: None,
+        projection: Default::default(),
+        paths: vec![StreamPath::new("head/child")?].into(),
+        children: None,
+        limit: 1,
+        at_least: RevisionCut::default(),
+    };
+    // Capture the real fork head through the shipping wire and JSON encoders;
+    // each negative control changes only its named coherence fields.
+    let view = crate::wire_codec::heads_to_wire(provider.heads(request.clone()).await?)?;
+    let original = view.heads[0].head.clone().unwrap();
+    let captured = crate::http_response::value("heads", &view.encode_to_vec())?.unwrap();
+    let request = crate::wire_codec::heads_request_to_wire(request).encode_to_vec();
     for (tail, durable, sequence, inherited, valid) in [
         (0, 0, None, None, true),
         (0, 0, None, Some(0), true),
@@ -186,38 +202,50 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         (1, 0, Some(0), Some(2), false),
         (u64::MAX, 0, Some(u64::MAX), None, false),
     ] {
-        let origin = inherited.map(|cut| {
-            json!({
-                "source":"head/source", "forkedAt":cut.to_string(),
-                "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            })
+        let mut response = captured.clone();
+        let head = &mut response["heads"][0];
+        head["tail"] = json!(tail.to_string());
+        head["durable"] = json!(durable.to_string());
+        head["last"] = sequence.map_or(Value::Null, |sequence| {
+            let mut record = head["last"].clone();
+            record["sequence"] = json!(sequence.to_string());
+            record
         });
-        let server = Server::new(vec![Reply::ok(json!({
-            "snapshot":snapshot,
-            "projection":"history",
-            "heads":[{
-                "tail":tail.to_string(), "durable":durable.to_string(),
-                "last":sequence.map(record), "origin":origin,
-            }],
-        }))])
-        .await;
-        let actual = server.client.head(StreamPath::new("head/child")?).await;
-        let wire = crate::wire::PathHead {
-            retained_through: None,
-            tail,
-            durable,
-            last: sequence
-                .map(|n| parse_record(&record(n)).map(crate::wire_codec::record_wire))
-                .transpose()?,
-            origin: inherited.map(|forked_at| crate::wire::ForkOrigin {
-                source: "head/source".into(),
-                forked_at,
-                commit_id: Bytes::from_static(&[0; 32]),
-            }),
-        };
-        assert_eq!(actual, crate::wire_codec::head_from_wire(wire));
+        head["origin"] = inherited.map_or(Value::Null, |cut| {
+            let mut origin = head["origin"].clone();
+            origin["forkedAt"] = json!(cut.to_string());
+            origin
+        });
+        let server = Server::new(vec![Reply::ok(response)]).await;
+        let actual = server
+            .client
+            .request("heads", request.clone())
+            .await
+            .map(|response| response["heads"][0].clone());
+        let mut wire = original.clone();
+        wire.tail = tail;
+        wire.durable = durable;
+        wire.last = sequence.map(|sequence| {
+            let mut record = original.last.clone().unwrap();
+            record.sequence = sequence;
+            record
+        });
+        wire.origin = inherited.map(|cut| {
+            let mut origin = original.origin.clone().unwrap();
+            origin.forked_at = cut;
+            origin
+        });
+        let expected = crate::wire_codec::head_from_wire(wire).map(|head| {
+            crate::http_response::value(
+                "head",
+                &crate::wire_codec::head_to_wire(head).encode_to_vec(),
+            )
+            .unwrap()
+            .unwrap()
+        });
+        assert_eq!(actual, expected);
         if valid {
-            assert_eq!(actual?.tail, tail);
+            assert_eq!(parse_u64(&actual?["tail"])?, tail);
         } else {
             assert_eq!(actual, Err(StreamError::InvalidResponse));
         }
@@ -226,6 +254,22 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         assert_eq!(requests[0].0, "/v1/stream/heads");
     }
     Ok(())
+}
+
+async fn missing_idempotency() -> (IdempotencyKey, Reply) {
+    let key = IdempotencyKey::unique();
+    // Capture the real provider's absent observation with the shipping codec.
+    let observation = MemoryStream::default()
+        .inspect_idempotency(key.clone())
+        .await
+        .unwrap();
+    let response = wire::InspectIdempotencyResponse {
+        observation: observation.map(crate::wire_codec::observation_wire),
+    };
+    let response = crate::http_response::value("idempotency/inspect", &response.encode_to_vec())
+        .unwrap()
+        .unwrap_or(Value::Null);
+    (key, Reply::ok(response))
 }
 
 #[tokio::test]
@@ -272,10 +316,10 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
 
 #[tokio::test]
 async fn truncated_unary_body_fails_without_retry() {
-    let server =
-        Server::with_body_mode(vec![Reply::ok(json!("1"))], Some(BodyMode::Truncated)).await;
+    let (key, reply) = missing_idempotency().await;
+    let server = Server::with_body_mode(vec![reply], Some(BodyMode::Truncated)).await;
     assert!(matches!(
-        server.client.tail(path()).await,
+        server.client.inspect_idempotency(key).await,
         Err(StreamError::Unavailable)
     ));
     assert_eq!(server.requests().len(), 1);
@@ -285,8 +329,9 @@ async fn truncated_unary_body_fails_without_retry() {
 async fn cancelling_a_pending_unary_body_closes_the_connection() {
     let (prefix_written, prefix) = oneshot::channel();
     let (peer_closed, closed) = oneshot::channel();
+    let (key, reply) = missing_idempotency().await;
     let server = Server::with_body_mode(
-        vec![Reply::ok(json!("1"))],
+        vec![reply],
         Some(BodyMode::Held {
             prefix_written,
             peer_closed,
@@ -294,7 +339,7 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     )
     .await;
     {
-        let reading = server.client.tail(path());
+        let reading = server.client.inspect_idempotency(key);
         tokio::pin!(reading);
         tokio::select! {
             result = &mut reading => panic!("body completed while held: {}", result.is_ok()),

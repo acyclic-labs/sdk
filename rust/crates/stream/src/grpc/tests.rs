@@ -486,8 +486,10 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
         let platform = Client::connect_eager(&endpoint, "exact-token").await;
         if mode == "file" || mode == "dir" {
             assert_eq!(
-                platform?.tail(StreamPath::new("platform/roots")?).await,
-                Err(StreamError::NotFound)
+                platform?
+                    .inspect_idempotency(IdempotencyKey::unique())
+                    .await,
+                Ok(None)
             );
         } else {
             assert!(platform.is_err(), "private endpoint unexpectedly trusted");
@@ -496,8 +498,8 @@ async fn platform_roots_and_exclusive_ca() -> TestResult {
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", pem.as_bytes())
                 .await?;
         assert_eq!(
-            pinned.tail(StreamPath::new("explicit/roots")?).await,
-            Err(StreamError::NotFound)
+            pinned.inspect_idempotency(IdempotencyKey::unique()).await,
+            Ok(None)
         );
         let denied =
             Client::connect_eager_with_ca_certificate(&endpoint, "exact-token", &unrelated).await;

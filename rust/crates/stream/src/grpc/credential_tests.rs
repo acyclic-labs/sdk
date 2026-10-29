@@ -220,7 +220,7 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
         assert_eq!(binding.revision, revision);
         assert_eq!(binding.expires_at_unix_seconds, 100);
         assert!(matches!(
-            client.tail(StreamPath::new("synthetic/path")?).await,
+            client.inspect_idempotency(IdempotencyKey::unique()).await,
             Err(StreamError::AccessDenied)
         ));
         if code == Code::PermissionDenied {
