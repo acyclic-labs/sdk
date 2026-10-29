@@ -66,16 +66,15 @@ pub async fn prompt_settled(
     let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     let conversation = Conversation::open(harness.connect().await?)?;
     let from = conversation.settled().await?;
-    // The shared observer subscribes to runtime delivery failures as well as
-    // committed status and conversation. A preparation refusal need not append
-    // a status; arm its real producer before publishing the prompt.
+    // Arm the shared committed status and conversation observer before
+    // publishing the prompt. Driver failures settle through the same agent
+    // transition and status stream as successful turns.
     let mut events = conversation.observe(from).await?;
     let inbox = conversation.send(id, prompt).await?;
     let id = IntentId::try_from(id).map_err(agent)?;
     let (agents, root) = harness.agents().await?;
     loop {
         match events.next().await? {
-            Event::Failed(message) => return Ok(PromptOutcome::Failed(message)),
             Event::Turn(entry) if entry.inbox == inbox => break,
             Event::Status(status) => match status.phase {
                 Phase::Done {

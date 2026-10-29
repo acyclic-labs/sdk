@@ -199,6 +199,7 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
             attachments: None,
         },
         output: super::driver::file("output")?,
+        outcome: Default::default(),
     }
     .encode()?;
     assert!(matches!(
@@ -216,7 +217,8 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
                         records: vec![
                             StatusRecord {
                                 phase: Phase::Idle,
-                                cursor: 2
+                                cursor: 2,
+                                conversation: 1
                             }
                             .encode()?
                             .into()
