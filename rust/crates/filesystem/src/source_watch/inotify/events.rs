@@ -84,7 +84,7 @@ impl Shared {
             .inbox
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take(&mut reading.buffer, maximum);
+            .take(&mut reading.buffer, maximum, self, work);
         reading.cursor = 0;
         reading.alias_cursor = 0;
         match taken {
@@ -96,12 +96,12 @@ impl Shared {
                 })?;
                 Ok(None)
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(DemandError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
                 reading.buffer = Vec::new();
                 reading.filled = 0;
                 Ok(Some(self.delivery.is_exact()))
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 
