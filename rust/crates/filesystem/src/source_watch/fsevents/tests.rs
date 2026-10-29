@@ -241,11 +241,10 @@ fn stop_denial_and_precancellation_preserve_the_original_stream_for_retry() -> T
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
-impl crate::fsevents::StreamTerminal for (std::sync::Arc<Shared>, CancellationToken) {
+impl<F: Fn() + Send + Sync> crate::fsevents::StreamTerminal for (Arc<Shared>, F) {
     fn stream_stopped(&self) {
         crate::fsevents::StreamTerminal::stream_stopped(self.0.as_ref());
-        self.1.cancel();
+        self.1();
     }
 }
 
@@ -260,13 +259,14 @@ pub(crate) fn terminal_cancellation_watch(
     crate::fsevents::EventStream::initialize_services()?;
     let held = HostRoot::open(root, work)?;
     let watch = Arc::new(driver(&held, Arc::new(Ignored), work)?);
+    let wait = wait.clone();
     watch
         .stream
         .lock()
         .map_err(|_| "poisoned actual stream custody")?
         .as_mut()
         .ok_or("missing actual event stream")?
-        .set_terminal(Arc::new((Arc::clone(&watch.shared), wait.clone())));
+        .set_terminal(Arc::new((Arc::clone(&watch.shared), move || wait.cancel())));
     Ok(crate::demand::native::native_watch_fixture(watch, work)?)
 }
 
@@ -328,13 +328,16 @@ fn cleanup_wait_preserves_cancelled_birth_and_finishes_late_cancellation() -> Te
             Err(DemandError::Cancelled)
         ));
         if late_wait {
+            let terminal_wait = wait.clone();
             watch
                 .stream
                 .lock()
                 .map_err(|_| "poisoned stream")?
                 .as_mut()
                 .ok_or("missing stream")?
-                .set_terminal(Arc::new((watch.shared.clone(), wait.clone())));
+                .set_terminal(Arc::new((watch.shared.clone(), move || {
+                    terminal_wait.cancel()
+                })));
             assert!(matches!(
                 watch.stop_with_cleanup_wait(&wait),
                 Err(DemandError::Cancelled)
@@ -722,16 +725,22 @@ fn original_callback_last_owner_drop_runs_the_same_queue_terminal_suffix() -> Te
     let delivery = Arc::new(Delivery::new(sink.clone(), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&held, delivery, &mut work)?;
     let completion = Arc::clone(&watch.shared);
+    let (terminal, retired) = std::sync::mpsc::channel();
+    watch
+        .stream
+        .lock()
+        .map_err(|_| "poisoned actual stream custody")?
+        .as_mut()
+        .ok_or("missing actual event stream")?
+        .set_terminal(Arc::new((completion.clone(), move || {
+            let _ = terminal.send(());
+        })));
     let funded_live = original.with_original_leaf(|work| work.live_allocation_bytes());
     *sink.watch.lock().map_err(|_| "poisoned callback custody")? = Some(watch);
     drop(work);
     std::fs::write(root.path().join("retire"), b"native event")?;
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while completion.stream_bytes.load(Ordering::Acquire) != 0
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    retired.recv_timeout(Duration::from_secs(10))?;
     assert!(sink.invoked.load(Ordering::Acquire));
     assert!(
         completion.stream_bytes.load(Ordering::Acquire) == 0,
