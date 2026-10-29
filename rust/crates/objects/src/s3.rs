@@ -16,6 +16,9 @@ use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+#[cfg(test)]
+mod tests;
+
 /// The request types a [`Signer`] names.
 pub use reqwest_s3::{Method, Url};
 
@@ -248,21 +251,35 @@ impl Medium for S3Medium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
+        if range.as_ref().is_some_and(|range| range.start > range.end) {
+            return Err(failed("range start exceeds its end"));
+        }
         let options = GetOptions {
             range: range.clone().map(GetRange::Bounded),
             ..GetOptions::default()
         };
         if range.as_ref().is_some_and(Range::is_empty) {
             return match self.store.head(&self.path(key)).await {
-                Ok(_) => Ok(Some(OwnedBytes::new())),
+                Ok(meta) if range.as_ref().is_some_and(|range| range.end <= meta.size) => {
+                    Ok(Some(OwnedBytes::new()))
+                }
+                Ok(_) => Err(failed("range exceeds object length")),
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
                 Err(error) => Err(failed(error)),
             };
         }
         match self.store.get_opts(&self.path(key), options).await {
-            Ok(result) => Ok(Some(OwnedBytes::from(
-                result.bytes().await.map_err(failed)?,
-            ))),
+            Ok(result) => {
+                if range
+                    .as_ref()
+                    .is_some_and(|range| range.end > result.meta.size || *range != result.range)
+                {
+                    return Err(failed("response does not cover the requested range"));
+                }
+                Ok(Some(OwnedBytes::from(
+                    result.bytes().await.map_err(failed)?,
+                )))
+            }
             Err(object_store::Error::NotFound { .. }) => Ok(None),
             Err(error) => Err(failed(error)),
         }
