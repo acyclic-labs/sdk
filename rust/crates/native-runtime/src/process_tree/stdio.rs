@@ -99,13 +99,84 @@ mod tests {
             line.clear();
             assert_eq!(output.read_line(&mut line).await?, 0);
             input.shutdown().await?;
+            assert_eq!(
+                input.write(b"late").await.unwrap_err().kind(),
+                io::ErrorKind::BrokenPipe,
+            );
+            drop(tree);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn cancelled_backpressure_keeps_each_accepted_prefix_with_its_write() -> io::Result<()> {
+        use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+        use windows_sys::Win32::System::Threading::{CreateEventW, SetEvent};
+
+        let name = format!("Local\\acyclic-protocol-write-{}", std::process::id());
+        let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
+        // SAFETY: the terminated name remains live through this call.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: creation returned one owned event handle.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        crate::coordination_runtime()?.block_on(async {
+            let mut command = Command::new("powershell.exe");
+            command.args(["-NoProfile", "-NonInteractive", "-Command", &format!(
+                "$event = [Threading.EventWaitHandle]::OpenExisting('{name}'); [Console]::Out.WriteLine('ready'); $null = $event.WaitOne(); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line.Length); [Console]::Out.WriteLine([Console]::ReadLine())"
+            )]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit());
+            let mut tree = super::super::ProcessTree::spawn(&mut command)?;
+            let mut input = ProcessPipeWriter::from_stdin(
+                tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?,
+            )?;
+            let mut output = BufReader::new(ProcessPipeReader::from_stdout(
+                tree.take_stdout().ok_or(io::ErrorKind::BrokenPipe)?,
+            )?);
+            let mut line = String::new();
+            output.read_line(&mut line).await?;
+            assert_eq!(line.trim_end(), "ready");
+            let bytes = vec![b'x'; events::PipeOperation::write_length(usize::MAX)];
+            let mut accepted = input.write(&bytes).await?;
+            assert_eq!(accepted, bytes.len());
+            // Standard child pipes have a 64 KiB buffer. If the first chunk
+            // fitted inline, the second must wait for this held child to read.
+            if !input.writer.0.as_ref().unwrap().pending() {
+                assert_eq!(input.write(&bytes).await?, bytes.len());
+                accepted += bytes.len();
+            }
+            assert!(input.writer.0.as_ref().unwrap().pending());
+            {
+                let mut next = std::pin::pin!(input.write(b"discarded"));
+                std::future::poll_fn(|cx| {
+                    assert!(next.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                }).await;
+            }
+            // The original child is the sole drain producer, released by this
+            // event; abandoning the second write must not submit its bytes.
+            // SAFETY: the parent still owns the live event handle.
+            if unsafe { SetEvent(event.as_raw_handle()) } == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            input.write_all(b"\nafter\n").await?;
+            input.shutdown().await?;
+            line.clear();
+            output.read_line(&mut line).await?;
+            assert_eq!(line.trim_end(), accepted.to_string());
+            line.clear();
+            output.read_line(&mut line).await?;
+            assert_eq!(line.trim_end(), "after");
+            line.clear();
+            assert_eq!(output.read_line(&mut line).await?, 0);
             drop(tree);
             Ok(())
         })
     }
 }
 
-/// A transferred child input pipe. A write completes after physical delivery.
+/// A transferred child input pipe. Flush joins physical delivery.
 /// The shared completion service retains pending bytes if the caller disappears.
 pub struct ProcessPipeWriter {
     wait: Option<events::Wait>,
@@ -133,6 +204,9 @@ impl ProcessPipeWriter {
             ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx));
         }
         self.wait = None;
+        if let Some(result) = operation.take_written() {
+            result?;
+        }
         Poll::Ready(Ok(()))
     }
 }
@@ -144,29 +218,22 @@ impl AsyncWrite for ProcessPipeWriter {
         bytes: &[u8],
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
-        loop {
-            ready!(this.poll_completion(cx))?;
-            let pipe = this.pipe.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
-            let (written, recorded) =
-                platform::write_pipe(pipe, &mut this.writer, bytes, None, None)?;
-            recorded?;
-            if let Some(written) = written {
-                return Poll::Ready(Ok(written));
-            }
-        }
+        ready!(this.poll_completion(cx))?;
+        let pipe = this.pipe.as_mut().ok_or(io::ErrorKind::BrokenPipe)?;
+        let (written, recorded) =
+            platform::write_pipe(pipe, &mut this.writer, bytes, None, None)?;
+        recorded?;
+        // The completion service owns this exact prefix once submitted. Report
+        // acceptance now so cancelling a write cannot attribute its eventual
+        // completion count to a later, different caller buffer.
+        Poll::Ready(Ok(written.unwrap_or_else(|| {
+            events::PipeOperation::write_length(bytes.len())
+        })))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
         ready!(this.poll_completion(cx))?;
-        if let Some(result) = this
-            .writer
-            .0
-            .as_ref()
-            .and_then(|operation| operation.take_written())
-        {
-            result?;
-        }
         Poll::Ready(Ok(()))
     }
 
