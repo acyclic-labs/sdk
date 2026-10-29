@@ -244,7 +244,6 @@ impl<'v> AdmittedAgent<'v> {
                 self.owner,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, self.owner, volume)?;

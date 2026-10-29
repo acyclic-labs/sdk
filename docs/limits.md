@@ -1969,3 +1969,10 @@ The source is rebased onto main d976b32fde, preserving the merged final authorit
 Qualification351 on signed1e442deae4 runs the complete23 generation/grouping controls:22 pass/1 fail,0 skipped/cancelled/todo. Actual declared Harness dependencies require Auth, Actors, Harness; the stale isolated expectation is corrected. The canonical Actor producer is not reached. Descriptor regeneration and current-source compilation remain pending.
 
 Nine further historical timer entries are classified, leaving194 Inspect rows. The verifier's hidden10s JWKS refresh deadline is removed; explicit source/caller deadlines remain possible. Original key-age, attempt-throttling, signature and scope checks stay. Paused-clock workload, fake leak and single delayed-trailer producers remain because they exercise exact deadline/terminal negatives without probing readiness.
+
+
+## Canonical Actor artifacts and qualification353
+
+The actual canonical Actor producer on signed9118f674c9 emits the composed descriptor110880 bytes, SHA2560992fc847fd29fd0c4f10b08bc428cf138d2cb2b8176bf821b5396fc320a4b4d. Both checked-in copies and manifest schema/descriptor hashes are refreshed from those bytes. The authoring guest fixture is byte-identical to the actual producer,10187 bytes SHA256c43e98ee2229744172d567fa15e3c7ddec74ed7e2f7c642a273bd6b5871994a5; no manual contract drift is inferred.
+
+The complete23 package generation/group controls pass,0 skipped/cancelled/todo, after restoring declared locked dependencies. Affected all-target compilation fails in the composed Harness authority projections: unused removed grant-size arguments and scalar initializers for optional step/history policy. Source now projects those same finite u32::MAX values into Some without widening or erasing the original finite controls. Fresh compilation and filesystem WASM/TypeScript qualification remain pending.
