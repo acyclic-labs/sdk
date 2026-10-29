@@ -315,6 +315,56 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     verify_subtree_fork(provider).await?;
     verify_page_tails(provider).await?;
     verify_page_tail_bytes(provider).await?;
+    verify_wide_append(provider).await?;
+    Ok(())
+}
+
+async fn verify_wide_append<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+    let request = AppendRequest {
+        path: path("conformance/wide-append")?,
+        records: vec![Bytes::from_static(b"wide").into(); 2_049],
+        if_tail: Some(0),
+        idempotency_key: key(b"conformance-wide-append")?,
+    };
+    let committed = provider.append(request.clone()).await?;
+    let AppendOutcome::Committed(receipt) = &committed else {
+        return Err(StreamError::InvalidResponse);
+    };
+    if receipt.start != 0
+        || receipt.end != 2_049
+        || receipt.tail != receipt.end
+        || provider.append(request.clone()).await? != committed
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    let mut records = provider
+        .read(ReadRequest {
+            path: request.path,
+            from: 0,
+            limit: 2_049,
+            at_least: Default::default(),
+        })
+        .await?;
+    let mut count = 0;
+    while let Some(record) = records.try_next().await? {
+        if record.sequence != count
+            || record.commit_id != receipt.commit_id
+            || record.value != Bytes::from_static(b"wide")
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        count += 1;
+    }
+    if count != receipt.end {
+        return Err(StreamError::InvalidResponse);
+    }
+    let observation = provider
+        .inspect_idempotency(request.idempotency_key)
+        .await?
+        .ok_or(StreamError::InvalidResponse)?;
+    if observation.outcome != IdempotencyOutcome::Append(committed) {
+        return Err(StreamError::InvalidResponse);
+    }
     Ok(())
 }
 
