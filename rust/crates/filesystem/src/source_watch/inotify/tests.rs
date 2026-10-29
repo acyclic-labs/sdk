@@ -1108,15 +1108,23 @@ fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Counts the changes delivered to one watch.
-#[derive(Default)]
-struct Counted(std::sync::atomic::AtomicUsize);
+/// Publishes nonempty changes from the original delivery callback.
+struct Counted(std::sync::mpsc::Sender<bool>);
+
+impl Counted {
+    fn record(&self, changes: &[HostChange]) {
+        if !changes.is_empty() {
+            let _ = self.0.send(true);
+        }
+    }
+}
+
 impl HostChangeSink for Counted {
     fn logical_owned_bytes(&self) -> u64 {
         0
     }
     fn host_changed(&self, changes: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
+        self.record(changes);
         Ok(())
     }
     fn host_changed_with_native_work(
@@ -1124,13 +1132,19 @@ impl HostChangeSink for Counted {
         changes: &[HostChange],
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
+        self.record(changes);
         work.check()
+    }
+    fn delivery_lost(&self) {
+        let _ = self.0.send(false);
     }
 }
 
-fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std::error::Error>> {
-    let counted = Arc::new(Counted::default());
+fn counted(
+    root: &Path,
+) -> Result<(NativeSourceWatch, std::sync::mpsc::Receiver<bool>), Box<dyn std::error::Error>> {
+    let (delivered, observed) = std::sync::mpsc::channel();
+    let counted = Arc::new(Counted(delivered));
     let mut work = crate::native_host::ordinary_work();
     let host = crate::native_host::HostRoot::open(root, &mut work)
         .map_err(crate::native_host::ordinary_error)?;
@@ -1138,19 +1152,7 @@ fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std
         Delivery::new(counted.clone(), &mut work).map_err(crate::native_host::ordinary_error)?;
     let watch = NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
         .map_err(crate::native_host::ordinary_error)?;
-    Ok((watch, counted))
-}
-
-/// Waits until `done` holds, or fails after a deadline.
-fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !done() {
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("timed out waiting until {what}").into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    Ok(())
+    Ok((watch, observed))
 }
 
 /// A watch whose cursor is held never stalls delivery to other watches.
@@ -1168,33 +1170,31 @@ fn a_held_cursor_never_stalls_delivery_to_other_watches() -> Result<(), Box<dyn 
 {
     let held_root = tempfile::tempdir()?;
     let other_root = tempfile::tempdir()?;
-    let (held, held_changes) = counted(held_root.path())?;
-    let (_other, other_changes) = counted(other_root.path())?;
+    let (held, held_delivery) = counted(held_root.path())?;
+    let (_other, other_delivery) = counted(other_root.path())?;
     let hub = hub::hub()?;
-    let scheduled = || {
-        held.shared
-            .inbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .scheduled()
-    };
     let paused = held.paused();
     // Each routed record schedules the held watch again once a pass started,
     // so it reaches as many pool threads as it receives records.
     for index in 0..hub::SERVICE_THREADS {
+        let started = held
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next_service();
         std::fs::write(held_root.path().join(format!("held-{index}")), b"")?;
         hub.drain()?;
-        eventually("a pass for the held watch started", || !scheduled())?;
+        started.recv_timeout(std::time::Duration::from_secs(5))?;
     }
     std::fs::write(other_root.path().join("other"), b"")?;
-    eventually("the other watch was delivered", || {
-        other_changes.0.load(Ordering::Acquire) > 0
-    })?;
-    assert_eq!(held_changes.0.load(Ordering::Acquire), 0);
+    assert!(other_delivery.recv_timeout(std::time::Duration::from_secs(5))?);
+    assert!(matches!(
+        held_delivery.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
     drop(paused);
-    eventually("the held watch was delivered", || {
-        held_changes.0.load(Ordering::Acquire) > 0
-    })?;
+    assert!(held_delivery.recv_timeout(std::time::Duration::from_secs(5))?);
     Ok(())
 }
 
