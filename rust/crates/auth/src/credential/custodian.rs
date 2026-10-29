@@ -46,6 +46,15 @@ pub trait CredentialRequest: CustodianPlatform + 'static {
     fn binding(&self) -> Option<CredentialBinding>;
     /// Recheck source, account, audience and absolute expiry before admission.
     fn check(&self) -> CredentialAction<()>;
+    /// Observe retained-data access synchronously, without dispatching work.
+    /// Some means this original custodian can locally check this exact request's
+    /// source changes, rejection and original absolute expiry at the instant of
+    /// access. None explicitly leaves synchronous retained views unsupported.
+    /// Implementations must never queue foreign work or reuse an earlier check.
+    /// Transport dispatch and reply admission still require `check`.
+    fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+        None
+    }
     /// Reject only this exact snapshot on authenticated remote rejection.
     fn reject(&self) -> CredentialAction<bool>;
 }

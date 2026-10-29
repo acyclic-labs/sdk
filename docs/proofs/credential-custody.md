@@ -450,3 +450,37 @@ This change adds zero tasks, timers, RPCs, durability barriers, credential reads
 or payload copies. Watch synchronization replaces notification synchronization;
 no latency reduction or total allocator-internal count is claimed. Blocking
 identity persistence still requires the native bounded-I/O adapter separately.
+
+## Explicit native custody and synchronous retained access
+
+Production signing custody selects exactly one backend. Native is the default;
+private files require the owner's explicit choice. A backend read/write refusal
+terminates admission and never becomes an absence or triggers another store.
+The process-local fixture backend remains restricted to test-support builds;
+standalone production-binary fixtures explicitly own a private-file directory.
+The production child-process control crosses real process exits and reopens
+that same directory. Unix mode changes and Windows Everyone ACL grants must
+refuse the original reference without creating another entry. Invalid policy
+combinations must fail before opening a credential service. Diagnostics retain
+operation and native status, never stored seed bytes.
+
+| Operation | Before | After |
+| --- | --- | --- |
+| Backend choice | Up to the fixed platform backend count, possibly after a failed write | Exactly one selected backend; first refusal terminates |
+| New-entry candidates | One growable candidate vector | Zero candidate vectors |
+| Existing-entry bootstrap | One selected successful read | Same one read; no write, lock, barrier or listing |
+| New-entry admission | Absence read, write and verification per attempted backend | One absence read, one write and one verification read |
+| File durability | One publication commit | Same shared commit; no per-read barrier |
+| Synchronous retained getter | No explicit capability; an awaited check could dispatch work | One original-owner synchronous observation, or explicit unsupported |
+
+`ResolvedCredential::retained_access` never calls asynchronous admission or
+resolution. It returns `None` for raw and async-only owners. Cached and browser
+JS owners check their original exact request, observing source invalidation,
+exact rejection and half-open expiry before exposing retained data. A successful
+observation is valid only at that instant; consumers cannot cache it as a grant.
+This adds zero events, tasks, timers, allocations, RPCs or bearer copies. It
+retains the original owner's fixed freshness checks; variable-length foreign
+revision comparison still depends on the supplied revision length. Existing
+custodian controls check old rejection against a new lease, immediate expiry,
+raw refusal and async-only refusal. Awaited checks remain required at transport
+boundaries. No new wait or completion producer is introduced.

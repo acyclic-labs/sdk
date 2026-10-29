@@ -148,6 +148,11 @@ impl CredentialRequest for Request {
     fn check(&self) -> CredentialAction<()> {
         invoke(&self.object, "check").map(|_| ()).into()
     }
+    fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+        // JS's admitted request owns a synchronous check. Forward the same
+        // object; no async invocation, copied validity or new identity exists.
+        Some(invoke(&self.object, "check").map(|_| ()))
+    }
     fn reject(&self) -> CredentialAction<bool> {
         invoke(&self.object, "reject")
             .and_then(|value| value.as_bool().ok_or(CredentialError::Invalid))

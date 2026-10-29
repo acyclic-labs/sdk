@@ -133,6 +133,20 @@ impl ResolvedCredential {
         }
     }
 
+    /// Non-dispatching observation for synchronous getters and retained views.
+    /// None means the source has no trusted synchronous guard; it must not be
+    /// treated as permission to expose retained data. Some(Err) refuses access
+    /// immediately, independently of watch delivery. No expiry is extended and
+    /// no resolution, callback dispatch or asynchronous check is started here.
+    /// Async `check` remains required around transport dispatch and admission.
+    pub fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+        match &self.0 {
+            Resolved::Raw(_) => None,
+            Resolved::Cached { cache, lease } => Some(cache.check(lease).map_err(cache_error)),
+            Resolved::Custodian(request) => request.retained_access(),
+        }
+    }
+
     /// A late rejection cannot discard a newer request's snapshot.
     pub fn reject(&self) -> CredentialAction<bool> {
         match &self.0 {

@@ -72,7 +72,8 @@ fn deferred_owner_requires_its_event_and_preserves_exact_rejection_after_replace
         match completion {
             "admit" => {
                 complete.send(()).unwrap();
-                block_on(admission).unwrap();
+                let admitted = block_on(admission).unwrap();
+                assert!(admitted.retained_access().is_none(), "an async-only owner acquired a fabricated synchronous guard");
             }
             "producer-loss" => {
                 drop(complete);
@@ -155,6 +156,9 @@ impl CredentialRequest for Request {
     fn check(&self) -> CredentialAction<()> {
         self.0.check()
     }
+    fn retained_access(&self) -> Option<Result<(), CredentialError>> {
+        self.0.retained_access()
+    }
     fn reject(&self) -> CredentialAction<bool> {
         self.0.reject()
     }
@@ -199,6 +203,7 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     release.send(()).unwrap();
     let requests: Vec<_> = block_on(cohort).into_iter().map(Result::unwrap).collect();
     let old = &requests[0];
+    assert!(old.retained_access().unwrap().is_ok());
     let binding = old.binding().unwrap();
     assert_eq!(binding.revision, revision);
     assert_ne!(
@@ -221,9 +226,12 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     );
     let current = block_on(provider.resolve()).unwrap();
     assert!(!block_on(old.reject()).unwrap());
+    assert!(old.retained_access().unwrap().is_err());
+    assert!(current.retained_access().unwrap().is_ok());
     block_on(current.check()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     now.store(100, Ordering::SeqCst);
+    assert!(current.retained_access().unwrap().is_err());
     assert!(block_on(current.check()).is_err());
 
     let raw = CredentialProvider::from_custodian(Source {
@@ -232,6 +240,7 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     });
     assert!(block_on(raw.watch()).unwrap().is_none());
     assert!(block_on(raw.resolve()).unwrap().binding().is_none());
+    assert!(block_on(raw.resolve()).unwrap().retained_access().is_none());
 
     let source = CredentialProvider::from_custodian(Source {
         provider: CredentialCache::new(
