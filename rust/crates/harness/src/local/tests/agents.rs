@@ -905,6 +905,117 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
 }
 
 #[tokio::test]
+async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()> {
+    use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
+    use crate::test_support::{ScriptedEvent, ScriptedTurn};
+    use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
+
+    let write = |text: &str| {
+        ScriptedTurn::Events(vec![
+            ScriptedEvent::Event(ModelEvent::ToolCall(ToolCall::new(
+                "write-seed".into(),
+                "write".into(),
+                serde_json::json!({
+                    "path": "seed.txt", "text": text,
+                    "media_type": "text/plain", "display_name": "seed.txt",
+                }),
+            ))),
+            ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: serde_json::json!({}),
+            }),
+        ])
+    };
+    let provider = super::scripted([
+        write("child"),
+        ScriptedTurn::Text("child done".into()),
+        write("parent"),
+        ScriptedTurn::Text("parent done".into()),
+    ]);
+    let publication = |index| -> Result<crate::conversation::FileRef> {
+        let request = provider
+            .request(index)
+            .ok_or_else(|| Error::NotFound("write successor request".into()))?;
+        let value = request
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .find_map(|part| match part {
+                ModelContentPart::ToolResult {
+                    name,
+                    content: ToolResultContent::Json { value },
+                    ..
+                } if name == "write" => Some(value.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::NotFound("successful write result".into()))?;
+        Ok(
+            serde_json::from_value::<crate::tool::files::FileResult>(value)
+                .map_err(agent)?
+                .file,
+        )
+    };
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    let AgentReply::Spawned { agent: child, .. } = connection
+        .execute(&AgentCommand::Spawn {
+            parent: root.clone(),
+            id: crate::agent::IntentId::try_from("isolated-write").map_err(agent)?,
+            brief: ModelContent::Text("write child seed".into()),
+        })
+        .await?
+    else {
+        return Err(Error::Invalid("spawn did not return its child".into()));
+    };
+    settled(&agents, &child).await?;
+    assert_eq!(provider.request_count(), 2);
+    let child_file = publication(1)?;
+    let child_state = agents.state(&child).await.map_err(agent)?;
+    let child_project = &child_state
+        .volumes
+        .iter()
+        .find(|binding| binding.name == "project")
+        .ok_or_else(|| Error::NotFound("child project volume".into()))?
+        .volume;
+    assert_ne!(child_project, &project);
+    assert_eq!(child_file.volume(), child_project);
+
+    conversation(&harness)
+        .await?
+        .send("parent-write", "write parent seed")
+        .await?;
+    settled(&agents, &root).await?;
+    assert_eq!(provider.request_count(), 4);
+    let parent_file = publication(3)?;
+    assert_eq!(parent_file.volume(), &project);
+    for (owner, file, expected) in [
+        (&child, &child_file, b"child".as_slice()),
+        (&root, &parent_file, b"parent".as_slice()),
+    ] {
+        assert_eq!(
+            Conversation::read(&connection, owner, ReadTarget::File { file: file.clone() }).await?,
+            expected,
+        );
+    }
+    // The parent's later write cannot retarget the child's retained result.
+    assert!(
+        Conversation::read(&connection, &child, ReadTarget::File { file: parent_file })
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
     // The child's brief turn, then the parent's own.
