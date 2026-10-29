@@ -195,20 +195,20 @@ impl AgentBinding {
 
     /// The canonical invocation of an Actor fetch the platform routed to this
     /// endpoint. `url`, relative or absolute, names discovery's or this
-    /// binding's route by its path and query alone, and `body` is the
-    /// caller's original prepared command, kept byte for byte: the result is
-    /// the envelope a session ActorCall carries here for the same command.
+    /// binding's route by its path and query alone, and `body` is one frame
+    /// of the caller's prepared command, kept byte for byte: the result is
+    /// the envelope a session ActorCall carries here for the same frame.
     ///
     /// # Errors
     /// [`CommandError::Invalid`] for another URL or a body that is not a
-    /// prepared command; [`CommandError::Capacity`] past the command budget.
+    /// command frame; [`CommandError::Capacity`] past the frame budget.
     pub fn routed(&self, url: &str, body: Vec<u8>) -> Result<Bytes, CommandError> {
-        let command = PreparedCommand::from_bytes(body)?;
+        PreparedCommand::decode(&body)?;
         let route = route_path(url);
         if route == route_path(DISCOVERY_URL) {
-            Self::discovery().encode(&command)
+            with_body(&Self::discovery().0, &body)
         } else if route == route_path(&self.0.url) {
-            self.encode(&command)
+            with_body(&self.0, &body)
         } else {
             Err(CommandError::Invalid)
         }
@@ -495,7 +495,7 @@ mod tests {
             let body = format!("{{ \"kind\" : \"{kind}\" }}").into_bytes();
             let command = PreparedCommand::from_bytes(body.clone())?;
             let routed = binding.routed(url, body.clone())?;
-            assert_eq!(&routed, route.prepare(&command)?.as_bytes());
+            assert_eq!(route.prepare(&command)?.invocations(), [routed.clone()]);
             assert_eq!(AgentCall::decode(&routed)?.invocation().body, body);
         }
         assert!(matches!(
