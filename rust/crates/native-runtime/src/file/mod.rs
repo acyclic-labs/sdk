@@ -34,6 +34,10 @@ pub use range::AsyncRangeReader;
 #[derive(Debug)]
 pub(crate) struct NativeFilePayload {
     pub(crate) file: File,
+    // The sole Windows proactor associates this original handle once. Keeping
+    // the marker with the payload needs neither a global cache nor retirement.
+    #[cfg(windows)]
+    pub(crate) completion_attached: std::sync::atomic::AtomicBool,
     // Fields retire in declaration order: physical File before its claim.
     pub(crate) _allocation: Option<ReadAllocation>,
 }
