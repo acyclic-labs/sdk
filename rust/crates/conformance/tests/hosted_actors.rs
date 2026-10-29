@@ -232,7 +232,7 @@ fn composition(
             ),
             limits: Limits::default(),
             turns: TurnLimits {
-                maximum_bytes: 1 << 20,
+                maximum_bytes: Some(1 << 20),
                 max_steps: Some(4),
                 history_turns: Some(8),
             },
