@@ -34,7 +34,16 @@ impl TurnExecutors for Never {
 
 /// Allows every command until denied; runs children unless childless.
 #[derive(Default)]
-struct Owner(AtomicBool, AtomicBool);
+struct Owner {
+    denied: AtomicBool,
+    childless: AtomicBool,
+    diff: std::sync::Mutex<Option<DiffPause>>,
+}
+
+struct DiffPause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
 
 impl Platform for Owner {
     fn policy<'a>(
@@ -42,7 +51,7 @@ impl Platform for Owner {
         _: &'a Principal,
         _: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
-        let denied = self.0.load(Ordering::SeqCst);
+        let denied = self.denied.load(Ordering::SeqCst);
         Box::pin(async move {
             Ok(if denied {
                 PolicyDecision::Deny
@@ -53,7 +62,36 @@ impl Platform for Owner {
     }
 
     fn runs_children(&self) -> bool {
-        !self.1.load(Ordering::SeqCst)
+        !self.childless.load(Ordering::SeqCst)
+    }
+
+    fn diff<'a>(
+        &'a self,
+        authorization: &'a CallAuthorization,
+        _: &'a AgentPath,
+        _: &'a AgentPageRequest,
+    ) -> BoxProviderFuture<'a, crate::Result<Vec<crate::context::DiffFilePage>>> {
+        Box::pin(async move {
+            authorization
+                .principal()
+                .map_err(|error| crate::Error::Storage(error.to_string()))?;
+            let pause = self
+                .diff
+                .lock()
+                .map_err(|_| crate::Error::Conflict("diff control poisoned".into()))?
+                .take();
+            if let Some(pause) = pause {
+                pause
+                    .entered
+                    .send(())
+                    .map_err(|()| crate::Error::Conflict("diff observer closed".into()))?;
+                pause
+                    .release
+                    .await
+                    .map_err(|_| crate::Error::Conflict("diff source owner closed".into()))?;
+            }
+            Ok(Vec::new())
+        })
     }
 }
 
@@ -447,6 +485,40 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &AgentCommand::Root {}).await?,
         Ok(AgentReply::Root { agent }) if agent == root
     ));
+    let diff = AgentCommand::Diff {
+        agent: root.clone(),
+        page: Default::default(),
+    };
+    assert!(matches!(
+        call(&client, "agents", &diff).await?,
+        Ok(AgentReply::Diff { items }) if items.is_empty()
+    ));
+    // The real session admits this query before its source suspends. Revoking
+    // policy during that wait must refuse disclosure, including an empty result.
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(DiffPause {
+        entered,
+        release: resume,
+    });
+    let query = call(&client, "agents", &diff);
+    tokio::pin!(query);
+    tokio::select! {
+        _ = &mut query => return Err("query ended before its source suspended".into()),
+        entered = waiting => entered?,
+    }
+    owner.denied.store(true, Ordering::SeqCst);
+    release
+        .send(())
+        .map_err(|()| "diff source closed before release")?;
+    let refused = query
+        .await
+        .expect_err("a suspended query disclosed after revocation");
+    assert!(matches!(
+        refused.downcast_ref::<StreamError>(),
+        Some(StreamError::AccessDenied)
+    ));
+    owner.denied.store(false, Ordering::SeqCst);
     let children = AgentCommand::Children {
         agent: root.clone(),
         page: Default::default(),
@@ -462,7 +534,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     };
     // A host that runs no children refuses the spawn itself, typed, and
     // commits nothing: no child is created to wait forever.
-    owner.1.store(true, Ordering::SeqCst);
+    owner.childless.store(true, Ordering::SeqCst);
     assert!(matches!(
         call(&client, "agents", &spawn).await?,
         Err(AgentControlFailure::Refused { code, .. }) if code == "spawn_refused"
@@ -471,7 +543,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         call(&client, "agents", &children).await?,
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
-    owner.1.store(false, Ordering::SeqCst);
+    owner.childless.store(false, Ordering::SeqCst);
     // A spawn is the parent's own step: the reply names the child, and the
     // running host's next step for the parent creates it.
     let runner = {
@@ -583,7 +655,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .await
             .is_err()
     );
-    owner.0.store(true, Ordering::SeqCst);
+    owner.denied.store(true, Ordering::SeqCst);
     assert!(
         call(&client, "agents", &AgentCommand::Root {})
             .await
@@ -696,7 +768,7 @@ async fn a_denied_staged_head_reads_no_part() -> Result {
         ledger.requests() != before,
         "an admitted head reads its parts"
     );
-    owner.0.store(true, Ordering::SeqCst);
+    owner.denied.store(true, Ordering::SeqCst);
     let before = ledger.requests();
     assert!(call(&client, "agents", &head).await.is_err());
     assert!(ledger.requests() == before, "a denied head reads no part");
