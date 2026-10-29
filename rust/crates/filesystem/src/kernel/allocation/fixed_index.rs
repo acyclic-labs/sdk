@@ -131,16 +131,14 @@ impl<V, const N: usize> FixedIndex<V, N> {
             accounting.charge_items(depth)?;
             return Ok(self.value_mut(key));
         }
-        let (link, return_depth) = match differing.flatten() {
-            Some(bit) => {
-                let (link, depth) = self.insertion_link(key, bit, accounting)?;
-                (link, depth + 1)
-            }
-            None => (&mut self.root, 1),
+        let link = match differing.flatten() {
+            Some(bit) => self.insertion_link(key, bit, accounting)?,
+            None => &mut self.root,
         };
-        // Pay the final lookup before publishing the new link, so no budget
-        // failure can turn a successful insertion into a rejected operation.
-        accounting.charge_items(return_depth + crate::foundation::usize_to_u64(N))?;
+        // Return the fresh leaf through the link we already own. Pay its one
+        // or two node visits before publication; no root traversal or key
+        // comparison is needed to rediscover the value just constructed.
+        accounting.charge_items(if differing.flatten().is_some() { 2 } else { 1 })?;
         let funding = Funding::admit::<V, N>(differing.flatten().is_some(), accounting)?;
         let value = match create(accounting) {
             Ok(value) => value,
@@ -186,7 +184,35 @@ impl<V, const N: usize> FixedIndex<V, N> {
             _ => unreachable!("nonempty table funds exactly one branch"),
         };
         *link = Some(replacement);
-        Ok(self.value_mut(key))
+        let child = match link.as_deref_mut() {
+            Some(Node {
+                kind: Kind::Leaf { value, .. },
+                ..
+            }) => return Ok(value),
+            Some(Node {
+                kind:
+                    Kind::Branch {
+                        bit,
+                        low,
+                        high: upper,
+                    },
+                ..
+            }) => {
+                if high(&key, *bit) {
+                    upper
+                } else {
+                    low
+                }
+            }
+            None => unreachable!("publication installs the prepared node"),
+        };
+        match child.as_deref_mut() {
+            Some(Node {
+                kind: Kind::Leaf { value, .. },
+                ..
+            }) => Ok(value),
+            _ => unreachable!("the new branch points directly to its prepared leaf"),
+        }
     }
 
     fn differing_bit(
@@ -222,17 +248,15 @@ impl<V, const N: usize> FixedIndex<V, N> {
         key: [u8; N],
         before: Bit,
         accounting: &mut KernelAccounting<'_>,
-    ) -> Result<(&mut Link<V, N>, u64), FsError> {
+    ) -> Result<&mut Link<V, N>, FsError> {
         let mut cursor = &mut self.root;
-        let mut depth = 0;
         loop {
             accounting.charge_items(1)?;
-            depth += 1;
             let descend = matches!(cursor.as_deref(), Some(Node {
                 kind: Kind::Branch { bit, .. }, ..
             }) if *bit < before);
             if !descend {
-                return Ok((cursor, depth));
+                return Ok(cursor);
             }
             match cursor.as_deref_mut() {
                 Some(Node {
