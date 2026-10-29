@@ -449,6 +449,8 @@ impl NativeSourceWatch {
             return Err(DemandError::Cancelled);
         }
         self.shared.stopping.store(true, Ordering::Release);
+        #[cfg(test)]
+        super::admission_tests::after_stop_admission();
         self.shared.reading_changed.notify_all();
         drop(ancestors);
         drop(watches);
