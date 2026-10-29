@@ -34,6 +34,9 @@ test("checks every workspace member alone, reusing one target with bounded worke
 test("real Cargo compilations overlap; restoring the shared build lock is rejected", async () => {
   mkdirSync(".tools", { recursive: true });
   const directory = resolve(mkdtempSync(".tools/crate-check-"));
+  const targetParent = resolve(process.env.CARGO_TARGET_DIR ?? directory);
+  mkdirSync(targetParent, { recursive: true });
+  const targets = mkdtempSync(join(targetParent, "crate-check-targets-"));
   try {
     for (const shared of [false, true]) {
       const fixture = join(directory, shared ? "shared" : "parallel");
@@ -61,7 +64,7 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
 `);
       }
       let output = "";
-      const target = join(fixture, "target");
+      const target = join(targets, shared ? "shared" : "parallel");
       const run = async (args, buildDirectory, measure) => {
         const env = { ...process.env, CODEX_HOME: join(fixture, "codex"),
           CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
@@ -93,6 +96,8 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
       }
     }
   } finally {
+    assert.equal(dirname(targets), targetParent);
+    rmSync(targets, { recursive: true, force: true });
     assert.equal(dirname(directory), resolve(".tools"));
     assert.ok(directory.startsWith(resolve(".tools") + sep));
     rmSync(directory, { recursive: true, force: true });
