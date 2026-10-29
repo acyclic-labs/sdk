@@ -49,22 +49,33 @@ export async function pty(processes, binary, fixture, input, capture) {
     { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   screen.onData(data => running.child.stdin.write(data));
   const raw = new OutputWatch(rawNeedles(input.actions));
-  let index = 0, failure;
+  let index = 0, failure, command;
   const snapshots = [];
   function frame() {
     if (failure || index >= input.actions.length || !frames.ready()) return;
     try {
       const visible = screenText(screen);
       const action = input.actions[index];
+      const unavailable = command && `${command} is not available in this view`;
+      if (unavailable && visible.includes(unavailable)
+          && !(action.when.contains ?? []).some(text => text && unavailable.includes(text))) {
+        const error = new Error(`command_unavailable: ${unavailable}`);
+        error.code = "command_unavailable";
+        throw error;
+      }
       if (raw.has(OVERFLOW) || failures.unexpected(visible, action.when)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
       if (action.after_request && !fixture.requested(action.after_request)) return;
       if (!matches(screen, raw, action.when)) return;
       failures.accept(visible, action.when);
+      if (unavailable && visible.includes(unavailable)) command = undefined;
       snapshots.push({ action: index, visible });
       index++;
-      if (action.prompt !== undefined) running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
+      if (action.prompt !== undefined) {
+        command = action.prompt.trim().startsWith("/") ? action.prompt.trim() : undefined;
+        running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
+      }
       if (action.send !== undefined) running.child.stdin.write(action.send);
       if (action.kill) running.killExecutable();
     } catch (error) { failure = error; running.killExecutable(); }

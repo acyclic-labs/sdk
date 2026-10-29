@@ -40,6 +40,7 @@ impl Cursor {
                 cancellation,
             )
             .await;
+            self.before_images_complete = captured.is_ok();
             if let Err(failure) = captured {
                 // This first import exists only to retain display before-images.
                 // Failure leaves capture_baseline's private candidate unpublished.

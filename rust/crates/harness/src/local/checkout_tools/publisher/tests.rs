@@ -217,6 +217,33 @@ async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()>
 }
 
 #[tokio::test]
+async fn first_path_publication_keeps_the_seeded_diff_baseline() -> Result<()> {
+    let (directory, harness, publisher) = fixture().await?;
+    std::fs::write(directory.path().join("seed.txt"), b"before\n").map_err(storage)?;
+    publisher.stage(
+        OperationId::new(), "seed.txt", b"after\n", "text/plain", "seed.txt",
+        crate::conversation::ContentAccess::default(),
+    )?.await?;
+    let workspace = harness.workspace.as_ref().expect("fixture workspace").view().workspace();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let baseline = workspace.operation_generation(
+        acyclic_fs::IdempotencyKey::from_bytes(capture::baseline_operation(workspace.id()).into_bytes()),
+        acyclic_fs::WorkBudget::UNBOUNDED, &cancellation,
+    ).await.map_err(storage)?.value.expect("baseline before the first path write");
+    let bytes = baseline.read("/seed.txt", 64, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(storage)?.value;
+    assert_eq!(bytes.as_ref(), b"before\n");
+    assert_eq!(std::fs::read(directory.path().join("seed.txt")).map_err(storage)?, b"after\n");
+    // Reading the mutable head instead loses the original endpoint.
+    let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(storage)?.value;
+    assert_ne!(head.id(), baseline.id());
+    assert_eq!(head.read("/seed.txt", 64, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(storage)?.value.as_ref(), b"after\n");
+    Ok(())
+}
+
+#[tokio::test]
 async fn open_reads_checkout_selection_once_when_no_publication_is_pending() -> Result<()> {
     let (_directory, harness, publisher) = fixture().await?;
     let workspace = publisher.tools.workspace.clone();

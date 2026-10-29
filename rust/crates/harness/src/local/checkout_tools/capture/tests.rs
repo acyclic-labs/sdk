@@ -475,11 +475,27 @@ proptest::proptest! {
             // No event mentions this file: it predates watcher registration.
             run(&tools, &mut slot).await?;
             let before = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
+            let baseline = workspace.operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ).await.map_err(storage)?.value.expect("retained initial source import");
+            assert_eq!(baseline.id(), before.id());
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
             std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
             run(&tools, &mut slot).await?;
             assert_eq!(contents(&tools).await?, b"after");
+            // Reopening the producer loses its in-memory cursor, but a rescan
+            // cannot replace the original baseline with the edited checkout.
+            slot = None;
+            run(&tools, &mut slot).await?;
+            let recovered = workspace.operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes()),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            ).await.map_err(storage)?.value.expect("baseline after cursor loss");
+            assert_eq!(recovered.id(), before.id());
             let bytes = before.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
             assert_eq!(bytes.as_ref(), original.as_bytes());
             // Negative control: the registration's empty authored generation
@@ -490,6 +506,31 @@ proptest::proptest! {
             harness.disconnect().await
         }).unwrap();
     }
+}
+
+#[tokio::test]
+async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<()> {
+    let (directory, harness, tools) = fixture().await?;
+    std::fs::remove_file(directory.path().join("marker")).map_err(storage)?;
+    let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+    run(&tools, &mut slot).await?;
+    let workspace = tools.workspace.view().workspace();
+    let cancellation = CancellationToken::new();
+    let key = acyclic_fs::IdempotencyKey::from_bytes(baseline_operation(workspace.id()).into_bytes());
+    let baseline = workspace.operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(storage)?.value.expect("empty baseline receipt");
+    std::fs::write(directory.path().join("marker"), b"after").map_err(storage)?;
+    run(&tools, &mut slot).await?;
+    slot = None;
+    run(&tools, &mut slot).await?;
+    let recovered = workspace.operation_generation(key, WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(storage)?.value.expect("original empty baseline");
+    assert_eq!(recovered.id(), baseline.id());
+    assert!(recovered.read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation).await.is_err());
+    assert_eq!(contents(&tools).await?, b"after");
+    drop(slot);
+    drop(tools);
+    harness.disconnect().await
 }
 
 fn capture_operation_bytes<Args, T>(_: impl FnOnce(Args) -> T) -> usize {

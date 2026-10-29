@@ -27,6 +27,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
+    before_images_complete: bool,
     #[cfg(all(test, not(loom)))]
     injection: Option<tests::Injection>,
 }
@@ -69,6 +70,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
+            before_images_complete: true,
             #[cfg(all(test, not(loom)))]
             injection: None,
         })
@@ -322,9 +324,24 @@ where
 
     // On failure discard the cursor: the next command must establish a new
     // baseline rather than skip changes consumed before a failed commit.
-    let baseline = slot
-        .as_ref()
-        .is_none_or(|cursor| physical.import_source && cursor.initial.is_some());
+    let baseline = needs_baseline(slot, physical);
+    // Reuse the import publication as the durable diff baseline. Recovery
+    // resolves this exact operation, never a later checkout head.
+    let first_baseline = physical.import_source
+        && slot.as_ref().is_some_and(|cursor| cursor.initial.is_some())
+        && phase == 0
+        && workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    baseline_operation(workspace.id()).into_bytes(),
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .is_none();
     let mut cursor = match slot.take() {
         Some(cursor) => cursor,
         None => Cursor::open(physical, policy)?,
@@ -351,8 +368,20 @@ where
         &cancellation,
     )?
     .await?;
-    if checkout.has_pending_mutations() || settlement.is_some() {
-        let operation = capture_operation(operation, phase);
+    // A best-effort before-image refusal cannot certify an exact snapshot.
+    let first_baseline = first_baseline && cursor.before_images_complete;
+    if checkout.has_pending_mutations() || settlement.is_some() || first_baseline {
+        let operation = if first_baseline {
+            baseline_operation(workspace.id())
+        } else {
+            capture_operation(operation, phase)
+        };
+        // Even an empty initial checkout needs an immutable baseline receipt.
+        let settlement = settlement.or_else(|| first_baseline.then(|| {
+            acyclic_fs::Digest::from_bytes(
+                *blake3::hash(b"acyclic.local.checkout-baseline/v1\0").as_bytes(),
+            )
+        }));
         let committed = checkout
             .commit(
                 operation,
@@ -387,6 +416,20 @@ where
     }
     *slot = Some(cursor);
     Ok(())
+}
+
+pub(super) fn needs_baseline(slot: &Option<Cursor>, physical: &LocalWorkspace) -> bool {
+    slot.as_ref()
+        .is_none_or(|cursor| physical.import_source && cursor.initial.is_some())
+}
+
+/// The first source import, retained in the workspace's existing operation index.
+pub(in crate::local) fn baseline_operation(workspace: acyclic_fs::WorkspaceId) -> acyclic_fs::OperationId {
+    let mut hash = blake3::Hasher::new_derive_key("acyclic.local.checkout-baseline/v1");
+    hash.update(&workspace.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    acyclic_fs::OperationId::from_bytes(bytes)
 }
 
 pub(super) fn capture_operation(operation: OperationId, phase: u8) -> acyclic_fs::OperationId {
