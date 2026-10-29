@@ -1,5 +1,4 @@
 use super::*;
-mod unindexed;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     #[cfg(test)]
@@ -45,25 +44,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         io: &PreparationIo,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let metadata_path = content_metadata_path_io(reference.path(), true, Some(io))?;
-        const MAXIMUM_METADATA: u64 = 6
-            * (crate::conversation::MAX_PATH_BYTES as u64
-                + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                + 1024);
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{}", reference.path()), work)
         })?;
-        let metadata =
-            match read_generation(selected, &metadata_path, MAXIMUM_METADATA, Some(io)).await {
-                Ok(metadata) => Some(metadata),
-                Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
-                #[cfg(not(target_arch = "wasm32"))]
-                Err(Error::NativeWorkspace { source, .. })
-                    if matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound) =>
-                {
-                    None
-                }
-                Err(error) => return Err(error),
-            };
+        let metadata = match read_metadata(selected, &metadata_path, Some(io)).await {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.code() == crate::wire::ErrorCode::NotFound => None,
+            #[cfg(not(target_arch = "wasm32"))]
+            Err(Error::NativeWorkspace { source, .. })
+                if matches!(source.as_ref(), acyclic_fs::WorkspaceError::NotFound) =>
+            {
+                None
+            }
+            Err(error) => return Err(error),
+        };
         let original = if let Some(metadata) = metadata {
             let (staged, _staged_hold) = decode_content_metadata(&metadata, io)?;
             if staged.volume() != reference.volume()
@@ -106,8 +100,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             // Comparing the protected index rejects a stale or substituted descriptor;
             // comparing immutable payloads rejects writes that bypassed that index.
             if selected.id() != original.id() {
-                let original_metadata =
-                    read_generation(&original, &metadata_path, MAXIMUM_METADATA, Some(io)).await?;
+                let original_metadata = read_metadata(&original, &metadata_path, Some(io)).await?;
                 if original_metadata.as_ref() != metadata.as_ref() {
                     return Err(stock_boundary(
                         Some(io),
@@ -118,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             original
         } else {
-            unindexed::authenticate(selected, reference, &path, io).await?;
+            super::authentication::authenticate(selected, reference, &path, io, None).await?;
             selected.clone()
         };
         let chunk = io.sdk(

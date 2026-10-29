@@ -1,4 +1,5 @@
 import { checkedReadSequence } from "./record.js";
+import { grpcDeadlines, deadlineSignal } from "@acyclic-labs/actors/deadline";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, credentialStream, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
@@ -6,7 +7,7 @@ import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
 import { connect as connectTls, rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor, type CallOptions } from "@connectrpc/connect";
-import { createDeadlineSignal, createLinkedAbortController } from "@connectrpc/connect/protocol";
+import { createLinkedAbortController } from "@connectrpc/connect/protocol";
 import { create, fromBinary, toBinary, type MessageInitShape } from "@bufbuild/protobuf";
 
 import * as wire from "../generated/proto/stream/v1/stream_pb.js";
@@ -45,7 +46,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
     const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
     await validateWireRequest({ kind: "follow", path, from });
-    const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
+    const deadline = deadlineSignal(timeoutMs, () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
       if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
@@ -63,9 +64,9 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     // Subscribe before resolution so a quiet physical session cannot miss a
     // source event between admitting its lease and starting the HTTP/2 call.
@@ -120,7 +121,7 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
     }
     finally { if (!retained) cleanup(); }
   };
-  return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
+  return grpcDeadlines(createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }), nodeOptions: {
     ...(options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] }),
     createConnection(authority, tlsOptions) {
       const address = new URL(authority);
@@ -129,7 +130,7 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
       socket.setNoDelay(true);
       return socket;
     },
-  } });
+  } }), () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
 }
 
 function streamGrpc(options: StreamGrpcOptions) {

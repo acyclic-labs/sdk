@@ -122,7 +122,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
         operation_id: OperationId::new(),
         input: ModelContent::Text("later input".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let journal = storage.journal();
     let output = executor.execute(input.clone(), journal.as_ref()).await?;
@@ -157,7 +157,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
                 operation_id: OperationId::new(),
                 input: ModelContent::Text("new source admission".into()),
                 selected_context: None,
-                max_steps: 1,
+                max_steps: Some(1),
             },
             journal.as_ref(),
         )
@@ -219,9 +219,9 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     let limits = Limits {
         file_bytes: 262_144,
         render_bytes: 262_144,
-        context_messages: 32,
-        attachments: 32,
-        path_bytes: 4_096,
+        context_messages: std::num::NonZeroUsize::new(32),
+        attachments: std::num::NonZeroUsize::new(32),
+        path_bytes: std::num::NonZeroUsize::new(4_096),
         ..Limits::default()
     };
     let provider = DurableContextProvider::new(

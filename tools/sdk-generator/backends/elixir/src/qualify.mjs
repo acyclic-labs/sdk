@@ -1,4 +1,5 @@
-import { spawnSync } from "node:child_process";
+import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,13 +16,13 @@ const marker = `PASS Elixir Rust message/enum/service descriptors, ${methodCount
 const provenanceMarker = "PASS Elixir exact compiled SDK module inventory, source paths and loaded BEAM paths";
 
 // Injection supports offline runner controls; the CLI uses admitted native tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned,
+export async function qualify(args, { command = captureCommand, toolchain = pinned,
   runtimePin = producerPins.runtime["linux-x64"], lockBytes = read("../templates/qualification/mix.lock"), onProgress = () => {} } = {}) {
-  if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Elixir qualification requires Linux x86_64");
+  if (command === captureCommand && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Elixir qualification requires Linux x86_64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "tool-inventory", "cache"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
-  const admitted = readPackage({ ...args, ...inputs });
+  const admitted = await readPackage({ ...args, ...inputs });
   const sourceNames = ["qualify.mjs", "package.mjs", "provenance.mjs", "runtime.mjs", "generate.mjs",
     "../toolchains/qualification.json", "../toolchains/toolchain.json", "../../../shared/protoc.json",
     "../../../shared/authority.mjs", "../../../../../scripts/archive-utils.mjs",
@@ -32,7 +33,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   onProgress("Verify complete OTP/Elixir runtime and qualification tools");
   verifyRuntime(inputs["runtime-root"], indexBytes, runtimePin);
   const tools = readTools(inputs["tool-home"], toolIndexBytes, toolchain);
-  const dependencies = readDependencies(inputs.cache, toolchain);
+  const dependencies = await readDependencies(inputs.cache, toolchain);
   const lock = lockBytes;
   verifyLock(lock, dependencies, toolchain);
   const home = join(output, "home");
@@ -45,11 +46,11 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
     HEX_OFFLINE: "1",
     PATH: [elixirBin, otpBin, "/usr/bin", "/bin"].join(":"),
     ERL_FLAGS: "+S 1:1", ELIXIR_ERL_OPTIONS: "+fnu", LC_ALL: "C.UTF-8" });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000 });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const [name, bytes] of admitted.payload) put("sdk/" + name, bytes);
-  put("package.tar.gz", admitted.archiveBytes); put("generation-receipt.json", admitted.receiptBytes);
+  await copyVerifiedArchive(admitted.archivePath, join(output, "package.tar.gz"), admitted.archiveDigest); put("generation-receipt.json", admitted.receiptBytes);
   put("runtime-inventory.json", indexBytes); put("tool-inventory.json", toolIndexBytes);
   for (const [name, bytes] of tools) put("home/" + name, bytes);
   chmodSync(env.MIX_REBAR3, 0o755);
@@ -92,12 +93,12 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
   if (!readFileSync(inputs["runtime-inventory"]).equals(indexBytes) || !readFileSync(inputs["tool-inventory"]).equals(toolIndexBytes)) throw new Error("external inventory changed");
   verifyRuntime(inputs["runtime-root"], indexBytes, runtimePin); readTools(inputs["tool-home"], toolIndexBytes, toolchain);
-  const after = readPackage({ ...args, ...inputs });
-  if (!after.archiveBytes.equals(admitted.archiveBytes) || !after.receiptBytes.equals(admitted.receiptBytes)) throw new Error("archive evidence changed");
-  for (const item of readDependencies(inputs.cache, toolchain).values()) if (!item.bytes.equals(dependencies.get(item.pin.name).bytes)) throw new Error("input dependency archive changed");
+  const after = await readPackage({ ...args, ...inputs });
+  if (after.archiveDigest !== admitted.archiveDigest || !after.receiptBytes.equals(admitted.receiptBytes)) throw new Error("archive evidence changed");
+  for (const item of (await readDependencies(inputs.cache, toolchain)).values()) if (!item.bytes.equals(dependencies.get(item.pin.name).bytes)) throw new Error("input dependency archive changed");
   const receipt = { schema: "acyclic.sdk.elixir-installed-qualification.v1", authority: "rust", target: "elixir",
     source_revision: admitted.receipt.source_revision, authority_manifest_sha256: admitted.receipt.authority_manifest_sha256,
-    archive_sha256: sha256(admitted.archiveBytes), generation_receipt_sha256: sha256(admitted.receiptBytes),
+    archive_sha256: admitted.archiveDigest, generation_receipt_sha256: sha256(admitted.receiptBytes),
     runtime_inventory_sha256: sha256(indexBytes), tool_inventory_sha256: sha256(toolIndexBytes),
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
     lock_sha256: sha256(lock), installed_dependencies: installedDependencies, payload_sha256: admitted.receipt.output_sha256,

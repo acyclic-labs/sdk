@@ -16,7 +16,7 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
-mod data;
+mod commands;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
@@ -75,7 +75,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 pub struct Client {
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
-    commands: mpsc::Sender<Command>,
+    commands: commands::Sender,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
@@ -85,6 +85,7 @@ pub struct Client {
     /// Last observed revision per authority: raised by receipts and every
     /// served open, forwarded as the floor of every read and follow.
     revisions: Arc<crate::RevisionTracker>,
+    registration_timeout: Option<u32>,
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
@@ -235,7 +236,7 @@ struct Pool {
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
     dial_epoch: u64,
-    commands: mpsc::Receiver<Command>,
+    commands: commands::Receiver,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
@@ -295,7 +296,7 @@ impl Client {
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
-        let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
+        let (commands, receiver) = commands::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
@@ -345,6 +346,7 @@ impl Client {
             attempt_epoch,
             abandoned,
             revisions,
+            registration_timeout: None,
         }
     }
     /// This pool's revision tracker; transports record their receipts here so
@@ -353,13 +355,19 @@ impl Client {
     pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
         &self.revisions
     }
-    /// Registers or renews a bounded capability slot on every physical session.
+    /// Selects an optional registration deadline in milliseconds for this client.
+    /// By default registration waits for its outcome or caller cancellation.
+    /// Dropping an expired opening withdraws only that interest, including its
+    /// pending queue admission; already opened siblings retain their owners.
+    #[must_use]
+    pub fn with_registration_timeout(mut self, milliseconds: Option<u32>) -> Self {
+        self.registration_timeout = milliseconds;
+        self
+    }
+    /// Registers or renews a capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
     /// the server rechecks bound channels and reports refusal on those channels.
     pub fn register_credential(&self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
-        if slot as usize >= Limits::default().channels {
-            return Err(StreamError::Capacity);
-        }
         let frame = frame(
             0,
             0,
@@ -371,12 +379,7 @@ impl Client {
         if frame.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        self.commands
-            .try_send(Command::Credential { slot, credential })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-            })
+        self.commands.credential(slot, credential)
     }
     /// Observes successful handshakes without depending on further task records.
     #[must_use]
@@ -397,7 +400,10 @@ impl Client {
     pub async fn follow(
         &self,
         request: crate::FollowRequest,
-    ) -> Result<crate::FollowStream, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
         self.follow_with_ack(request, true).await
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
@@ -455,41 +461,13 @@ impl Client {
         &self,
         request: crate::FollowRequest,
         acknowledge: bool,
-    ) -> Result<crate::FollowStream, StreamError> {
-        Ok(super::runtime::boxed(
-            self.follow_updates(request, acknowledge).await?,
-        ))
-    }
-    /// Follows only records, boxed once and carrying no state beyond the
-    /// subscription: the typed form of [`Self::follow`] without progress.
-    pub async fn follow_records(
-        &self,
-        request: crate::FollowRequest,
-    ) -> Result<RecordStream, StreamError> {
-        let filter = Some(request.filter.transport_filter()?);
-        let from = request.from;
-        Ok(super::runtime::boxed(
-            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                .await?
-                .map(|item| match item? {
-                    Received::Data(data) => match data.item {
-                        Some(Item::Record(record)) => wire_codec::record(record),
-                        _ => Err(StreamError::Unavailable),
-                    },
-                    _ => Err(StreamError::Unavailable),
-                }),
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        request: crate::FollowRequest,
-        acknowledge: bool,
     ) -> Result<
         impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
         StreamError,
     > {
         let filter = Some(request.filter.transport_filter()?);
         let (from, progress) = (request.from, request.progress);
+
         let source = self
             .open_subscription(
                 follow_kind(request),
@@ -500,8 +478,9 @@ impl Client {
                 0,
             )
             .await?;
-        Ok(source.filter_map(move |item| {
-            future::ready(match item {
+        Ok(crate::projection::filter_map(
+            source,
+            move |item| match item {
                 Ok(Received::Data(data))
                 | Ok(Received::Frame(wire::SessionFrame {
                     body: Some(Body::Data(data)),
@@ -529,8 +508,28 @@ impl Client {
                 })) => None,
                 Ok(_) => Some(Err(StreamError::Unavailable)),
                 Err(error) => Some(Err(error)),
-            })
-        }))
+            },
+        ))
+    }
+    /// Follows only records, boxed once and carrying no state beyond the
+    /// subscription: the typed form of [`Self::follow`] without progress.
+    pub async fn follow_records(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<RecordStream, StreamError> {
+        let filter = Some(request.filter.transport_filter()?);
+        let from = request.from;
+        Ok(super::runtime::boxed(
+            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                .await?
+                .map(|item| match item? {
+                    Received::Data(data) => match data.item {
+                        Some(Item::Record(record)) => wire_codec::record(record),
+                        _ => Err(StreamError::Unavailable),
+                    },
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -564,7 +563,7 @@ impl Client {
             },
         )?;
         wire_codec::cut_from_wire(follow.at_least.clone())?;
-        Ok(data::Data::new(
+        Ok(crate::projection::filter_map(
             self.open_kind(
                 Kind::Follow(follow),
                 from,
@@ -572,6 +571,15 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?,
+            |item| match item {
+                Ok(Received::Data(data)) => Some(Ok(data)),
+                Ok(Received::Frame(wire::SessionFrame {
+                    body: Some(Body::Watermark(_)),
+                    ..
+                })) => None,
+                Ok(_) => Some(Err(StreamError::Unavailable)),
+                Err(error) => Some(Err(error)),
+            },
         ))
     }
 
@@ -721,9 +729,17 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(registration, self.executor.sleep(10_000)))
-            .await
-            .unwrap_or(Err(StreamError::DeadlineElapsed));
+            .scope(async {
+                match self.registration_timeout {
+                    Some(milliseconds) => {
+                        deadline::until(registration, self.executor.sleep(milliseconds))
+                            .await
+                            .unwrap_or(Err(StreamError::DeadlineElapsed))
+                    }
+                    None => registration.await,
+                }
+            })
+            .await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);

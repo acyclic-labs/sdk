@@ -1,25 +1,26 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { gunzipSync } from "node:zlib";
-import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
+import { collectBody, readArchivePayload, visitTar } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, inventory, sha256 } from "../../../shared/authority.mjs";
 
-export function readDependencies(cache, pins) {
+export async function readDependencies(cache, pins) {
   const admitted = new Map();
   for (const pin of pins.dependencies) {
     if (!/^[a-z_]+$/.test(pin.name) || !/^[0-9.]+$/.test(pin.version) || admitted.has(pin.name)) throw new Error("unsafe or duplicate dependency coordinate");
     const filename = `${pin.name}-${pin.version}.tar`, bytes = readFileSync(join(cache, filename));
-    if (bytes.length > 16 * 1024 * 1024 || sha256(bytes) !== pin.archive_sha256) throw new Error("dependency archive differs: " + filename);
-    const outer = tarEntries(bytes), names = outer.map(entry => entry.path).sort();
+    if (sha256(bytes) !== pin.archive_sha256) throw new Error("dependency archive differs: " + filename);
+    const outer = [];
+    await visitTar([bytes], async entry => {
+      if (entry.type !== "0" || !["CHECKSUM", "VERSION", "contents.tar.gz", "metadata.config"].includes(entry.path)
+        || outer.some(previous => previous.path === entry.path)) throw new Error("Hex envelope differs");
+      outer.push({ ...entry, body: await collectBody(entry) });
+    });
+    const names = outer.map(entry => entry.path).sort();
     if (JSON.stringify(names) !== JSON.stringify(["CHECKSUM", "VERSION", "contents.tar.gz", "metadata.config"])
       || outer.some(entry => entry.type !== "0")) throw new Error("Hex envelope differs");
     const get = name => outer.find(entry => entry.path === name).body;
-    const expanded = gunzipSync(get("contents.tar.gz"), { maxOutputLength: 32 * 1024 * 1024 });
-    const payload = new Map(), folded = new Set();
-    for (const entry of tarEntries(expanded)) {
-      if (entry.type !== "0" || !canonical(entry.path) || folded.has(entry.path.toLowerCase())) throw new Error("unsafe package source inventory");
-      payload.set(entry.path, entry.body); folded.add(entry.path.toLowerCase());
-    }
+    const { payload } = await readArchivePayload(get("contents.tar.gz"), { canonical, caseInsensitive: true,
+      regularOnly: true });
     admitted.set(pin.name, { pin, filename, bytes, payload, metadata: get("metadata.config"), innerChecksum: get("CHECKSUM").toString().trim().toLowerCase() });
   }
   return admitted;
