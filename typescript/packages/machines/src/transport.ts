@@ -128,7 +128,7 @@ function checkIdentity(request: { value: Uint8Array } | undefined, response: { v
 
 // Connect's promise-client iterator does not forward return() to the RPC.
 // Own cancellation outside the generator so return() also interrupts a pending next().
-function ownedStream<T>(open: (signal: AbortSignal) => AsyncIterable<T>, parent: AbortSignal | undefined, terminal: (value: T) => boolean): AsyncIterableIterator<T> {
+function ownedStream<T>(open: (signal: AbortSignal) => AsyncIterable<T>, parent: AbortSignal | undefined, terminal: (value: T) => boolean): AsyncIterableIterator<T> & { return(): Promise<IteratorResult<T>> } {
   let iterator: AsyncIterator<T> | undefined;
   let controller: AbortController | undefined;
   let closed = false;
