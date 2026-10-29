@@ -265,7 +265,7 @@ impl TaskContext {
                 granted_prefix,
                 path,
                 expected_generation,
-                self.scope.limits.file_bytes,
+                Some(self.scope.limits.file_bytes),
                 crate::conversation::ContentAccess {
                     ceiling: Some(self.scope.grants()),
                     io: None,
