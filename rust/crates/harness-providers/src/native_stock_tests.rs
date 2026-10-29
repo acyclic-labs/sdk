@@ -112,7 +112,7 @@ impl TurnExecutors for Stock {
         Box::pin(async move {
             let provider = Arc::clone(&self.provider) as Arc<dyn ModelProvider>;
             let provider = provider
-                .bind_content(authority.content.reader.clone(), LIMITS.maximum_bytes)
+                .bind_content(authority.content.reader.clone(), Some(LIMITS.maximum_bytes))
                 .unwrap_or(provider);
             Ok(Arc::new(
                 StockExecutor::new(

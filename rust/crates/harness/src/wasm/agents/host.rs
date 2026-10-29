@@ -89,7 +89,7 @@ pub(super) struct HostModel {
     pub(super) reconcile: Function,
     pub(super) capacity: Option<Function>,
     pub(super) count_tokens: Option<Function>,
-    pub(super) content: Option<(Arc<dyn ContentResidencyVerifier>, u64)>,
+    pub(super) content: Option<(Arc<dyn ContentResidencyVerifier>, Option<u64>)>,
 }
 
 struct HostModelIterator {
@@ -160,7 +160,7 @@ impl ModelProvider for HostModel {
     fn bind_content(
         &self,
         reader: Arc<dyn ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Option<Arc<dyn ModelProvider>> {
         Some(Arc::new(Self {
             content: Some((reader, maximum_bytes)),
