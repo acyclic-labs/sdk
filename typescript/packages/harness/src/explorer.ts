@@ -177,6 +177,7 @@ export class AgentExplorer {
       this.#timer = undefined;
       this.#frame = undefined;
       this.#fallbackFrame = undefined;
+      this.#db?.close();
       this.#core.free();
     }
   }
