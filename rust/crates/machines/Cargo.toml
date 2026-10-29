@@ -17,6 +17,8 @@ categories = ["api-bindings"]
 [features]
 conformance = ["dep:acyclic-stream", "tokio/time"]
 default = ["grpc"]
+
+local = ["dep:acyclic-native-runtime"]
 grpc = ["dep:acyclic-native-runtime", "dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]

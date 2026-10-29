@@ -72,6 +72,10 @@ pub use provider::*;
 mod simulation;
 pub use simulation::*;
 
+/// Native process execution over the same public output stream.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod local;
+
 #[cfg(feature = "grpc")]
 pub mod grpc;
 #[cfg(feature = "grpc")]
