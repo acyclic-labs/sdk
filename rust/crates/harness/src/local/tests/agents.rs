@@ -42,8 +42,13 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
     }
 }
 
-/// The root's conversation once its first turn has settled.
+/// The root's conversation once it has settled every input sent before
+/// this call: idle past that inbox tail. Its adoption's own `Idle` status
+/// precedes those inputs, so it never counts.
 async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>> {
+    let inbox = crate::agent::inbox_tail(&**agents.provider(), root)
+        .await
+        .map_err(agent)?;
     let mut statuses = acyclic_stream::records_only(
         agents
             .provider()
@@ -58,7 +63,7 @@ async fn settled(agents: &LocalAgents, root: &AgentPath) -> Result<Vec<Vec<u8>>>
         while let Some(record) = statuses.try_next().await.map_err(agent)? {
             let status = StatusRecord::decode(&record.value).map_err(agent)?;
             match status.phase {
-                crate::agent::Phase::Idle if status.cursor > 0 => {
+                crate::agent::Phase::Idle if status.cursor >= inbox => {
                     return records(&**agents.provider(), root.conversation().map_err(agent)?)
                         .await;
                 }
