@@ -128,7 +128,9 @@ mod coordination;
 #[path = "testing/resources.rs"]
 pub mod resources;
 mod task;
-pub use coordination::{ActorExecutor, ActorFailure, ActorTask, Coordination, coordination};
+pub use coordination::{
+    ActorExecutor, ActorFailure, ActorTask, Coordination, coordination, with_actor_lifetime,
+};
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub use blocking::{InlineBlocking, run_blocking_io};

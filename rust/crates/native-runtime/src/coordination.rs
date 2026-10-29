@@ -10,7 +10,9 @@ use std::{
     task::{Context, Poll},
 };
 mod health;
+mod lifetime;
 use health::ShardHealth;
+pub use lifetime::with_actor_lifetime;
 
 /// A delivery ended without its ordinary application result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -174,6 +176,7 @@ pub struct ActorExecutor {
 impl ActorExecutor {
     /// Transfers one owned delivery to its selected current-thread runtime.
     /// Dropping the returned observer detaches; explicit abort cancels it.
+    /// Retains the original [`with_actor_lifetime`] owner when one is scoped.
     /// No application mailbox or second cross-actor wake channel is created.
     pub fn spawn<F>(&self, future: F) -> ActorTask<F::Output>
     where
@@ -181,7 +184,10 @@ impl ActorExecutor {
         F::Output: Send + 'static,
     {
         let task = if self.alive.is_available() {
-            Some(crate::task::spawn_on(&self.handle, future))
+            Some(crate::task::spawn_on(
+                &self.handle,
+                lifetime::inherit(future),
+            ))
         } else {
             drop(future);
             None

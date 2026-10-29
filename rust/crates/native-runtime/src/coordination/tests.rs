@@ -201,6 +201,123 @@ fn retirement_wakes_observers_while_their_physical_shard_is_blocked() -> io::Res
     })
 }
 
+#[test]
+fn application_lifetime_joins_original_blocked_delivery_after_observer_loss() -> io::Result<()> {
+    struct Original {
+        retired: Arc<std::sync::atomic::AtomicBool>,
+        finished: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+    impl Drop for Original {
+        fn drop(&mut self) {
+            self.retired
+                .store(true, std::sync::atomic::Ordering::Release);
+            if let Some(finished) = self.finished.take() {
+                let _ = finished.send(());
+            }
+        }
+    }
+    let pool = Coordination::start(NonZeroUsize::new(1).unwrap())?;
+    for retained in [true, false] {
+        let executor = pool.actor(&"application-owned-actor")?;
+        let (alive, mut lifetime) = tokio::sync::watch::channel(());
+        let (starting, started) = tokio::sync::oneshot::channel();
+        let (release, held) = mpsc::channel::<()>();
+        let (finished, finishing) = tokio::sync::oneshot::channel();
+        let retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let original = Original {
+            retired: Arc::clone(&retired),
+            finished: Some(finished),
+        };
+        let submit = async move {
+            executor.spawn(async move {
+                let _original = original;
+                let _ = starting.send(());
+                held.recv().map_err(io::Error::other)
+            })
+        };
+        let task = if retained {
+            pool.block_on(with_actor_lifetime(alive, submit))
+        } else {
+            // The former serving-loop owner closes its original lifetime
+            // before accepted work on another thread can physically retire.
+            let task = pool.block_on(submit);
+            drop(alive);
+            task
+        };
+        pool.block_on(started).map_err(io::Error::other)?;
+        task.abort();
+        drop(task);
+        assert!(!retired.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(lifetime.has_changed().is_ok(), retained);
+        // This is the sole producer of the blocked physical wait. Losing it
+        // returns a typed channel error; application closure follows Drop.
+        drop(release);
+        pool.block_on(finishing).map_err(io::Error::other)?;
+        assert!(pool.block_on(lifetime.changed()).is_err());
+        assert!(retired.load(std::sync::atomic::Ordering::Acquire));
+    }
+    Ok(())
+}
+
+#[test]
+fn actor_lifetime_inheritance_is_constant_and_excludes_background_tasks() -> io::Result<()> {
+    let pool = Coordination::start(NonZeroUsize::new(1).unwrap())?;
+    let (alive, lifetime) = tokio::sync::watch::channel(());
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let mut scoped = None;
+    let allocation = acyclic_test_support::measure(|| {
+        scoped = Some(with_actor_lifetime(alive, async {
+            for count in [1, 100_000] {
+                let inherited = acyclic_test_support::measure(|| {
+                    for _ in 0..count {
+                        drop(std::hint::black_box(lifetime::inherit(
+                            std::future::pending::<()>(),
+                        )));
+                    }
+                });
+                assert_eq!(inherited.count_total, 0);
+                let copied = acyclic_test_support::measure(|| {
+                    for _ in 0..count {
+                        drop(std::hint::black_box(Box::new(lifetime::inherit(
+                            std::future::pending::<()>(),
+                        ))));
+                    }
+                });
+                assert_eq!(copied.count_total, count);
+            }
+            crate::spawn(async move { held.await })
+        }));
+    });
+    assert_eq!(allocation.count_total, 1);
+    let background = pool.block_on(scoped.ok_or(io::ErrorKind::NotFound)?);
+    assert!(
+        lifetime.has_changed().is_err(),
+        "a transport cannot retain its own close producer"
+    );
+    drop(release);
+    assert!(pool.block_on(background)?.is_err());
+    Ok(())
+}
+
+#[test]
+fn nested_actor_submission_retains_the_original_application_producer() -> io::Result<()> {
+    let pool = Coordination::start(NonZeroUsize::new(1).unwrap())?;
+    let parent = pool.actor(&"parent")?;
+    let child = pool.actor(&"child")?;
+    let (alive, mut lifetime) = tokio::sync::watch::channel(());
+    let (release, held) = tokio::sync::oneshot::channel::<()>();
+    let task = pool.block_on(with_actor_lifetime(alive, async move {
+        parent
+            .spawn(async move { child.spawn(async move { held.await }) })
+            .await
+    }))?;
+    assert!(lifetime.has_changed().is_ok());
+    drop(task);
+    drop(release);
+    assert!(pool.block_on(lifetime.changed()).is_err());
+    Ok(())
+}
+
 #[cfg(feature = "test-support")]
 #[test]
 fn seeded_task_gates_preserve_the_original_physical_shard() -> io::Result<()> {
