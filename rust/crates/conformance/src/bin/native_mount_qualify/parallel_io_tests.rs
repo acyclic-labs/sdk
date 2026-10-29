@@ -59,3 +59,63 @@ fn fails_immediately_on_an_unrelated_error() {
     assert_eq!(attempts, 1);
     assert!(matches!(result, Err(error) if error.kind() == ErrorKind::PermissionDenied));
 }
+
+/// Actual contained child process used by the exit-order and deadline controls.
+#[test]
+fn exit_wait_child() {
+    match std::env::var("ACYCLIC_QUALIFIER_EXIT_CHILD").as_deref() {
+        Ok("fail") => {
+            println!("complete failed-child stdout");
+            eprintln!("complete failed-child stderr");
+            std::process::exit(7);
+        }
+        Ok("blocked") => loop {
+            std::thread::park();
+        },
+        _ => {}
+    }
+}
+
+fn exit_child(mode: &str) -> Result<Option<super::CapturedChild>, super::Failure> {
+    Ok(Some(super::spawn_captured_child(
+        std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "parallel_io_tests::exit_wait_child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_QUALIFIER_EXIT_CHILD", mode),
+    )?))
+}
+
+#[tokio::test]
+async fn exit_wait_settles_all_successes_and_failure_behind_a_blocked_child()
+-> Result<(), super::Failure> {
+    let mut children = vec![exit_child("success")?, exit_child("success")?];
+    super::wait_captured_children(&mut children, Instant::now() + Duration::from_secs(2)).await?;
+    assert!(children.iter().all(Option::is_none));
+
+    // A prefix scheduler would wait for the blocked first child until deadline.
+    // The actual later failure must win and retire every accepted sibling.
+    let mut children = vec![exit_child("blocked")?, exit_child("fail")?];
+    let error =
+        super::wait_captured_children(&mut children, Instant::now() + Duration::from_secs(2))
+            .await
+            .expect_err("a failed actual child must refuse the qualification");
+    assert!(
+        error.to_string().contains("parallel I/O child 1 failed"),
+        "{error}"
+    );
+    assert!(children.iter().all(Option::is_none));
+
+    let mut children = vec![exit_child("blocked")?, exit_child("blocked")?];
+    let error = super::wait_captured_children(&mut children, Instant::now())
+        .await
+        .expect_err("a deadline must retire blocked children, never invent success");
+    assert!(
+        error.to_string().contains("exceeded their deadline"),
+        "{error}"
+    );
+    assert!(children.iter().all(Option::is_none));
+    Ok(())
+}
