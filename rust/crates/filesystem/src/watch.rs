@@ -295,6 +295,46 @@ impl WatchState {
     }
 }
 
+/// Notification access independent of the mutable watcher operation owner.
+/// Cloning shares the original controls and allocates no subscription payload.
+#[derive(Clone)]
+pub(crate) struct NativeWatchSubscription {
+    shared: Arc<WatchState>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl NativeWatchSubscription {
+    pub(crate) fn changed_with_native_work(
+        &self,
+        original: &crate::NativeMaterializationWork,
+    ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
+        let shared = Arc::clone(&self.shared);
+        let queued = Arc::clone(&self.queued);
+        let original = original.clone();
+        async move {
+            original.admit(WorkCounters::UNCHARGED)?;
+            if shared.ready(&queued)? {
+                return Ok(());
+            }
+            let cancelled = original.scope_cancellation_wait()?;
+            let mut cancelled = std::pin::pin!(cancelled);
+            loop {
+                let changed = shared.changed.notified();
+                let mut changed = std::pin::pin!(changed);
+                changed.as_mut().enable();
+                original.admit(WorkCounters::UNCHARGED)?;
+                if shared.ready(&queued)? {
+                    return Ok(());
+                }
+                tokio::select! {
+                    () = changed.as_mut() => {},
+                    () = cancelled.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
+                }
+            }
+        }
+    }
+}
+
 /// Declared before producer locks, so publication wakes observers only after
 /// the batch, its accounting and all state guards have retired.
 struct WatchDelivery(Arc<WatchState>);
@@ -3684,29 +3724,13 @@ impl NativeWatch {
         &self,
         original: &crate::NativeMaterializationWork,
     ) -> impl std::future::Future<Output = Result<(), NativeWatchError>> + Send + use<> {
-        let shared = Arc::clone(&self.shared);
-        let queued = Arc::clone(&self.queued);
-        let original = original.clone();
-        async move {
-            original.admit(WorkCounters::UNCHARGED)?;
-            if shared.ready(&queued)? {
-                return Ok(());
-            }
-            let cancelled = original.scope_cancellation_wait()?;
-            let mut cancelled = std::pin::pin!(cancelled);
-            loop {
-                let changed = shared.changed.notified();
-                let mut changed = std::pin::pin!(changed);
-                changed.as_mut().enable();
-                original.admit(WorkCounters::UNCHARGED)?;
-                if shared.ready(&queued)? {
-                    return Ok(());
-                }
-                tokio::select! {
-                    () = changed.as_mut() => {},
-                    () = cancelled.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
-                }
-            }
+        self.subscription().changed_with_native_work(original)
+    }
+
+    pub(crate) fn subscription(&self) -> NativeWatchSubscription {
+        NativeWatchSubscription {
+            shared: Arc::clone(&self.shared),
+            queued: Arc::clone(&self.queued),
         }
     }
 
