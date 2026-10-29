@@ -42,22 +42,6 @@ const stripHarnessClosureShims = output => {
   }
 };
 
-const narrowMachinesDecoder = output => {
-  const declarationPath = resolve(output, "acyclic_machines_wasm.d.ts");
-  const declaration = readFileSync(declarationPath, "utf8");
-  const decoder = "static decodeHttpResponse(route: MachinesHttpRoute, response_json: string, expected_json: string): MachinesHttpResponseUnion;";
-  if (!declaration.includes(decoder)) {
-    throw new Error("Machines WASM declaration no longer contains the expected HTTP decoder signature");
-  }
-  writeFileSync(
-    declarationPath,
-    declaration.replace(
-      decoder,
-      "static decodeHttpResponse<Route extends MachinesHttpRoute>(route: Route, response_json: string, expected_json: string): MachinesHttpResponse<Route>;",
-    ),
-  );
-};
-
 const packages = {
   auth: { cargo: ["-p", "acyclic-auth-wasm"], artifact: "acyclic_auth_wasm" },
   actors: { family: true },
@@ -68,7 +52,6 @@ const packages = {
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
-    postprocess: narrowMachinesDecoder,
   },
   inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {

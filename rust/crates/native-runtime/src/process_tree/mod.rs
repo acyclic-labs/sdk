@@ -970,7 +970,7 @@ impl ProcessTree {
     }
 
     /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(unix)]
+    #[cfg(all(unix, test))]
     fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
         self.prepare_exit_source()?;
         let exit = self.exit_source()?;

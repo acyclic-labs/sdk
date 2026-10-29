@@ -2,7 +2,7 @@ use super::*;
 
 /// One deadline through credential admission, dispatch and streamed completion.
 /// WallAlarm also wakes a silent transport when authenticated wall time expires.
-pub(crate) struct GuestDeadline {
+pub struct GuestDeadline {
     until: tokio::time::Instant,
     expiry: Option<u64>,
     wake: Arc<tokio::sync::Notify>,

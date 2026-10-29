@@ -2,14 +2,13 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::{MAX_BEARER_TOKEN_BYTES, MAX_PAGE_SIZE, SimulatedMachines};
+use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
-mod http;
 mod public;
 mod watch;
 pub use watch::WasmOperationWatch;
@@ -24,88 +23,6 @@ pub(crate) fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
     let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
     error.into()
 }
-
-macro_rules! define_http_routes {
-    ($( $name:ident => $route:literal => $request:literal => $response:literal ),+ $(,)?) => {
-        pub(crate) mod http_route {
-            use super::{JsValue, js_error};
-
-            $(pub const $name: &str = $route;)+
-
-            pub const ALL: &[&str] = &[$($name),+];
-
-            pub fn canonical(value: &str) -> Result<&'static str, JsValue> {
-                ALL.iter()
-                    .copied()
-                    .find(|candidate| *candidate == value)
-                    .ok_or_else(|| js_error("invalid", "unknown Machines HTTP route"))
-            }
-        }
-
-        /// Returns the hosted route values emitted from the Rust route contract.
-        #[wasm_bindgen(
-            js_name = httpRoutes,
-            unchecked_return_type = "MachinesHttpRoutes"
-        )]
-        pub fn http_routes() -> JsValue {
-            let routes = js_sys::Object::new();
-            $(js_sys::Reflect::set(
-                &routes,
-                &JsValue::from_str(stringify!($name)),
-                &JsValue::from_str($route),
-            ).expect("static HTTP route names are valid object keys");)+
-            routes.into()
-        }
-
-        #[wasm_bindgen(typescript_custom_section)]
-        const HTTP_ROUTE_CONTRACT: &'static str = concat!(
-            "export type MachinesHttpRoute =\n",
-            $("    | ", stringify!($route), "\n",)+
-            ";\n\n",
-            "export interface MachinesHttpRoutes {\n",
-            $("    readonly ", stringify!($name), ": ", stringify!($route), ";\n",)+
-            "}\n\n",
-            "export function httpRoutes(): MachinesHttpRoutes;\n\n",
-            "export interface MachinesHttpRequestMap {\n",
-            $("    ", stringify!($route), ": ", $request, ";\n",)+
-            "}\n\n",
-            "export type MachinesHttpRequest<Route extends MachinesHttpRoute> =\n",
-            "    MachinesHttpRequestMap[Route];\n",
-            "export type MachinesHttpRequestUnion =\n",
-            "    MachinesHttpRequestMap[MachinesHttpRoute];\n\n",
-            "export interface MachinesHttpResponseMap {\n",
-            $("    ", stringify!($route), ": ", $response, ";\n",)+
-            "}\n\n",
-            "export type MachinesHttpResponse<Route extends MachinesHttpRoute> =\n",
-            "    MachinesHttpResponseMap[Route];\n",
-            "export type MachinesHttpResponseUnion =\n",
-            "    MachinesHttpResponseMap[MachinesHttpRoute];\n",
-        );
-    };
-}
-
-define_http_routes!(
-    IMAGES_QUALIFY => "images/qualify" => "{ readonly image: ImageIn }" => "QualificationOut",
-    MACHINES_CREATE => "machines/create" => "CreateIn" => "MutationOut",
-    MACHINES_INSPECT => "machines/inspect" => "{ readonly machineId: string }" => "ObservationOut",
-    MACHINES_LIST => "machines/list" => "ListIn" => "PageOut",
-    CHECKPOINTS_INSPECT => "checkpoints/inspect" => "{ readonly checkpointId: string }" => "CheckpointOut",
-    MACHINES_CHECKPOINT => "machines/checkpoint" => "MachineKey" => "MutationOut",
-    MACHINES_FORK => "machines/fork" => "{ readonly machineId: string; readonly count: number; readonly idempotencyKey: string }" => "MutationOut",
-    CHECKPOINTS_FORK => "checkpoints/fork" => "ForkIn" => "MutationOut",
-    MACHINES_SUSPEND => "machines/suspend" => "MachineKey" => "MutationOut",
-    MACHINES_WAKE => "machines/wake" => "MachineKey" => "MutationOut",
-    MACHINES_SUSPENSION_POLICY => "machines/suspension-policy" => "PolicyIn" => "MutationOut",
-    MACHINES_DESTROY => "machines/destroy" => "MachineKey" => "MutationOut",
-    CHECKPOINTS_DESTROY => "checkpoints/destroy" => "CheckpointKey" => "MutationOut",
-    MACHINES_EVENTS => "machines/events" => "EventsIn" => "EventsOut",
-    MACHINES_USAGE => "machines/usage" => "UsageIn" => "UsageOut",
-    OPERATIONS_RECOVER => "operations/recover" => "{ readonly idempotencyKey: string }" => "MutationOut",
-    OPERATIONS_RECOVER_ID => "operations/recover-id" => "{ readonly idempotencyKey: string }" => "string",
-    OPERATIONS_INSPECT => "operations/inspect" => "{ readonly operationId: string }" => "OperationOut",
-    OPERATIONS_CANCEL => "operations/cancel" => "{ readonly operationId: string }" => "OperationOut",
-    OPERATIONS_WATCH => "operations/watch" => "{ readonly operationId: string }" => "readonly OperationOut[]",
-);
 
 /// Normalize a caller identity to a retained UUID or a deterministic UUIDv5-like value.
 /// Valid non-nil UUID strings are preserved byte-for-byte in canonical form.
@@ -136,71 +53,6 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Uuid::from_bytes(bytes).to_string())
-}
-
-/// Validates transport-only options before the HTTP adapter constructs a
-/// request. Endpoint URL policy remains in JavaScript because this crate does
-/// not carry a URL parser; token and response-bound policy stay Rust-owned.
-#[wasm_bindgen(js_name = validateTransportOptions)]
-pub fn validate_transport_options(
-    #[wasm_bindgen(unchecked_param_type = "string")] token: &JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
-) -> Result<(), JsValue> {
-    let token = token.as_string().ok_or_else(|| {
-        js_error(
-            "invalid-token",
-            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
-        )
-    })?;
-    if token.chars().all(is_js_whitespace)
-        || token.len() > MAX_BEARER_TOKEN_BYTES
-        || token
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\0'))
-    {
-        return Err(js_error(
-            "invalid-token",
-            "token must be a non-empty bearer token of at most 12 KiB without CR, LF, or NUL",
-        ));
-    }
-    validate_maximum_response_bytes(maximum_response_bytes)
-}
-
-/// Validates the response bound without requiring a credential before renewal.
-#[wasm_bindgen(js_name = validateMaximumResponseBytes)]
-pub fn validate_maximum_response_bytes(
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
-) -> Result<(), JsValue> {
-    let maximum = maximum_response_bytes.as_f64().ok_or_else(|| {
-        js_error(
-            "invalid-maximum",
-            "maximumResponseBytes must be a positive safe integer",
-        )
-    })?;
-    if !public::is_safe_integer(maximum) || maximum <= 0.0 {
-        return Err(js_error(
-            "invalid-maximum",
-            "maximumResponseBytes must be a positive safe integer",
-        ));
-    }
-    Ok(())
-}
-
-fn is_js_whitespace(character: char) -> bool {
-    matches!(
-        character,
-        '\u{0009}'..='\u{000D}'
-            | '\u{0020}'
-            | '\u{00A0}'
-            | '\u{1680}'
-            | '\u{2000}'..='\u{200A}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{202F}'
-            | '\u{205F}'
-            | '\u{3000}'
-            | '\u{FEFF}'
-    )
 }
 
 /// Validates the canonical Machines page-size policy before any provider is
@@ -456,28 +308,5 @@ impl WasmSimulatedMachines {
         value
             .as_string()
             .ok_or_else(|| js_error("invalid", "Machines operation returned a non-string result"))
-    }
-
-    /// Decodes a hosted HTTP response using the Rust-owned scalar wrappers and
-    /// the same public DTO shape as simulator methods.
-    #[wasm_bindgen(
-        js_name = decodeHttpResponse,
-        unchecked_return_type = "MachinesHttpResponseUnion"
-    )]
-    pub fn decode_http_response(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: &str,
-        response_json: &str,
-        expected_json: &str,
-    ) -> Result<JsValue, JsValue> {
-        http::decode(route, response_json, expected_json)
-    }
-
-    /// Encodes a natural hosted request using Rust-owned bigint and bytes
-    /// wrappers before it crosses the HTTP boundary.
-    #[wasm_bindgen(js_name = encodeHttpRequest)]
-    pub fn encode_http_request(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRequestUnion")] request: &JsValue,
-    ) -> Result<String, JsValue> {
-        http::encode_request(request)
     }
 }

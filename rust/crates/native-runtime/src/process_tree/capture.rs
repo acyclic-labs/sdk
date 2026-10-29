@@ -73,11 +73,6 @@ pub(super) struct PendingStdin<'a> {
 }
 
 impl<'a> PendingStdin<'a> {
-    #[cfg(unix)]
-    pub(super) fn waiting_byte(&self) -> Option<u8> {
-        self.bytes.get(self.written).copied()
-    }
-
     #[cfg(windows)]
     pub(super) fn waiting_bytes(&self) -> Option<&[u8]> {
         self.bytes

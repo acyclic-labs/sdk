@@ -2,6 +2,7 @@ import { ownedStream } from "./owned-stream.js";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Transport } from "@connectrpc/connect";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
+export { createMachinesRpcTransport } from "./rpc-transport.js";
 
 export const MAX_OUTPUT_READ_BYTES = 65_536;
 const MAX_OFFSET = (1n << 64n) - 1n;

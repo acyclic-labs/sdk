@@ -31,9 +31,9 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_before_rpc() {
                                 .ok_or(acyclic_auth::credential::CredentialError::Invalid),
                         )
                     }));
-                    prop_assert!(provider.authorization.0.is_none());
+                    prop_assert!(provider.endpoint.authorization.0.is_none());
                     for value in &expected {
-                        let mut authorization = provider.authorization().await.unwrap();
+                        let mut authorization = provider.endpoint.authorization().await.unwrap();
                         let request = authorization.call(Request::new(())).unwrap();
                         let header = request.metadata().get("authorization").unwrap();
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));

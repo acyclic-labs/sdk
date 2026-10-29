@@ -7,14 +7,13 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 use async_trait::async_trait;
-use futures::{Stream, StreamExt, stream};
+use futures::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
     num::NonZeroU32,
-    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -80,7 +79,7 @@ pub mod local;
 pub mod grpc;
 #[cfg(feature = "grpc")]
 mod obs;
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use grpc::Tls;
 
 /// Shared provider qualification, checked benchmarks and request accounting.

@@ -2,11 +2,12 @@ use super::*;
 
 macro_rules! machine_mutations {
     ($(($method:ident, $outcome:ident, $span:literal)),+; $($other:tt)*) => {
-        #[async_trait]
-        impl MachinesProvider for GrpcProvider {
+        #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+        #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+        impl<E: RpcEndpoint> MachinesProvider for Provider<E> {
         $(
-        #[tracing::instrument(name = $span, skip_all,
-            fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty))]
+        #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(name = $span, skip_all,
+            fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)))]
         async fn $method(&self, machine: MachineId, key: IdempotencyKey)
             -> Result<MutationOutcome, ProviderError> {
             obs::finish(async {
@@ -46,11 +47,11 @@ machine_mutations! {
         self.guest_write_file(machine, access, data, truncate).await
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.exec",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn exec(
         &self,
         machine: MachineId,
@@ -60,7 +61,7 @@ machine_mutations! {
             async {
                 let timeout =
                     Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
-                let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
+                let deadline = self.endpoint.deadline(timeout, command.expiry_unix_ms)?;
                 let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
                 let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
@@ -94,11 +95,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.read_output",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn read_output(
         &self,
         machine: MachineId,
@@ -126,20 +127,20 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.qualify_image",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
         obs::finish(self.qualification(Some(image)).await)
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.create",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
@@ -189,11 +190,11 @@ machine_mutations! {
         ).await.map(MutationOutcome::VolumeAttached)
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.inspect_machine",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn inspect_machine(
         &self,
         machine: MachineId,
@@ -213,11 +214,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.list_machines",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn list_machines(
         &self,
         after: Option<MachineId>,
@@ -271,11 +272,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.checkpoint",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn checkpoint(
         &self,
         machine: MachineId,
@@ -303,11 +304,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.inspect_checkpoint",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn inspect_checkpoint(
         &self,
         checkpoint: CheckpointId,
@@ -329,11 +330,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.fork",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn fork(
         &self,
         checkpoint: CheckpointId,
@@ -370,11 +371,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.fork_machine",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn fork_machine(
         &self,
         machine: MachineId,
@@ -411,11 +412,11 @@ machine_mutations! {
         )
     }
 
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.set_suspension_policy",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn set_suspension_policy(
         &self,
         machine: MachineId,
@@ -448,11 +449,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.destroy_checkpoint",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn destroy_checkpoint(
         &self,
         checkpoint: CheckpointId,
@@ -481,11 +482,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.events",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn events(
         &self,
         machine: MachineId,
@@ -538,11 +539,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.usage",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn usage(
         &self,
         machine: MachineId,
@@ -571,11 +572,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.recover",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
@@ -586,11 +587,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.recover_operation",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         obs::finish(
             async {
@@ -601,11 +602,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.inspect_operation",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn inspect_operation(
         &self,
         operation: OperationId,
@@ -623,11 +624,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.cancel",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
         obs::finish(
             async {
@@ -642,11 +643,11 @@ machine_mutations! {
             .await,
         )
     }
-    #[tracing::instrument(
+    #[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(
         name = "acyclic.machines.watch_operation",
         skip_all,
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
+    ))]
     async fn watch_operation(
         &self,
         operation: OperationId,

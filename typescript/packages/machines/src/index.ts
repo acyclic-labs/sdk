@@ -164,5 +164,4 @@ export function managedOci(reference: string): Image {
 export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
-export * from "./http.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";

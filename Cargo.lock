@@ -780,10 +780,13 @@ dependencies = [
  "acyclic-stream",
  "async-trait",
  "futures",
+ "heck",
  "hex",
  "hyper-util",
+ "js-sys",
  "proptest",
  "prost",
+ "prost-types",
  "rcgen",
  "rustix",
  "serde",
@@ -801,6 +804,7 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -809,14 +813,12 @@ version = "0.2.0"
 dependencies = [
  "acyclic-machines",
  "acyclic-stream",
- "base64 0.23.1",
  "futures",
  "hex",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
- "serde_json",
  "sha2 0.11.1",
  "tsify",
  "uuid",
