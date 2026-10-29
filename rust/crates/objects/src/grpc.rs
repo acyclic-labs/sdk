@@ -156,8 +156,7 @@ impl GrpcObjects {
         } else {
             acyclic_auth::channel::PeerTrust::Platform
         };
-        // Every request carries its own deadline; the channel adds none.
-        let endpoint = endpoint.connect_timeout(std::time::Duration::from_secs(10));
+        // Only the caller's selected operation budget supplies a deadline.
         let channel = acyclic_auth::channel::connect(endpoint, peer, identity)
             .await
             .map_err(|error| match error {
