@@ -135,7 +135,7 @@ async function runCase(binary, login, root, name) {
 
 async function main() {
   const [binary, output, ...selected] = process.argv.slice(2);
-  const login = process.env.LIVE_CODEX_HOME;
+  const login = process.env.LIVE_CODEX_HOME ?? process.env.E2E_LIVE_CODEX_HOME;
   assert.ok(binary && isAbsolute(binary) && output && login && isAbsolute(login), `step=admit arguments and existing login path; recovery=${recovery}`);
   const names = selected.length ? selected : liveCases;
   assert.equal(new Set(names).size, names.length, `step=reject duplicate cases; recovery=${recovery}`);
