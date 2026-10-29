@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createWriteStream, mkdtempSync, readFileSync } from "node:fs";
+import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, readSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
@@ -206,6 +206,9 @@ export class Spool {
   #file;
   #path;
   #written = Promise.resolve();
+  // Bytes of whole lines the transcript has finished writing. Writes finish
+  // in order, so [0, completed) is always a run of complete lines.
+  #completed = 0;
   #blocked;
   constructor(stream, closed, { transcript, key, unique = false } = {}) {
     this.#key = key; this.#unique = unique;
@@ -248,7 +251,8 @@ export class Spool {
     let room = true;
     if (this.#file) {
       const file = this.#file;
-      this.#written = new Promise(resolve => { room = file.write(line + "\n", resolve); });
+      const bytes = Buffer.from(line + "\n");
+      this.#written = new Promise(resolve => { room = file.write(bytes, () => { this.#completed += bytes.length; resolve(); }); });
     }
     for (const key of this.#key?.(event) ?? []) {
       if (this.#index.has(key)) {
@@ -300,7 +304,12 @@ export class Spool {
   async history(match = () => true) {
     assert.ok(this.#path, "event history requires a transcript");
     await this.#written;
-    return readFileSync(this.#path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
+    // Exactly the completed lines: a later write may already have put part
+    // of its line in the file.
+    const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, "r");
+    try { for (let at = 0; at < bytes.length;) at += readSync(fd, bytes, at, bytes.length - at, at); }
+    finally { closeSync(fd); }
+    return bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
   }
 }
 

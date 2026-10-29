@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -181,6 +181,21 @@ test("a spool ends with the exact typed cause", async t => {
     const error = await ended(new Spool(stream, new Promise(() => {}), { transcript: join(tmpdir(), "missing-directory-" + process.pid, "events.jsonl") }), () => {});
     assert.equal(error.kind, "spool");
   });
+});
+
+test("history reads only completed lines while a later write is in flight", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "e2e-history-")), "events.jsonl");
+  const stream = new PassThrough();
+  const events = new Spool(stream, new Promise(() => {}), { transcript: path });
+  const second = events.next(event => event.n === 2);
+  stream.write('{"n":1}\n{"n":2}\n');
+  await second;
+  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
+  // A started write: part of a large line is already in the file.
+  appendFileSync(path, '{"n":3,"pad":"' + "x".repeat(1 << 16));
+  assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
+  // Negative control: reading to EOF takes the partial line.
+  assert.throws(() => readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)), SyntaxError);
 });
 
 test("a transcript failure while the child runs ends it with the spool cause and reaps the child", async () => {
