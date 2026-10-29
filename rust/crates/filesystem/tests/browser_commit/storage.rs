@@ -139,6 +139,19 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         .map_err(js_error)?;
     let read_peak = work.spent().peak_allocation_bytes;
     assert_eq!(read.bytes, bytes);
+    let associated = ObjectId {
+        storage: Some(acyclic_fs::ObjectStorage {
+            locator: Digest::from_bytes([31; 32]),
+            root_file_id: acyclic_fs::FileId::from_bytes([32; 16]),
+            origin_generation: Digest::from_bytes([33; 32]),
+        }),
+        ..object_id
+    };
+    let mut associated_work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        store.read(associated, 1_024, &mut associated_work).await,
+        Err(ObjectStoreError::Missing)
+    ));
     assert_eq!(
         read.retention,
         ObjectReadRetention::Owned {

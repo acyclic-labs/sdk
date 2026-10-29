@@ -36,7 +36,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                     backend_read_operations: 1,
                     bytes_hashed: length,
                     allocation_operations: 1,
-                    peak_allocation_bytes: OBJECT_KEY_BYTES,
+                    peak_allocation_bytes: object_key_bytes(write.object_id),
                     ..Default::default()
                 },
             )
@@ -68,7 +68,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             let copy = WorkCounters {
                 bytes_copied: length * 2,
                 allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: OBJECT_KEY_BYTES + length * 2 + retained,
+                peak_allocation_bytes: object_key_bytes(write.object_id) + length * 2 + retained,
                 ..Default::default()
             };
             if let Some(stored) = stored {
@@ -136,7 +136,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 object_probes: 1,
                 backend_read_operations: 1,
                 allocation_operations: 1,
-                peak_allocation_bytes: OBJECT_KEY_BYTES,
+                peak_allocation_bytes: object_key_bytes(id),
                 ..Default::default()
             },
         )
@@ -156,7 +156,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 bytes_hashed: length,
                 bytes_copied: length * 2,
                 allocation_operations: 2 * u64::from(length != 0),
-                peak_allocation_bytes: OBJECT_KEY_BYTES + length * 2,
+                peak_allocation_bytes: object_key_bytes(id) + length * 2,
                 ..Default::default()
             },
         )
@@ -218,7 +218,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                     object_probes: 1,
                     backend_read_operations: 1,
                     allocation_operations: 1,
-                    peak_allocation_bytes: retained + OBJECT_KEY_BYTES,
+                    peak_allocation_bytes: retained + object_key_bytes(request.object_id),
                     ..Default::default()
                 },
             )
@@ -240,7 +240,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                     bytes_hashed: length,
                     bytes_copied: length * 2,
                     allocation_operations: 2 * u64::from(length != 0),
-                    peak_allocation_bytes: retained + OBJECT_KEY_BYTES + length * 2,
+                    peak_allocation_bytes: retained + length * 2,
                     ..Default::default()
                 },
             )

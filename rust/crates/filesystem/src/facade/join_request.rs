@@ -155,14 +155,14 @@ pub(super) fn hash_join_resolutions(
             MergeConflictResolution::File(Some(record)) => {
                 let payload_bytes = match record.payload {
                     FilePayload::InlineRegular(data) => 9 + data.as_bytes().len() as u64,
-                    FilePayload::Regular { .. }
-                    | FilePayload::SymbolicLink { .. }
-                    | FilePayload::ReparsePoint { .. } => 42,
-                    FilePayload::Directory { .. } => 34,
+                    FilePayload::Regular { extents, .. } => 9 + extents.encoded_len() as u64,
+                    FilePayload::SymbolicLink { target, .. } => 9 + target.encoded_len() as u64,
+                    FilePayload::ReparsePoint { payload, .. } => 9 + payload.encoded_len() as u64,
+                    FilePayload::Directory { entries } => 1 + entries.encoded_len() as u64,
                     FilePayload::Empty => 1,
                     FilePayload::Device { .. } => 9,
                 };
-                60 + payload_bytes
+                27 + record.metadata.encoded_len() as u64 + payload_bytes
             }
         };
         let hashing = WorkCounters {

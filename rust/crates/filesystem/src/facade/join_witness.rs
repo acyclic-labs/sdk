@@ -99,8 +99,7 @@ pub(super) fn hash_merge_resolution(
 }
 
 pub(super) fn hash_object_id(hasher: &mut blake3::Hasher, object: ObjectId) {
-    hasher.update(&[object.kind.canonical_tag()]);
-    hasher.update(object.digest.as_bytes());
+    hasher.update(object.to_bytes().as_slice());
 }
 
 pub(super) fn hash_file_payload(hasher: &mut blake3::Hasher, payload: FilePayload) {
@@ -279,5 +278,190 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         .await;
         budget.finish(result, &accounting)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::join_request::{WorkspaceJoinResolutions, hash_join_resolutions};
+    use super::*;
+
+    #[test]
+    fn join_resolutions_bind_every_sealed_reference_and_admit_exact_hash_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plain = ObjectId {
+            kind: ObjectKind::Metadata,
+            digest: Digest::from_bytes([1; 32]),
+            storage: None,
+        };
+        let storage = crate::ObjectStorage {
+            locator: Digest::from_bytes([2; 32]),
+            root_file_id: FileId::from_bytes([3; 16]),
+            origin_generation: Digest::from_bytes([4; 32]),
+        };
+        let references = [
+            plain,
+            ObjectId {
+                storage: Some(storage),
+                ..plain
+            },
+            ObjectId {
+                storage: Some(crate::ObjectStorage {
+                    locator: Digest::from_bytes([5; 32]),
+                    ..storage
+                }),
+                ..plain
+            },
+            ObjectId {
+                storage: Some(crate::ObjectStorage {
+                    root_file_id: FileId::from_bytes([6; 16]),
+                    ..storage
+                }),
+                ..plain
+            },
+            ObjectId {
+                storage: Some(crate::ObjectStorage {
+                    origin_generation: Digest::from_bytes([7; 32]),
+                    ..storage
+                }),
+                ..plain
+            },
+        ];
+        let cancellation = CancellationToken::new();
+        for position in 0..5 {
+            let record = |reference: ObjectId| {
+                let (kind, payload) = match position {
+                    0 => (FileKind::Fifo, FilePayload::Empty),
+                    1 => (
+                        FileKind::Regular,
+                        FilePayload::Regular {
+                            logical_bytes: 1,
+                            extents: ObjectId {
+                                kind: ObjectKind::ExtentPage,
+                                ..reference
+                            },
+                        },
+                    ),
+                    2 => (
+                        FileKind::Directory,
+                        FilePayload::Directory {
+                            entries: ObjectId {
+                                kind: ObjectKind::TreePage,
+                                ..reference
+                            },
+                        },
+                    ),
+                    3 => (
+                        FileKind::SymbolicLink,
+                        FilePayload::SymbolicLink {
+                            target_bytes: 1,
+                            target: ObjectId {
+                                kind: ObjectKind::Blob,
+                                ..reference
+                            },
+                        },
+                    ),
+                    _ => (
+                        FileKind::ReparsePoint,
+                        FilePayload::ReparsePoint {
+                            payload_bytes: 1,
+                            payload: ObjectId {
+                                kind: ObjectKind::Blob,
+                                ..reference
+                            },
+                        },
+                    ),
+                };
+                FileRecord {
+                    file_id: FileId::from_bytes([8; 16]),
+                    kind,
+                    link_count: 1,
+                    metadata: if position == 0 { reference } else { plain },
+                    payload,
+                }
+            };
+            let mut digests = Vec::new();
+            for reference in references {
+                let resolutions = BTreeMap::from([(
+                    MergeConflict::File(FileId::from_bytes([8; 16])),
+                    MergeConflictResolution::File(Some(record(reference))),
+                )]);
+                let resolutions = WorkspaceJoinResolutions::Map(&resolutions);
+                let mut accounting =
+                    KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+                let digest = hash_join_resolutions(&resolutions, &mut accounting)?;
+                assert!(
+                    !digests.contains(&digest),
+                    "reference alias at position {position}"
+                );
+                digests.push(digest);
+
+                let KernelAccounting::Standalone { work, .. } = accounting else {
+                    unreachable!()
+                };
+                let reference_bytes = if reference.storage.is_some() { 113 } else { 33 };
+                let (metadata_bytes, payload_bytes) = match position {
+                    0 => (reference_bytes, 1),
+                    2 => (33, 1 + reference_bytes),
+                    _ => (33, 9 + reference_bytes),
+                };
+                assert_eq!(
+                    work.bytes_hashed,
+                    b"acyclic-fs-workspace-join-resolutions-v1\0".len() as u64
+                        + 17
+                        + 27
+                        + metadata_bytes
+                        + payload_bytes
+                );
+                let exact = WorkBudget {
+                    bytes_hashed: work.bytes_hashed,
+                    ..WorkBudget::UNBOUNDED
+                };
+                assert_eq!(
+                    hash_join_resolutions(
+                        &resolutions,
+                        &mut KernelAccounting::standalone(exact, &cancellation)
+                    )?,
+                    digest
+                );
+                let insufficient = WorkBudget {
+                    bytes_hashed: exact.bytes_hashed - 1,
+                    ..exact
+                };
+                assert!(
+                    hash_join_resolutions(
+                        &resolutions,
+                        &mut KernelAccounting::standalone(insufficient, &cancellation)
+                    )
+                    .is_err()
+                );
+
+                // Rebuilding a plain identity reproduces the former intent collision.
+                let mut rebuilt = blake3::Hasher::new();
+                hash_merge_resolution(
+                    &mut rebuilt,
+                    &MergeConflictResolution::File(Some(record(ObjectId {
+                        storage: None,
+                        ..reference
+                    }))),
+                );
+                let mut original = blake3::Hasher::new();
+                hash_merge_resolution(
+                    &mut original,
+                    &MergeConflictResolution::File(Some(record(plain))),
+                );
+                assert_eq!(rebuilt.finalize(), original.finalize());
+            }
+        }
+        cancellation.cancel();
+        let empty = BTreeMap::new();
+        assert!(
+            hash_join_resolutions(
+                &WorkspaceJoinResolutions::Map(&empty),
+                &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation)
+            )
+            .is_err()
+        );
+        Ok(())
     }
 }
