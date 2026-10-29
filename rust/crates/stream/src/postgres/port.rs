@@ -4,7 +4,7 @@ pub(super) struct PgJournal<'a> {
     pub(super) client: &'a mut Client,
     pub(super) publish: &'a Statement,
     pub(super) read: &'a Statement,
-    pub(super) namespace: &'a str,
+    pub(super) namespace: &'a [u8; 32],
     pub(super) wakes: &'a mut watch::Receiver<()>,
     pub(super) head: &'a mut u64,
 }
@@ -27,7 +27,7 @@ impl CommandJournal for PgJournal<'_> {
         let mut entries = Vec::new();
         let rows = self
             .client
-            .query(self.read, &[&self.namespace, &from, &page])
+            .query(self.read, &[&self.namespace.as_slice(), &from, &page])
             .await
             .map_err(unavailable)?;
         let first = rows.first().ok_or(StreamError::InvalidResponse)?;
@@ -65,7 +65,7 @@ impl CommandJournal for PgJournal<'_> {
 async fn append(
     client: &Client,
     publish: &Statement,
-    namespace: &str,
+    namespace: &[u8; 32],
     expected: u64,
     frames: &[JournalFrame<'_>],
 ) -> Result<AppendIf, StreamError> {
@@ -94,7 +94,13 @@ async fn append(
     let row = client
         .query_one(
             publish,
-            &[&namespace, &expected, &bytes, &millis, &deadlines],
+            &[
+                &namespace.as_slice(),
+                &expected,
+                &bytes,
+                &millis,
+                &deadlines,
+            ],
         )
         .await
         .map_err(|error| {
