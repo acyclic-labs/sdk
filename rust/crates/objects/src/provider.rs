@@ -333,25 +333,16 @@ pub trait Blobs: Send + Sync {
     /// A put that references or repeats an earlier put of the batch starts
     /// only once that put completed, so outcomes never depend on timing.
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
-        let overlapped = |segment: Vec<(OwnedBytes, Vec<Digest>)>| {
-            stream::iter(segment)
-                .map(|(body, references)| self.put(body, references))
-                .buffered(BATCH_WINDOW)
-                .collect::<Vec<_>>()
-        };
         let mut results = Vec::with_capacity(requests.len());
-        let mut segment = Vec::new();
-        let mut published = std::collections::HashSet::new();
-        for (body, references) in requests {
-            let digest = Digest::of(&body);
-            if published.contains(&digest) || references.iter().any(|r| published.contains(r)) {
-                results.extend(overlapped(std::mem::take(&mut segment)).await);
-                published.clear();
-            }
-            published.insert(digest);
-            segment.push((body, references));
-        }
-        results.extend(overlapped(segment).await);
+        let driven = crate::batch::drive(
+            requests,
+            BATCH_WINDOW,
+            |_| Ok::<_, std::convert::Infallible>(()),
+            |(body, references)| self.put(body, references),
+            |put| results.push(put),
+        )
+        .await;
+        let Ok(()) = driven;
         results
     }
 

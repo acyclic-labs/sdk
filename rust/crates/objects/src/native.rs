@@ -235,12 +235,14 @@ pub(crate) fn get_batch<'a, M: Medium>(
     native_future(&meter, async move {
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
-        for (digest, range, maximum) in requests {
-            values.push(checked(
-                &medium,
-                account.get_inner(digest, range, maximum).await,
-            ));
-        }
+        crate::batch::drive(
+            requests,
+            crate::BATCH_WINDOW,
+            |bytes| ReadAllocation::new(&future_meter, bytes),
+            |(digest, range, maximum)| account.get_inner(digest, range, maximum),
+            |got| values.push(checked(&medium, got)),
+        )
+        .await?;
         ObjectsBatch::new(values, allocation)
     })
 }
@@ -265,6 +267,16 @@ pub(crate) fn put_batch<'a, M: Medium>(
     requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
     meter: Meter,
 ) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+    put_window(account, requests, meter, crate::BATCH_WINDOW)
+}
+
+/// [`put_batch`] with `window` members in flight.
+pub(crate) fn put_window<'a, M: Medium>(
+    account: &'a Account<M>,
+    requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+    meter: Meter,
+    window: usize,
+) -> Result<ObjectsNativeFuture<'a, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
     native_input_meter(&meter, &requests)?;
     let (requests, custody) = requests.split();
     let future_meter = Arc::clone(&meter);
@@ -272,12 +284,14 @@ pub(crate) fn put_batch<'a, M: Medium>(
     native_future(&meter, async move {
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
-        for (body, references) in requests {
-            values.push(
-                checked(&medium, account.put_inner(body, references).await)
-                    .map(|put| ObjectsPutReceipt::new(put, None)),
-            );
-        }
+        crate::batch::drive(
+            requests,
+            window,
+            |bytes| ReadAllocation::new(&future_meter, bytes),
+            |(body, references)| account.put_inner(body, references),
+            |put| values.push(checked(&medium, put).map(|put| ObjectsPutReceipt::new(put, None))),
+        )
+        .await?;
         ObjectsBatch::new(values, allocation)
     })
 }

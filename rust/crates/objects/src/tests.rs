@@ -2337,3 +2337,403 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
     assert_eq!(blobs.head(kept).await?.digest, kept);
     Ok(())
 }
+
+/// A meter that admits all but live allocation past `limit`, recording the
+/// peak it held, for driving the native entry points.
+#[cfg(not(target_arch = "wasm32"))]
+struct Budget {
+    limit: u64,
+    held: std::sync::Mutex<(u64, u64)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Budget {
+    fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            held: std::sync::Mutex::new((0, 0)),
+        }
+    }
+
+    fn hold(&self, bytes: u64) -> std::io::Result<()> {
+        let mut held = self.held.lock().unwrap();
+        if held.0 + bytes > self.limit {
+            return Err(std::io::ErrorKind::OutOfMemory.into());
+        }
+        held.0 += bytes;
+        held.1 = held.1.max(held.0);
+        Ok(())
+    }
+
+    /// The peak live allocation since the last call.
+    fn peak(&self) -> u64 {
+        let mut held = self.held.lock().unwrap();
+        let live = held.0;
+        std::mem::replace(&mut held.1, live)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_native_runtime::NativeReadMeter for Budget {
+    fn check(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn reserve_operations(
+        &self,
+        _: acyclic_native_runtime::NativeOperationKind,
+        _: u64,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn cancel_reserved_operations(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) {}
+    fn record_reserved_operation(
+        &self,
+        _: acyclic_native_runtime::NativeOperationKind,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn reserve_bytes(
+        &self,
+        _: acyclic_native_runtime::NativeOperationKind,
+        _: u64,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn cancel_reserved_bytes(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) {}
+    fn record_reserved_bytes(
+        &self,
+        _: acyclic_native_runtime::NativeOperationKind,
+        _: u64,
+        _: u64,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+        self.hold(bytes)
+    }
+    fn reserve_allocation(&self, bytes: u64) -> std::io::Result<()> {
+        self.hold(bytes)
+    }
+    fn cancel_reserved_allocation(&self, bytes: u64) {
+        self.release(bytes);
+    }
+    fn record_reserved_allocation(&self, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn allocation_failed(&self, _: std::collections::TryReserveError) -> std::io::Error {
+        std::io::ErrorKind::OutOfMemory.into()
+    }
+    fn allocate_refcount_header(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn adopt(&self, bytes: u64) -> std::io::Result<()> {
+        self.hold(bytes)
+    }
+    fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
+        let mut held = self.held.lock().unwrap();
+        held.0 += bytes;
+        held.1 = held.1.max(held.0);
+        (bytes, Ok(()))
+    }
+    fn examine(&self, _: u64, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn admit_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn record_examination(&self, _: u64, _: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn release(&self, bytes: u64) {
+        self.held.lock().unwrap().0 -= bytes;
+    }
+    fn admit_bytes(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn admit_read(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn record_read(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn admit_write(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn record_write(&self, _: usize) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn admit_durability(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A remote-like medium: every operation yields once, as a round trip does,
+/// and the peak count of operations in flight together is recorded. A
+/// nonempty create of a key naming `slow` takes many round trips.
+#[derive(Default)]
+struct Latent {
+    inner: MemoryMedium,
+    flight: std::sync::Mutex<(usize, usize)>,
+    slow: std::sync::Mutex<Option<String>>,
+}
+
+impl Latent {
+    /// One round trip.
+    async fn trip(&self) {
+        {
+            let mut flight = self.flight.lock().unwrap();
+            flight.0 += 1;
+            flight.1 = flight.1.max(flight.0);
+        }
+        tokio::task::yield_now().await;
+        self.flight.lock().unwrap().0 -= 1;
+    }
+
+    /// The peak since the last call.
+    fn peak(&self) -> usize {
+        std::mem::take(&mut self.flight.lock().unwrap().1)
+    }
+}
+
+#[async_trait::async_trait]
+impl Medium for Latent {
+    async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        let slow = self
+            .slow
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|slow| key.contains(slow));
+        for _ in 0..if slow && !bytes.is_empty() { 16 } else { 1 } {
+            self.trip().await;
+        }
+        self.inner.create(key, bytes).await
+    }
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError> {
+        self.trip().await;
+        self.inner.read(key, range).await
+    }
+    async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        self.trip().await;
+        self.inner.remove(key).await
+    }
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        self.trip().await;
+        self.inner.replace(key, expected, bytes).await
+    }
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        self.trip().await;
+        self.inner.remove_if(key, expected).await
+    }
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError> {
+        self.trip().await;
+        self.inner.list(prefix, after, limit).await
+    }
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        self.inner.flush(keys).await
+    }
+    fn volatile(&self) -> bool {
+        false
+    }
+    fn recovered(&self) -> bool {
+        false
+    }
+    fn settle(&self) {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_native_batch_has_every_member_in_flight_at_once()
+-> Result<(), Box<dyn std::error::Error>> {
+    const N: u8 = 16;
+    let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> =
+        std::sync::Arc::new(Budget::new(u64::MAX));
+    let bodies = |seed: u8| -> Vec<(OwnedBytes, Vec<Digest>)> {
+        (0..N)
+            .map(|i| (OwnedBytes::from(vec![seed, i]), Vec::new()))
+            .collect()
+    };
+    let store = Store::new(Latent::default());
+    let blobs = store.account(b"account")?;
+    // The account's revisions open before any measurement.
+    blobs.put(vec![0].into(), Vec::new()).await?;
+    store.medium().peak();
+    let batch = blobs
+        .put_batch_native(
+            crate::ObjectsNativeRequest::new(bodies(1), (), &meter)?,
+            std::sync::Arc::clone(&meter),
+        )?
+        .await?;
+    let mut digests = Vec::new();
+    for receipt in batch {
+        digests.push(receipt?.put().verified().ok_or("unknown")?.digest);
+    }
+    assert_eq!(store.medium().peak(), usize::from(N));
+    let requests: Vec<_> = digests
+        .iter()
+        .map(|digest| (*digest, ByteRange::FULL, 8))
+        .collect();
+    let batch = blobs
+        .get_batch_native(
+            crate::ObjectsNativeRequest::new(requests, (), &meter)?,
+            std::sync::Arc::clone(&meter),
+        )?
+        .await?;
+    for (object, (body, _)) in batch.zip(bodies(1)) {
+        assert_eq!(object?.body(), &body);
+    }
+    assert_eq!(store.medium().peak(), usize::from(N));
+    // Negative control: the same work, one member after another.
+    for (body, references) in bodies(2) {
+        blobs.put(body, references).await?;
+    }
+    for digest in &digests {
+        blobs.get(*digest, ByteRange::FULL, 8).await?;
+    }
+    assert_eq!(store.medium().peak(), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_repeat_put_reads_twice_and_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::new(Counting::default());
+    let blobs = store.account(b"account")?;
+    let child = Digest::of(&[1; 8]);
+    blobs.put(vec![1; 8].into(), Vec::new()).await?;
+    blobs.put(vec![2; 8].into(), vec![child]).await?;
+    store.medium().take();
+    let again = blobs.put(vec![2; 8].into(), vec![child]).await?;
+    assert!(matches!(again, Put::AlreadyExists { .. }));
+    let counts = store.medium().take();
+    // The failed envelope create, the envelope and the presence probe.
+    assert_eq!(counts.get("create"), Some(&1), "{counts:?}");
+    assert_eq!(counts.get("read"), Some(&2), "{counts:?}");
+    assert_eq!(counts.len(), 2, "{counts:?}");
+    // Negative control: a stored envelope whose payload a put still owes is
+    // indexed and written.
+    let parent = Digest::of(&[2; 8]).to_hex();
+    let payload = store
+        .medium()
+        .inner
+        .list(&format!("{}/p/", Digest::of(b"account").to_hex()), None, 8)
+        .await?
+        .into_iter()
+        .find(|(key, _)| key.contains(&parent))
+        .ok_or("no payload")?
+        .0;
+    store.medium().inner.remove(&payload).await?;
+    store.medium().take();
+    blobs.put(vec![2; 8].into(), vec![child]).await?;
+    let counts = store.medium().take();
+    assert_eq!(counts.get("create"), Some(&3), "{counts:?}");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
+-> Result<(), Box<dyn std::error::Error>> {
+    let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> =
+        std::sync::Arc::new(Budget::new(u64::MAX));
+    let store = Store::new(Latent::default());
+    let blobs = store.account(b"account")?;
+    blobs.put(vec![0].into(), Vec::new()).await?;
+    // The child's writes take many round trips.
+    let slow = |seed: u8| {
+        *store.medium().slow.lock().unwrap() = Some(Digest::of(&[seed; 8]).to_hex());
+    };
+    let batch = |seed: u8| -> Vec<(OwnedBytes, Vec<Digest>)> {
+        let child = vec![seed; 8];
+        let parent = (vec![seed + 1; 8], vec![Digest::of(&child)]);
+        vec![
+            (child.into(), Vec::new()),
+            (parent.0.into(), parent.1),
+            (vec![seed + 2; 8].into(), Vec::new()),
+        ]
+    };
+    slow(1);
+    let receipts = blobs
+        .put_batch_native(
+            crate::ObjectsNativeRequest::new(batch(1), (), &meter)?,
+            std::sync::Arc::clone(&meter),
+        )?
+        .await?;
+    for receipt in receipts {
+        assert!(matches!(receipt?.put(), Put::Created { .. }));
+    }
+    // Negative control: the same members started together, unordered, the
+    // parent first.
+    let [child, parent, _] = <[_; 3]>::try_from(batch(4)).map_err(|_| "three members")?;
+    slow(4);
+    let (parent, _) =
+        futures::future::join(blobs.put(parent.0, parent.1), blobs.put(child.0, child.1)).await;
+    assert_eq!(
+        parent.err().map(|error| error.code),
+        Some(ErrorCode::MissingReference)
+    );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_native_batch_many_times_its_budget_completes_within_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    const N: usize = 16 * crate::BATCH_WINDOW;
+    let bodies = |seed: u8| -> Vec<(OwnedBytes, Vec<Digest>)> {
+        (0..N)
+            .map(|i| {
+                (
+                    OwnedBytes::from(vec![seed, i as u8, (i >> 8) as u8]),
+                    Vec::new(),
+                )
+            })
+            .collect()
+    };
+    let store = Store::new(MemoryMedium::default());
+    let blobs = store.account(b"account")?;
+    blobs.put(vec![0].into(), Vec::new()).await?;
+    let put = async |seed: u8, limit: u64, window: usize| {
+        let budget = std::sync::Arc::new(Budget::new(limit));
+        let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request = crate::ObjectsNativeRequest::new(bodies(seed), (), &meter)?;
+        let receipts = crate::native::put_window(&blobs, request, meter, window)?.await?;
+        for receipt in receipts {
+            assert!(matches!(receipt?.put(), Put::Created { .. }));
+        }
+        Ok::<_, crate::NativeObjectsError>(budget.peak())
+    };
+    let budget = put(1, u64::MAX, crate::BATCH_WINDOW).await?;
+    // Every member held at once needs many times that budget.
+    let whole = put(2, u64::MAX, N).await?;
+    assert!(whole > 4 * budget, "{whole} against {budget}");
+    let within = put(3, budget, crate::BATCH_WINDOW).await?;
+    assert!(within <= budget, "{within} against {budget}");
+    // Negative control: the batch holding every member at once is refused.
+    let refused = put(4, budget, N)
+        .await
+        .map(|_| ())
+        .err()
+        .map(|error| error.into_cause());
+    assert!(
+        matches!(&refused, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory),
+        "{refused:?}"
+    );
+    Ok(())
+}

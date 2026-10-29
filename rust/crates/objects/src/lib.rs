@@ -2,6 +2,7 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
+mod batch;
 mod blob;
 pub mod conformance;
 #[cfg(any(objects_client, objects_server))]
