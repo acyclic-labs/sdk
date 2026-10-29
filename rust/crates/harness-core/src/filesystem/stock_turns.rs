@@ -256,7 +256,10 @@ impl TurnExecutors for StockExecutors {
         Box::pin(async move {
             let provider = self
                 .provider
-                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
+                .bind_content(
+                    authority.content.reader.clone(),
+                    Some(self.limits.file_bytes),
+                )
                 .unwrap_or_else(|| Arc::clone(&self.provider));
             // The agent tools act for this turn: their effects commit with it.
             let mut tools = self.tools.clone();

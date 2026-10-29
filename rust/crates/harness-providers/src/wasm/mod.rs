@@ -121,7 +121,7 @@ impl WasmProviderRegistry {
         if let Some(reader) = reader {
             registry = registry.with_content(
                 Arc::new(acyclic_harness::BrowserContentReader(reader)),
-                limits.render_bytes,
+                Some(limits.render_bytes),
             );
         }
         Ok(Self { registry, limits })
