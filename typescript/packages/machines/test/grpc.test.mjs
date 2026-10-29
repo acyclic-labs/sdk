@@ -76,6 +76,7 @@ async function receiveCommand(input) {
 test("native binary file IO preserves ranges, short writes, errno and original identity", async t => {
   const access = { machine, path: "/workspace/$(literal) ' file", offset: 9007199254740993n, deadlineUnixMs: BigInt(Date.now() + 60000) };
   const data = new Uint8Array([0, 255, 10]);
+  let expectedPath = access.path;
   const calls = [];
   const cancelled = Promise.withResolvers();
   const { machines } = await fixture(t, {
@@ -83,7 +84,7 @@ test("native binary file IO preserves ranges, short writes, errno and original i
       authenticate(context);
       for await (const query of input) {
         calls.push("read");
-        assert.deepEqual(query.access, create(wire.FileAccessSchema, access));
+        assert.deepEqual(query.access, create(wire.FileAccessSchema, { ...access, path: expectedPath }));
         if (query.limit === 4) return;
         if (query.limit === 5) {
           context.signal.addEventListener("abort", cancelled.resolve, { once: true });
@@ -114,9 +115,16 @@ test("native binary file IO preserves ranges, short writes, errno and original i
   await assert.rejects(machines.readFile({ protocol, access, limit: 4 }), error => error.code === Code.DataLoss);
   assert.deepEqual((await machines.readFile({ protocol, access, limit: 5 })).result, { case: "data", value: data });
   await cancelled.promise;
+  for (const path of ["C:/workspace/file", "c:\\workspace\\file", "\\\\server\\share\\file"]) {
+    expectedPath = path;
+    const selected = { ...access, path };
+    assert.deepEqual((await machines.readFile({ protocol, access: selected, limit: 3 })).result, { case: "data", value: data });
+    assert.deepEqual((await machines.writeFile({ protocol, access: selected, data })).result, { case: "written", value: 2 });
+  }
   const dispatched = calls.length;
   for (const invalid of [
     { ...access, path: "relative" }, { ...access, path: "/a\0b" },
+    { ...access, path: "C:relative" }, { ...access, path: "\\relative" },
     { ...access, offset: (1n << 64n) - 1n }, { ...access, deadlineUnixMs: 1n },
   ]) await assert.rejects(machines.readFile({ protocol, access: invalid, limit: 3 }), RangeError);
   await assert.rejects(machines.writeFile({ protocol, access, data, truncate: true }), RangeError);

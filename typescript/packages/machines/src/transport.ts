@@ -129,7 +129,7 @@ function checkIdentity(request: { value: Uint8Array } | undefined, response: { v
 
 
 function checkFileAccess(access: wire.FileAccess | undefined, length: number): wire.FileAccess {
-  if (!access || !access.machine || !access.path.startsWith("/") || access.path.includes("\0") || access.offset < 0n || access.offset > MAX_OFFSET || access.deadlineUnixMs < 1n || access.deadlineUnixMs > MAX_OFFSET) throw new RangeError("invalid absolute guest file access");
+  if (!access || !access.machine || !/^(?:\/|\\\\|[A-Za-z]:[\/\\])/.test(access.path) || access.path.includes("\0") || access.offset < 0n || access.offset > MAX_OFFSET || access.deadlineUnixMs < 1n || access.deadlineUnixMs > MAX_OFFSET) throw new RangeError("invalid absolute guest file access");
   if (!Number.isInteger(length) || length < 0 || length > MAX_OUTPUT_READ_BYTES || access.offset + BigInt(length) > MAX_OFFSET) throw new RangeError("invalid guest file chunk range");
   return access;
 }
