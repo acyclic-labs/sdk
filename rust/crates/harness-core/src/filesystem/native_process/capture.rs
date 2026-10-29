@@ -3,9 +3,6 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
-mod owner;
-#[doc(hidden)]
-pub use owner::OwnerControl;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =

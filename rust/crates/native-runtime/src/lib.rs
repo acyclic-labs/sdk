@@ -53,9 +53,9 @@ pub use process_tree::PreparedClosedProcess;
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
     CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, OwnedCaptureInput,
-    ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessCustody, ProcessCustodyLease,
-    ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessTree, ProcessTreeIo,
-    ProcessTreeStorage, ProcessWake,
+    ProcessCaptureFailure, ProcessCaptureStream, ProcessChunk, ProcessControl, ProcessCustody,
+    ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput, ProcessReadiness, ProcessTree,
+    ProcessTreeIo, ProcessTreeStorage, ProcessWake,
 };
 
 mod file;

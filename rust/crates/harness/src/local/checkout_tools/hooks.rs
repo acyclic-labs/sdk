@@ -3,8 +3,8 @@
 //! shell's native volume scope, and each event's outcome is retained once on
 //! the agent's private volume.
 use super::*;
-use crate::filesystem::native_process::capture::OwnerControl;
 use crate::hooks::{HookEvent, HookOutput, Hooks};
+use acyclic_native_runtime::ProcessControl;
 
 impl CheckoutTools {
     pub(super) async fn configured_hooks(
@@ -73,7 +73,7 @@ impl CheckoutTools {
                 )?
                 .await?;
             }
-            let control = OwnerControl::open(self.expiry_unix_ms)?;
+            let control = ProcessControl::open(self.expiry_unix_ms).map_err(storage)?;
             // A dropped turn stops its hooks; their workers still reap them.
             let _stop = shell::StopOnDrop(control.clone());
             let wake = control.wake();
@@ -114,7 +114,7 @@ impl CheckoutTools {
 
 fn owner_check(
     workspace: Arc<LocalWorkspace>,
-    control: OwnerControl,
+    control: ProcessControl,
 ) -> impl Fn() -> std::io::Result<()> + Send + Sync + 'static {
     move || {
         if acyclic_fs::capture_root_identity(&workspace.path).map_err(std::io::Error::other)?

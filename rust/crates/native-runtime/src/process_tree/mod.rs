@@ -23,6 +23,8 @@ mod custodian;
 mod events;
 mod wake;
 pub use wake::ProcessWake;
+mod control;
+pub use control::ProcessControl;
 #[cfg(unix)]
 mod exit_wait;
 #[cfg(any(windows, test))]
