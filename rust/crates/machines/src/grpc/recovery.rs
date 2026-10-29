@@ -4,6 +4,7 @@ pub(super) async fn settle_machine(
     provider: &GrpcProvider,
     key: IdempotencyKey,
     admission: wire::MachineAdmission,
+    attached: bool,
     accepts: impl FnOnce(MachineId, &MachineContract) -> bool + Send,
 ) -> Result<MachineObservation, ProviderError> {
     let operation = decode_operation(admission.operation.as_ref())
@@ -15,18 +16,28 @@ pub(super) async fn settle_machine(
     if !accepts(machine, &contract) {
         return Err(ProviderError::Indeterminate(key));
     }
-    wait(provider, key, operation).await?;
-    inspect_contract(provider, machine, contract)
-        .await
+    let outcome = wait(provider, key, operation).await?;
+    settled_machine(machine, contract, outcome, attached)
         .map_err(|_| ProviderError::Indeterminate(key))
 }
 
-async fn inspect_contract(
-    provider: &GrpcProvider,
+fn settled_machine(
     machine: MachineId,
     contract: MachineContract,
+    outcome: Option<wire::MutationOutcome>,
+    attached: bool,
 ) -> Result<MachineObservation, ProviderError> {
-    let observation = provider.inspect_machine(machine).await?;
+    let result = outcome.and_then(|outcome| outcome.result);
+    let value = match result {
+        Some(wire::mutation_outcome::Result::Created(value)) if !attached => value,
+        Some(wire::mutation_outcome::Result::VolumeAttached(value)) if attached => value,
+        _ => {
+            return Err(ProviderError::Rejected(
+                "original settled machine result is missing".into(),
+            ));
+        }
+    };
+    let observation = decode_machine_observation(value, machine)?;
     if observation.contract != contract {
         return Err(ProviderError::Rejected(
             "settled machine contract was substituted".into(),
@@ -61,7 +72,7 @@ pub(super) async fn wait(
     provider: &GrpcProvider,
     key: IdempotencyKey,
     operation: OperationId,
-) -> Result<(), ProviderError> {
+) -> Result<Option<wire::MutationOutcome>, ProviderError> {
     obs::finish(
         async {
             let mut stream = provider
@@ -83,7 +94,8 @@ pub(super) async fn wait(
                     .map_err(|_| ProviderError::Indeterminate(key))?
                     .phase;
                 if let Some(outcome) = observed_outcome(key, phase) {
-                    return outcome;
+                    outcome?;
+                    return Ok(value.outcome);
                 }
             }
             Err(ProviderError::Indeterminate(key))
@@ -95,6 +107,7 @@ pub(super) async fn wait(
 pub(super) async fn decode_recovered(
     provider: &GrpcProvider,
     value: wire::RecoveredAdmission,
+    outcome: Option<wire::MutationOutcome>,
 ) -> Result<MutationOutcome, ProviderError> {
     use wire::recovered_admission::Result as ResultKind;
     validate_recovered_admission(&value)?;
@@ -102,19 +115,19 @@ pub(super) async fn decode_recovered(
         .result
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
-        ResultKind::Create(value) => inspect_contract(
-            provider,
+        ResultKind::Create(value) => settled_machine(
             decode_machine(value.machine.as_ref())?,
             decode_contract(value.contract.as_ref())?,
+            outcome,
+            false,
         )
-        .await
         .map(MutationOutcome::Created),
-        ResultKind::AttachVolume(value) => inspect_contract(
-            provider,
+        ResultKind::AttachVolume(value) => settled_machine(
             decode_machine(value.machine.as_ref())?,
             decode_contract(value.contract.as_ref())?,
+            outcome,
+            true,
         )
-        .await
         .map(MutationOutcome::VolumeAttached),
         ResultKind::Checkpoint(value) => MachinesProvider::inspect_checkpoint(
             provider,

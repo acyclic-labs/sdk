@@ -162,7 +162,7 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                settle_machine(self, key, response, |_, contract|
+                settle_machine(self, key, response, false, |_, contract|
                     request.image.as_ref().is_none_or(|image| image == &contract.image)
                     && request.selected_volume_ref == contract.selected_volume_ref
                 ).await.map(MutationOutcome::Created)
@@ -184,7 +184,7 @@ machine_mutations! {
                 machine: Some(encode_machine(machine)),
                 selected_volume_ref: Some(volume.clone()),
             }).await.map_err(|error| mutation_error(key, &error))?.into_inner();
-        settle_machine(self, key, response, |actual, contract|
+        settle_machine(self, key, response, true, |actual, contract|
             actual == machine && contract.selected_volume_ref.as_ref() == Some(&volume)
         ).await.map(MutationOutcome::VolumeAttached)
     }
@@ -593,8 +593,8 @@ machine_mutations! {
         obs::finish(
             async {
                 let (operation, value) = recovered_admission(self, key).await?;
-                wait(self, key, operation).await?;
-                decode_recovered(self, value).await.map_err(|_| ProviderError::Indeterminate(key))
+                let outcome = wait(self, key, operation).await?;
+                decode_recovered(self, value, outcome).await.map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )

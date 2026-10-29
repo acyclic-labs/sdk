@@ -20,6 +20,7 @@ struct ObservationScript {
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
     selected_volumes: Vec<Option<wire::selection::VolumeRef>>,
+    current_contract: Option<wire::MachineContract>,
     started: Arc<tokio::sync::Notify>,
 }
 
@@ -93,13 +94,15 @@ operation_service! {
         if request.into_inner().machine != admission.machine {
             return Err(Status::invalid_argument("machine was substituted"));
         }
-        if let WatchReply::Script(script) = &self.watch {
-            script.lock().expect("observation script").calls.push("inspect_machine");
-        }
+        let contract = if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            script.calls.push("inspect_machine");
+            script.current_contract.clone().or_else(|| admission.contract.clone())
+        } else { admission.contract.clone() };
         Ok(Response::new(wire::MachineState {
             machine: admission.machine.clone(),
             status: wire::MachineStatus::Running as i32,
-            contract: admission.contract.clone(),
+            contract,
             endpoints: Vec::new(),
             last_checkpoint: None,
             created_at_unix_ms: 1,
@@ -307,6 +310,7 @@ fn scripted_operation_service(
         inspections: inspections.into(),
         calls: Vec::new(),
         selected_volumes: Vec::new(),
+        current_contract: None,
         started: Arc::new(tokio::sync::Notify::new()),
     }));
     (
@@ -386,7 +390,34 @@ fn operation_state(operation: OperationId, status: wire::OperationStatus) -> wir
             value: operation.as_bytes().to_vec(),
         }),
         status: status as i32,
+        outcome: None,
     }
+}
+
+fn settled_state(
+    operation: OperationId,
+    machine: MachineId,
+    contract: wire::MachineContract,
+    attached: bool,
+) -> wire::OperationState {
+    let machine = wire::MachineState {
+        machine: Some(encode_machine(machine)),
+        status: wire::MachineStatus::Running as i32,
+        contract: Some(contract),
+        endpoints: Vec::new(),
+        last_checkpoint: None,
+        created_at_unix_ms: 1,
+        changed_at_unix_ms: 1,
+    };
+    let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
+    state.outcome = Some(wire::MutationOutcome {
+        result: Some(if attached {
+            wire::mutation_outcome::Result::VolumeAttached(machine)
+        } else {
+            wire::mutation_outcome::Result::Created(machine)
+        }),
+    });
+    state
 }
 
 fn recovered_suspend(

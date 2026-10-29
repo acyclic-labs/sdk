@@ -227,6 +227,11 @@ pub(in super::super) fn decode_operation_observation(
             ));
         }
     };
+    if phase != OperationPhase::Succeeded && value.outcome.is_some() {
+        return Err(ProviderError::Rejected(
+            "non-successful operation contains a settled result".into(),
+        ));
+    }
     Ok(OperationObservation { id, phase })
 }
 pub(in super::super) fn decode_usage_receipt(

@@ -82,14 +82,15 @@ async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
         )),
     };
     assert!(
-        decode_recovered(&provider, recovered(Vec::new()))
+        decode_recovered(&provider, recovered(Vec::new()), None)
             .await
             .is_err()
     );
     assert!(
         decode_recovered(
             &provider,
-            recovered(vec![encode_machine(child), encode_machine(child)])
+            recovered(vec![encode_machine(child), encode_machine(child)]),
+            None,
         )
         .await
         .is_err()
