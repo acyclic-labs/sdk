@@ -856,7 +856,7 @@ async fn created<P: StreamProvider + ?Sized>(
 
 /// Activation by the root's activation log: actors created by other parties'
 /// commits get their first delivery with no placement call and no scan.
-async fn foreign_creates_activate(count: usize) -> TestResult {
+async fn foreign_creates_activate(count: usize, precreated: bool) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let runtime = Arc::new(Runtime::new(
@@ -864,10 +864,24 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(SystemClock),
     ));
-    let host = Arc::clone(&runtime);
-    let task = tokio::spawn(async move {
-        let _outcome = host.run(|_, _| {}).await;
-    });
+    let launch = || {
+        let host = Arc::clone(&runtime);
+        tokio::spawn(async move { host.run(|_, _| {}).await })
+    };
+    let mut task = if precreated { None } else { Some(launch()) };
+    if let Some(task) = task.as_mut() {
+        let (dispatcher_store, dispatcher) = runtime.dispatcher_store()?;
+        let path = dispatcher_store.path(&dispatcher)?;
+        tokio::select! {
+            stopped = task => return Err(format!("host stopped before dispatcher publication: {stopped:?}").into()),
+            ready = created(&*provider, path.clone(), path) => ready?,
+        }
+        assert_eq!(
+            provider.tail(root()?).await,
+            Err(StreamError::NotFound),
+            "starting a host must not append a synthetic activation"
+        );
+    }
     for index in 0..count {
         let address = actor(&format!("a{index}"))?;
         let inbox = StreamPath::new(format!("agents/a{index}"))?;
@@ -897,14 +911,22 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
         })?;
         PreparedPublish::settle(&provider.commit(prepared.into_request()?).await?)?;
     }
-    for index in 0..count {
-        let address = actor(&format!("a{index}"))?;
-        created(
-            &*provider,
-            store.path(&address)?,
-            StreamPath::new(format!("out/a{index}"))?,
-        )
-        .await?;
+    let mut task = task.unwrap_or_else(launch);
+    let delivered = async {
+        for index in 0..count {
+            let address = actor(&format!("a{index}"))?;
+            created(
+                &*provider,
+                store.path(&address)?,
+                StreamPath::new(format!("out/a{index}"))?,
+            )
+            .await?;
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    };
+    tokio::select! {
+        stopped = &mut task => return Err(format!("host stopped before delivery: {stopped:?}").into()),
+        result = delivered => result?,
     }
     task.abort();
     let _aborted = task.await;
@@ -914,13 +936,20 @@ async fn foreign_creates_activate(count: usize) -> TestResult {
 
 #[tokio::test]
 async fn foreign_created_actors_activate_without_placement_or_scan() -> TestResult {
-    foreign_creates_activate(1_000).await
+    foreign_creates_activate(1_000, false).await
+}
+
+/// Creation may win before the first host starts. Startup must only subscribe,
+/// rather than conditionally append an opening record to the occupied log.
+#[tokio::test]
+async fn precreated_actors_activate_without_an_activation_log_sentinel() -> TestResult {
+    foreign_creates_activate(1, true).await
 }
 
 #[tokio::test]
 #[ignore = "stress"]
 async fn ten_thousand_foreign_created_actors_activate() -> TestResult {
-    foreign_creates_activate(10_000).await
+    foreign_creates_activate(10_000, false).await
 }
 
 /// Pausing an actor that no host has claimed yet takes effect at epoch 0; the

@@ -439,25 +439,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub async fn run(&self, report: impl Fn(&ActorReference, &Error)) -> Result<Infallible, Error> {
         let root = self.store.root().clone();
         let provider = self.store.provider();
-        // Streams has no empty create: open the log with one non-address record
-        // at sequence 0. Any existing log (an earlier opening or a creation)
-        // refuses it, which is equally fine.
-        provider
-            .append(AppendRequest {
-                path: root.clone(),
-                records: vec![b"open".to_vec().into()],
-                if_tail: Some(0),
-                idempotency_key: key(
-                    &Snapshot {
-                        path: root.clone(),
-                        tail: 0,
-                        anchor: None,
-                        state: None,
-                    },
-                    "open",
-                )?,
-            })
-            .await?;
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
         let dispatcher = self.dispatcher(&dispatch_store, &dispatch_actor).await?;
         // A cursor alone would forget all previously discovered subscriptions
@@ -552,8 +533,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             steps += 1;
             match event {
                 Event::Created(record) => {
-                    // The opening record is not an address; skip it. Another
-                    // host's actors are not discovered here. Tracking wakes an
+                    // Another host's actors are not discovered here. Tracking wakes an
                     // already resident actor: this is its producer's wake.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
                         && self.claims(&actor)
