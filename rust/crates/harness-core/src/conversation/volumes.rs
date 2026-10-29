@@ -551,7 +551,6 @@ impl ContentGrant {
         agent: AgentId,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
@@ -560,7 +559,7 @@ impl ContentGrant {
                 "admission belongs to another acting agent".into(),
             ));
         }
-        Self::check_agent_volume(scope, Some(agent), volume, operation, maximum_bytes, work)
+        Self::check_agent_volume(scope, Some(agent), volume, operation, work)
     }
 
     fn check_volume(
@@ -569,7 +568,7 @@ impl ContentGrant {
         operation: VolumeOperation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        Self::check_agent_volume(scope, scope.agent(), volume, operation, maximum_bytes, work)
+        Self::check_agent_volume(scope, scope.agent(), volume, operation, work)
     }
 
     fn check_agent_volume(
@@ -577,7 +576,6 @@ impl ContentGrant {
         agent: Option<AgentId>,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         volume.validate(work)?;
