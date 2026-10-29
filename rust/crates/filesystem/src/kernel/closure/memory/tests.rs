@@ -91,6 +91,7 @@ fn identity_tables_preserve_values_without_insertion_shifts()
         let mut digest = [0; 32];
         digest[..8].copy_from_slice(&number.to_be_bytes());
         let object = ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: crate::Digest::from_bytes(digest),
         };

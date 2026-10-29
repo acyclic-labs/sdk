@@ -261,7 +261,15 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
         .map(|index| {
             let mut digest = [0; 32];
             digest[..8].copy_from_slice(&index.to_le_bytes());
-            GenerationId::new(Digest::from_bytes(digest))
+            GenerationId::from_root(ObjectId {
+                kind: ObjectKind::GenerationRoot,
+                digest: Digest::from_bytes(digest),
+                storage: (index % 2 == 0).then_some(crate::ObjectStorage {
+                    locator: Digest::from_bytes(digest),
+                    root_file_id: value.root_file_id,
+                    origin_generation: Digest::from_bytes([91; 32]),
+                }),
+            })
         })
         .collect();
     let encoded = encode_generation_root(
@@ -277,9 +285,23 @@ fn large_parent_lineage_preserves_order_and_rejects_nonadjacent_duplicates()
         value
     );
     let mut corrupted = encoded;
-    let last = PARENTS_OFFSET + (value.parents.len() - 1) * 32;
-    let first: [u8; 32] = corrupted[PARENTS_OFFSET..PARENTS_OFFSET + 32].try_into()?;
-    corrupted[last..last + 32].copy_from_slice(&first);
+    let parents_offset = DOMAIN.len() + 2 + 16 + 16 + value.file_table.encoded_len() + 4;
+    let last = parents_offset
+        + value.parents[..value.parents.len() - 1]
+            .iter()
+            .map(|parent| parent.object_id().encoded_len())
+            .sum::<usize>();
+    let first = value.parents[0].object_id().to_bytes();
+    assert_eq!(
+        first.as_slice().len(),
+        value
+            .parents
+            .last()
+            .ok_or("missing last parent")?
+            .object_id()
+            .encoded_len()
+    );
+    corrupted[last..last + first.as_slice().len()].copy_from_slice(first.as_slice());
     assert!(matches!(
         decode_generation_root(&corrupted, DecodeLimits::default(), |_| Ok::<
             _,
@@ -307,7 +329,8 @@ fn forged_parent_count_is_rejected_before_allocating() -> Result<(), Box<dyn std
         |_| Ok::<_, CanonicalDecodeError>(()),
         |_| CanonicalDecodeError::AllocationFailed,
     )?;
-    encoded[PARENTS_OFFSET - 4..PARENTS_OFFSET].copy_from_slice(&u32::MAX.to_le_bytes());
+    let count_offset = DOMAIN.len() + 2 + 16 + 16 + root().file_table.encoded_len();
+    encoded[count_offset..count_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
     let mut allocations = 0;
     let result = decode_generation_root(&encoded, DecodeLimits::default(), |step| {
         if matches!(step, ReadAllocationStep::Allocate { .. }) {

@@ -3,6 +3,8 @@
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
 };
+#[cfg(test)]
+use crate::Digest;
 use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CancellationToken, WorkCounters};
@@ -217,7 +219,9 @@ where
         return Err(CanonicalDecodeError::Truncated.into());
     }
     observe(ReadAllocationStep::CheckCopy(
-        (parent_count * std::mem::size_of::<GenerationId>()) as u64,
+        parent_count
+            .checked_mul(std::mem::size_of::<GenerationId>())
+            .ok_or(CanonicalDecodeError::LengthOverflow)? as u64,
     ))?;
     let mut parents = Vec::new();
     super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;

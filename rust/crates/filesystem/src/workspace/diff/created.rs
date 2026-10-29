@@ -255,6 +255,7 @@ mod tests {
 
     fn directory(file_id: FileId) -> crate::kernel::FileRecord {
         let object = |kind| crate::ObjectId {
+            storage: None,
             kind,
             digest: crate::foundation::Digest::from_bytes([1; 32]),
         };

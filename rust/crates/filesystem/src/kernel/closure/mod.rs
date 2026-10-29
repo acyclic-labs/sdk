@@ -40,7 +40,8 @@ pub struct GenerationProof {
     pub file_count: u64,
     /// Logical regular-file bytes, counting each file identity once, including holes.
     pub logical_file_bytes: u128,
-    /// Sorted immutable objects authenticated by this proof.
+    /// Immutable objects authenticated by this proof. Ordinary proofs use sorted
+    /// identities; publication proofs order dependencies before their parents.
     pub objects: Vec<ObjectId>,
     /// Exact proof work.
     pub work: WorkCounters,

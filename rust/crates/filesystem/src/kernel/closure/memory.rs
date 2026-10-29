@@ -307,7 +307,7 @@ impl Drop for ProofGuard {
 
 pub(super) struct ProofVec<'a, T> {
     pub(super) values: Vec<T>,
-    index: crate::kernel::allocation::fixed_index::FixedIndex<usize, 33>,
+    index: crate::kernel::allocation::fixed_index::FixedIndex<usize, { ObjectId::ENCODED_LEN }>,
     guard: Option<ProofGuard>,
     meter: ProofMeter<'a>,
 }
@@ -315,7 +315,7 @@ pub(super) struct ProofVec<'a, T> {
 #[derive(Default)]
 pub(crate) struct CachedProofs {
     entries: Vec<CachedSlot>,
-    index: crate::kernel::allocation::fixed_index::FixedIndex<usize, 33>,
+    index: crate::kernel::allocation::fixed_index::FixedIndex<usize, { ObjectId::ENCODED_LEN }>,
     guard: Option<ProofGuard>,
 }
 
@@ -470,20 +470,20 @@ impl<T> Drop for ProofVec<'_, T> {
 
 /// Fixed-width identity lookup shared with all other persistent kernel owners.
 pub(super) trait ProofKey: Copy {
-    fn proof_key(self) -> [u8; 33];
+    fn proof_key(self) -> [u8; ObjectId::ENCODED_LEN];
 }
 
 impl ProofKey for ObjectId {
-    fn proof_key(self) -> [u8; 33] {
-        self.to_bytes()
+    fn proof_key(self) -> [u8; ObjectId::ENCODED_LEN] {
+        self.index_key()
     }
 }
 
 macro_rules! uuid_proof_key {
     ($kind:ty) => {
         impl ProofKey for $kind {
-            fn proof_key(self) -> [u8; 33] {
-                let mut key = [0; 33];
+            fn proof_key(self) -> [u8; ObjectId::ENCODED_LEN] {
+                let mut key = [0; ObjectId::ENCODED_LEN];
                 key[..16].copy_from_slice(&self.into_bytes());
                 key
             }
