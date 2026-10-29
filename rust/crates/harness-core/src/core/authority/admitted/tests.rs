@@ -1021,7 +1021,7 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 },
                 executors.clone(),
                 TurnLimits {
-                    maximum_bytes: u64::MAX,
+                    maximum_bytes: None,
                     max_steps: Some(u32::MAX),
                     history_turns: Some(u64::from(u32::MAX)),
                 },

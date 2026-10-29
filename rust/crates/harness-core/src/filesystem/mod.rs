@@ -160,7 +160,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         input: &'a B,
         media_type: &'a str,
         display_name: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         idempotency_key: &'a IdempotencyKey,
         internal_class: Option<InternalContentClass>,
         expected_generation: Option<&'a GenerationRef>,
@@ -171,6 +171,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         A: 'static,
         O: 'static,
     {
+        let maximum_bytes = maximum_bytes.into();
         // Refuse invalid or unauthorized input before admitting an allocated future.
         let bytes = input.as_ref();
         grant.require(volume, VolumeOperation::Write, io)?;
@@ -185,7 +186,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "content caller lacks a filesystem write grant",
             ));
         }
-        if volume.provider() != &self.provider || bytes.len() as u64 > maximum_bytes {
+        if volume.provider() != &self.provider
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
+        {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,

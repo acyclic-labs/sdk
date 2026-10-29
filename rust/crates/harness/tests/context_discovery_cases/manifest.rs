@@ -154,7 +154,7 @@ async fn pinned_manifest_drives_scripted_requests_and_restart_without_wrapper_st
     let manifest = seed(&fixture).await?;
     let limits = Limits {
         render_bytes: Some(32_768),
-        file_bytes: 32_768,
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -273,7 +273,7 @@ async fn skill_order_is_explicit_and_cached_and_empty_tools_allow_sampling() -> 
     manifest.tools.clear();
     let limits = Limits {
         render_bytes: Some(32_768),
-        file_bytes: 32_768,
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -374,7 +374,7 @@ async fn skill_path_bounds_reject_before_any_body_read_at_a_short_manifest_path(
     )?;
     let limits = Limits {
         render_bytes: Some(32_768),
-        file_bytes: 32_768,
+        file_bytes: Some(32_768),
         ..Default::default()
     };
     let (publisher, reader, _, _) = storage(&fixture).await?;
@@ -429,7 +429,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
     )?;
     let limits = Limits {
         render_bytes: Some(32_768),
-        file_bytes: 32_768,
+        file_bytes: Some(32_768),
         context_messages: std::num::NonZeroUsize::new(32),
         ..Default::default()
     };
@@ -442,7 +442,7 @@ async fn invalid_tool_bindings_and_bounds_fail_before_skill_reads() -> Result<()
             OperationId::new(),
             "context/unbounded-file.json",
             Limits {
-                file_bytes: 1,
+                file_bytes: Some(1),
                 ..limits
             },
         )

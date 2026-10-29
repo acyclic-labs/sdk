@@ -135,7 +135,7 @@ impl CanonicalContextCheckpoint {
             limits
                 .render_bytes
                 .into_iter()
-                .chain(Some(limits.file_bytes))
+                .chain(limits.file_bytes)
                 .min(),
             &mut None,
         )

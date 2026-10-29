@@ -387,8 +387,8 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
 /// Bounds of one agent turn.
 #[derive(Clone, Copy, Debug)]
 pub struct TurnLimits {
-    /// Journal bytes per turn.
-    pub maximum_bytes: u64,
+    /// Optional caller-selected journal file byte policy per turn.
+    pub maximum_bytes: Option<u64>,
     /// Model and tool steps per turn.
     pub max_steps: Option<u32>,
     /// Optional caller-selected tail of settled turns; None selects the complete history.
@@ -1172,7 +1172,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     admission: TurnAdmission,
     agent: AgentPath,
     volumes: Vec<VolumeBinding>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
@@ -1225,7 +1225,12 @@ where
                 None,
             )?;
             let bytes = reader
-                .read(&external[0], self.maximum_bytes, None, None)?
+                .read(
+                    &external[0],
+                    external[0].descriptor().byte_length(),
+                    None,
+                    None,
+                )?
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;

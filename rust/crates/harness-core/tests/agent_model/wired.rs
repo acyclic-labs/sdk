@@ -26,7 +26,7 @@ use acyclic_stream::{
 use std::sync::Arc;
 
 const LIMITS: TurnLimits = TurnLimits {
-    maximum_bytes: 64 * 1024,
+    maximum_bytes: Some(64 * 1024),
     max_steps: Some(4),
     history_turns: Some(8),
 };
@@ -1237,7 +1237,7 @@ async fn spawn_respects_only_an_explicit_child_limit() -> Result {
                 &state,
                 (effects.clone() as Arc<dyn TurnEffects>, None),
                 Arc::new(Writer(volume)),
-                1024,
+                Some(1024),
                 (&acyclic_harness_core::tools::default_names(), limit),
             )?;
             let spawn = tools.get("spawn", None, None)?.ok_or("no spawn tool")?;

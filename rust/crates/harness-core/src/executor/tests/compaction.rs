@@ -549,7 +549,7 @@ async fn oversized_summary_input_rejects_before_accounting_or_journal_publicatio
         let limits = Limits {
             context_messages: std::num::NonZeroUsize::new(1),
             render_bytes: Some(4_096),
-            file_bytes,
+            file_bytes: Some(file_bytes),
             ..Limits::default()
         };
         let executor = base.clone().with_limits(limits);

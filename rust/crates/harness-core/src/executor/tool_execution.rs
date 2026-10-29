@@ -72,7 +72,9 @@ impl StockExecution<'_> {
                 .stock
                 .limits
                 .file_bytes
-                .min(self.stock.tool_scope.limits().file_bytes),
+                .into_iter()
+                .chain(self.stock.tool_scope.limits().file_bytes)
+                .min(),
             render_bytes: self
                 .stock
                 .limits

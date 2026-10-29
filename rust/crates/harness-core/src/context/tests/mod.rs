@@ -91,7 +91,7 @@ struct TestPayloadStore {
 
 fn payload_limits() -> Limits {
     Limits {
-        file_bytes: 1_048_576,
+        file_bytes: Some(1_048_576),
         render_bytes: Some(1_048_576),
         context_messages: std::num::NonZeroUsize::new(4_096),
         attachments: std::num::NonZeroUsize::new(1_024),

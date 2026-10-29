@@ -33,8 +33,8 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&source, Some(self.stock.limits.file_bytes), self.io)?;
-        stock_json_bound(&instruction, Some(self.stock.limits.file_bytes), self.io)?;
+        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
+        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
         let summary_output = self.output_budget()?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
@@ -114,7 +114,7 @@ impl StockExecution<'_> {
     ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, Some(self.stock.limits.file_bytes), true)?,
+            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
             _ => crate::contract::canonical_json_bytes(&source)?.into(),
         };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
