@@ -129,8 +129,8 @@ impl HostWorkspaceOwner {
         })
     }
 
-    /// Keeps each native request's saved result until its reply under
-    /// `directory`'s `results` is durable: the reply then answers a replay.
+    /// Keeps each native request's saved result until its client withdraws
+    /// the request after reading its durable reply under `directory`.
     #[must_use]
     pub fn with_requests(mut self, directory: std::path::PathBuf) -> Self {
         self.requests = Some(directory);
@@ -292,7 +292,7 @@ impl HostWorkspaceOwner {
                 operation: acyclic_fs::OperationId::from_bytes(operation.into_bytes()),
                 unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
                     let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
-                    directory.join("requests").join(&file).exists()
+                    directory.join("requests").join(&file).try_exists()
                 }),
             });
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)
