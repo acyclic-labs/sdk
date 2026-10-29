@@ -285,19 +285,6 @@ impl Explorer {
         })
     }
 
-    /// Register the actual provider's source before accepting retained state.
-    ///
-    /// # Errors
-    /// Refuses an invalid policy.
-    pub fn for_provider<P: acyclic_stream::StreamProvider + ?Sized>(
-        policy: ReaderPolicy,
-        provider: &P,
-    ) -> Result<Self, StreamError> {
-        let mut explorer = Self::new(policy)?;
-        explorer.reader.configure_source(provider, 0);
-        Ok(explorer)
-    }
-
     /// The reader the platform driver executes.
     pub fn reader(&mut self) -> &mut Reader {
         &mut self.reader

@@ -485,20 +485,6 @@ impl Reader {
         })
     }
 
-    /// Register the configured source before restoring or reading retained data.
-    /// Providers without trusted custody remain explicitly unqualified.
-    ///
-    /// # Errors
-    /// Refuses an invalid policy.
-    pub fn for_provider<P: acyclic_stream::StreamProvider + ?Sized>(
-        policy: ReaderPolicy,
-        provider: &P,
-    ) -> Result<Self, StreamError> {
-        let mut reader = Self::new(policy)?;
-        reader.configure_source(provider, 0);
-        Ok(reader)
-    }
-
     pub(crate) fn configure_source<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         provider: &P,
