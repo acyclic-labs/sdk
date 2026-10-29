@@ -296,3 +296,43 @@ async fn ordinary_range_authentication_uses_bounded_live_memory() -> Result<()> 
     assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
     Ok(())
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn upload_receipt_recovery_uses_bounded_live_memory() -> Result<()> {
+    let (host, file) = published(&vec![b'x'; 4 * 1024 * 1024 + 17]).await?;
+    let write = grant(file.volume(), VolumeOperation::Write)?;
+    let stop = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget {
+            peak_allocation_bytes: 1024 * 1024,
+            ..acyclic_fs::WorkBudget::UNBOUNDED
+        },
+        &stop,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let io = PreparationIo::from_native_work(&work)?;
+    let key = IdempotencyKey::new("publish")?;
+    let access = crate::conversation::ContentAccess {
+        ceiling: None,
+        io: Some(&io),
+    };
+    assert_eq!(
+        host.content_for_operation(file.volume(), &write, &key, file.path(), u64::MAX, access)
+            .await?,
+        Some(file.clone())
+    );
+    assert!(work.receipt().peak_allocation_bytes < file.descriptor().byte_length());
+    // An explicitly chosen content allowance still refuses the same complete file.
+    let denied = host
+        .content_for_operation(file.volume(), &write, &key, file.path(), 4096, access)
+        .await;
+    assert!(matches!(denied, Err(error) if error.code() == crate::wire::ErrorCode::Invalid));
+    stop.cancel();
+    assert!(
+        host.content_for_operation(file.volume(), &write, &key, file.path(), u64::MAX, access)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

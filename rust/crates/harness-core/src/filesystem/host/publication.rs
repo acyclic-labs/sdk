@@ -325,18 +325,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .0
             .0
             .pin_version(version, &mut Some(&mut io.history_io()))?;
-        let bytes = self
-            .read_retained_file(
-                original,
-                &recorded.0.0,
-                request
-                    .maximum_bytes
-                    .unwrap_or(recorded.0.0.descriptor().byte_length().max(1)),
-                Some(io),
-            )?
-            .await?;
-        let hold = io.guard_bytes(&bytes)?;
-        let bytes = (bytes, hold);
+        let bytes = if request.purpose == PublicationPurpose::Content {
+            let bytes = self
+                .read_retained_file(
+                    original,
+                    &recorded.0.0,
+                    request
+                        .maximum_bytes
+                        .unwrap_or(recorded.0.0.descriptor().byte_length().max(1)),
+                    Some(io),
+                )?
+                .await?;
+            let hold = io.guard_bytes(&bytes)?;
+            Some((bytes, hold))
+        } else {
+            if request
+                .maximum_bytes
+                .is_some_and(|maximum| recorded.0.0.descriptor().byte_length() > maximum)
+            {
+                return Err(stock_boundary(
+                    Some(io),
+                    crate::wire::ErrorCode::Invalid,
+                    "content provider or size limit mismatch",
+                ));
+            }
+            let path = crate::executor::with_history_io(Some(io), |work| {
+                crate::executor::preparation_format(format_args!("/{}", recorded.0.0.path()), work)
+            })?;
+            let _path_hold = io.guard_owned(path.capacity() as u64)?;
+            super::authentication::authenticate(original, &recorded.0.0, &path, io).await?;
+            None
+        };
         bounded_io::retain(original, Some(io)).await?;
         let version_bytes = version_hold.bytes();
         version_hold.into_retained()?;
@@ -344,11 +363,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(recorded.0.1.take());
         recorded.1.substitute(recorded.0.0.logical_owned_bytes()?)?;
         recorded.1.into_retained()?;
-        let payload = if request.purpose == PublicationPurpose::Content {
-            if let Some(hold) = bytes.1 {
+        let payload = if let Some((bytes, hold)) = bytes {
+            if let Some(hold) = hold {
                 hold.into_retained()?;
             }
-            Some(bytes.0)
+            Some(bytes)
         } else {
             None
         };
