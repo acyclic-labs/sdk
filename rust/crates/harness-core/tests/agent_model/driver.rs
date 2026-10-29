@@ -662,6 +662,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
             from: Sender::Agent { path: path.clone() },
             id: intent(&format!("{GOAL_INTENT}original:{count}")),
             body: Box::new(file("GOAL.md")?),
+            attachments: None,
         };
         for sequence in 1..=turns {
             let previous_id = message.id.clone();
