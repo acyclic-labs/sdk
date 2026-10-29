@@ -10,6 +10,7 @@ const wait = value => value && typeof value.primitive === "string" && typeof val
 // original drain deadline bounds this exchange; it owns no timer or process.
 export class ProcessReport {
   generation = randomBytes(16).toString("hex");
+  requestId = randomBytes(16).toString("hex");
   #request;
   #ready = false;
   #readyResolve;
@@ -35,9 +36,11 @@ export class ProcessReport {
       }
     });
     channel.on("error", error => this.#finish("sink-failed", error.code ?? "transport-error"));
-    channel.on("end", () => {
+    const ended = () => {
       this.#ended = true;
-    });
+    };
+    channel.on("end", ended);
+    channel.on("close", ended);
     child.once("exit", () => {
       this.#ownerExited = true;
       if (this.#request) this.#finish("owner-exited");
@@ -75,7 +78,7 @@ export class ProcessReport {
   }
   request(deadline) {
     if (!this.#request) {
-      this.#request = { request_id: randomBytes(16).toString("hex"), generation: this.generation, deadline_unix_ms: deadline };
+      this.#request = { request_id: this.requestId, generation: this.generation, deadline_unix_ms: deadline };
       if (this.#ownerExited) this.#finish("owner-exited");
       else if (this.#ended) this.#finish("sink-failed", "control-eof-before-request");
       this.#write?.();
