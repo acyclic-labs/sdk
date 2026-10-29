@@ -452,7 +452,7 @@ async fn content_executes_and_identity_rejections_precede_candidate_writes()
             chunk_bytes: 64,
             page_items: 8,
             page_bytes: 4096,
-            maximum_blob_bytes: 1,
+            maximum_blob_bytes: Some(1),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),

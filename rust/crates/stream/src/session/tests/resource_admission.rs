@@ -44,12 +44,8 @@ async fn resource_refusals_preserve_other_channels_in_the_same_interest() -> Tes
         let provider = Arc::new(MemoryStream::default());
         append(&provider, "healthy", Bytes::from_static(b"record")).await?;
         let (sender, receiver) = mpsc::unbounded();
-        let mut greeting = hello(1_000_000, 100);
-        let Some(Body::Hello(body)) = greeting.body.as_mut() else {
-            unreachable!()
-        };
-        body.credentials = vec![credential.clone().into()];
-        sender.unbounded_send(Ok(greeting))?;
+        sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+        sender.unbounded_send(Ok(super::credential(0, credential.clone().into())))?;
         let mut resource = subscribe(3, "unused", 0, false);
         let Some(Kind::Follow(follow)) = resource.kind.as_mut() else {
             unreachable!()

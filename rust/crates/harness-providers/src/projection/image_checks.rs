@@ -90,7 +90,7 @@ pub(super) fn assert_roundtrip(input: &[u8]) {
                 Credentials::explicit(Default::default()),
                 Arc::new(NoHttp),
             )
-            .with_content(reader.clone(), maximum_bytes);
+            .with_content(reader.clone(), Some(maximum_bytes));
             registry.register("image-test".into(), serde_json::from_value(json!({
                 "adapter":adapter,"authentication":"optional","base_url":"http://127.0.0.1:1/v1",
                 "models":{"tiny":{"capacity":{"context_tokens":32768,"output_tokens":1024},"features":{"images":true,"tools":false}}},

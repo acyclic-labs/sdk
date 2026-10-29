@@ -125,7 +125,6 @@ async fn apply_delta<O: AsyncObjectStore>(
             objects,
             table,
             &mutations.value,
-            u32::try_from(delta.files.len()).map_err(|_| WorkError::Overflow)?,
             limits,
             accounting,
             cancellation,
@@ -165,7 +164,7 @@ async fn compose_directory<O: AsyncObjectStore>(
                 return Err(FsError::InvalidDiff);
             }
             previous = Some(&binding.name);
-            append_binding(&mut mutations, binding, limits, accounting)?;
+            append_binding(&mut mutations, binding, accounting)?;
         }
         let entries = if mutations.value.is_empty() {
             entries
@@ -174,7 +173,6 @@ async fn compose_directory<O: AsyncObjectStore>(
                 objects,
                 entries,
                 &mutations.value,
-                u32::try_from(bindings.len()).map_err(|_| WorkError::Overflow)?,
                 limits,
                 accounting,
                 cancellation,
@@ -194,12 +192,10 @@ async fn compose_directory<O: AsyncObjectStore>(
 fn append_binding(
     mutations: &mut Owned<Vec<TreeMutation>>,
     binding: &DirectoryBindingChange,
-    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     let (mutation, mut allocation, bytes) = if let Some(entry) = &binding.after {
-        let (entry, allocation) =
-            clone_value::<TreeFormat>(entry, limits.maximum_name_bytes, accounting, None, 0)?;
+        let (entry, allocation) = clone_value::<TreeFormat>(entry, accounting, None, 0)?;
         let bytes = TreeFormat::value_owned_bytes(&entry);
         let mutation = match &binding.before {
             Some(before) => TreeMutation::Replace {
@@ -211,13 +207,7 @@ fn append_binding(
         (mutation, allocation, bytes)
     } else {
         let before = binding.before.as_ref().ok_or(FsError::InvalidDiff)?;
-        let (name, allocation) = clone_key::<TreeFormat>(
-            &binding.name,
-            limits.maximum_name_bytes,
-            accounting,
-            None,
-            0,
-        )?;
+        let (name, allocation) = clone_key::<TreeFormat>(&binding.name, accounting, None, 0)?;
         let bytes = TreeFormat::key_owned_bytes(&name);
         (
             TreeMutation::Remove {

@@ -71,7 +71,6 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
     store: &S,
     root: (ObjectId, u64),
     mutations: &[ExtentMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -81,7 +80,6 @@ pub async fn apply_extent_mutations<S: crate::AsyncObjectStore>(
         store,
         root,
         mutations,
-        maximum_mutations,
         limits,
         &mut accounting,
         cancellation,
@@ -98,14 +96,13 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
     store: &S,
     root: (ObjectId, u64),
     mutations: &[ExtentMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<ExtentMutationReceipt, FsError> {
     let (root, old_logical_bytes) = root;
     accounting.check()?;
-    validate_request(root, mutations, maximum_mutations, limits).map_err(extent_error)?;
+    validate_request(root, mutations, limits).map_err(extent_error)?;
     let plan = compile_patch_plan(old_logical_bytes, mutations, accounting)?;
     let final_size = plan.final_size;
     let truncated = final_size < old_logical_bytes;
@@ -166,17 +163,12 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
 fn validate_request(
     root: ObjectId,
     mutations: &[ExtentMutation],
-    maximum_mutations: u32,
     limits: DecodeLimits,
 ) -> Result<(), ExtentMutationError> {
     let error = if root.kind != ObjectKind::ExtentPage {
         Some(ExtentMutationError::WrongRootKind)
     } else if mutations.is_empty() {
         Some(ExtentMutationError::Empty)
-    } else if maximum_mutations == 0
-        || usize::try_from(maximum_mutations).map_or(true, |maximum| mutations.len() > maximum)
-    {
-        Some(ExtentMutationError::TooManyMutations)
     } else if !limits.page_limits_valid(2) {
         Some(ExtentMutationError::InvalidLimits)
     } else {
@@ -802,9 +794,6 @@ pub enum ExtentMutationError {
     /// Batch contains no mutations.
     #[error("extent mutation batch is empty")]
     Empty,
-    /// Batch exceeds its admitted bound.
-    #[error("extent mutation count exceeds its bound")]
-    TooManyMutations,
     /// Root has the wrong object kind.
     #[error("extent mutation root has the wrong kind")]
     WrongRootKind,

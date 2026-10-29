@@ -20,7 +20,8 @@ pub use http::HttpSource;
 pub use keys::{Config, Limits, SigningAlgorithm};
 
 /// A single GET of the pinned URI, without redirects, retries or discovery.
-/// The shared refresher bounds the streamed body and its total duration.
+/// The shared refresher applies host-selected body allowances. A source may
+/// enforce an explicit caller deadline; the verifier adds none.
 pub trait JwksSource: ProviderPlatform {
     /// Return a lazy body only for a successful response from this exact URI.
     fn fetch<'a>(
@@ -96,15 +97,7 @@ impl Verifier {
             return Err(refused("OIDC key refresh is rate limited"));
         }
         self.attempted_at = Some(now);
-        use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
-        use futures::future::{Either, select};
-        let fetch = keys::fetch(source, &self.config);
-        let timeout = PlatformExecutor.sleep(10_000);
-        futures::pin_mut!(fetch, timeout);
-        let replacement = match select(fetch, timeout).await {
-            Either::Left((result, _)) => result?,
-            Either::Right(_) => return Err(refused("OIDC key refresh timed out")),
-        };
+        let replacement = keys::fetch(source, &self.config).await?;
         self.keys = replacement;
         self.fetched_at = Some(now);
         Ok(())

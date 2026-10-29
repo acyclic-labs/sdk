@@ -248,9 +248,6 @@ where
                                 &self.scope,
                                 &self.volume,
                                 VolumeOperation::Read,
-                                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                                    .transpose()?
-                                    .unwrap_or(u64::MAX),
                                 work,
                             )
                         })?;

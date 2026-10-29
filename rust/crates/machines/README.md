@@ -20,7 +20,7 @@ The reference carries no capability or guest mapping fence. Settlement and recov
 check that original contract; a substituted selection remains indeterminate under
 the original mutation key. The process-local simulator refuses hosted selection.
 
-`Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
+`Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one guest
 command and returns a disposable stream of separate stdout (`Data`) and stderr
 bytes followed by one exit code or a typed stopped capture. A terminal event
 completes the stream without waiting for EOF. Dropping the stream cancels its RPC.
@@ -31,7 +31,11 @@ so never redispatch it automatically. Argument validation does not evaluate a
 shell; shell execution requires an explicit shell program in `argv`.
 
 Commands can carry binary stdin, a guest cwd, a combined output allowance and an
-absolute authority expiry. Native clients reuse the shared wall-clock alarm so
+absolute authority expiry. The command deadline is optional: `None` waits for
+completion or cancellation without a fallback timer. A selected deadline must be
+positive; it stays fixed through admission and native worker submission.
+Authority expiry remains independent, including when no command deadline is
+selected or output credit is withheld. Native clients reuse the shared wall-clock alarm so
 expiry also wakes silent commands. Client-side expiry reports uncertainty; only
 the producer can attest physical cleanup. Protocol 1.1 merged channels and cannot
 satisfy this contract: a server must refuse unsupported revisions before dispatch.

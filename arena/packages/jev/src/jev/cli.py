@@ -148,7 +148,7 @@ def main(argv=None) -> int:
     g.add_argument("--task", help="what the agent is working on, for the in-scope question")
     g.add_argument("--ask-at", type=float, default=0.6, help="P(destructive) at or above which to answer 'ask'")
     g.add_argument("--deny-at", type=float, default=1.01, help="P(destructive) at or above which to deny (default: never)")
-    g.add_argument("--timeout", type=float, default=8.0)
+    g.add_argument("--timeout", type=float, help="optional backend deadline in seconds")
     g.add_argument("--checkpoint", action="store_true", help="run `acyclic checkpoint --no-wait` when jev says to")
     g.add_argument("--repo")
     g.add_argument("--print-hook-snippet", action="store_true", help="print the settings.json hook entry and exit")

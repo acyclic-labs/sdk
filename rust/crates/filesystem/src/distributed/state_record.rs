@@ -131,7 +131,7 @@ impl StateRecord {
                 .try_into()
                 .map_err(|_| corrupt())?,
         ) as usize;
-        if path_length == 0 || path_length > acyclic_stream::MAX_PATH_BYTES {
+        if path_length == 0 {
             return Err(corrupt());
         }
         let tag_index = path_start.checked_add(path_length).ok_or_else(corrupt)?;

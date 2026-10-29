@@ -1,6 +1,6 @@
 import type { CreateMachine, MachineEventPage, MachineId, MachinesProvider } from "./index.js";
 import { MANAGED_OCI_CONTRACT } from "./managed-oci-contract.js";
-import { validatePageSize } from "../generated/wasm/acyclic_machines_wasm.js";
+import { pageSize as normalizePageSize } from "./wasm-runtime.js";
 
 export interface MachineListOptions {
   /** Exclusive cursor. */
@@ -20,7 +20,7 @@ export async function createMachine(provider: MachinesProvider, request: CreateM
   return machine.id;
 }
 export function machineEvents(provider: MachinesProvider, id: MachineId, afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<MachineEventPage> {
-  return provider.events(id, afterSequence, limit);
+  return provider.events(id, afterSequence, normalizePageSize(limit, MANAGED_OCI_CONTRACT.maxEventPageSize));
 }
 
 export async function* listMachines(provider: MachinesProvider, options: MachineListOptions = {}): AsyncIterable<MachineId> {

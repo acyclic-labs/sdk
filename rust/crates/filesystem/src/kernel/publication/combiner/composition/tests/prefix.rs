@@ -57,7 +57,7 @@ impl Fixture {
         });
         Ok(Self {
             _directory: directory,
-            owner: Owner(Arc::new(Objects { fs, gate })),
+            owner: Owner(Arc::new(Objects::new(fs, gate))),
             first,
             second,
         })
@@ -100,6 +100,7 @@ async fn check_prefix(native: bool, cancel: bool) -> TestResult {
         .ok_or("root ownership")?;
     let gate = Arc::clone(&owner.0.gate);
     let weak = Arc::downgrade(&owner.0);
+    let owner_released = owner.0.retirement.release_barrier();
     let limits = crate::facade::closure_limits(first_core.preconditions.config);
     let (first, second) = futures::try_join!(
         Ticket::enter_core(

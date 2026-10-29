@@ -3,6 +3,9 @@ use super::*;
 use crate::{PublicationChanges, VolumeConfig};
 use acyclic_stream::{AppendRecord, ChangeEntryRef, RecordHeaders};
 
+/// Actual publication chunk width; remaining entries continue in later records.
+pub(super) const CHANGES_PAGE_ENTRIES: usize = 64;
+
 pub(super) fn changes_path(
     placement: &AuthorityPlacement,
     volume: crate::VolumeId,
@@ -47,13 +50,13 @@ impl PreparedEntry {
 }
 
 fn chunk_end(context: &[u8], entries: &[PreparedEntry]) -> Result<usize, AuthorityStoreError> {
-    let mut references: [ChangeEntryRef<'_>; acyclic_stream::MAX_RECORD_KEYS] =
+    let mut references: [ChangeEntryRef<'_>; CHANGES_PAGE_ENTRIES] =
         std::array::from_fn(|_| ChangeEntryRef {
             key: &[],
             operation: "",
             metadata: &[],
         });
-    let count = entries.len().min(acyclic_stream::MAX_RECORD_KEYS);
+    let count = entries.len().min(CHANGES_PAGE_ENTRIES);
     for (slot, entry) in references.iter_mut().zip(entries) {
         *slot = entry.borrowed();
     }
@@ -118,7 +121,7 @@ fn encode_chunks(
     while !remaining.is_empty() {
         let count = chunk_end(encoded_context.as_ref(), remaining)?;
         let (selected, next) = remaining.split_at(count);
-        let mut references: [ChangeEntryRef<'_>; acyclic_stream::MAX_RECORD_KEYS] =
+        let mut references: [ChangeEntryRef<'_>; CHANGES_PAGE_ENTRIES] =
             std::array::from_fn(|_| ChangeEntryRef {
                 key: &[],
                 operation: "",

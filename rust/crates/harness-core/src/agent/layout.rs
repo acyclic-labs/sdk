@@ -36,8 +36,6 @@ pub const VOLUMES: &str = "harness/volumes";
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
 pub const NOT_INHERITED: [&str; 4] = [CHILDREN, CLOSED, TARGETS, MACHINES];
-/// Deepest admitted nesting; bounds every path and every lineage walk.
-pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
 const CLOSED: &str = "closed";
@@ -166,12 +164,12 @@ impl AgentPath {
 
     /// The child `id` nested under this agent.
     pub fn child(&self, id: &AgentId) -> Result<Self, Error> {
-        if self.depth + 1 > MAX_DEPTH {
-            return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-        }
         Ok(Self {
             text: format!("{}/{CHILDREN}/{id}", self.text),
-            depth: self.depth + 1,
+            depth: self
+                .depth
+                .checked_add(1)
+                .ok_or(Error::Path("agent depth overflows this platform"))?,
         })
     }
 
@@ -289,9 +287,6 @@ impl TryFrom<String> for AgentPath {
             }
             AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
-            if depth > MAX_DEPTH {
-                return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
-            }
         }
         Ok(Self { text, depth })
     }
@@ -349,7 +344,8 @@ mod tests {
             root.parent().expect("root").target("pc")?
         );
         assert_ne!(foreign.target("pc")?, root.target("pc")?);
-        for depth in [1, 8, MAX_DEPTH] {
+        // Cross the former implicit depth of 64 with the same allocation oracle.
+        for depth in [1, 8, 65] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
                 descendant = descendant.child(&AgentId::from_bytes([3; 16]))?;
