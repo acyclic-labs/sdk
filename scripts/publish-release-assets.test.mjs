@@ -265,3 +265,58 @@ test('empty or duplicate asset selections never publish a release', async t => {
   assert.equal(uploads, 1);
   assert.equal(publications, 0);
 });
+
+
+test('large release resume examines remote names once and preserves exact digest admission', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-release-index-'));
+  t.after(() => {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+    fs.rmSync(directory, { recursive: true });
+  });
+  const env = { SOURCE_SHA: 'a'.repeat(40), VERSION: '1.2.3', GITHUB_REPOSITORY: 'owner/sdk' };
+  const remote = [];
+  for (let index = 0; index < 1025; index++) {
+    const name = `asset-${index}.tgz`;
+    const bytes = `qualified body ${index}`;
+    remote.push({ name, digest: 'sha256:' + createHash('sha256').update(bytes).digest('hex') });
+    if (index >= 705) fs.writeFileSync(path.join(directory, name), bytes);
+  }
+  const originalParse = JSON.parse;
+  let namesExamined = 0, mutations = 0, mode = 'complete';
+  t.mock.method(JSON, 'parse', (...args) => {
+    const decoded = originalParse(...args);
+    if (decoded.tag_name) {
+      for (const asset of decoded.assets) {
+        const name = asset.name;
+        Object.defineProperty(asset, 'name', { get() { namesExamined++; return name; } });
+      }
+    }
+    return decoded;
+  });
+  const gh = (...args) => {
+    if (args[0] === 'api' && args[1].includes('/git/ref/')) {
+      return JSON.stringify({ object: { type: 'commit', sha: env.SOURCE_SHA } });
+    }
+    if (args[0] === 'api') {
+      const assets = mode === 'duplicate' ? [...remote, remote.at(-1)] : remote;
+      return JSON.stringify({ tag_name: 'acyclic-v1.2.3', target_commitish: env.SOURCE_SHA, assets });
+    }
+    assert.deepEqual(args, ['release', 'edit', 'acyclic-v1.2.3', '--repo', 'owner/sdk', '--draft=false']);
+    mutations++;
+    return '';
+  };
+  await publish({ env, directory, gh });
+  assert.equal(mutations, 1);
+  assert.ok(namesExamined <= remote.length + 320,
+    `release resume examined ${namesExamined} remote names for320 files/${remote.length} remote assets`);
+  t.diagnostic(`RELEASE_RESUME remote=1025 files=320 names_examined=${namesExamined}`);
+
+  const changed = path.join(directory, remote.at(-1).name);
+  fs.writeFileSync(changed, 'different bytes');
+  await assert.rejects(publish({ env, directory, gh }), /different contents/);
+  assert.equal(mutations, 1, 'conflicting digest published the release');
+  mode = 'duplicate';
+  await assert.rejects(publish({ env, directory, gh }), /Duplicate published asset name/);
+  assert.equal(mutations, 1, 'duplicate remote identity published the release');
+});
