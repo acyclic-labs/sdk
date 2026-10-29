@@ -66,10 +66,14 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         provider,
         ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
     )?;
+    let shell_grant = acyclic_harness_core::tools::catalog()
+        .find(|spec| spec.name == "shell")
+        .ok_or_else(|| Error::Invalid("public tool catalog has no shell".into()))?
+        .capability();
     let grants = acyclic_harness_core::Capabilities::new([
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.capability(VolumeOperation::Write, &mut None)?,
-        acyclic_harness_core::contract::capability::tool_call("shell"),
+        shell_grant,
     ]);
     let scope = issuer.bootstrap_scope("local-machine", &grants, None, &mut None)?;
     let workspace = host
