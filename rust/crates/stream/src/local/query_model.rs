@@ -25,6 +25,21 @@ pub(super) async fn spawn_blocking<T>(
     Ok(work())
 }
 
+// The same owned lease boundary, executed by the existing model worker.
+pub(super) async fn submit_file<C, T, E>(
+    acquire: impl FnOnce() -> std::result::Result<(acyclic_native_runtime::FileLease, C), E>,
+    operation: impl FnOnce(&acyclic_native_runtime::FileLease, &mut C) -> std::result::Result<T, E>,
+) -> std::result::Result<std::result::Result<T, E>, tokio::task::JoinError> {
+    spawn_blocking(move || {
+        let (lease, mut custody) = acquire()?;
+        let result = operation(&lease, &mut custody);
+        drop(lease);
+        drop(custody);
+        result
+    })
+    .await
+}
+
 pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     let limits = LocalStreamLimits::default();
     // The claim and the journal outlive their temporary directory: releasing

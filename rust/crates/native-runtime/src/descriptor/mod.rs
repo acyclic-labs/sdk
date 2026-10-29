@@ -18,6 +18,7 @@ mod admission;
 mod cache;
 #[cfg(all(test, loom))]
 mod model;
+mod owned;
 #[cfg(all(test, not(loom)))]
 mod tests;
 
