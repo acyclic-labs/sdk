@@ -37,8 +37,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
-const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-
 #[derive(Clone, Copy)]
 pub(super) enum HostCaptureScope {
     ExactPaths,
