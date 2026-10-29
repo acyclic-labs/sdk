@@ -1272,3 +1272,9 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | Git ignore/attributes1MiB file policies | `rust/crates/harness-core/src/filesystem/workspace_policy.rs:34,58`; `agent_publication.rs:130`; `tools/git/view.rs:176`; `rust/crates/filesystem/src/git_compat/capture/traversal.rs:21,99` | 1 deleted | Read complete policy files through the same optional-size generation/checkout reader. Root/nested capture and diff share one strict read/UTF-8 parser; only the optional policy lookup treats absence as no policy, while a file named by the immutable listing retains its original read failure. Preserve exact generation binding, original cancellation/accounting, host reservations, tracked precedence and ignore negation. The existing nested-policy capture control now places its deny/reinclude tail past1MiB. No new test or source ledger. Compilation pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| Rust client fixture runner credential hex131072; tool8MiB/control32MiB/agent65536 | `rust/crates/conformance/src/bin/client-conformance.rs:7,23` | 1 deleted | Read the same original fixture handle to EOF and decode the complete credential hex, matching the TypeScript runner. Keep fixture grammar, original session credential registration and authorized namespace checks. No maximum-sized allocation or extra read mechanism. Compilation pending. |
+| Virtiofsd enrollment JSON64KiB | `rust/crates/harness/src/bin/virtiofsd.rs:39` | 1 deleted | Read the same opened operator-selected config file to EOF. Keep deny_unknown_fields, original finite WorkBudget admission, private socket creation and kernel peer authentication before FUSE packets. The actual session budget is still required and cannot deserialize missing fields into an unbounded grant. Compilation pending. |
