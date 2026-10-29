@@ -81,14 +81,23 @@ export async function publish({ env = process.env, directory = env.RELEASE_ASSET
       release = JSON.parse(gh('api', `repos/${repository}/releases/tags/${tag}`));
     }
     admitRelease(release, source, version);
-    const names = new Set();
+    // One index serves remote lookup and local duplicate admission. Each remote
+    // name is examined once, including when every local asset resumes late in
+    // a large release. A null value marks an already visited local name.
+    const names = new Map();
+    for (const asset of release.assets) {
+      const name = asset.name;
+      if (names.has(name)) throw new Error(`Duplicate published asset name ${name}`);
+      names.set(name, asset);
+    }
+    delete release.assets;
     for (let item = first; !item.done; item = await files.next()) {
       const file = item.value;
       const name = path.basename(file);
-      if (names.has(name)) throw new Error(`Duplicate release asset name ${name}`);
-      names.add(name);
+      const existing = names.get(name);
+      if (existing === null) throw new Error(`Duplicate release asset name ${name}`);
+      names.set(name, null);
       const expected = await digest(file);
-      const existing = release.assets.find(asset => asset.name === name);
       if (existing) {
         let actual = existing.digest;
         if (!actual) {
