@@ -10,6 +10,9 @@ use reqwest::{
     Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
 };
+mod availability;
+#[cfg(test)]
+mod tests;
 
 fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
@@ -255,6 +258,10 @@ mod context_tests;
 
 #[async_trait::async_trait]
 impl Blobs for HttpObjects {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.observe_availability(digest).await
+    }
+
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         if let Some(context) = &self.context {
             context.check()?;

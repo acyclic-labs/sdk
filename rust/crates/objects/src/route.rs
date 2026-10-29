@@ -10,6 +10,51 @@ use prost::Message;
 /// A route's response and the revision committing or serving it.
 pub type Served<T> = (T, Option<Revision>);
 
+/// Registers the authenticated account's exact physical identity before its
+/// first cursor is returned. Both streaming transports use this one dispatch.
+pub async fn availability(
+    blobs: &dyn Blobs,
+    request: wire::AvailabilityRequest,
+) -> Result<crate::Availability, Error> {
+    blobs
+        .availability(convert::digest(request.digest.as_ref())?)
+        .await
+}
+
+/// Canonical opening cursor followed by coalesced changes. EOF/failure remains
+/// an error; it never fabricates a successful verification or catalog revision.
+pub fn availability_frames(
+    observation: crate::Availability,
+) -> impl futures::Stream<Item = Result<wire::AvailabilityCursor, Error>> + Send + 'static {
+    use futures::{StreamExt as _, stream};
+    let initial = observation.cursor();
+    stream::once(std::future::ready(Ok(initial.into()))).chain(stream::try_unfold(
+        observation,
+        |mut observation| async move {
+            let next = observation.changed().await?;
+            Ok(Some((next.into(), observation)))
+        },
+    ))
+}
+
+/// Serves a streaming binary route using canonical Protobuf message framing.
+/// HTTP gateways authenticate the account before calling this, and revalidate
+/// their original grant before disclosing each returned frame.
+pub async fn invoke_stream(
+    blobs: &dyn Blobs,
+    route: &str,
+    input: Bytes,
+) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, Error>>, Error> {
+    use futures::StreamExt as _;
+    if route != "blobs/availability" {
+        return Err(wire::ErrorCode::InvalidArgument.into());
+    }
+    let observation = availability(blobs, decode(input)?).await?;
+    Ok(Box::pin(
+        availability_frames(observation).map(|frame| Ok(frame?.encode_length_delimited_to_vec())),
+    ))
+}
+
 /// Verifies the supplied digest, then publishes the body.
 ///
 /// # Errors

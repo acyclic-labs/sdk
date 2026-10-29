@@ -135,6 +135,16 @@ message UsageResponse {
   uint64 blobs = 1;
   uint64 unique_bytes = 2;
 }
+// Register before verifying this exact immutable identity. The first cursor
+// opens the observation; every subscription/reconnect requires verification
+// after that cursor. Later cursors coalesce physical-availability invalidations,
+// including same-reference bytes-only repair. They never certify stored bytes
+// or durability. Source loss terminates with a typed service failure.
+message AvailabilityRequest { Digest digest = 1; }
+message AvailabilityCursor {
+  bytes incarnation = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 16];
+  uint64 sequence = 2;
+}
 // Read-your-writes rides gRPC binary metadata as the shared Streams token
 // acyclic.stream.v1.Revision (protobuf bytes). Requests may repeat
 // `acyclic-min-revision-bin`, one value per authority: GET, HEAD and LIST wait,
@@ -143,6 +153,7 @@ message UsageResponse {
 // response, including failures, may carry `acyclic-revision-bin`: a write's
 // committed revision, or the applied revision a read was served at.
 service BlobsService {
+  rpc Availability(AvailabilityRequest) returns (stream AvailabilityCursor) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/blobs" }; }
   rpc PutBlob(PutBlobRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
   rpc PutManifest(PutManifestRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
   rpc GetBlob(GetBlobRequest) returns (GetBlobResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/blobs" }; }

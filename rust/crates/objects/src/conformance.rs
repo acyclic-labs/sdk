@@ -69,6 +69,57 @@ fn code<T: std::fmt::Debug>(result: &Result<T, Error>) -> Option<ErrorCode> {
 /// Runs every case. `run` namespaces this run's content so repeated runs
 /// against one service stay independent.
 pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<(), Failure> {
+    // Register before inspecting an initially absent exact identity. An account
+    // observing the same digest must receive none of this account's activity.
+    use futures::FutureExt as _;
+    let available_body = bytes(&format!("{run}/availability"), 73);
+    let available_digest = Digest::of(&available_body);
+    let mut available = first
+        .availability(available_digest)
+        .await
+        .map_err(|error| fail("availability-register-before-verification", error))?;
+    let mut isolated = second
+        .availability(available_digest)
+        .await
+        .map_err(|error| fail("availability-account-isolation", error))?;
+    let initial = available.cursor();
+    expect!(
+        "availability-register-before-verification",
+        code(&first.head(available_digest).await) == Some(ErrorCode::NotFound),
+        "fixture digest exists"
+    );
+    put(
+        first,
+        "availability-register-before-verification",
+        available_body.clone(),
+        Vec::new(),
+    )
+    .await?;
+    let observed = available.changed().await;
+    expect!(
+        "availability-register-before-verification",
+        matches!(observed, Ok(cursor) if cursor.incarnation() == initial.incarnation() && cursor.sequence() > initial.sequence()),
+        observed
+    );
+    let verified = first.get(available_digest, ByteRange::FULL, 73).await;
+    expect!(
+        "availability-register-before-verification",
+        matches!(&verified, Ok(object) if object.body() == &available_body),
+        verified
+    );
+    expect!(
+        "availability-account-isolation",
+        isolated.changed().now_or_never().is_none(),
+        "foreign account was notified"
+    );
+    // This fixture leaves the pre-existing case inventories independent.
+    first
+        .delete(available_digest)
+        .await
+        .map_err(|error| fail("availability-register-before-verification", error))?;
+    drop(available);
+    drop(isolated);
+
     // put-created-then-already-exists-verified
     let body = bytes(&format!("{run}/plain"), 4096);
     let digest = Digest::of(&body);

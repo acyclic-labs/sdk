@@ -268,6 +268,16 @@ impl PartialEq for Object {
 /// dedupe against or disclose another account's blobs.
 #[async_trait::async_trait]
 pub trait Blobs: Send + Sync {
+    /// Registers exact-key physical availability invalidations in this account.
+    /// Subscribe before verifying; changes racing verification remain pending.
+    /// Reconnect requires a fresh subscribe/verify handshake. Events certify no
+    /// bytes or durability. A provider without an original physical producer
+    /// refuses `Unsupported`, rather than returning a healthy empty stream.
+    /// Observe a closure through its exact selected member identities.
+    async fn availability(&self, _digest: Digest) -> Result<crate::Availability, Error> {
+        Err(wire::ErrorCode::Unsupported.into())
+    }
+
     /// Stores `body` with envelope `references`, each of which must already exist.
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error>;
 
@@ -432,6 +442,10 @@ pub trait Blobs: Send + Sync {
 
 #[async_trait::async_trait]
 impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        (**self).availability(digest).await
+    }
+
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         (**self).put(body, references).await
     }

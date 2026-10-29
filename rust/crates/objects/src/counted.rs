@@ -13,6 +13,11 @@ use acyclic_stream::testing::{Counted, RequestClass};
 
 #[async_trait::async_trait]
 impl<P: Blobs> Blobs for Counted<P> {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.record(RequestClass::Data);
+        self.inner().availability(digest).await
+    }
+
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         self.record(RequestClass::Data);
         self.inner().put(body, references).await

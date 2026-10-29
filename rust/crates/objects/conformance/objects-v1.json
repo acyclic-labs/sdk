@@ -3,6 +3,8 @@
   "version": 3,
   "fixture": "two disposable accounts of one service with immediate visibility",
   "cases": [
+    "availability-register-before-verification",
+    "availability-account-isolation",
     "put-created-then-already-exists-verified",
     "head-and-exact-ranges",
     "range-and-allocation-bounds",
