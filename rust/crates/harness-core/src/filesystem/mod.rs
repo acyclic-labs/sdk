@@ -258,7 +258,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     true,
                 )?,
                 None => acyclic_stream::OwnedBytes::from(crate::contract::canonical_json_bytes(

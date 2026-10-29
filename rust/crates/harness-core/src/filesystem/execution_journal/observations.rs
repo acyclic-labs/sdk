@@ -316,8 +316,11 @@ where
         };
         let body_hold;
         let bytes = if let Some(io) = io {
-            let encoded =
-                io.encode(&observation, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let encoded = io.encode(
+                &observation,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+                false,
+            )?;
             body_hold = io.guard_bytes(&encoded)?;
             encoded
         } else {

@@ -102,7 +102,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode(value, maximum, false)?;
+        let bytes = io.encode(value, Some(maximum), false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }

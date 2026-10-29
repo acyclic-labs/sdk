@@ -66,7 +66,7 @@ impl ModelPrefix {
     ) -> Result<acyclic_stream::OwnedBytes> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            return io.encode(self, io.remaining()?.bytes_encoded, true);
+            return io.encode(self, Some(io.remaining()?.bytes_encoded), true);
         }
         let _ = io;
         Ok(crate::contract::canonical_json_bytes(self)?.into())

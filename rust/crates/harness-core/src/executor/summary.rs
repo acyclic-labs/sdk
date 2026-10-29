@@ -114,7 +114,7 @@ impl StockExecution<'_> {
     ) -> Result<(Option<acyclic_stream::OwnedBytes>, [u8; 32], u32)> {
         let source_bytes: acyclic_stream::OwnedBytes = match self.io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.encode(&source, self.stock.limits.file_bytes, true)?,
+            Some(io) => io.encode(&source, Some(self.stock.limits.file_bytes), true)?,
             _ => crate::contract::canonical_json_bytes(&source)?.into(),
         };
         let source_digest = crate::model::hash_bytes(&source_bytes, self.io)?;
@@ -280,7 +280,7 @@ pub(super) async fn stage_summary_provenance(
         .transpose()?;
     let bytes: acyclic_stream::OwnedBytes = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.encode(summary, io.remaining()?.bytes_encoded, true)?,
+        Some(io) => io.encode(summary, Some(io.remaining()?.bytes_encoded), true)?,
         _ => crate::contract::canonical_json_bytes(summary)?.into(),
     };
     #[cfg(feature = "filesystem")]

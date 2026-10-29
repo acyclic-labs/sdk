@@ -190,7 +190,7 @@ fn request_body(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
-        let bytes = io.encode(value, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(value, Some(io.remaining()?.bytes_encoded), false)?;
         return Ok(bytes::Bytes::from_owner(bytes));
     }
     let _ = work;

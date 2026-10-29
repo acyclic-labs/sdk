@@ -631,7 +631,7 @@ fn exhausted_native_custody_transfer_keeps_existing_guard_until_value_drops() ->
     .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let baseline = work.live_allocation_bytes();
     let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
-    let bytes = io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = io.encode(&serde_json::Value::Null, Some(1024), true)?;
     let held = io.owned_bytes()?;
     let live_held = work.live_allocation_bytes() - baseline;
     let Err(error) = io.into_native_custody(held + work.remaining()?.peak_allocation_bytes + 1)
@@ -667,7 +667,7 @@ fn rejected_foreign_native_custody_preserves_original_owned_data_guard() -> Resu
     let receiver_baseline = receiving.live_allocation_bytes();
     let producer_baseline = producing.live_allocation_bytes();
     let producer_io = crate::filesystem::PreparationIo::from_native_work(&producing)?;
-    let bytes = producer_io.encode(&serde_json::Value::Null, 1024, true)?;
+    let bytes = producer_io.encode(&serde_json::Value::Null, Some(1024), true)?;
     drop(producer_io);
     let (metadata, incoming) = producing
         .display("source carrier metadata")
