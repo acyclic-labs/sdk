@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 mod refusals;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let namespace = uuid::Uuid::new_v4().to_string();
+    let namespace = format!("{}/{}", uuid::Uuid::new_v4(), "segment/".repeat(2048));
     let start = Instant::now();
     let (provider, peer) = tokio::try_join!(
         PostgresStream::connect(database, &namespace),
@@ -191,7 +191,10 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
     let killed = client
         .query(
             "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name=$1",
-            &[&format!("acyclic-stream-listener-{namespace}")],
+            &[&format!(
+                "acyclic-stream-listener-{}",
+                &blake3::hash(namespace.as_bytes()).to_hex().as_str()[..32]
+            )],
         )
         .await?;
     assert_eq!(killed.len(), 1);
