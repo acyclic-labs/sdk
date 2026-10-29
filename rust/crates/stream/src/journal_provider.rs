@@ -11,6 +11,7 @@ use crate::{
 use async_trait::async_trait;
 use futures::StreamExt as _;
 use js_sys::Uint8Array;
+use prost::Message;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
