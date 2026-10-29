@@ -219,7 +219,14 @@ async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
 #[tokio::test]
 async fn recovered_terminal_publication_reopens_only_its_original_admission()
 -> Result<(), Box<dyn std::error::Error>> {
-    for destroy in [false, true] {
+    for (settled, replay) in [
+        (MachineState::Suspended, false),
+        (MachineState::Running, false),
+        (MachineState::Destroyed, false),
+        (MachineState::Suspended, true),
+        (MachineState::Running, true),
+        (MachineState::Destroyed, true),
+    ] {
         let machine = MachineId::new();
         let directory = tempfile::tempdir()?;
         let streams = Arc::new(
@@ -237,15 +244,20 @@ async fn recovered_terminal_publication_reopens_only_its_original_admission()
         };
         let local =
             AdmittedMachine::open(backend, enrollment(machine), streams.clone(), root).await?;
+        if settled == MachineState::Running {
+            local.suspend(machine, IdempotencyKey::new()).await?;
+        }
+        let before = streams.head(path.clone()).await?;
         let key = IdempotencyKey::new();
         let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
-        let mut submitted = Box::pin(schedule.scope(async {
-            if destroy {
-                local.destroy_machine(machine, key).await
-            } else {
-                local.suspend(machine, key).await
+        let transition = || async {
+            match settled {
+                MachineState::Running => local.wake(machine, key).await,
+                MachineState::Suspended => local.suspend(machine, key).await,
+                _ => local.destroy_machine(machine, key).await,
             }
-        }));
+        };
+        let mut submitted = Box::pin(schedule.scope(transition()));
         let mut admission = None;
         let terminal = loop {
             let boundary = tokio::select! {
@@ -274,20 +286,20 @@ async fn recovered_terminal_publication_reopens_only_its_original_admission()
                 boundary = boundaries.recv() => boundary.unwrap().release(),
             }
         }
-        let settled = if destroy {
-            MachineState::Destroyed
-        } else {
-            MachineState::Suspended
-        };
-        let outcome = if destroy {
-            MutationOutcome::MachineDestroyed(machine)
-        } else {
-            MutationOutcome::Suspended(machine)
+        let outcome = match settled {
+            MachineState::Running => MutationOutcome::Woken(machine),
+            MachineState::Suspended => MutationOutcome::Suspended(machine),
+            _ => MutationOutcome::MachineDestroyed(machine),
         };
         let head = streams.head(path.clone()).await?;
-        assert_eq!(head.tail, 3);
+        assert_eq!(head.tail, before.tail + 2);
         assert_ne!(local.inspect_machine(machine).await?.state, settled);
-        assert_eq!(local.recover(key).await?, outcome);
+        let retained = if replay {
+            transition().await?
+        } else {
+            local.recover(key).await?
+        };
+        assert_eq!(retained, outcome);
         assert_eq!(
             local.inspect_machine(machine).await?.state,
             settled,
@@ -295,22 +307,31 @@ async fn recovered_terminal_publication_reopens_only_its_original_admission()
         );
         assert_eq!(streams.head(path.clone()).await?, head);
         let later = IdempotencyKey::new();
-        if destroy {
+        if settled == MachineState::Destroyed {
             assert!(matches!(
                 local.wake(machine, later).await,
                 Err(ProviderError::Conflict(_))
             ));
         } else {
-            assert_eq!(
-                local.wake(machine, later).await?,
-                MutationOutcome::Woken(machine)
-            );
-            // Recovering an older key must not replace a later published state.
-            assert_eq!(local.recover(key).await?, outcome);
-            assert_eq!(
-                local.inspect_machine(machine).await?.state,
+            let next = if settled == MachineState::Suspended {
+                assert_eq!(
+                    local.wake(machine, later).await?,
+                    MutationOutcome::Woken(machine)
+                );
                 MachineState::Running
-            );
+            } else {
+                assert_eq!(
+                    local.suspend(machine, later).await?,
+                    MutationOutcome::Suspended(machine)
+                );
+                MachineState::Suspended
+            };
+            // Recovering an older key must not replace a later published state.
+            let later_head = streams.head(path.clone()).await?;
+            assert_eq!(local.recover(key).await?, outcome);
+            assert_eq!(transition().await?, outcome);
+            assert_eq!(streams.head(path.clone()).await?, later_head);
+            assert_eq!(local.inspect_machine(machine).await?.state, next);
         }
     }
     Ok(())
