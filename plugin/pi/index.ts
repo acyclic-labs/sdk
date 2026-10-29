@@ -29,7 +29,8 @@ export default function acyclic(pi: ExtensionAPI) {
   const pending = new Map<number, {yes: (value: Response) => void; no: (error: Error) => void; dispatch: () => void}>();
   const task = () => { if (!selected) throw new Error("Acyclic workspace owner is unavailable"); return selected; };
   const stop = (error: Error) => {
-    failure ??= new Error(`step=serve Pi coordination: ${error.message}; recovery=pi`);
+    if (failure) return;
+    failure = new Error(`step=serve Pi coordination: ${error.message}; recovery=pi`);
     for (const entry of pending.values()) entry.no(failure);
     pending.clear(); bridge?.stdin.end();
   };
