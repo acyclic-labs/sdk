@@ -44,32 +44,11 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
     let writer = PostgresStream::connect(&database, &namespace).await?;
     // Hold the real follower's replica lock while another connection publishes
     // enough commands to require a second page. Its LISTEN driver remains live.
-    let mut session = follower.inner.session.lock().await;
+    let mut replica = follower.inner.session.lock().await;
     for _ in 0..=PAGE {
         append(&writer, "paged/history").await?;
     }
     let target = writer.inner.session.lock().await.cursor;
-    let Session {
-        client,
-        cursor,
-        observed_head,
-        publish,
-        read,
-        wakes,
-    } = &mut *session;
-    let mut replica = Replicated::new(
-        PgJournal {
-            client,
-            publish,
-            read,
-            namespace: &namespace,
-            wakes,
-            head: observed_head,
-        },
-        follower.inner.core.clone(),
-        Arc::clone(&follower.inner.clock),
-        *cursor,
-    );
     replica
         .refresh_with(
             PAGE,
@@ -82,33 +61,18 @@ async fn paged_refresh_retains_observed_head_after_consuming_its_wake()
     // The refresh keeps its first snapshot's cut, while its second real SQL
     // page sees the append made during replay of the first page.
     assert_eq!(replica.cursor, target);
-    *cursor = replica.cursor;
-    drop(replica);
-    assert!(*observed_head > *cursor);
+    assert!(replica.journal.head > replica.cursor);
     // Expose exactly the consumed-notification case, without another write,
     // query, readiness loop or background task repairing the pending work.
-    wakes.borrow_and_update();
-    let mut forgotten = *cursor;
-    let mut journal = PgJournal {
-        client,
-        publish,
-        read,
-        namespace: &namespace,
-        wakes,
-        head: &mut forgotten,
-    };
+    replica.journal.wakes.borrow_and_update();
+    let observed_head = replica.journal.head;
+    let cursor = replica.cursor;
+    replica.journal.head = cursor;
     // Negative control: reconstructing from only the applied cursor parks.
-    assert!(journal.changed(*cursor).now_or_never().is_none());
-    journal.head = observed_head;
-    assert_eq!(journal.changed(*cursor).now_or_never(), Some(Ok(())));
-    let mut replica = Replicated::new(
-        journal,
-        follower.inner.core.clone(),
-        Arc::clone(&follower.inner.clock),
-        *cursor,
-    );
+    assert!(replica.journal.changed(cursor).now_or_never().is_none());
+    replica.journal.head = observed_head;
+    assert_eq!(replica.journal.changed(cursor).now_or_never(), Some(Ok(())));
     replica.refresh(PAGE).await?;
-    *cursor = replica.cursor;
     assert_eq!(
         replica
             .provider
@@ -135,10 +99,11 @@ impl ReplayObserver for CompetingPublication<'_> {
         if !after && !self.published {
             let writer = self.writer.inner.session.lock().await;
             let free = writer
+                .journal
                 .client
                 .query_one(
                     "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1937006962))",
-                    &[&self.writer.inner.namespace],
+                    &[&writer.journal.namespace],
                 )
                 .await
                 .map_err(unavailable)?;
@@ -170,28 +135,7 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
     };
     // The other real session commits after our read, before our decision.
     // Retaining a read-time database fence would deadlock this exact control.
-    let mut session = provider.inner.session.lock().await;
-    let Session {
-        client,
-        cursor,
-        observed_head,
-        publish,
-        read,
-        wakes,
-    } = &mut *session;
-    let mut replica = Replicated::new(
-        PgJournal {
-            client,
-            publish,
-            read,
-            namespace: &namespace,
-            wakes,
-            head: observed_head,
-        },
-        provider.inner.core.clone(),
-        Arc::clone(&provider.inner.clock),
-        *cursor,
-    );
+    let mut replica = provider.inner.session.lock().await;
     let result = replica
         .execute_with(
             WriteRequest::Append(request.clone()),
@@ -211,16 +155,16 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
         result.outcome,
         WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 1 })
     ));
-    *cursor = replica.cursor;
-    drop(replica);
-    let count = client
+    let count = replica
+        .journal
+        .client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
             &[&namespace],
         )
         .await?;
     assert_eq!(count.get::<_, i64>(0), 1);
-    drop(session);
+    drop(replica);
     assert!(
         provider
             .inspect_idempotency(request.idempotency_key.clone())
@@ -286,6 +230,7 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
         .session
         .lock()
         .await
+        .journal
         .client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",

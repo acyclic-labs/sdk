@@ -20,22 +20,9 @@ mod tests;
 use port::PgJournal;
 const SCHEMA: &str = include_str!("postgres/schema.sql");
 
-struct Session {
-    client: Client,
-    cursor: u64,
-    // A later page can observe an append beyond the refresh's pinned target.
-    // Keep that pending work across temporary journal/replica owners.
-    observed_head: u64,
-    publish: Statement,
-    read: Statement,
-    wakes: watch::Receiver<()>,
-}
-
 struct Inner {
     core: MemoryStream,
-    session: Mutex<Session>,
-    clock: Arc<ReplicaClock>,
-    namespace: String,
+    session: Mutex<Replicated<PgJournal>>,
     failed: AtomicBool,
     failure: watch::Sender<bool>,
     // Dropping the owner closes both connections and their drivers. No task
@@ -170,16 +157,19 @@ impl PostgresStream {
         );
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
-            session: Mutex::new(Session {
-                client,
-                cursor: 0,
-                observed_head: 0,
-                publish,
-                read,
-                wakes,
-            }),
-            clock,
-            namespace: namespace.to_owned(),
+            session: Mutex::new(Replicated::new(
+                PgJournal {
+                    client,
+                    head: 0,
+                    publish,
+                    read,
+                    wakes,
+                    namespace: namespace.to_owned(),
+                },
+                core.clone(),
+                clock,
+                0,
+            )),
             core,
             failed: AtomicBool::new(false),
             failure,
@@ -202,29 +192,7 @@ impl PostgresStream {
                     let Some(inner) = weak.upgrade() else {
                         return;
                     };
-                    let mut session = inner.session.lock().await;
-                    let Session {
-                        client,
-                        cursor,
-                        observed_head,
-                        publish,
-                        read,
-                        wakes,
-                    } = &mut *session;
-                    let mut replica = Replicated::new(
-                        PgJournal {
-                            client,
-                            publish,
-                            read,
-                            namespace: &inner.namespace,
-                            wakes,
-                            head: observed_head,
-                        },
-                        inner.core.clone(),
-                        Arc::clone(&inner.clock),
-                        *cursor,
-                    );
-                    replica.changed()
+                    inner.session.lock().await.changed()
                 };
                 let result = match changed {
                     Ok(changed) => changed.await,
@@ -266,31 +234,8 @@ impl PostgresStream {
 
     async fn refresh(&self) -> Result<(), StreamError> {
         self.check()?;
-        let mut session = self.inner.session.lock().await;
-        let Session {
-            client,
-            cursor,
-            observed_head,
-            publish,
-            read,
-            wakes,
-        } = &mut *session;
-        let mut replica = Replicated::new(
-            PgJournal {
-                client,
-                publish,
-                read,
-                namespace: &self.inner.namespace,
-                wakes,
-                head: observed_head,
-            },
-            self.inner.core.clone(),
-            Arc::clone(&self.inner.clock),
-            *cursor,
-        );
+        let mut replica = self.inner.session.lock().await;
         let result = replica.refresh(PAGE).await;
-        *cursor = replica.cursor;
-        drop(replica);
         if result.is_err() {
             self.fail();
         }
@@ -307,31 +252,8 @@ impl PostgresStream {
         // This one exact publication retains custody through caller cancellation.
         tokio::spawn(async move {
             provider.check()?;
-            let mut session = provider.inner.session.lock().await;
-            let Session {
-                client,
-                cursor,
-                observed_head,
-                publish,
-                read,
-                wakes,
-            } = &mut *session;
-            let mut replica = Replicated::new(
-                PgJournal {
-                    client,
-                    publish,
-                    read,
-                    namespace: &provider.inner.namespace,
-                    wakes,
-                    head: observed_head,
-                },
-                provider.inner.core.clone(),
-                Arc::clone(&provider.inner.clock),
-                *cursor,
-            );
+            let mut replica = provider.inner.session.lock().await;
             let result = replica.execute(command, deadline, PAGE).await;
-            *cursor = replica.cursor;
-            drop(replica);
             if matches!(
                 result,
                 Err(StreamError::Unavailable | StreamError::InvalidResponse)

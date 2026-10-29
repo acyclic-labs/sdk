@@ -1,21 +1,29 @@
 use super::*;
 use crate::replicated::{AppendIf, CommandJournal, JournalEntry, JournalFrame, JournalPage};
-pub(super) struct PgJournal<'a> {
-    pub(super) client: &'a mut Client,
-    pub(super) publish: &'a Statement,
-    pub(super) read: &'a Statement,
-    pub(super) namespace: &'a str,
-    pub(super) wakes: &'a mut watch::Receiver<()>,
-    pub(super) head: &'a mut u64,
+pub(super) struct PgJournal {
+    pub(super) client: Client,
+    pub(super) publish: Statement,
+    pub(super) read: Statement,
+    pub(super) namespace: String,
+    pub(super) wakes: watch::Receiver<()>,
+    // A later page can observe a publication beyond the refresh's pinned cut.
+    pub(super) head: u64,
 }
 
-impl CommandJournal for PgJournal<'_> {
+impl CommandJournal for PgJournal {
     async fn append_if(
         &mut self,
         expected: u64,
         frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError> {
-        append(self.client, self.publish, self.namespace, expected, frames).await
+        append(
+            &self.client,
+            &self.publish,
+            &self.namespace,
+            expected,
+            frames,
+        )
+        .await
     }
 
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
@@ -27,7 +35,7 @@ impl CommandJournal for PgJournal<'_> {
         let mut entries = Vec::new();
         let rows = self
             .client
-            .query(self.read, &[&self.namespace, &from, &page])
+            .query(&self.read, &[&self.namespace, &from, &page])
             .await
             .map_err(unavailable)?;
         let first = rows.first().ok_or(StreamError::InvalidResponse)?;
@@ -42,7 +50,7 @@ impl CommandJournal for PgJournal<'_> {
                 });
             }
         }
-        *self.head = head;
+        self.head = head;
         Ok(JournalPage {
             entries,
             head,
@@ -51,7 +59,7 @@ impl CommandJournal for PgJournal<'_> {
     }
 
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
-        let head = *self.head;
+        let head = self.head;
         let mut wakes = self.wakes.clone();
         Box::pin(async move {
             if head > after {
