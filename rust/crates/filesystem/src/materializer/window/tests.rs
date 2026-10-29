@@ -71,11 +71,10 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
             process.io(&meter)?.queue_stdin(prompt.to_vec())?;
             tokio::time::timeout(Duration::from_secs(3), async {
                 loop {
-                    let ready = process.io(&meter)?.readiness()?;
                     if process.io(&meter)?.pump_stdin()? {
                         return Ok::<_, std::io::Error>(());
                     }
-                    ready.await;
+                    process.io(&meter)?.readiness()?.await.into_result()?;
                 }
             })
             .await

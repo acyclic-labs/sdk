@@ -352,7 +352,7 @@ impl HostSessionProcess {
 
     /// Arms one wait for this child's next pipe data, writable stdin or exit,
     /// served by the shared process-event hub without a thread or timer.
-    pub fn readiness(&mut self) -> Result<acyclic_native_runtime::ProcessReadiness> {
+    pub fn readiness(&mut self) -> Result<acyclic_native_runtime::ProcessReadiness<'_>> {
         self.live_io()?.readiness().map_err(storage)
     }
 

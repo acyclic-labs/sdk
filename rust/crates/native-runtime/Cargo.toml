@@ -95,3 +95,8 @@ workspace = true
 name = "wake_loom"
 path = "tests/wake_loom.rs"
 required-features = ["model-checking"]
+
+[[test]]
+name = "process_signal_loom"
+path = "tests/process_signal_loom.rs"
+required-features = ["model-checking"]

@@ -12,10 +12,53 @@ pub(super) struct Poller {
     queue: OwnedFd,
 }
 
-/// kqueue interest needs no release: a one-shot filter deletes itself when
-/// it fires, a stale one is re-armed under the next token by `EV_ADD`, and
-/// closing a pipe or the exit of its process removes the rest.
-pub(super) struct Registration;
+/// The source remains borrowed until its one-shot filter is removed.
+pub(super) struct Registration {
+    queue: std::os::fd::RawFd,
+    event: Option<libc::kevent>,
+}
+
+impl Registration {
+    pub(super) fn disarm(&mut self) -> io::Result<()> {
+        let Some(mut event) = self.event.take() else {
+            return Ok(());
+        };
+        event.flags = libc::EV_DELETE;
+        loop {
+            // SAFETY: the hub and source outlive this registration.
+            if unsafe {
+                libc::kevent(
+                    self.queue,
+                    &raw const event,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    std::ptr::null(),
+                )
+            } == 0
+            {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            match error.kind() {
+                io::ErrorKind::Interrupted => {}
+                _ if error.raw_os_error() == Some(libc::ENOENT) => return Ok(()),
+                _ => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = self.disarm();
+    }
+}
+
+// SAFETY: udata carries only a numeric token; no pointer is dereferenced.
+unsafe impl Send for Registration {}
+// SAFETY: only exclusive Drop accesses the registration.
+unsafe impl Sync for Registration {}
 
 fn change(ident: usize, filter: i16, flags: u16, fflags: u32, token: u64) -> libc::kevent {
     libc::kevent {
@@ -130,10 +173,25 @@ impl Poller {
         match self.apply(&event) {
             // XNU attaches NOTE_EXIT to a process that has already become a
             // zombie without ever firing it, so recheck after attaching.
-            Ok(()) if matches!(source, Source::Exit(..)) && exited(event.ident)? => Ok(None),
-            Ok(()) => Ok(Some(Registration)),
+            Ok(()) => {
+                let mut registration = Registration {
+                    queue: self.queue.as_raw_fd(),
+                    event: Some(event),
+                };
+                if matches!(source, Source::Exit(..)) && exited(event.ident)? {
+                    registration.disarm()?;
+                    Ok(None)
+                } else {
+                    Ok(Some(registration))
+                }
+            }
             // The process already exited: the waiter observes it now.
-            Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(None),
+            Err(error)
+                if matches!(source, Source::Exit(..))
+                    && error.raw_os_error() == Some(libc::ESRCH) =>
+            {
+                Ok(None)
+            }
             Err(error) => Err(error),
         }
     }
@@ -172,6 +230,11 @@ impl Poller {
             };
         }
         for event in events.iter().take(usize::try_from(count).unwrap_or(0)) {
+            if event.flags & libc::EV_ERROR != 0 && event.data != 0 {
+                return Err(io::Error::from_raw_os_error(
+                    i32::try_from(event.data).map_err(io::Error::other)?,
+                ));
+            }
             if event.filter != libc::EVFILT_USER {
                 ready.push(event.udata.addr() as u64);
             }

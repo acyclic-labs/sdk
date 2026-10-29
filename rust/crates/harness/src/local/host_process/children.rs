@@ -139,7 +139,7 @@ impl NativeChildren {
 
     /// One wait per running child that fires when its pipes have data or
     /// room, or it exits, all served by the shared process-event hub.
-    pub fn readiness(&mut self) -> Result<Vec<acyclic_native_runtime::ProcessReadiness>> {
+    pub fn readiness(&mut self) -> Result<Vec<acyclic_native_runtime::ProcessReadiness<'_>>> {
         self.children
             .values_mut()
             .map(|running| running.process.readiness())

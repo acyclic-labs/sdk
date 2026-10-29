@@ -13,10 +13,35 @@ pub(super) struct Poller {
     wake: OwnedFd,
 }
 
-/// Linux interest needs no release: a one-shot entry disarms itself when it
-/// fires, a stale one is re-armed under the next token, and closing the fd
-/// removes it from the set.
-pub(super) struct Registration;
+/// The wait borrows the source until this registration is deleted.
+pub(super) struct Registration {
+    epoll: RawFd,
+    fd: Option<RawFd>,
+}
+
+impl Registration {
+    pub(super) fn disarm(&mut self) -> io::Result<()> {
+        let Some(fd) = self.fd.take() else {
+            return Ok(());
+        };
+        loop {
+            // SAFETY: the hub and borrowed source outlive this registration.
+            let result = check(unsafe {
+                libc::epoll_ctl(self.epoll, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut())
+            });
+            match result {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                result => return result.map(drop),
+            }
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = self.disarm();
+    }
+}
 
 fn check(result: libc::c_int) -> io::Result<libc::c_int> {
     if result < 0 {
@@ -61,29 +86,15 @@ impl Poller {
         };
         // SAFETY: the caller's borrowed fd is live for this call, and the
         // epoll fd is owned by this poller.
-        let modified = check(unsafe {
+        check(unsafe {
             libc::epoll_ctl(
                 self.epoll.as_raw_fd(),
-                libc::EPOLL_CTL_MOD,
+                libc::EPOLL_CTL_ADD,
                 fd,
                 &raw mut event,
             )
-        });
-        match modified {
-            Err(error) if error.raw_os_error() == Some(libc::ENOENT) => {
-                // SAFETY: as above, adding the same live fd.
-                check(unsafe {
-                    libc::epoll_ctl(
-                        self.epoll.as_raw_fd(),
-                        libc::EPOLL_CTL_ADD,
-                        fd,
-                        &raw mut event,
-                    )
-                })
-                .map(drop)
-            }
-            other => other.map(drop),
-        }
+        })
+        .map(drop)
     }
 
     pub(super) fn register(
@@ -98,7 +109,10 @@ impl Poller {
             Source::Writable(fd) => (fd.as_raw_fd(), libc::EPOLLOUT),
         };
         self.interest(fd, events, token)?;
-        Ok(Some(Registration))
+        Ok(Some(Registration {
+            epoll: self.epoll.as_raw_fd(),
+            fd: Some(fd),
+        }))
     }
 
     pub(super) fn notify(&self) -> io::Result<()> {

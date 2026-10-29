@@ -28,7 +28,7 @@ impl ToolProvider for Fixture {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> Result<Option<Wake>> {
+    ) -> Result<Option<Wake<'_>>> {
         if self.released && parked.contains("held") {
             settled.push(("held".into(), Err(json!({"code":"released"}))));
         }

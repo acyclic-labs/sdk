@@ -69,6 +69,24 @@ scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
 Existing temporary-file capture consumers retain their separate file-size
 polling policy, which is not a hard disk-usage limit.
 
+`ProcessTree::readiness()` borrows its tree until the wait is consumed or
+dropped, so pipe closure and child reaping cannot invalidate armed kernel
+registrations. A source already armed by another wait is refused with
+`AlreadyExists`; dropping that wait releases its interest before rearming.
+The first terminal event wins: `Ready`, `Deadline`, `Cancelled`, or
+`ServiceFailed` with the original shared error. Fatal readiness-service
+failure settles current and future waiters, including waits without deadlines.
+Producer loss uses that same failure path. Fatal kernel waits are never retried;
+interrupted syscalls retain their interest and retry. Capture propagates a
+service failure into the tree's existing cleanup path.
+
+For S sources and W outstanding waits, successful arm/drop perform O(S) expected amortized
+hash work and one registry critical section. A deadline adds O(log W) tree
+work. Delivery visits only ready tokens and expired deadlines; settling and
+polling one terminal signal take O(1) work. Fatal failure necessarily visits
+the W affected waits once. Hash-table growth is amortized, rather than a
+worst-case constant-time guarantee. No operation scans process history.
+
 Process ownership stays in `process_tree.rs` inside this existing crate. File
 backends remain separate modules. `process_output(command, timeout, max_bytes)`
 provides bounded short-command capture; `process_status(command, timeout)`

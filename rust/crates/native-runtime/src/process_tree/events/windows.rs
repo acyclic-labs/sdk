@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -33,9 +33,6 @@ const PIPE_KEY: usize = 2;
 /// The largest stdin chunk one overlapped write carries.
 const WRITE_CHUNK: usize = 64 * 1024;
 
-/// The port the registered exit callbacks post to.
-static PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
-
 pub(super) struct Poller {
     port: OwnedHandle,
 }
@@ -49,22 +46,41 @@ unsafe impl Send for Registration {}
 // SAFETY: shared access never touches the handle; only Drop does.
 unsafe impl Sync for Registration {}
 
-impl Drop for Registration {
-    fn drop(&mut self) {
+impl Registration {
+    pub(super) fn disarm(&mut self) -> io::Result<()> {
         if let Some(wait) = self.0.take() {
             // SAFETY: this owned registration is released once. A null
             // completion event returns at once; a callback still running
             // posts only a token, which the hub ignores once disarmed.
-            unsafe { UnregisterWaitEx(wait, std::ptr::null_mut()) };
+            if unsafe { UnregisterWaitEx(wait, std::ptr::null_mut()) } == 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(ERROR_IO_PENDING.cast_signed()) {
+                    return Err(error);
+                }
+            }
         }
+        Ok(())
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = self.disarm();
     }
 }
 
 unsafe extern "system" fn exited(context: *mut c_void, _timed_out: bool) {
+    let Ok(hub) = super::hub() else {
+        return;
+    };
     // SAFETY: the port outlives the process, and the context is only the
     // token value; nothing dereferences it.
     unsafe {
-        PostQueuedCompletionStatus(PORT.load(Ordering::Acquire), 0, EXIT_KEY, context.cast());
+        if PostQueuedCompletionStatus(hub.poller.port.as_raw_handle(), 0, EXIT_KEY, context.cast())
+            == 0
+        {
+            hub.fail(io::Error::last_os_error());
+        }
     }
 }
 
@@ -307,7 +323,6 @@ impl Poller {
         }
         // SAFETY: a successful call returns one owned port handle.
         let port = unsafe { OwnedHandle::from_raw_handle(port) };
-        PORT.store(port.as_raw_handle(), Ordering::Release);
         Ok(Self { port })
     }
 

@@ -295,11 +295,11 @@ impl<'a> Pump<'a> {
     }
 
     /// Arms one wait on every source that can make progress.
-    pub(super) fn arm_with_wake(
-        &self,
-        tree: &mut ProcessTree,
-        wakes: Option<&[ProcessWake]>,
-    ) -> io::Result<events::Wait> {
+    pub(super) fn arm_with_wake<'b>(
+        &'b self,
+        tree: &'b mut ProcessTree,
+        wakes: Option<&'b [ProcessWake]>,
+    ) -> io::Result<events::Wait<'b>> {
         let wake_at = match self.check_every {
             Some(_) => self.next_check.min(self.deadline),
             None => self.deadline,

@@ -98,7 +98,7 @@ impl ToolProvider for Coordination {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> Result<Option<Wake>> {
+    ) -> Result<Option<Wake<'_>>> {
         let Some(children) = self.children.as_mut() else {
             return Ok(None);
         };
@@ -118,18 +118,16 @@ impl ToolProvider for Coordination {
             return Ok(None);
         }
         if flowed {
-            return Ok(Some(Box::pin(std::future::ready(()))));
+            return Ok(Some(Box::pin(std::future::ready(Ok(())))));
         }
         let mut waits = children.readiness()?;
         Ok(Some(Box::pin(std::future::poll_fn(move |context| {
-            if waits
-                .iter_mut()
-                .any(|wait| Pin::new(wait).poll(context).is_ready())
-            {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
+            for wait in &mut waits {
+                if let Poll::Ready(outcome) = Pin::new(wait).poll(context) {
+                    return Poll::Ready(outcome.into_result().map_err(storage));
+                }
             }
+            Poll::Pending
         }))))
     }
 }

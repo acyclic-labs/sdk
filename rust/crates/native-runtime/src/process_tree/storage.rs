@@ -38,7 +38,7 @@ pub struct ProcessTreeIo<'a> {
     stderr: &'a mut ReadBuffer<u8>,
 }
 
-impl ProcessTreeIo<'_> {
+impl<'a> ProcessTreeIo<'a> {
     /// Queues input without transferring the native pipe or its owner.
     pub fn queue_stdin(&mut self, bytes: Vec<u8>) -> io::Result<()> {
         self.meter.check()?;
@@ -50,7 +50,7 @@ impl ProcessTreeIo<'_> {
     }
     /// Arms one wait for this process's next readiness; see
     /// [`ProcessTree::readiness`].
-    pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+    pub fn readiness(self) -> io::Result<ProcessReadiness<'a>> {
         self.tree.readiness()
     }
     /// Reads bounded stdout without waiting for data.

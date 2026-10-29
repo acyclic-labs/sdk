@@ -30,7 +30,7 @@ const QUEUED_REPLIES: usize = 32;
 /// What one wait of the serving loop observed.
 enum Event {
     Message(Option<io::Result<Value>>),
-    Woken,
+    Woken(Result<()>),
     Room,
     Failed,
 }
@@ -54,7 +54,7 @@ pub enum ToolCall {
 
 /// A provider's armed wake-up: it completes once its work can progress, such
 /// as when a child's pipe has data or the child exits.
-pub type Wake = Pin<Box<dyn Future<Output = ()>>>;
+pub type Wake<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
 /// A parked call's settled result: its answer, or a tool failure.
 pub type Settled = std::result::Result<Value, Value>;
@@ -86,7 +86,7 @@ pub trait ToolProvider {
         &mut self,
         parked: &BTreeSet<String>,
         settled: &mut Vec<(String, Settled)>,
-    ) -> Result<Option<Wake>>;
+    ) -> Result<Option<Wake<'_>>>;
 }
 
 /// The server's identity and its bounds.
@@ -144,42 +144,49 @@ impl ToolServer {
         let mut settled = Vec::new();
         loop {
             let keys = parked.iter().map(|(_, key)| key.clone()).collect();
-            let wake = provider.progress(&keys, &mut settled)?;
-            for (key, value) in settled.drain(..) {
-                for (id, _) in parked.extract_if(.., |(_, parked)| *parked == key) {
-                    queue(backlog, &result(&id, value.clone()))?;
-                }
-            }
-            while let Some(line) = backlog.pop_front() {
-                match replies.try_send(line) {
-                    Ok(()) => {}
-                    Err(error) if error.is_full() => {
-                        backlog.push_front(error.into_inner());
-                        break;
+            let event = {
+                let wake = provider.progress(&keys, &mut settled)?;
+                for (key, value) in settled.drain(..) {
+                    for (id, _) in parked.extract_if(.., |(_, parked)| *parked == key) {
+                        queue(backlog, &result(&id, value.clone()))?;
                     }
-                    // The writer returns its own failure once joined.
-                    Err(_) => return Ok(()),
                 }
-            }
-            let mut events: Vec<Pin<Box<dyn Future<Output = Event> + '_>>> = Vec::new();
-            if backlog.len() < QUEUED_REPLIES {
-                events.push(Box::pin(messages.next().map(Event::Message)));
-            }
-            if let Some(wake) = wake {
-                events.push(Box::pin(wake.map(|()| Event::Woken)));
-            }
-            if !backlog.is_empty() {
-                let replies = &mut *replies;
-                events.push(Box::pin(
-                    future::poll_fn(move |context| replies.poll_ready(context))
-                        .map(|_| Event::Room),
-                ));
-            }
-            events.push(Box::pin((&mut *failed).map(|_| Event::Failed)));
-            let (event, _, _) = block_on(future::select_all(events));
+                while let Some(line) = backlog.pop_front() {
+                    match replies.try_send(line) {
+                        Ok(()) => {}
+                        Err(error) if error.is_full() => {
+                            backlog.push_front(error.into_inner());
+                            break;
+                        }
+                        // The writer returns its own failure once joined.
+                        Err(_) => return Ok(()),
+                    }
+                }
+                let mut events: Vec<Pin<Box<dyn Future<Output = Event> + '_>>> = Vec::new();
+                if backlog.len() < QUEUED_REPLIES {
+                    events.push(Box::pin(messages.next().map(Event::Message)));
+                }
+                if let Some(wake) = wake {
+                    events.push(Box::pin(wake.map(Event::Woken)));
+                }
+                if !backlog.is_empty() {
+                    let replies = &mut *replies;
+                    events.push(Box::pin(
+                        future::poll_fn(move |context| replies.poll_ready(context))
+                            .map(|_| Event::Room),
+                    ));
+                }
+                events.push(Box::pin((&mut *failed).map(|_| Event::Failed)));
+                let (event, _, _) = block_on(future::select_all(events));
+                event
+            };
             let message = match event {
                 Event::Message(message) => message,
-                Event::Woken | Event::Room => continue,
+                Event::Woken(result) => {
+                    result?;
+                    continue;
+                }
+                Event::Room => continue,
                 // The writer returns its own failure once joined.
                 Event::Failed => return Ok(()),
             };

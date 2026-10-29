@@ -121,15 +121,26 @@ pub struct ProcessTree {
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
 /// It holds no thread and fires once.
-pub struct ProcessReadiness(events::Wait);
+/// The wait borrows its tree, preventing pipe closure or replacement while
+/// kernel registrations still reference it.
+pub struct ProcessReadiness<'a>(events::Wait<'a>);
 
-impl std::future::Future for ProcessReadiness {
-    type Output = ();
+pub use events::ProcessWaitOutcome;
+
+impl ProcessReadiness<'_> {
+    /// Settles this wait as cancelled unless a terminal event already won.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
+impl std::future::Future for ProcessReadiness<'_> {
+    type Output = ProcessWaitOutcome;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
+    ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.0).poll(context)
     }
 }
@@ -495,7 +506,13 @@ impl ProcessTree {
     /// closed, queued stdin accepts bytes, or the direct child exits. Its
     /// owner then reads without waiting, as before; no thread or timer runs
     /// while it waits.
-    pub fn readiness(&mut self) -> io::Result<ProcessReadiness> {
+    pub fn readiness(&mut self) -> io::Result<ProcessReadiness<'_>> {
+        if self.is_reaped() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "process readiness has no child; retain the child before arming",
+            ));
+        }
         let writing = self
             .queued_stdin
             .as_ref()
@@ -503,9 +520,7 @@ impl ProcessTree {
         #[cfg(unix)]
         {
             use std::os::fd::AsFd as _;
-            if self.child.is_some() {
-                self.prepare_exit_source()?;
-            }
+            self.prepare_exit_source()?;
             let mut sources = Vec::with_capacity(4);
             if let Some(child) = &self.child {
                 if let Some(pipe) = &child.stdout {
@@ -525,7 +540,10 @@ impl ProcessTree {
         {
             use std::os::windows::io::AsHandle as _;
             let Some(child) = &self.child else {
-                return events::arm(&[], None).map(ProcessReadiness);
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "process readiness has no child; retain the child before arming",
+                ));
             };
             let [stdout, stderr] = &mut self.readers;
             if stdout.is_none()
@@ -802,7 +820,11 @@ impl ProcessTree {
                 match pump.turn(self, &mut check, &mut observe, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
-                        Ok(wait) => wait.block(),
+                        Ok(wait) => {
+                            if let Err(error) = wait.block().into_result() {
+                                break Err(error);
+                            }
+                        }
                         Err(error) => break Err(error),
                     },
                 }
@@ -875,7 +897,11 @@ impl ProcessTree {
             match turned {
                 pump::Turn::Done(result) => break result,
                 pump::Turn::Wait => match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
-                    Ok(wait) => wait.await,
+                    Ok(wait) => {
+                        if let Err(error) = wait.await.into_result() {
+                            break Err(error);
+                        }
+                    }
                     Err(error) => break Err(error),
                 },
             }
@@ -915,7 +941,11 @@ impl ProcessTree {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
                             match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
-                                Ok(wait) => wait.block(),
+                                Ok(wait) => {
+                                    if let Err(error) = wait.block().into_result() {
+                                        break Err(error);
+                                    }
+                                }
                                 Err(error) => break Err(error),
                             }
                         }
@@ -1013,8 +1043,8 @@ impl ProcessTree {
     }
 
     /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(unix)]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
+    #[cfg(all(unix, test))]
+    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait<'_>> {
         self.prepare_exit_source()?;
         let exit = self.exit_source()?;
         events::arm(exit.as_slice(), Some(deadline))
@@ -1022,7 +1052,7 @@ impl ProcessTree {
 
     /// Arms one wait on the direct child's exit, waking by `deadline`.
     #[cfg(windows)]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
+    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait<'_>> {
         use std::os::windows::io::AsHandle as _;
         let exit = self
             .child
@@ -1060,8 +1090,7 @@ impl ProcessTree {
                         return Err(io::ErrorKind::TimedOut.into());
                     }
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        self.arm_exit(deadline)?.block();
-                        Ok(())
+                        self.arm_exit(deadline)?.block().into_result()
                     })?;
                 }
                 if let Some(child) = self.child.as_mut() {
