@@ -206,6 +206,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(slot) = actors.get(&actor) {
+            // An activation may follow another producer's state commit. Wake
+            // against that new cut even if the resident had no input or alarm.
+            slot.refresh.store(true, Ordering::Release);
             slot.waker.wake_by_ref();
             return Ok(());
         }

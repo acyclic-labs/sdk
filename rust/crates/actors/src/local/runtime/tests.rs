@@ -337,6 +337,63 @@ struct CapturesCuts {
     deliveries: std::sync::Mutex<Vec<Delivery>>,
 }
 
+/// A committed activation refreshes a resident's idle cut, including when
+/// there was no alarm or the replacement deadline is earlier than its timer.
+#[tokio::test]
+async fn state_binding_alarm_activation_refreshes_an_idle_resident() -> TestResult {
+    for original in [None, Some(1000)] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = Store::new(Arc::clone(&provider), root()?);
+        let address = actor("changed-alarm")?;
+        let mut create = PreparedPublish::foreign(key("idle/create")?);
+        for effect in store.create(
+            &address,
+            BTreeMap::new(),
+            Some(ledger("out/changed-alarm")?),
+        )? {
+            create.join(effect)?;
+        }
+        store.submit(create).await?;
+        let runtime = Runtime::new(
+            Store::new(Arc::clone(&provider), root()?),
+            Arc::new(Package::new()?),
+            Arc::new(Manual(AtomicU64::new(100))),
+        );
+        runtime.track(address.clone())?;
+        assert!(runtime.drain().await.is_empty());
+        if let Some(deadline) = original {
+            let snapshot = store.load(&address).await?;
+            let epoch = snapshot.state().ok_or("missing state")?.epoch();
+            let mut binding = store.bind_state(snapshot, epoch)?;
+            binding.transaction(|state| state.alarm(Some(deadline)))?;
+            binding.flush(key("idle/original")?).await?;
+        }
+        let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
+        // MemoryStream operations complete synchronously. This drives the
+        // actual dispatcher until every original event owner is pending.
+        assert!(futures::poll!(host.as_mut()).is_pending());
+        assert_eq!(runtime.ready.next_deadline(), original);
+        assert_eq!(runtime.counts().1, 0, "resident must be idle");
+        let snapshot = store.load(&address).await?;
+        let epoch = snapshot.state().ok_or("missing state")?.epoch();
+        let mut binding = store.bind_state(snapshot, epoch)?;
+        binding.transaction(|state| state.alarm(Some(50)))?;
+        binding.flush(key("idle/replacement")?).await?;
+        assert!(futures::poll!(host.as_mut()).is_pending());
+        assert_eq!(
+            records(&*provider, "out/changed-alarm").await?,
+            vec![Bytes::from_static(if original.is_some() {
+                b"a2"
+            } else {
+                b"a1"
+            })],
+            "the original activation must deliver the changed alarm once"
+        );
+        assert_eq!(runtime.ready.next_deadline(), None);
+    }
+    Ok(())
+}
+
 /// The production reservation package uses the original strict wire, Store,
 /// event host, pause/placement fences and alarm generation on physical reopen.
 #[tokio::test]
