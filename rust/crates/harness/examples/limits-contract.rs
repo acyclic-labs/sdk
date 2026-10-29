@@ -6,7 +6,7 @@ use serde_json::json;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let defaults = Limits::default();
     let maximum = Limits {
-        file_bytes: MAX_EXACT_JS_INTEGER,
+        file_bytes: Some(MAX_EXACT_JS_INTEGER),
         path_bytes: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),
         attachments: std::num::NonZeroUsize::new(MAX_PORTABLE_COUNT),
         render_bytes: Some(MAX_EXACT_JS_INTEGER),
