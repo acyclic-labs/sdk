@@ -9,7 +9,7 @@
 //! are still present. A client awaits its reply as one keyed waiter on its
 //! process's watcher and withdraws its request once read; the owner then drops
 //! the reply. There is no per-request result file, watcher or deadline: a
-//! request waits until it is answered or its owner exits.
+//! request waits until it is answered, its notification source fails or its owner exits.
 //!
 //! Both endpoints follow notifications, never scans. The owner indexes the
 //! request names each notification carries and dispatches every request
@@ -45,6 +45,10 @@ fn projection_changed(event: &notify::Result<notify::Event>) -> bool {
     !event
         .as_ref()
         .is_ok_and(|event| matches!(event.kind, notify::EventKind::Access(_)))
+}
+
+fn notification_failure(error: &notify::Error) -> String {
+    format!("step=observe native workspace files: {error}; recovery=acyclic agents")
 }
 
 /// The leaves under `directory` a notification names, or `None` when it
@@ -138,6 +142,7 @@ struct Key {
 #[derive(Default)]
 struct Waiters {
     gone: bool,
+    failure: Option<String>,
     keys: BTreeMap<String, Key>,
 }
 
@@ -149,6 +154,37 @@ struct Shared {
 }
 
 impl Shared {
+    fn note(&self, event: notify::Result<notify::Event>) {
+        if let Err(error) = &event {
+            let mut waiters = lock(&self.waiters);
+            if waiters.gone || waiters.failure.is_some() {
+                return;
+            }
+            let failure = notification_failure(error);
+            waiters.failure = Some(failure.clone());
+            for key in waiters.keys.values_mut() {
+                for (_, waiter) in std::mem::take(&mut key.waiting) {
+                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(failure.clone()))));
+                }
+            }
+            return;
+        }
+        if !projection_changed(&event) {
+            return;
+        }
+        let keys = match notified_leaves(&event, &self.status) {
+            Some(leaves) => leaves
+                .into_iter()
+                .filter_map(|leaf| leaf.into_string().ok())
+                .collect::<BTreeSet<_>>(),
+            // Overflow: every awaited key once, never every request.
+            None => lock(&self.waiters).keys.keys().cloned().collect(),
+        };
+        for key in keys {
+            self.deliver(&key);
+        }
+    }
+
     /// Delivers `key`'s latest status to its waiters; read once per key and
     /// notification, whatever the number of other outstanding requests.
     fn deliver(&self, key: &str) {
@@ -231,27 +267,13 @@ impl Bridge {
         {
             return Err(Error::NotFound(NO_OWNER.into()));
         }
-        let status = directory.join("status");
         let shared = Arc::new(Shared {
-            status: status.clone(),
+            status: directory.join("status"),
             waiters: Mutex::default(),
         });
         let notified = Arc::clone(&shared);
         let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-            if !projection_changed(&event) {
-                return;
-            }
-            let keys = match notified_leaves(&event, &status) {
-                Some(leaves) => leaves
-                    .into_iter()
-                    .filter_map(|leaf| leaf.into_string().ok())
-                    .collect::<BTreeSet<_>>(),
-                // Overflow: every awaited key once, never every request.
-                None => lock(&notified.waiters).keys.keys().cloned().collect(),
-            };
-            for key in keys {
-                notified.deliver(&key);
-            }
+            notified.note(event);
         })
         .map_err(storage)?;
         let exited = Arc::clone(&shared);
@@ -292,6 +314,9 @@ impl Bridge {
     ) -> Result<Waiting> {
         {
             let mut waiters = lock(&self.shared.waiters);
+            if let Some(failure) = &waiters.failure {
+                return Err(Error::Storage(failure.clone()));
+            }
             if waiters.gone {
                 return Err(Error::NotFound(NO_OWNER.into()));
             }
@@ -605,6 +630,7 @@ struct Notices {
 struct Touched {
     names: BTreeSet<OsString>,
     rescan: bool,
+    failure: Option<String>,
 }
 
 impl Notices {
@@ -615,6 +641,7 @@ impl Notices {
             touched: Mutex::new(Touched {
                 names: BTreeSet::new(),
                 rescan: true,
+                failure: None,
             }),
             changed: tokio::sync::Notify::new(),
         }
@@ -628,9 +655,15 @@ impl Notices {
         }
         {
             let mut touched = lock(&self.touched);
-            match notified_leaves(event, &self.requests) {
-                Some(leaves) => touched.names.extend(leaves),
-                None => touched.rescan = true,
+            if let Err(error) = event {
+                touched
+                    .failure
+                    .get_or_insert_with(|| notification_failure(error));
+            } else if touched.failure.is_none() {
+                match notified_leaves(event, &self.requests) {
+                    Some(leaves) => touched.names.extend(leaves),
+                    None => touched.rescan = true,
+                }
             }
         }
         self.changed.notify_one();
@@ -641,6 +674,7 @@ impl Notices {
         Touched {
             names: std::mem::take(&mut touched.names),
             rescan: std::mem::take(&mut touched.rescan),
+            failure: touched.failure.clone(),
         }
     }
 }
@@ -683,6 +717,9 @@ impl Served {
     /// Applies what notifications reported: each named request is admitted
     /// or withdrawn on its own; only an overflow lists the whole directory.
     fn touch(&mut self, requests: &Path, session: uuid::Uuid, touched: Touched) -> Result<()> {
+        if let Some(failure) = touched.failure {
+            return Err(Error::Storage(failure));
+        }
         let names = if touched.rescan {
             #[cfg(test)]
             {

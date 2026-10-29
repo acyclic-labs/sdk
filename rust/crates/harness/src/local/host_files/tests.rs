@@ -292,6 +292,60 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         lock(&bridge.watching).watched.is_empty(),
         "a key nothing awaits must not stay watched"
     );
+    // The real connection has completed ordinary requests. Lose its
+    // notification producer while two registered replies remain outstanding:
+    // both must finish without publishing a reply or waiting for owner death.
+    let (first, first_reply) = mpsc::sync_channel(1);
+    let first = bridge.wait(WORKSPACE, OperationId::new(), first)?;
+    let (second, second_reply) = mpsc::sync_channel(1);
+    let second = bridge.wait(WORKSPACE, OperationId::new(), second)?;
+    assert!(matches!(
+        first_reply.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    bridge
+        .shared
+        .note(Err(notify::Error::io(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        ))));
+    let failure = match first_reply
+        .try_recv()
+        .expect("watch failure settles the first reply")
+    {
+        Delivery::Reply(Err(Error::Storage(failure))) => failure,
+        _ => panic!("watch failure must retain its storage cause"),
+    };
+    assert!(failure.contains("step=observe native workspace files:"));
+    assert!(failure.ends_with("recovery=acyclic agents"));
+    assert!(matches!(
+        second_reply.try_recv(),
+        Ok(Delivery::Reply(Err(Error::Storage(ref error)))) if error == &failure
+    ));
+    drop((first, second));
+    bridge
+        .shared
+        .note(Err(notify::Error::io(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ))));
+    let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    assert!(
+        Arc::ptr_eq(&lock(&REGISTRY).bridge(&cwd)?, &bridge),
+        "a failed live connection must not reopen its notification source"
+    );
+    assert!(matches!(request(&cwd, HostAction::Agents {
+        task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
+    }), Err(Error::Storage(ref error)) if error == &failure));
+    assert_eq!(
+        std::fs::read_dir(&requests).map_err(storage)?.count(),
+        0,
+        "a refused connection must not publish a request with no response producer"
+    );
+    assert!(lock(&bridge.shared.waiters).keys.is_empty());
+    assert!(lock(&bridge.watching).watched.is_empty());
+    assert!(
+        !owner.is_finished(),
+        "client failure must not kill the workspace owner"
+    );
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
     owner.abort();
@@ -365,11 +419,10 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         touched.names,
         BTreeSet::from(["a.json".into(), "b.json".into()])
     );
-    // Negative controls: an overflow, an error or a foreign path cannot name
+    // Negative controls: an overflow or a foreign path cannot name
     // every changed request, so each forces exactly one rescan.
     for event in [
         Ok(notify::Event::new(notify::EventKind::Other).set_flag(Flag::Rescan)),
-        Err(notify::Error::generic("queue overflow")),
         Ok(notify::Event::new(notify::EventKind::Any).add_path(root.path().join("..").join("x"))),
         Ok(notify::Event::new(notify::EventKind::Any)),
     ] {
@@ -385,6 +438,7 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         Touched {
             names: BTreeSet::from(["absent.json".into()]),
             rescan: false,
+            failure: None,
         },
     )?;
     assert_eq!(served.rescans, 0);
@@ -394,8 +448,35 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         Touched {
             names: BTreeSet::new(),
             rescan: true,
+            failure: None,
         },
     )?;
     assert_eq!(served.rescans, 1);
+    // Notification errors mean the producer is unavailable, unlike a
+    // successful overflow event. Do not scan or dispatch after that failure.
+    notices.note(&Err(notify::Error::io(std::io::Error::from(
+        std::io::ErrorKind::BrokenPipe,
+    ))));
+    let failure = notices.take();
+    assert!(!failure.rescan);
+    let error = served
+        .touch(&requests, session, failure)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("step=observe native workspace files:"));
+    notices.note(&named(notify::EventKind::Any, "later.json"));
+    let later = notices.take();
+    assert!(later.names.is_empty());
+    assert_eq!(
+        served
+            .touch(&requests, session, later)
+            .unwrap_err()
+            .to_string(),
+        error
+    );
+    assert_eq!(
+        served.rescans, 1,
+        "producer failure must not trigger another scan"
+    );
     Ok(())
 }
