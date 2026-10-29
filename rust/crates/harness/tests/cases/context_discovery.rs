@@ -77,7 +77,7 @@ impl ContentResidencyVerifier for CountingReader<'_> {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a acyclic_harness::resources::GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: acyclic_harness::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         acyclic_harness::conversation::BoundedContentFuture<

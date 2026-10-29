@@ -359,7 +359,7 @@ where
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         crate::conversation::BoundedContentFuture<
@@ -398,8 +398,7 @@ where
                     &grant,
                     path,
                     expected_generation,
-                    self.maximum_bytes
-                        .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
+                    maximum_bytes.into_iter().chain(self.maximum_bytes).min(),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;

@@ -108,9 +108,10 @@ impl<
         cut: LazySnapshotRef,
         path: &str,
         range: Option<crate::ByteRange>,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(OwnedSourceChunk, bool), LazyWorkspaceError> {
+        let maximum = maximum.into();
         let (lookup, used, guard) = self.lookup_at_snapshot(cut, path, ctx).await?;
         let lookup = lookup.ok_or(LazyWorkspaceError::NotFound)?;
         let source = matches!(lookup, LazyLookup::Source { .. });
@@ -130,9 +131,10 @@ impl<
         &self,
         cut: LazySnapshotRef,
         file_id: FileId,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<OwnedSourceChunk, LazyWorkspaceError> {
+        let maximum = maximum.into();
         self.validate_snapshot(cut, ctx).await?;
         let mut checkout = self
             .checkout(
@@ -166,7 +168,7 @@ impl<
             )
         })?;
         let length = record_logical_bytes(record).ok_or(LazyWorkspaceError::NotRegularFile)?;
-        if length > maximum {
+        if maximum.is_some_and(|maximum| length > maximum) {
             return Err(LazyWorkspaceError::TooLarge);
         }
         let read = accounted!(ctx, |work, cancel| detached.read_range(

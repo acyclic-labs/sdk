@@ -748,7 +748,7 @@ fn checkout_publication_preserves_caller_ceilings() {
                                     &grant,
                                     source.path(),
                                     None,
-                                    1024,
+                                    Some(1024),
                                     crate::conversation::ContentAccess::default(),
                                 )
                                 .await?;

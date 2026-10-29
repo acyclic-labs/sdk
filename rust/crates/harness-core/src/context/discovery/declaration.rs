@@ -332,7 +332,7 @@ impl PinnedContextPath {
                 &self.root.directory,
                 &self.path,
                 Some(&self.generation),
-                maximum_bytes,
+                Some(maximum_bytes),
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;

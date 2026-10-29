@@ -122,7 +122,7 @@ impl SkillMetadata {
                 &source.root.directory,
                 &source.path,
                 Some(&source.generation),
-                maximum_bytes,
+                Some(maximum_bytes),
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: content_io,

@@ -19,7 +19,7 @@ struct SkillRead<'a> {
     grant: &'a ContentGrant,
     path: &'a str,
     source_generation: &'a GenerationRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     access: crate::conversation::ContentAccess<'a, 'a>,
 }
 
@@ -71,9 +71,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
+        let maximum_bytes = maximum_bytes.into();
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         let (file, bytes, _) = self
@@ -96,13 +97,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant: &ContentGrant,
         path: &str,
         expected_generation: Option<&GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         access: crate::conversation::ContentAccess<'_, '_>,
     ) -> Result<(
         FileRef,
         acyclic_stream::OwnedBytes,
         Option<crate::OperationId>,
     )> {
+        let maximum_bytes = maximum_bytes.into();
         let crate::conversation::ContentAccess { ceiling, io } = access;
 
         self.require_private_directory(volume, grant, path, io)?;
@@ -529,7 +531,7 @@ fn path_read_refusal(error: Error) -> Error {
 pub(in crate::filesystem) async fn read_generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
-    maximum: u64,
+    maximum: impl Into<Option<u64>>,
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
     let unmeasured;
