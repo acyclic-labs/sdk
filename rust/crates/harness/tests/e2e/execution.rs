@@ -37,7 +37,7 @@ pub(super) struct Outcome<P, A: 'static = MemoryAuthorityBackend, O: 'static = M
 }
 
 impl<
-    P: acyclic_harness_core::store::JournalProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 > Outcome<P, A, O>
@@ -58,7 +58,7 @@ impl<
 }
 
 /// Runs one executor scenario with its journal on `stream`.
-pub(super) async fn run_on<P: acyclic_harness_core::store::JournalProvider>(
+pub(super) async fn run_on<P: acyclic_harness::store::JournalProvider>(
     case: Scenario,
     stream: Arc<P>,
 ) -> TestResult<Outcome<P>> {
@@ -66,7 +66,7 @@ pub(super) async fn run_on<P: acyclic_harness_core::store::JournalProvider>(
 }
 
 pub(super) async fn run_with_filesystem<
-    P: acyclic_harness_core::store::JournalProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
@@ -128,7 +128,7 @@ pub(super) async fn workspace(
     workspace_on(seed, Arc::new(MemoryStream::default())).await
 }
 
-async fn workspace_on<P: acyclic_harness_core::store::JournalProvider>(
+async fn workspace_on<P: acyclic_harness::store::JournalProvider>(
     seed: &std::collections::BTreeMap<String, String>,
     stream: Arc<P>,
 ) -> TestResult<MemoryHarnessStorage<P>> {
@@ -138,7 +138,7 @@ async fn workspace_on<P: acyclic_harness_core::store::JournalProvider>(
 }
 
 pub(super) async fn publish<
-    P: acyclic_harness_core::store::JournalProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
@@ -486,7 +486,7 @@ async fn scenario_observations_normalize_inline_and_file_events() -> TestResult 
 }
 
 pub(super) async fn check_files<
-    P: acyclic_harness_core::store::JournalProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(

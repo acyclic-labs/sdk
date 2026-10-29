@@ -56,7 +56,7 @@ fn scenarios() -> TestResult<Vec<(PathBuf, Value)>> {
 }
 
 /// The trace of `case` on `stream`, after its own oracle passed.
-async fn trace<P: acyclic_harness_core::store::JournalProvider>(
+async fn trace<P: acyclic_harness::store::JournalProvider>(
     case: &Value,
     stream: Arc<P>,
 ) -> TestResult<Value> {
@@ -70,7 +70,10 @@ async fn trace<P: acyclic_harness_core::store::JournalProvider>(
 
 /// Runs `case` on both providers; both must pass its oracle and replay the
 /// same trace.
-async fn compare<A: StreamProvider, B: StreamProvider>(
+async fn compare<
+    A: acyclic_harness::store::JournalProvider,
+    B: acyclic_harness::store::JournalProvider,
+>(
     path: &Path,
     case: &Value,
     left: Arc<A>,
@@ -111,7 +114,7 @@ impl Drop for Loopback {
     }
 }
 
-async fn loopback<P: acyclic_harness_core::store::JournalProvider + 'static>(
+async fn loopback<P: acyclic_harness::store::JournalProvider + 'static>(
     provider: Arc<P>,
 ) -> TestResult<Loopback> {
     use acyclic_stream::{grpc, session, wire};

@@ -7,7 +7,7 @@ use acyclic_objects::MemoryObjects;
 
 async fn row<P, A, O>(name: &str, files: Fs<A, O>, stream: Arc<P>) -> TestResult
 where
-    P: acyclic_harness_core::store::JournalProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -41,7 +41,7 @@ where
     Ok(())
 }
 
-async fn files<P: acyclic_harness_core::store::JournalProvider>(
+async fn files<P: acyclic_harness::store::JournalProvider>(
     name: &str,
     stream: Arc<P>,
 ) -> TestResult {

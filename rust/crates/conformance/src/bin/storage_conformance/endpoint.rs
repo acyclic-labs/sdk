@@ -23,7 +23,7 @@ use acyclic_objects::{
     Blobs, MemoryObjects, Store,
     s3::{Capabilities as S3Capabilities, S3Medium},
 };
-use acyclic_stream::{BoxProviderStream, StreamProvider};
+use acyclic_stream::BoxProviderStream;
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
@@ -83,7 +83,7 @@ fn checked<T>(
     result.map_err(|error| format!("step=endpoint-{phase}-{step}: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh").into())
 }
 
-pub(super) async fn verify<P: StreamProvider + 'static>(
+pub(super) async fn verify<P: acyclic_stream::NativeStreamProvider + 'static>(
     domain: &Domain,
     reopen: impl AsyncFn() -> Result<Arc<P>>,
 ) -> Result {
@@ -120,7 +120,7 @@ pub(super) async fn verify<P: StreamProvider + 'static>(
     }
 }
 
-async fn verify_pair<P: StreamProvider + 'static, Q: Blobs + 'static>(
+async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs + 'static>(
     domain: &Domain,
     reopen: impl AsyncFn() -> Result<Arc<P>>,
     reopen_objects: impl AsyncFn() -> Result<Arc<Q>>,
