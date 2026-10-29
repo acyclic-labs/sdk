@@ -43,6 +43,7 @@ pub(crate) enum Admission {
 pub(crate) struct Publication {
     commit: CommitId,
     machine_tail: u64,
+    producer: tokio::sync::watch::Sender<bool>,
 }
 
 impl Journal {
@@ -57,12 +58,6 @@ impl Journal {
             machine,
             producer: Mutex::new(None),
         }
-    }
-
-    pub(crate) async fn producer(&self, key: IdempotencyKey) -> tokio::sync::watch::Sender<bool> {
-        let (sender, receiver) = tokio::sync::watch::channel(false);
-        *self.producer.lock().await = Some((OperationId(key.0), receiver));
-        sender
     }
 
     fn path(&self, suffix: impl fmt::Display) -> Result<StreamPath, ProviderError> {
@@ -149,6 +144,10 @@ impl Journal {
             phase: OperationPhase::Pending,
             outcome: None,
         };
+        // Only original physical admission needs a live completion owner.
+        // Replay and already-settled logical changes allocate no producer.
+        let (producer, receiver) = tokio::sync::watch::channel(false);
+        *self.producer.lock().await = Some((OperationId(key.0), receiver));
         let receipt = self
             .commit(
                 key,
@@ -163,6 +162,7 @@ impl Journal {
         Ok(Admission::Original(Some(Publication {
             commit: receipt.commit_id,
             machine_tail: current.tail + 1,
+            producer,
         })))
     }
 
@@ -176,7 +176,7 @@ impl Journal {
     ) -> Result<MutationOutcome, ProviderError> {
         let operation = self.operation(key)?;
         let machine_path = self.path(format_args!("machines/{}", self.machine))?;
-        let (machine_condition, admitted) = match admitted {
+        let (machine_condition, operation_condition) = match &admitted {
             Some(publication) => (
                 CommitCondition::Head {
                     path: machine_path.clone(),
@@ -202,7 +202,7 @@ impl Journal {
                 },
             ),
         };
-        let conditions = vec![machine_condition, admitted];
+        let conditions = vec![machine_condition, operation_condition];
         let value = Operation {
             digest,
             phase: OperationPhase::Succeeded,
@@ -216,6 +216,9 @@ impl Journal {
         )
         .await
         .map_err(|_| ProviderError::Indeterminate(key))?;
+        if let Some(publication) = admitted {
+            publication.producer.send_replace(true);
+        }
         Ok(outcome)
     }
 
