@@ -57,33 +57,56 @@ impl RevisionCut {
         Self(vec![revision])
     }
 
-    /// Canonicalizes participants: one entry per scope, as [`Self::observe`] keeps.
-    pub fn new(revisions: impl IntoIterator<Item = Revision>) -> Self {
-        let mut cut = Self::default();
-        for revision in revisions {
-            cut.observe(revision);
+    /// Canonicalizes participants in place, retaining the greatest index per
+    /// authority. Conflicting incarnations refuse with `RevisionForeign`:
+    /// neither incarnation proves the other's committed publications.
+    pub fn new(revisions: impl IntoIterator<Item = Revision>) -> Result<Self, StreamError> {
+        let mut revisions: Vec<_> = revisions.into_iter().collect();
+        revisions.sort_unstable_by(|left, right| left.scope.cmp(&right.scope));
+        let mut foreign = false;
+        revisions.dedup_by(|next, kept| {
+            if next.scope != kept.scope {
+                return false;
+            }
+            if !next.same_authority(kept) {
+                foreign = true;
+            } else {
+                kept.index = kept.index.max(next.index);
+            }
+            true
+        });
+        if foreign {
+            Err(StreamError::RevisionForeign)
+        } else {
+            revisions.shrink_to_fit();
+            Ok(Self(revisions))
         }
-        cut
     }
 
     /// Raises this cut with one observed revision of its own authority.
-    /// A different incarnation of a known scope replaces it: the old floor
-    /// is unprovable after a reset.
-    pub fn observe(&mut self, revision: Revision) {
-        match self
+    /// A different incarnation refuses with `RevisionForeign` and leaves the
+    /// cut unchanged. A reset cannot silently retire the original requirement.
+    /// Returns the retained participant without another lookup or clone.
+    pub fn observe(&mut self, revision: Revision) -> Result<&Revision, StreamError> {
+        let at = match self
             .0
             .binary_search_by(|entry| entry.scope.cmp(&revision.scope))
         {
             Ok(at) => {
                 let entry = &mut self.0[at];
                 if entry.incarnation != revision.incarnation {
-                    *entry = revision;
+                    return Err(StreamError::RevisionForeign);
                 } else if entry.index < revision.index {
                     entry.index = revision.index;
                 }
+                at
             }
-            Err(at) => self.0.insert(at, revision),
-        }
+            Err(at) => {
+                self.0.insert(at, revision);
+                at
+            }
+        };
+        Ok(&self.0[at])
     }
 
     /// Whether this cut holds `revision`'s authority at or above its index.
@@ -576,6 +599,40 @@ impl AppliedRevisions {
 #[cfg(all(test, not(target_arch = "wasm32"), not(loom)))]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(64))]
+        #[test]
+        fn minimum_cut_refuses_incarnation_replacement_in_every_input_order(
+            scope in proptest::collection::vec(proptest::num::u8::ANY, 0..32),
+            incarnation in proptest::num::u128::ANY,
+            first_index in proptest::num::u64::ANY,
+            next_index in proptest::num::u64::ANY,
+        ) {
+            let first = Revision { scope: RevisionScope::new(scope.clone()), incarnation, index: first_index };
+            let reset = Revision { incarnation: incarnation ^ 1, index: next_index, ..first.clone() };
+            for revisions in [[first.clone(), reset.clone()], [reset.clone(), first.clone()]] {
+                proptest::prop_assert_eq!(RevisionCut::new(revisions.clone()), Err(StreamError::RevisionForeign));
+                proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(revisions.iter().map(crate::wire_codec::revision_to_wire).collect()), Err(StreamError::RevisionForeign));
+            }
+            let mut cut = RevisionCut::of(first.clone());
+            proptest::prop_assert_eq!(cut.observe(reset), Err(StreamError::RevisionForeign));
+            proptest::prop_assert_eq!(&cut, &RevisionCut::of(first.clone()));
+
+            // Same-authority duplicates retain their maximum in either order;
+            // an unrelated scope remains an independent requirement.
+            let next = Revision { index: next_index, ..first.clone() };
+            let other = Revision { scope: RevisionScope::new([scope, vec![0]].concat()), ..first.clone() };
+            for revisions in [vec![first.clone(), other.clone(), next.clone()], vec![next.clone(), other.clone(), first.clone()]] {
+                let cut = RevisionCut::new(revisions).unwrap();
+                proptest::prop_assert_eq!(cut.iter().len(), 2);
+                proptest::prop_assert!(cut.covers(&first) && cut.covers(&next) && cut.covers(&other));
+                proptest::prop_assert_eq!(crate::wire_codec::cut_from_wire(crate::wire_codec::cut_to_wire(&cut)).unwrap(), cut);
+            }
+            proptest::prop_assert!(cut.observe(next.clone()).is_ok());
+            proptest::prop_assert!(cut.covers(&first) && cut.covers(&next));
+        }
+    }
 
     #[tokio::test]
     async fn parks_until_applied_and_refuses_foreign_incarnations() {

@@ -406,17 +406,28 @@ impl Pool {
                     }
                     // Every open, including a resume on another replica, raises the floor.
                     Ok(applied) => {
-                        if let Some(applied) = applied {
-                            self.revisions.observe(&applied);
-                            if let Some(link) = self.links.get_mut(node) {
-                                link.served.observe(applied);
+                        let conflict = applied.and_then(|applied| {
+                            let link = self.links.get_mut(node)?;
+                            match link.served.observe(applied) {
+                                Ok(applied) => {
+                                    self.revisions.observe(applied);
+                                    None
+                                }
+                                Err(error) => Some(error),
                             }
+                        });
+                        if let Some(error) = conflict {
+                            Some(error)
+                        } else {
+                            Self::opened(route, id, &opened)?
                         }
-                        Self::opened(route, id, &opened)?
                     }
                     Err(error) => Some(error),
                 };
                 if let Some(error) = refused {
+                    if let Some(ready) = route.ready.take() {
+                        let _ = ready.send(Err(error.clone()));
+                    }
                     let records = route.records.clone();
                     self.remove(id)?;
                     self.executor.spawn(Box::pin(async move {
