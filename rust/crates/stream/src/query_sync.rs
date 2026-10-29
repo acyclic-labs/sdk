@@ -1,5 +1,6 @@
 //! Synchronization used by stream publication and observation.
 #[cfg(any(loom, all(test, not(target_arch = "wasm32"))))]
+#[path = "query_sync/parity.rs"]
 pub(crate) mod parity;
 
 #[cfg(loom)]

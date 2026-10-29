@@ -1,4 +1,3 @@
-use super::*;
 use crate::probe::probe;
 use futures::StreamExt;
 use loom::sync::atomic::Ordering;
