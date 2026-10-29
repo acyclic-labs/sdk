@@ -12,7 +12,6 @@ fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Er
     Ok(AttributeName::new(
         super::super::AttributeClass::PosixXattr,
         vec![byte; length],
-        u32::try_from(length)?,
     )?)
 }
 
@@ -82,7 +81,6 @@ async fn sparse_attribute_changes_rewrite_only_one_leaf_and_root()
             expected,
             replacement: entry(3, 1, 9)?,
         }],
-        8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -124,7 +122,6 @@ async fn unordered_attribute_mutations_are_sorted_once_and_persist_canonically()
             AttributeMutation::Insert(entry(4, 1, 4)?),
             AttributeMutation::Insert(entry(2, 1, 2)?),
         ],
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -167,7 +164,6 @@ async fn no_op_attribute_replace_preserves_root_without_writes()
             expected: same.clone(),
             replacement: same,
         }],
-        8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -191,7 +187,6 @@ async fn pre_cancelled_attribute_mutation_accesses_no_backend()
         &store,
         root,
         vec![AttributeMutation::Insert(entry(2, 1, 2)?)],
-        8,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -216,14 +211,12 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     let limits = DecodeLimits {
         maximum_page_bytes: 175,
         maximum_page_items: 8,
-        maximum_name_bytes: 40,
         ..DecodeLimits::default()
     };
     let receipt = apply_attribute_mutations(
         &store,
         root,
         vec![AttributeMutation::Insert(entry(2, 40, 2)?)],
-        1,
         limits,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -274,10 +267,8 @@ async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn 
         &store,
         root,
         vec![AttributeMutation::Insert(entry(1, 40, 1)?)],
-        1,
         DecodeLimits {
             maximum_page_bytes: 99,
-            maximum_name_bytes: 40,
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,

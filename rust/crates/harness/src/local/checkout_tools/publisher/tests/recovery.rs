@@ -21,7 +21,7 @@ async fn a_recovered_write_returns_the_written_reference() -> Result<()> {
     let (observed, _) = publisher
         .observe_staged_once(
             operation,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
@@ -73,7 +73,7 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
     let replayed = if recover {
         match publisher.observe_staged_once(
             operation,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess::default(),
         ) {
             Ok(observed) => observed.await.map(|(file, _)| file),
@@ -206,7 +206,7 @@ async fn a_recovered_write_keeps_its_reference_however_far_the_head_moves() -> R
     let (recovered, _) = publisher
         .observe_staged_once(
             operation,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
@@ -273,7 +273,7 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
     let (recovered, _) = publisher
         .observe_staged_once(
             operation,
-            1024,
+            Some(1024),
             crate::conversation::ContentAccess::default(),
         )?
         .await?;
@@ -515,7 +515,7 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
         publisher
             .observe_staged_once(
                 operation,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess::default(),
             )?
             .await

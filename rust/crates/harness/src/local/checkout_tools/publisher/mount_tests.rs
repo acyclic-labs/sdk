@@ -289,7 +289,11 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     assert!(!directory.path().join(".volumes/scratch/denied").exists());
     assert_eq!(
         publisher
-            .observe_staged_once(operation, 64, crate::conversation::ContentAccess::default())?
+            .observe_staged_once(
+                operation,
+                Some(64),
+                crate::conversation::ContentAccess::default()
+            )?
             .await?
             .0,
         Some(file.clone())
@@ -401,7 +405,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
     };
     let observe = move |operation| async move {
         publisher
-            .observe_staged_once(operation, 1024, access())?
+            .observe_staged_once(operation, Some(1024), access())?
             .await
             .map(|(file, _)| file)
     };
@@ -440,7 +444,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
         publisher
             .observe_staged_once(
                 OperationId::new(),
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: Some(&none),
                     io: None
