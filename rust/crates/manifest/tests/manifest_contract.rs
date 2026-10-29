@@ -269,6 +269,8 @@ fn review_regressions_fail_before_publication() -> Result<(), Box<dyn std::error
         ("/environments/0/name", json!("-production")),
         ("/environments/0/crons/0/schedule", json!("0 0 31 2 *")),
         ("/environments/0/crons/0/schedule", json!("*/0 * * * *")),
+        ("/environments/0/crons/0/schedule", json!("+0 0 * * *")),
+        ("/environments/0/crons/0/schedule", json!("0 0 * * * *")),
         ("/environments/0/entries/0/bindings", json!(["missing"])),
         ("/environments/0/entries/0/secrets", json!(["missing"])),
         ("/environments/0/bindings/0/name", json!("1binding")),
