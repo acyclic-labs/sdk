@@ -77,10 +77,12 @@ pub fn assert_replay(record: Record, limits: Limits) {
     }
     let encoded = serde_json::to_vec(&record).unwrap();
     assert!(
-        encoded.len() as u64
-            <= limits
-                .render_bytes
-                .map_or(limits.file_bytes, |maximum| limits.file_bytes.min(maximum))
+        limits
+            .render_bytes
+            .into_iter()
+            .chain(limits.file_bytes)
+            .min()
+            .is_none_or(|maximum| encoded.len() as u64 <= maximum)
     );
     let result = serde_json::to_vec(&ToolResult { value: Value::Null }).unwrap();
     let projection = serde_json::to_vec(&ToolResultContent::Json { value: Value::Null }).unwrap();
@@ -216,7 +218,7 @@ pub fn check(data: &[u8]) {
         assert_replay(
             record,
             Limits {
-                file_bytes: 4096,
+                file_bytes: Some(4096),
                 render_bytes: Some(4096),
                 ..Limits::default()
             },
