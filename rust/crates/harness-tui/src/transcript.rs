@@ -435,12 +435,25 @@ mod tests {
     fn complete_source_remains_searchable_while_only_visible_rows_are_materialized() {
         let mut transcript = TranscriptRows::default();
         transcript
-            .push(false, &format!("begin\n{}\nend", "界\n".repeat(22_000)))
+            // Explicit Markdown hard breaks keep this a 22,000-row source
+            // after answer styling; soft breaks intentionally render as spaces.
+            .push(false, &format!("begin  \n{}\nend", "界  \n".repeat(22_000)))
             .unwrap();
         for index in 0..300 {
             transcript.push(true, &format!("prompt {index}")).unwrap();
         }
         assert!(transcript.len() > 22_000);
+        let mut glyphs = 0;
+        for start in (0..transcript.len()).step_by(SEARCH_ROWS) {
+            for line in transcript.window(start..start + SEARCH_ROWS).unwrap() {
+                glyphs += line
+                    .spans
+                    .iter()
+                    .map(|span| span.content.matches('界').count())
+                    .sum::<usize>();
+            }
+        }
+        assert_eq!(glyphs, 22_000);
         assert_eq!(transcript.find("begin", transcript.len()).unwrap(), Some(0));
         let end = transcript.find("end", transcript.len()).unwrap().unwrap();
         assert!(end > 22_000);
