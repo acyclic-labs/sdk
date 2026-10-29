@@ -71,13 +71,12 @@ async fn named_retention_preserves_the_exact_reference_without_a_cached_proof() 
                 crate::kernel::RetentionKind::Pin,
                 &label,
             );
+            let maximum_payload_bytes = work.accounting().remaining()?.authority_bytes_read;
             let ((_, payload), _) = authority
-                .head_payload(id, MAXIMUM_VOLUME_EVENT_BYTES, &mut work)
+                .head_payload(id, maximum_payload_bytes, &mut work)
                 .await?;
-            let retained = crate::kernel::decode_retention_created(
-                &payload.ok_or("missing retention record")?,
-                MAXIMUM_VOLUME_EVENT_BYTES,
-            )?;
+            let payload = payload.ok_or("missing retention record")?;
+            let retained = crate::kernel::decode_retention_created(&payload, payload.len() as u64)?;
             assert_eq!(retained.generation_root, reference);
         }
     }

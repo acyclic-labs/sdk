@@ -10,7 +10,8 @@ pub struct MemoryObjectStore {
 
 #[derive(Default)]
 pub(super) struct MemoryObjectState {
-    pub(super) objects: crate::kernel::allocation::fixed_index::FixedIndex<OwnedBytes, 33>,
+    pub(super) objects:
+        crate::kernel::allocation::fixed_index::FixedIndex<OwnedBytes, { ObjectId::ENCODED_LEN }>,
 }
 
 impl MemoryObjectState {
@@ -19,7 +20,7 @@ impl MemoryObjectState {
         id: &ObjectId,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<&OwnedBytes>, FsError> {
-        self.objects.get(id.to_bytes(), accounting)
+        self.objects.get(id.index_key(), accounting)
     }
 }
 
@@ -101,7 +102,7 @@ impl MemoryObjectStore {
         let mut batch = if writes.len() > 1 {
             Some(crate::kernel::allocation::fixed_index::FixedIndex::<
                 &OwnedBytes,
-                33,
+                { ObjectId::ENCODED_LEN },
             >::default())
         } else {
             None
@@ -124,7 +125,7 @@ impl MemoryObjectStore {
                 if let Some(batch) = &mut batch {
                     let mut inserted = false;
                     let previous = batch.get_or_try_insert_with(
-                        write.object_id.to_bytes(),
+                        write.object_id.index_key(),
                         accounting,
                         |_| {
                             inserted = true;
@@ -157,7 +158,7 @@ impl MemoryObjectStore {
         })?;
         for entry in writes {
             let stored = state.objects.get_or_try_insert_with(
-                entry.object_id.to_bytes(),
+                entry.object_id.index_key(),
                 accounting,
                 |accounting| {
                     let delta = WorkCounters {
