@@ -4,11 +4,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
 import { MemoryObjectsV1, blobDigest, verified } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
-import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
 
 const expectedRoutes = ["blobs/put", "blobs/put-manifest", "blobs/get", "blobs/head", "blobs/delete", "blobs/list", "blobs/retain", "blobs/release", "blobs/collect", "blobs/usage"];
 const fail = (code) => error => error.code === code;
@@ -49,6 +49,28 @@ async function fixture() {
 
 test("Objects v1 Rust WASM memory provider serves the whole blob lifecycle", async () => {
   await lifecycle(await MemoryObjectsV1.create());
+});
+
+test("Objects v1 owned binary bindings retain validation and caller bytes", async () => {
+  await MemoryObjectsV1.create();
+  const memory = new ObjectsV1Memory();
+  const body = new Uint8Array(1024 * 1024).fill(37);
+  const digest = await blobDigest(body);
+  const input = toBinary(wire.PutBlobRequestSchema, create(wire.PutBlobRequestSchema, { digest, body }));
+  const original = input.slice();
+  const output = await memory.invoke("blobs/put", input);
+  verify_objects_v1("blobs/put", input, output);
+  assert.deepEqual(input, original);
+  const request = toBinary(wire.GetBlobRequestSchema, create(wire.GetBlobRequestSchema, { digest, maximumBytes: BigInt(body.length) }));
+  const reply = await memory.invoke("blobs/get", request);
+  verify_objects_v1("blobs/get", request, reply);
+  const decoded = fromBinary(wire.GetBlobResponseSchema, reply);
+  assert.deepEqual(decoded.body, body);
+  decoded.body[0] ^= 1;
+  const corrupt = toBinary(wire.GetBlobResponseSchema, decoded);
+  assert.throws(() => verify_objects_v1("blobs/get", request, corrupt), fail(wire.ErrorCode.UNAVAILABLE));
+  await assert.rejects(memory.invoke("blobs/put", new Uint8Array([0xff])), fail(wire.ErrorCode.INVALID_ARGUMENT));
+  assert.throws(() => verify_objects_v1("blobs/get", request, new Uint8Array([0xff])), fail(wire.ErrorCode.UNAVAILABLE));
 });
 test("Objects v1 HTTP serves every canonical route, typed errors and authentication", async () => {
   const server = await fixture();

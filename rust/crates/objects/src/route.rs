@@ -4,6 +4,7 @@
 use crate::convert;
 use crate::{Blobs, Digest, Error, RootId, wire};
 use acyclic_stream::Revision;
+use bytes::Bytes;
 use prost::Message;
 
 /// A route's response and the revision committing or serving it.
@@ -189,17 +190,18 @@ pub async fn usage(
     ))
 }
 
-fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, Error> {
+fn decode<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
     T::decode(bytes).map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 
 /// Serves one [`crate::HTTP_ROUTES`] route from its binary input message,
 /// returning the binary output message.
+/// The owned input backs decoded body fields without copying their contents.
 ///
 /// # Errors
 /// The route's semantic failure, or `InvalidArgument` for an unknown route or
 /// a malformed input.
-pub async fn invoke(blobs: &dyn Blobs, route: &str, input: &[u8]) -> Result<Vec<u8>, Error> {
+pub async fn invoke(blobs: &dyn Blobs, route: &str, input: Bytes) -> Result<Vec<u8>, Error> {
     Ok(match route {
         "blobs/put" => put_blob(blobs, decode(input)?).await?.0.encode_to_vec(),
         "blobs/put-manifest" => put_manifest(blobs, decode(input)?).await?.0.encode_to_vec(),
@@ -218,6 +220,7 @@ pub async fn invoke(blobs: &dyn Blobs, route: &str, input: &[u8]) -> Result<Vec<
 /// Checks one [`crate::HTTP_ROUTES`] reply against the request it answers,
 /// exactly as the Rust clients check theirs, for clients in other languages
 /// that carry the binary messages themselves.
+/// Owned buffers back decoded bodies for the duration of validation.
 ///
 /// A put request's digest is trusted as the caller's own: the client hashed
 /// the body when it built the request, and the service refuses a mismatch.
@@ -225,9 +228,9 @@ pub async fn invoke(blobs: &dyn Blobs, route: &str, input: &[u8]) -> Result<Vec<
 /// # Errors
 /// `InvalidArgument` for an unknown route or malformed request, and
 /// `Unavailable` for a reply that is malformed or does not answer it.
-pub fn verify(route: &str, input: &[u8], output: &[u8]) -> Result<(), Error> {
-    fn reply<T: Message + Default>(bytes: &[u8]) -> Result<T, Error> {
-        T::decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
+pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
+    fn reply<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
+        decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
     }
     let checked = match route {
         "blobs/put" => {
@@ -270,3 +273,6 @@ pub fn verify(route: &str, input: &[u8], output: &[u8]) -> Result<(), Error> {
     };
     checked.map_err(|_| wire::ErrorCode::Unavailable.into())
 }
+
+#[cfg(test)]
+mod tests;
