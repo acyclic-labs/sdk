@@ -14,7 +14,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
-import { Processes, Events, schedule } from "./process.mjs";
+import { Processes, Spool, schedule } from "./process.mjs";
 import { requests, subset, recordedRequests } from "./assertions.mjs";
 import { seed, expand as expandFixture } from "./fixtures.mjs";
 import { inventory, readCoverage } from "./coverage.mjs";
@@ -48,7 +48,8 @@ const cases = scripts
   .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
 assert.ok(cases.length, "no matching cases");
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
-const processes = new Processes();
+const processes = new Processes({ transcripts: join(output, "transcripts") });
+mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
 let server, events, port;
@@ -72,9 +73,11 @@ function outcome(input, result) {
   const [line] = results;
   return line.error === undefined ? { completion: "completed", ok: { text: line.text } } : { completion: "failed", error: line.error };
 }
-function checkTree(test) {
+// A mock request is indexed by its case and step, and by its case, path and step.
+const requestKey = (id, { path, step }) => JSON.stringify(path === undefined ? [id, step] : [id, path, step]);
+async function checkTree(test) {
   if (test.assert.dead_tree) {
-    const records = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
+    const records = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), await events.history());
     fenced(records.filter(record => record.case === test.id), test.assert.dead_tree);
   }
 }
@@ -100,11 +103,11 @@ async function execute(test, gitOrigin) {
     await json(fixture.catalog, { e2e: provider });
     fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
     fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
-    fixture.requests = events.seen.filter(event => event.case === test.id);
+    fixture.requested = request => events.has(requestKey(test.id, request));
     fixture.onRequest = listener => events.subscribe(event => {
-      if (event.case === test.id) { fixture.requests.push(event); listener(event); }
+      if (event.case === test.id) listener(event);
     });
-    fixture.waitRequest = match => events.wait(event => event.case === test.id && match(event));
+    fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
     fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
@@ -127,7 +130,7 @@ async function execute(test, gitOrigin) {
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
       const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env, scopeReportSignal: "SIGTERM" });
       if (input.kill_on) {
-        await Promise.race([events.wait(event => event.case === test.id && event.path === input.kill_on.path && event.step === input.kill_on.step), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
+        await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
         const result = await running.exited;
         assert.ok(result.signal || result.code !== 0);
@@ -152,11 +155,11 @@ async function execute(test, gitOrigin) {
     }
     // Check while the mock's held response is still open. Killing the mock
     // first would let an unfenced descendant exit and produce a false pass.
-    checkTree(test);
+    await checkTree(test);
     contexts.set(test.id, { test, fixture, captures, artifact });
     return { case: test.id, platform: process.platform, status: "pass", seconds: (performance.now() - begin) / 1000 };
   } catch (error) {
-    try { checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
+    try { await checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
     return { case: test.id, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000, error: error.stack, workspace: fixture.workspace };
   } finally {
     await Promise.all(interrupted);
@@ -189,8 +192,10 @@ const execution = await withOwnedCase({ processes, run: async () => {
   await json(join(output, "script.json"), { cases: scripts });
   const env = environment(join(scratch, "support-profile"));
   server = processes.start(mock, ["--script", join(output, "script.json"), "--record", join(output, "requests.jsonl")], { env });
-  events = new Events(server.child.stdout, server.closed);
-  port = (await events.wait(event => event.event === "ready")).port;
+  events = new Spool(server.child.stdout, server.closed, { transcript: join(output, "events.jsonl"),
+    key: event => event.event === "ready" ? ["ready"]
+      : event.event === "request" ? [requestKey(event.case, { step: event.step }), requestKey(event.case, event)] : [] });
+  port = (await events.keyed("ready")).port;
   const origin = join(roots[0], "origin"); await mkdir(origin);
   await seed(origin, { "seed.txt": "base\n" });
   for (const args of [["init", "--quiet", "--initial-branch=main", origin], ["-C", origin, "add", "."],
@@ -203,7 +208,7 @@ const execution = await withOwnedCase({ processes, run: async () => {
 } });
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
-const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), events.seen);
+const allRecords = recordedRequests(readFileSync(join(output, "requests.jsonl"), "utf8"), await events.history());
 results = await Promise.all(results.map(result => verify(result, allRecords)));
 results = results.map(result => ({ ...result, ...(execution.expired ? { timeout: true } : {}), evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));

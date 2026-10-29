@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
+import { createWriteStream, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { createInterface } from "node:readline";
-import { stripVTControlCharacters } from "node:util";
 import { StringDecoder } from "node:string_decoder";
+import { stripVTControlCharacters } from "node:util";
 import assert from "node:assert/strict";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export async function schedule(items, platform, execute) {
@@ -15,9 +17,16 @@ export async function schedule(items, platform, execute) {
 
 // Event-driven subprocesses: no polling or readiness delays. Every child is
 // owned by the suite and is reaped even when another case fails.
+//
+// Output is not retained in memory: each stream goes to a transcript file in
+// the scope's transcript directory, and a settled result reads it on demand.
 export class Processes {
   children = new Map();
   stopping = false;
+  started = 0;
+  #transcripts;
+  constructor({ transcripts } = {}) { this.#transcripts = transcripts; }
+  get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
     const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReportSignal, ...spawnOptions } = options;
@@ -27,10 +36,10 @@ export class Processes {
       if (scopeTreeControl) { child.stdin.end(); return; }
       child.kill(scopeKillSignal);
     };
-    let stdout = "", stderr = "", reportRequested = false;
-    const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
-    child.stdout.on("data", bytes => { stdout += outputDecoder.write(bytes); });
-    child.stderr.on("data", bytes => { stderr += errorDecoder.write(bytes); });
+    let reportRequested = false;
+    const index = this.started++;
+    const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
+    const written = [transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)];
     // Exit is the owner-death barrier. Close may wait for inherited pipes in
     // surviving descendants, which recovery must be allowed to fence first.
     const exited = new Promise((resolve, reject) => {
@@ -42,15 +51,21 @@ export class Processes {
       child.on("error", reject);
       child.on("close", (code, signal) => {
         this.children.delete(child);
-        stdout += outputDecoder.end(); stderr += errorDecoder.end();
-        const stuck_on = reportRequested ? waitDetails(stderr + "\n" + stdout) : [];
-        resolve({ code, signal, stdout, stderr, ...(reportRequested ? { termination: { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 } } : {}) });
+        // Settle only after both transcripts are complete on disk.
+        Promise.all(written).then(() => {
+          const result = settled(code, signal, stdoutPath, stderrPath);
+          if (reportRequested) {
+            const stuck_on = waitDetails(result.stderr + "\n" + result.stdout);
+            result.termination = { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 };
+          }
+          resolve(result);
+        }, reject);
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
     this.children.set(child, { kill, closed, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
-    return { child, exited, closed, killExecutable: () => child.kill("SIGKILL"), get stdout() { return stdout; } };
+    return { child, exited, closed, killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
     const process = this.start(program, args, options);
@@ -71,7 +86,7 @@ export class Processes {
       ? ["--mount-root", scopeMountRoot, "--"] : [];
     const owned = this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
       ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
-    return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1"), get stdout() { return owned.stdout; } };
+    return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1") };
   }
   // The one real-terminal transport: ConPTY inside native Job custody on
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
@@ -123,39 +138,161 @@ export function conptyArgs(binary, args) {
     ...(operation === undefined ? [] : ["--operation", operation])];
 }
 
-export class Events {
-  seen = [];
-  pending = new Set();
-  listeners = new Set();
+// A stream's bytes go straight to its transcript file; nothing is decoded or
+// kept in memory. Resolves once the file holds every byte.
+function transcript(stream, path) {
+  const file = createWriteStream(path);
+  stream.pipe(file);
+  return new Promise((resolve, reject) => {
+    file.once("finish", resolve);
+    file.once("error", reject);
+    stream.once("error", reject);
+  });
+}
+
+// A settled process result. Its output is the explicit historical query of
+// the transcript on disk, read when a caller asks for it.
+function settled(code, signal, stdoutPath, stderrPath) {
+  return {
+    code, signal,
+    get stdout() { return readFileSync(stdoutPath, "utf8"); },
+    get stderr() { return readFileSync(stderrPath, "utf8"); },
+    transcripts: { stdout: stdoutPath, stderr: stderrPath },
+  };
+}
+
+// Why an event spool ended: its source reached EOF or failed, a line was
+// not JSON, a unique key repeated, or the transcript could not be written.
+export class SpoolEnded extends Error {
+  constructor(kind, message, detail) {
+    super(`event spool ${kind}: ${message}`);
+    this.name = "SpoolEnded";
+    this.kind = kind;
+    this.detail = detail;
+  }
+}
+
+// A JSONL event source that keeps no history in memory. Each event gets a
+// sequence number and is appended to the transcript. A waiter registers
+// before the event it waits for: `next` sees only later events, and `keyed`
+// also answers from the index of the keys an event was recorded under. Each
+// event costs one comparison per pending `next` and one index entry per
+// key. `history` is the explicit scan of the transcript.
+export class Spool {
+  sequence = 0;
   ended;
-  constructor(stream, closed) {
-    createInterface({ input: stream }).on("line", line => {
-      try {
-        const event = JSON.parse(line);
-        this.seen.push(event);
-        for (const listener of this.listeners) listener(event);
-        for (const wait of [...this.pending]) if (wait.match(event)) {
-          this.pending.delete(wait); wait.resolve(event);
-        }
-      } catch (error) { this.fail(error); }
-    });
-    closed.then(result => this.fail(new Error(`event source exited: ${JSON.stringify(result)}`)), error => this.fail(error));
+  #pending = new Set();
+  #listeners = new Set();
+  #index = new Map();
+  #waiting = new Map();
+  #key;
+  #unique;
+  #file;
+  #path;
+  #written = Promise.resolve();
+  constructor(stream, closed, { transcript: path, key, unique = false } = {}) {
+    this.#key = key; this.#unique = unique; this.#path = path;
+    if (path) {
+      this.#file = createWriteStream(path);
+      this.#file.on("error", error => this.fail(new SpoolEnded("spool", `transcript ${path}: ${error.message}`, error)));
+    }
+    createInterface({ input: stream }).on("line", line => this.#line(line));
+    stream.once("error", error => this.fail(new SpoolEnded("source", error.message, error)));
+    closed.then(result => this.fail(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result)),
+      error => this.fail(new SpoolEnded("source", error.message, error)));
+  }
+  #line(line) {
+    if (this.ended) return;
+    let event;
+    try { event = JSON.parse(line); } catch (error) {
+      this.fail(new SpoolEnded("malformed", `line ${this.sequence + 1} is not JSON: ${line.slice(0, 200)}`, error));
+      return;
+    }
+    this.sequence++;
+    if (this.#file) {
+      const file = this.#file;
+      this.#written = new Promise(resolve => file.write(line + "\n", resolve));
+    }
+    for (const key of this.#key?.(event) ?? []) {
+      if (this.#index.has(key)) {
+        if (this.#unique) { this.fail(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return; }
+        continue;
+      }
+      this.#index.set(key, event);
+      for (const wait of this.#waiting.get(key) ?? []) wait.resolve(event);
+      this.#waiting.delete(key);
+    }
+    for (const listener of this.#listeners) listener(event);
+    for (const wait of this.#pending) if (wait.match(event)) {
+      this.#pending.delete(wait); wait.resolve(event);
+    }
   }
   fail(error) {
+    if (this.ended) return;
     this.ended = error;
-    for (const wait of this.pending) wait.reject(error);
-    this.pending.clear();
+    for (const wait of this.#pending) wait.reject(error);
+    this.#pending.clear();
+    for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(error);
+    this.#waiting.clear();
+    this.#file?.end();
   }
-  wait(match) {
-    const event = this.seen.find(match);
-    if (event) return Promise.resolve(event);
+  // The first event after this call that `match` accepts.
+  next(match) {
     if (this.ended) return Promise.reject(this.ended);
-    return new Promise((resolve, reject) => this.pending.add({ match, resolve, reject }));
+    return new Promise((resolve, reject) => this.#pending.add({ match, resolve, reject }));
   }
+  // The first event recorded under `key`, earlier or later.
+  keyed(key) {
+    if (this.#index.has(key)) return Promise.resolve(this.#index.get(key));
+    if (this.ended) return Promise.reject(this.ended);
+    return new Promise((resolve, reject) => {
+      const waits = this.#waiting.get(key) ?? [];
+      waits.push({ resolve, reject });
+      this.#waiting.set(key, waits);
+    });
+  }
+  has(key) { return this.#index.has(key); }
   subscribe(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
+  // Every event so far that `match` accepts, read from the transcript.
+  async history(match = () => true) {
+    assert.ok(this.#path, "event history requires a transcript");
+    await this.#written;
+    return readFileSync(this.#path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
+  }
+}
+
+// An incremental watch for fixed needles in a stream's text. It remembers
+// which needles have appeared and where each last appeared, and keeps only
+// the tail a needle could straddle, so each chunk costs its own length.
+export class OutputWatch {
+  #needles; #tail = ""; #offset = 0; #last = new Map(); #decoder = new StringDecoder("utf8"); #keep;
+  constructor(needles) {
+    this.#needles = [...new Set(needles)].filter(Boolean);
+    this.#keep = Math.max(0, ...this.#needles.map(needle => needle.length - 1));
+  }
+  static of(text, needles) { const watch = new OutputWatch(needles); watch.write(text); return watch; }
+  // Feeds bytes or text; returns this watch.
+  write(chunk) {
+    const text = typeof chunk === "string" ? chunk : this.#decoder.write(chunk);
+    const combined = this.#tail + text, base = this.#offset - this.#tail.length;
+    for (const needle of this.#needles) {
+      for (let at = combined.indexOf(needle); at >= 0; at = combined.indexOf(needle, at + 1)) {
+        if (base + at + needle.length > this.#offset) this.#last.set(needle, base + at);
+      }
+    }
+    this.#offset += text.length;
+    this.#tail = this.#keep ? combined.slice(-this.#keep) : "";
+    return this;
+  }
+  has(needle) {
+    assert.ok(this.#needles.includes(needle), `unwatched needle ${JSON.stringify(needle)}`);
+    return this.#last.has(needle);
+  }
+  // Whether `needle` last appeared after `other` last did.
+  later(needle, other) { return (this.#last.get(needle) ?? -1) > (this.#last.get(other) ?? -1); }
 }
 
 export function waitDetails(stderr) {

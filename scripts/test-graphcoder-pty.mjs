@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { isAbsolute } from "node:path";
 import { fixture } from "./graphcoder-fixture.mjs";
-import { Processes } from "./graphcoder-e2e/process.mjs";
+import { Processes, OutputWatch } from "./graphcoder-e2e/process.mjs";
 import { withOwnedCase } from "./graphcoder-e2e/suite.mjs";
 import { Terminal, screenText, hasBoldAnswer, thinkingPhase } from "./graphcoder-pty/screen.mjs";
 const [binary, scenario = "success"] = process.argv.slice(2);
@@ -18,6 +18,7 @@ if (scenario === "thinking") host.holdCount("say hello");
 const processes = new Processes();
 const running = processes.startTerminal(binary, host.args);
 const { child } = running;
+const raw = new OutputWatch(["\x1b[?25h", "\x1b["]);
 if (scenario === "cancel-preparation") host.counting.then(() => child.stdin.write("\x03"));
 const sendPrompt = text => child.stdin.write(`\x1b[200~${text}\x1b[201~\r`);
 let failure, stopped = false;
@@ -40,7 +41,7 @@ function frame() {
     retried = true;
     child.stdin.write("\x1b[?1;2c\x1b[>0;1;0c\x1b[12;40R");
   }
-  if (!submitted && visible.includes("GraphCoder") && running.stdout.includes("\x1b[?25h")) {
+  if (!submitted && visible.includes("GraphCoder") && raw.has("\x1b[?25h")) {
     submitted = true;
     sendPrompt(scenario === "command-recovery" ? "/compact summarize" : scenario === "cancel-preparation" ? "/delegate cancel before headers" : "/delegate say hello");
   }
@@ -66,7 +67,8 @@ function frame() {
   }
 }
 child.stdout.on("data", bytes => {
-  if (scenario === "typeahead" && !submitted && running.stdout.includes("\x1b[")) {
+  raw.write(bytes);
+  if (scenario === "typeahead" && !submitted && raw.has("\x1b[")) {
     submitted = true;
     child.stdin.write("/delegate say hello\r\n");
   }

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { fixture } from "./graphcoder-fixture.mjs";
-import { Processes } from "./graphcoder-e2e/process.mjs";
+import { Processes, OutputWatch } from "./graphcoder-e2e/process.mjs";
 import { withOwnedCase } from "./graphcoder-e2e/suite.mjs";
 import { Terminal, screenText, hasBoldAnswer } from "./graphcoder-pty/screen.mjs";
 const [binary, mode = "headless"] = process.argv.slice(2);
@@ -26,17 +26,18 @@ const start = (first, resume = true) => {
   if (!interactive) return { running, exit: running.closed };
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   let submitted = false, complete = false, stopped = false;
-  running.child.stdout.on("data", bytes => screen.write(bytes, () => {
+  const raw = new OutputWatch(["\x1b[?25h"]);
+  running.child.stdout.on("data", bytes => { raw.write(bytes); screen.write(bytes, () => {
     if (stopped) return;
     const visible = screenText(screen);
-    if (first && !submitted && visible.includes("GraphCoder") && running.stdout.includes("\x1b[?25h")) {
+    if (first && !submitted && visible.includes("GraphCoder") && raw.has("\x1b[?25h")) {
       submitted = true;
       running.child.stdin.write(`${mode === "interactive" ? "/delegate " : ""}resume after kill\r`);
     }
     if (!first && !complete && hasBoldAnswer(screen) && visible.includes("○")) {
       complete = true; running.child.stdin.write("\x04");
     }
-  }));
+  }); });
   const exit = running.closed.then(result => { stopped = true; screen.dispose(); return { ...result, complete }; });
   return { running, exit };
 };
