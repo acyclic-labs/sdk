@@ -1,20 +1,47 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { posix } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, posix } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
+import { packageClosure } from "./package-closure.mjs";
 
 const source = readFileSync("scripts/package-closure.mjs", "utf8");
-const closure = source.slice(source.indexOf("export function")).replace("export function", "function");
+const closure = source.slice(source.indexOf("export function")).replaceAll("export function", "function");
 const names = "abcdefghijkl";
+
+test("package closure follows declared workspaces and ignores leftover directories", t => {
+  const root = mkdtempSync(join(tmpdir(), "package-closure-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(`${root}/package.json`, JSON.stringify({ workspaces: ["typescript/packages/*"] }));
+  for (const name of ["a", "b"]) {
+    const directory = `${root}/typescript/packages/${name}`;
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(`${directory}/package.json`, JSON.stringify({ name: `@example/${name}`,
+      dependencies: name === "a" ? { "@example/b": "workspace:*" } : {} }));
+    writeFileSync(`${directory}/tsconfig.json`, JSON.stringify({}));
+  }
+  assert.deepEqual([...packageClosure(root, "a")], ["b", "a"]);
+  mkdirSync(`${root}/typescript/packages/b/node_modules`, { recursive: true });
+  mkdirSync(`${root}/typescript/packages/c/node_modules`, { recursive: true });
+  assert.deepEqual([...packageClosure(root, "a")], ["b", "a"]);
+  writeFileSync(`${root}/package.json`, JSON.stringify({ workspaces: ["typescript/packages/[ab]"] }));
+  mkdirSync(`${root}/typescript/packages/z`, { recursive: true });
+  writeFileSync(`${root}/typescript/packages/z/package.json`, "invalid undeclared manifest");
+  assert.deepEqual([...packageClosure(root, "a")], ["b", "a"]);
+  writeFileSync(`${root}/typescript/packages/b/package.json`, "invalid declared manifest");
+  assert.throws(() => packageClosure(root, "a"), SyntaxError);
+});
 
 function actual(rows, selected, code = closure) {
   const context = {
     root: "root", selected: names[selected % rows.length], join: posix.join,
-    readdirSync: () => rows.map((_, index) => ({ name: names[index], isDirectory: () => true })),
+    basename: posix.basename, dirname: posix.dirname,
+    globSync: () => rows.map((_, index) => `typescript/packages/${names[index]}/package.json`),
     readFileSync: path => {
+      if (path === "root/package.json") return JSON.stringify({ workspaces: ["typescript/packages/*"] });
       const index = names.indexOf(path.split("/")[3]);
       assert.ok(index >= 0 && index < rows.length, path);
       const row = rows[index];

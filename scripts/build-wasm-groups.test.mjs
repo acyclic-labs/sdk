@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
-import { packageClosure } from "./package-closure.mjs";
+import { packageClosure, workspaceManifests } from "./package-closure.mjs";
 
 const source = readFileSync("scripts/build-wasm-groups.mjs", "utf8").replace(/^import .*;\r?\n/, "");
 const build = readFileSync("scripts/build-wasm.mjs", "utf8");
@@ -11,9 +11,7 @@ const inventory = build.slice(build.indexOf("const packages = {"), build.indexOf
 const names = [...inventory.matchAll(/^  ([a-z]+): \{/gm)].map(match => match[1]);
 
 test("every standalone project compilation prepares its complete WASM closure", () => {
-  const packages = new Map(readdirSync("typescript/packages", { withFileTypes: true })
-    .filter(entry => entry.isDirectory()).map(entry => [entry.name,
-      JSON.parse(readFileSync(`typescript/packages/${entry.name}/package.json`, "utf8"))]));
+  const packages = workspaceManifests(process.cwd());
   const wasm = name => [...packageClosure(process.cwd(), name)]
     .map(name => name === "workers" ? "manifest" : name).filter(name => names.includes(name));
 
@@ -72,8 +70,8 @@ test("standalone package WASM targets follow references while groups keep exclus
     packages: Object.fromEntries(names.map(name => [name, {}])),
     process: { env: grouped ? { ACYCLIC_WASM_GROUPS_PREPARED: "1" } : {} },
   }));
-  assert.deepEqual(targets("filesystem", false), ["actors", "filesystem"]);
-  assert.deepEqual(targets("harness", false), ["actors", "objects", "harness"]);
+  assert.deepEqual(targets("filesystem", false), ["auth", "actors", "filesystem"]);
+  assert.deepEqual(targets("harness", false), ["harness"]);
   for (const name of names) assert.deepEqual(targets(name, true), [name]);
 });
 
