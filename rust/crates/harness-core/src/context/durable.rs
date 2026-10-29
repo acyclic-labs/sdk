@@ -591,7 +591,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
     let canonical = match io {
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let encoded = io.encode(&value, maximum, true)?;
+            let encoded = io.encode(&value, Some(maximum), true)?;
             let _hold = io.guard_bytes(&encoded)?;
             encoded.as_ref() == bytes
         }
