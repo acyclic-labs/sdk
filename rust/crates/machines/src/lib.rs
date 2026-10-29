@@ -68,6 +68,8 @@ mod contract;
 pub use contract::*;
 mod provider;
 pub use provider::*;
+/// Original-operation result publication and credited immutable reads.
+pub mod results;
 mod simulation;
 pub use simulation::*;
 
