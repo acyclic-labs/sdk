@@ -3,6 +3,7 @@
 use super::*;
 use crate::MemoryObjects;
 use acyclic_stream::AppliedRevisions;
+use futures::FutureExt as _;
 use std::time::Duration;
 use std::{future::Future, pin::Pin, sync::Mutex};
 
