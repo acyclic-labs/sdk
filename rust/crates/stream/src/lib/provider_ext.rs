@@ -87,7 +87,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     where
         Self: NativeStreamProvider,
     {
-        let future = self.native_write(WriteRequest::Append(request), None, meter);
+        let future = self.native_write(WriteRequest::Append(request), meter);
         async move {
             let result = future.await?;
             Ok(result.and_then(|output| {
@@ -104,14 +104,19 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit(
         &self,
-        request: CommitRequest,
+        mut request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send
     where
         Self: NativeStreamProvider,
     {
-        let future = self.native_write(WriteRequest::Commit(request), deadline, meter);
+        request.deadline_unix_millis = request
+            .deadline_unix_millis
+            .into_iter()
+            .chain(deadline)
+            .min();
+        let future = self.native_write(WriteRequest::Commit(request), meter);
         async move {
             let result = future.await?;
             Ok(result.and_then(|output| {

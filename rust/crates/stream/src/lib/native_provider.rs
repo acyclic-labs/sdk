@@ -9,7 +9,6 @@
 #[acyclic_contract_derive::explicit_provider]
 pub trait NativeStreamProvider: StreamProvider {
     /// The same barrier, with admission and physical I/O on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_durability_barrier(
         &self,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -18,7 +17,6 @@ pub trait NativeStreamProvider: StreamProvider {
     }
     /// Reserves a phase's completion before writes are deferred. Polling seals
     /// the then-current accepted prefix without admitting new caller work.
-    #[cfg(not(target_arch = "wasm32"))]
     fn prepare_native_durability_barrier(
         &self,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -26,7 +24,6 @@ pub trait NativeStreamProvider: StreamProvider {
         Err(std::io::ErrorKind::Unsupported.into())
     }
     /// Canonical inspection funded by the original native work owner.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
         key: IdempotencyKey,
@@ -36,7 +33,6 @@ pub trait NativeStreamProvider: StreamProvider {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
     /// Canonical tail observation on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_tail(
         &self,
         path: StreamPath,
@@ -46,7 +42,6 @@ pub trait NativeStreamProvider: StreamProvider {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
     /// Canonical finite read; original causes and output custody are retained.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
         &self,
         request: ReadRequest,
@@ -56,19 +51,16 @@ pub trait NativeStreamProvider: StreamProvider {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
     /// Publishes a genuine request family on its original native work owner.
-    /// The commit-only deadline is independent of the retained request digest.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// The Commit request carries its deadline independently of its retry digest.
     fn native_write(
         &self,
         request: WriteRequest,
-        deadline: Option<u64>,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, WriteOutcome> {
         let _ = (request, deadline);
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
     /// Executes the canonical native Commit with an owned original guard before every protected publication attempt.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
@@ -86,7 +78,6 @@ pub trait NativeStreamProvider: StreamProvider {
         NativeProviderFuture::ready(Ok(Err(E::from(StreamError::Unsupported))))
     }
     /// Funds the canonical two-tail/one-append/one-record Commit ingress before physical action.
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_prepare_commit(
         &self,
         request: CommitRequest,

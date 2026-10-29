@@ -281,7 +281,6 @@ impl crate::NativeStreamProvider for LocalStream {
     fn native_write(
         &self,
         request: crate::WriteRequest,
-        deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
         match request {
@@ -290,7 +289,7 @@ impl crate::NativeStreamProvider for LocalStream {
             }
             crate::WriteRequest::Commit(request) => self.guarded_commit(
                 request,
-                deadline,
+                None,
                 meter,
                 || futures::future::ready(Ok(())),
                 crate::WriteOutcome::Commit,

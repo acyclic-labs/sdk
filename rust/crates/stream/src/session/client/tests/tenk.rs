@@ -65,9 +65,6 @@ impl StreamProvider for Owners {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl crate::NativeStreamProvider for Owners {}
-
 async fn agent(
     memory: Arc<MemoryStream>,
     paths: Arc<Vec<StreamPath>>,

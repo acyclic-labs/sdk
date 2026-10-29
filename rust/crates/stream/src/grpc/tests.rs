@@ -135,9 +135,6 @@ impl StreamProvider for EndingFollow {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-impl crate::NativeStreamProvider for EndingFollow {}
-
 #[tokio::test]
 async fn grpc_transport_passes_the_public_suite() -> TestResult {
     let transport = client(MemoryStream::default())?;

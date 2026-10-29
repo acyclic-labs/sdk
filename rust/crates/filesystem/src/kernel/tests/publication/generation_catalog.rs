@@ -185,7 +185,6 @@ mod probe {
         fn native_write(
             &self,
             request: acyclic_stream::WriteRequest,
-            deadline: Option<u64>,
             meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
             let acyclic_stream::WriteRequest::Commit(_) = &request else {
@@ -195,7 +194,7 @@ mod probe {
             let funding = Arc::clone(&meter);
             NativeProviderFuture::new(&funding, async move {
                 self.await_commit_gate().await;
-                self.inner.native_write(request, deadline, meter).await
+                self.inner.native_write(request, meter).await
             })
         }
     }

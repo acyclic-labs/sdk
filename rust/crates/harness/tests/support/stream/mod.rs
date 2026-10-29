@@ -478,7 +478,6 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
     fn native_write(
         &self,
         request: acyclic_stream::WriteRequest,
-        deadline: Option<u64>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
         let original = meter.clone();
@@ -491,11 +490,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                     };
                     let mut output = match self
                         .inner
-                        .native_write(
-                            acyclic_stream::WriteRequest::Append(request),
-                            deadline,
-                            original,
-                        )
+                        .native_write(acyclic_stream::WriteRequest::Append(request), original)
                         .await?
                     {
                         Ok(output) => output,
@@ -518,11 +513,7 @@ impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvid
                     };
                     let mut output = match self
                         .inner
-                        .native_write(
-                            acyclic_stream::WriteRequest::Commit(request),
-                            deadline,
-                            original,
-                        )
+                        .native_write(acyclic_stream::WriteRequest::Commit(request), original)
                         .await?
                     {
                         Ok(output) => output,

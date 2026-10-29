@@ -243,7 +243,6 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
     fn native_write(
         &self,
         request: acyclic_stream::WriteRequest,
-        deadline: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
         let original = Arc::clone(&meter);
@@ -260,7 +259,7 @@ impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
                 })
                 .await;
             match target {
-                Ok(target) => target.native_write(request, deadline, original).await,
+                Ok(target) => target.native_write(request, original).await,
                 Err(error) => Ok(Err(error)),
             }
         })
@@ -451,7 +450,6 @@ mod tests {
         fn native_write(
             &self,
             request: acyclic_stream::WriteRequest,
-            _: Option<u64>,
             _: std::sync::Arc<dyn super::NativeReadMeter>,
         ) -> super::NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
             let digest = match &request {

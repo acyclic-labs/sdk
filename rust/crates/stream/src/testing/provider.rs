@@ -105,11 +105,10 @@ impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Cou
     fn native_write(
         &self,
         request: crate::WriteRequest,
-        deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, crate::WriteOutcome> {
         self.record(RequestClass::Data);
-        self.inner().native_write(request, deadline, meter)
+        self.inner().native_write(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit_guarded<E, F, Fut>(
