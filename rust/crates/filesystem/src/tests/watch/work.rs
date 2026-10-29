@@ -44,8 +44,10 @@ async fn native_change_wait_uses_retained_events_and_settles_on_cancel_or_drop()
         assert_eq!(idle.backend_write_operations, 0);
         std::fs::write(root.path().join("delivered"), b"complete")?;
         tokio::time::timeout(Duration::from_secs(5), changed.as_mut()).await??;
-        let expected = NamespacePath::from_portable(
-            &crate::path::PortablePath::parse("/delivered", VolumeLimits::default())?,
+        let expected = relative_namespace_path(
+            &watch.root,
+            &watch.root.join("delivered"),
+            watch.profile,
             VolumeLimits::default(),
         )?;
         tokio::time::timeout(Duration::from_secs(5), async {
