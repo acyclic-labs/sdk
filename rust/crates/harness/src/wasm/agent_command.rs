@@ -234,7 +234,7 @@ pub struct WasmAgentCommand {
 
 #[wasm_bindgen]
 impl WasmAgentCommand {
-    /// Current logical invocation transport bound, pending shared chunking.
+    /// Maximum size of one transport invocation frame. Larger commands are staged.
     #[wasm_bindgen(js_name = maximumInvocationBytes)]
     pub fn maximum_invocation_bytes() -> u32 {
         acyclic_stream::MAX_COMMAND_BYTES as u32
