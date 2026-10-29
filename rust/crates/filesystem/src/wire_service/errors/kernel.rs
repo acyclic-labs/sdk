@@ -180,7 +180,7 @@ project!(CheckpointError, {
 project!(PublicationError, {
     E::ChangeLimit | E::Work(_) => Code::ResourceExhausted,
     E::AuthorityMismatch { .. } | E::VolumeMismatch { .. } | E::ActiveProjection => Code::FailedPrecondition,
-    E::GroupAborted => Code::Aborted,
+    E::GroupAborted(_) => Code::Aborted,
     E::ChangeValidation(error) | E::ProjectionValidation(error) => filesystem_code(error),
     E::Closure(error) => kernel_code(error),
     E::Objects(error) => object_code(error),

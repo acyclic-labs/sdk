@@ -1,5 +1,6 @@
 //! The one enqueue/prepare/seal state machine. Synchronization and storage are
 //! supplied by the host; no callback runs while this state is borrowed twice.
+use super::GroupAbort;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,6 +26,7 @@ pub(super) struct Member<T, R> {
 pub(super) struct State<T, R> {
     pub(super) members: Vec<Member<T, R>>,
     pub(super) phase: Phase,
+    pub(super) abort_cause: GroupAbort,
     preparation_owned: bool,
 }
 
@@ -42,6 +44,7 @@ impl<T, R: Copy> State<T, R> {
         Self {
             members,
             phase: Phase::Collecting,
+            abort_cause: GroupAbort::PhaseEnded,
             preparation_owned: false,
         }
     }
@@ -233,12 +236,19 @@ impl<T, R: Copy> State<T, R> {
                 self.close();
             }
         } else if self.phase != Phase::Appending {
-            self.abort();
+            self.abort_with(GroupAbort::MemberWithdrawn);
         }
     }
 
     pub(super) fn abort(&mut self) {
+        self.abort_with(GroupAbort::PhaseEnded);
+    }
+
+    pub(super) fn abort_with(&mut self, cause: GroupAbort) {
         if self.phase != Phase::Complete {
+            if self.phase != Phase::Aborted {
+                self.abort_cause = cause;
+            }
             self.phase = Phase::Aborted;
         }
     }

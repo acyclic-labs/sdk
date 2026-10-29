@@ -69,8 +69,8 @@ pub struct PublishGenerationRequest {
 /// Context, evidence and authorization for one publication.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationIntent {
-    /// Exact path preconditions for independent composition. Without these,
-    /// the immutable generation is an opaque, exact-head replacement.
+    /// Captured path conditions and explicit independent-composition admission.
+    /// Without admission the generation remains an exact-head replacement.
     pub(crate) preconditions: Option<PublicationPreconditions>,
     /// Optional semantic operation context.
     pub operation_context: Option<Digest>,
@@ -103,7 +103,7 @@ pub(crate) struct PublicationPreconditions {
     pub config: crate::VolumeConfig,
     /// Authority head actually observed for the immutable base.
     pub head: Head,
-    /// An explicitly prepared merge permits composition across a newer head.
+    /// The selected publication contract admits independent composition.
     pub rebase: bool,
     /// Exact traversal, observation and mutation preconditions against that base.
     pub reads: super::CheckoutDependencies,
@@ -132,6 +132,23 @@ pub struct PublicationReceipt {
 /// Publication failure retaining every unit of work spent before rejection.
 pub type PublicationFailure = OperationFailure<PublicationError>;
 
+/// The event that ended a publication group before its durable result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
+pub enum GroupAbort {
+    /// A caller withdrew before ownership was transferred.
+    #[error("member withdrawn")]
+    MemberWithdrawn,
+    /// The required publication phase has already ended.
+    #[error("publication phase ended")]
+    PhaseEnded,
+    /// The producer was destroyed before returning its result.
+    #[error("publication job dropped")]
+    JobDropped,
+    /// The original member's publication seal refused admission.
+    #[error("member seal failed")]
+    SealFailed,
+}
+
 /// Fail-closed generation-publication errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
 pub enum PublicationError {
@@ -139,8 +156,8 @@ pub enum PublicationError {
     #[error("publication change paths exceed the admitted traversal bound")]
     ChangeLimit,
     /// A member disappeared or rejected preparation before the atomic seal.
-    #[error("publication group was aborted before sealing")]
-    GroupAborted,
+    #[error("publication group aborted: {0}")]
+    GroupAborted(#[source] GroupAbort),
     /// Namespace change facts could not be authenticated.
     #[error("publication change validation failed: {0}")]
     ChangeValidation(#[source] Box<crate::FsError>),

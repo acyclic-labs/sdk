@@ -9,6 +9,17 @@ struct ForeignOwner {
     racing_operation: Option<OperationId>,
     forbid_replay: Arc<std::sync::atomic::AtomicBool>,
     dispatch_gate: Option<Arc<DispatchGate>>,
+    _retirement: Option<Arc<Retirement>>,
+}
+
+struct Retirement(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for Retirement {
+    fn drop(&mut self) {
+        if let Some(retired) = self.0.take() {
+            let _ = retired.send(());
+        }
+    }
 }
 
 impl AsyncAuthorityStore for ForeignOwner {
@@ -236,7 +247,7 @@ async fn native_rejected_groups_reply_without_a_head_probe() -> TestResult {
 #[cfg(not(target_arch = "wasm32"))]
 async fn check_rejected_group_reply(native: bool) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -265,6 +276,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
             racing_operation: Some(operation),
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -296,7 +308,10 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         Arc::clone(&objects),
         EmbeddedCapabilities::MEMORY,
     );
-    let volume = first.create_volume(config(), B, &cancel).await?.value;
+    let volume = first
+        .create_volume(serialized_config(), B, &cancel)
+        .await?
+        .value;
     let mut seed = open_checkout(&volume, writable_manual(), &cancel).await?;
     for name in ["a", "b"] {
         seed.create(
@@ -319,6 +334,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         objects,
         EmbeddedCapabilities::MEMORY,
@@ -434,7 +450,7 @@ async fn native_committed_volume_witness_never_certifies_an_overlapping_read() -
 #[cfg(not(target_arch = "wasm32"))]
 async fn check_committed_volume_witness(native: bool, overlapping_read: bool) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -449,6 +465,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -598,7 +615,7 @@ async fn check_successor_intake(
 ) -> TestResult {
     use futures::future::{Either, select};
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c", "abandoned"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -615,6 +632,7 @@ async fn check_successor_intake(
             racing_operation: reject.then_some(operations[0]),
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -786,7 +804,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
     use futures::future::{AbortHandle, Abortable, Either, select};
     for dropped in 0..2 {
         let cancel = CancellationToken::new();
-        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
         for name in ["a", "b"] {
             create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
         }
@@ -802,6 +820,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
                 racing_operation: None,
                 forbid_replay: Default::default(),
                 dispatch_gate: Some(Arc::clone(&gate)),
+                _retirement: None,
             },
             crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
             EmbeddedCapabilities::MEMORY,
@@ -906,12 +925,13 @@ async fn native_owned_append_retains_the_actual_composition_after_every_client_l
 async fn check_composition_custody(native: bool) -> TestResult {
     use futures::future::{Either, select};
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
     commit(&mut seed, &cancel).await?;
     let gate = Arc::new(DispatchGate::default());
+    let (retired, retirement) = tokio::sync::oneshot::channel();
     let observer = Fs::new(
         ForeignOwner {
             inner: Arc::new(crate::StreamAuthorityStore::new(
@@ -922,6 +942,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: Some(Arc::new(Retirement(Some(retired)))),
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -949,9 +970,11 @@ async fn check_composition_custody(native: bool) -> TestResult {
         "durability I/O outlived the actual filesystem composition"
     );
     gate.release.notify_one();
-    while actual.strong_count() != 0 {
-        tokio::task::yield_now().await;
-    }
+    retirement.await?;
+    assert!(
+        actual.upgrade().is_none(),
+        "completed owner retained composition"
+    );
     verify_owned_operations(&volume, operations, &cancel).await
 }
 
@@ -960,7 +983,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
 fn ready_memory_batches_need_no_detached_executor() -> TestResult {
     futures::executor::block_on(async {
         let cancel = CancellationToken::new();
-        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
         for name in ["a", "b"] {
             create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
         }

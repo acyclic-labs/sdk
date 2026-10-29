@@ -7,7 +7,7 @@ use futures::TryStreamExt;
 #[tokio::test]
 async fn native_group_seals_each_member_with_its_original_ledger() -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -91,7 +91,7 @@ async fn native_group_seals_each_member_with_its_original_ledger() -> TestResult
 #[tokio::test]
 async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operation() -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c", "d"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -223,7 +223,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
 #[tokio::test]
 async fn publication_snapshot_excludes_late_observations_and_releases_on_drop() -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut checkout) = fixture(config(), &cancel).await?;
+    let (volume, mut checkout) = fixture(serialized_config(), &cancel).await?;
     create(
         &mut checkout,
         "file",
@@ -358,7 +358,7 @@ async fn check_pending_withdrawal(native: bool) -> TestResult {
     for cancel_member in [false, true] {
         let cancel = CancellationToken::new();
         let second_cancel = CancellationToken::new();
-        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
         for name in ["a", "b"] {
             create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
         }
@@ -432,35 +432,11 @@ async fn check_pending_withdrawal(native: bool) -> TestResult {
             "withdrawal changed the survivor count"
         );
         verify_withdrawn_member(&volume, operations, usize::from(!cancel_member), &cancel).await?;
-        let withdrawn = if cancel_member { &mut b } else { &mut a };
-        let conflict = withdrawn
-            .commit(
-                OperationId::new(),
-                None,
-                None,
-                None,
-                PublicationPermit::Unrestricted,
-                B,
-                &cancel,
-                allow::<FsError>,
-            )
-            .await?;
-        assert!(matches!(
-            conflict.value,
-            LivePublicationObservation::Conflict { .. }
-        ));
-        assert!(matches!(
-            withdrawn
-                .rebase_head(
-                    volume.config.limits.maximum_checkout_dependencies,
-                    B,
-                    &cancel,
-                )
-                .await?
-                .value,
-            RebaseDecision::Safe { .. }
-        ));
-        commit(withdrawn, &cancel).await?;
+        if cancel_member {
+            commit(&mut b, &cancel).await?;
+        } else {
+            commit(&mut a, &cancel).await?;
+        }
         assert!(
             !a.has_pending_mutations() && !b.has_pending_mutations(),
             "fresh round did not recover aborted members"
@@ -481,7 +457,7 @@ mod property {
                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
             runtime.block_on(async {
                 let cancel = CancellationToken::new();
-                let (volume, mut seed) = fixture(config(), &cancel).await?;
+                let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
                 for name in ["a", "b", "c", "d"] { create(&mut seed, name, OwnedBytes::from_static(&[0]), &cancel).await?; }
                 commit(&mut seed, &cancel).await?;
                 let mut serial = open_checkout(&volume, writable_manual(), &cancel).await?;

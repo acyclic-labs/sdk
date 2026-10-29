@@ -327,7 +327,7 @@ impl Ticket {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.phase == Phase::Aborted {
-                    return Err(PublicationError::GroupAborted.into());
+                    return Err(PublicationError::GroupAborted(state.abort_cause).into());
                 }
                 if state.members.len() == state.members.capacity() {
                     return Ok(());
@@ -415,7 +415,9 @@ impl Ticket {
                     self.settled = true;
                     return Ok(());
                 }
-                Phase::Aborted => return Err(PublicationError::GroupAborted.into()),
+                Phase::Aborted => {
+                    return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
+                }
                 _ => wait_for_notification(notified.as_mut(), cancelled.as_mut()).await?,
             }
         }

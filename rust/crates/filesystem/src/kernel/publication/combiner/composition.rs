@@ -34,7 +34,9 @@ impl<P> Job<P> {
 
 impl<P> Drop for Job<P> {
     fn drop(&mut self) {
-        self.finish(Err(PublicationError::GroupAborted.into()));
+        self.finish(Err(
+            PublicationError::GroupAborted(GroupAbort::JobDropped).into()
+        ));
     }
 }
 

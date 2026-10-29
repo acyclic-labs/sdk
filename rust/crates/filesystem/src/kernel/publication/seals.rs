@@ -63,7 +63,7 @@ where
                         .error
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
-                    Err(PublicationError::GroupAborted.into())
+                    Err(PublicationError::GroupAborted(GroupAbort::SealFailed).into())
                 }
             }
         })

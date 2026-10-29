@@ -30,7 +30,7 @@ pub(in crate::kernel::publication) async fn prepare<P: PublicationOwner>(
     let Some(preconditions) = intent.preconditions.take() else {
         return Ok(candidate);
     };
-    if preconditions.head != request.expected {
+    if !preconditions.rebase || preconditions.head != request.expected {
         return Ok(candidate);
     }
     let Some(mut ticket) = Ticket::enter(
