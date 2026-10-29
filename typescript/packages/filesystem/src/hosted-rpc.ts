@@ -19,7 +19,7 @@ export class HostedFsError extends Error {
 export interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
   readonly maximumResponseBytes: number;
-  readonly maximumTransactionMutations: number;
+  readonly maximumTransactionMutations: number | undefined;
   readonly maximumPageItems: number;
   readonly s3Credentials: boolean;
   readonly sourceReconciliation: boolean;
