@@ -29,15 +29,15 @@ pub enum SourceMode {
     Tracking,
 }
 
-/// Exact bounded native-source configuration.
+/// Native-source configuration with optional caller admission policies.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceOptions {
     /// Source advancement behavior.
     pub mode: SourceMode,
     /// Maximum paths in one authenticated baseline or reconciliation batch.
     pub maximum_paths: Option<u32>,
-    /// Maximum sparse data spans admitted per regular file.
-    pub maximum_extent_spans: u32,
+    /// Optional caller policy for sparse data spans per regular file.
+    pub maximum_extent_spans: Option<u32>,
     /// Canonical portable prefixes omitted from capture and deletion inference.
     pub excluded_paths: Vec<PortablePath>,
 }
@@ -47,7 +47,7 @@ impl Default for SourceOptions {
         Self {
             mode: SourceMode::Tracking,
             maximum_paths: None,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
             excluded_paths: Vec::new(),
         }
     }
@@ -660,7 +660,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
-        if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
+        if options.maximum_paths == Some(0) || options.maximum_extent_spans == Some(0) {
             return Err(SourceError::InvalidOptions);
         }
         let workspace = self.open_source_workspace(name.as_ref()).await?;

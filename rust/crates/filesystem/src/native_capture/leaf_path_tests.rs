@@ -75,7 +75,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
         maximum_paths: Some(8),
-        maximum_extent_spans: 8,
+        maximum_extent_spans: Some(8),
     };
     let policy = CapturePolicy::default();
     runtime.block_on(capture_subtrees_with_native_work(
@@ -208,7 +208,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
         maximum_paths: Some(32),
-        maximum_extent_spans: 8,
+        maximum_extent_spans: Some(8),
     };
     runtime.block_on(capture_subtrees_with_native_work(
         &mut checkout,

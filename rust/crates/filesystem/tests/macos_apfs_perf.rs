@@ -84,7 +84,7 @@ async fn report_macos_directory_rename_capture() -> Result<(), Box<dyn std::erro
         expected_root_identity: capture_root_identity(root.path())?,
         source_root: root.path().to_owned(),
         maximum_paths: Some(128),
-        maximum_extent_spans: 128,
+        maximum_extent_spans: Some(128),
     };
     capture_baseline(
         &mut checkout,
