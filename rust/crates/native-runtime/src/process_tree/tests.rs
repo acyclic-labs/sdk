@@ -1396,7 +1396,7 @@ mod seeded_capture {
             let collect = Collect(Vec::new());
             let operation = async move {
                 if scheduled {
-                    tree.capture_scheduled(capture, 64, None, collect).await
+                    tree.capture_driven(capture, 64, None, collect, None).await
                 } else {
                     tree.capture(capture, 64, None, collect).await
                 }

@@ -10,6 +10,7 @@ use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 enum WatchReply {
     Reject(Code),
     Items(Vec<WatchItem>),
+    Delayed(wire::OperationState, Duration),
     Silent,
     Script(std::sync::Arc<std::sync::Mutex<ObservationScript>>),
 }
@@ -18,6 +19,9 @@ struct ObservationScript {
     watches: std::collections::VecDeque<WatchReply>,
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
+    selected_volumes: Vec<Option<wire::selection::VolumeRef>>,
+    current_contract: Option<wire::MachineContract>,
+    started: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -52,7 +56,6 @@ macro_rules! operation_service {
 
 operation_service! {
     (qualify_image, QualifyImageRequest, ImageQualification),
-    (create, CreateMachineRequest, MachineAdmission),
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
     (fork, ForkCheckpointRequest, ForkAdmission),
     (fork_machine, ForkMachineRequest, ForkMachineAdmission),
@@ -60,11 +63,68 @@ operation_service! {
     (set_suspension_policy, SetSuspensionPolicyRequest, PolicyAdmission),
     (destroy_machine, MachineMutationRequest, MutationAdmission),
     (destroy_checkpoint, CheckpointMutationRequest, MutationAdmission),
-    (inspect_machine, InspectMachineRequest, MachineState),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn create(&self, request: Request<wire::CreateMachineRequest>)
+        -> Result<Response<wire::MachineAdmission>, Status> {
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) {
+            return Err(Status::invalid_argument("create key was substituted"));
+        }
+        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("create"));
+        };
+        if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            script.selected_volumes.push(request.selected_volume_ref);
+            script.calls.push(
+                if request.image.is_none() { "create_default" } else { "create_explicit" }
+            );
+        }
+        Ok(Response::new(admission.clone()))
+    }
+    async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
+        -> Result<Response<wire::MachineState>, Status> {
+        let Some(wire::recovered_admission::Result::Create(admission)
+            | wire::recovered_admission::Result::AttachVolume(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("inspect_machine"));
+        };
+        if request.into_inner().machine != admission.machine {
+            return Err(Status::invalid_argument("machine was substituted"));
+        }
+        let contract = if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            script.calls.push("inspect_machine");
+            script.current_contract.clone().or_else(|| admission.contract.clone())
+        } else { admission.contract.clone() };
+        Ok(Response::new(wire::MachineState {
+            machine: admission.machine.clone(),
+            status: wire::MachineStatus::Running as i32,
+            contract,
+            endpoints: Vec::new(),
+            last_checkpoint: None,
+            created_at_unix_ms: 1,
+            changed_at_unix_ms: 1,
+        }))
+    }
+    async fn attach_volume(&self, request: Request<wire::AttachVolumeRequest>)
+        -> Result<Response<wire::MachineAdmission>, Status> {
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) {
+            return Err(Status::invalid_argument("attach key was substituted"));
+        }
+        let Some(wire::recovered_admission::Result::AttachVolume(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("attach_volume"));
+        };
+        if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            script.selected_volumes.push(request.selected_volume_ref);
+            script.calls.push("attach_volume");
+        }
+        Ok(Response::new(admission.clone()))
+    }
     async fn suspend(
         &self,
         request: Request<wire::MachineMutationRequest>,
@@ -143,10 +203,10 @@ operation_service! {
 
         async fn exec(
             &self,
-            request: Request<wire::ExecRequest>,
+            request: Request<tonic::Streaming<wire::ExecInput>>,
         ) -> Result<Response<Self::ExecStream>, Status> {
             if let Some(guest) = &self.guest {
-                return Ok(guest.exec(request));
+                return guest.exec(request).await;
             }
             Err(Status::unimplemented("exec"))
         }
@@ -158,6 +218,28 @@ operation_service! {
                 return Ok(guest.read_output(request));
             }
             Err(Status::unimplemented("read_output"))
+        }
+        type ReadFileStream = Pin<Box<dyn Stream<Item = Result<wire::ReadFileResponse, Status>> + Send>>;
+        async fn read_file(&self, request: Request<tonic::Streaming<wire::ReadFileRequest>>)
+            -> Result<Response<Self::ReadFileStream>, Status> {
+            let guest = self.guest.clone().ok_or_else(|| Status::unimplemented("read_file"))?;
+            Ok(Response::new(Box::pin(stream::try_unfold((request.into_inner(), guest),
+                |(mut input, guest)| async move {
+                    let Some(chunk) = input.message().await? else { return Ok(None); };
+                    let response = guest.read_file(Request::new(chunk))?.into_inner();
+                    Ok(Some((response, (input, guest))))
+                }))))
+        }
+        type WriteFileStream = Pin<Box<dyn Stream<Item = Result<wire::WriteFileResponse, Status>> + Send>>;
+        async fn write_file(&self, request: Request<tonic::Streaming<wire::WriteFileRequest>>)
+            -> Result<Response<Self::WriteFileStream>, Status> {
+            let guest = self.guest.clone().ok_or_else(|| Status::unimplemented("write_file"))?;
+            Ok(Response::new(Box::pin(stream::try_unfold((request.into_inner(), guest),
+                |(mut input, guest)| async move {
+                    let Some(chunk) = input.message().await? else { return Ok(None); };
+                    let response = guest.write_file(Request::new(chunk))?.into_inner();
+                    Ok(Some((response, (input, guest))))
+                }))))
         }
     type WatchOperationStream = Pin<
         Box<dyn futures::Stream<Item = Result<wire::OperationState, Status>> + Send + 'static>,
@@ -172,6 +254,7 @@ operation_service! {
             WatchReply::Script(script) => {
                 let mut script = script.lock().expect("observation script");
                 script.calls.push("watch");
+                script.started.notify_one();
                 script
                     .watches
                     .pop_front()
@@ -189,6 +272,10 @@ operation_service! {
                 Ok(Response::new(Box::pin(stream::iter(items))))
             }
             WatchReply::Script(_) => Err(Status::internal("nested observation script")),
+            WatchReply::Delayed(value, delay) => Ok(Response::new(Box::pin(stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok(value)
+            })))),
             WatchReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
         }
     }
@@ -222,6 +309,9 @@ fn scripted_operation_service(
         watches: watches.into(),
         inspections: inspections.into(),
         calls: Vec::new(),
+        selected_volumes: Vec::new(),
+        current_contract: None,
+        started: Arc::new(tokio::sync::Notify::new()),
     }));
     (
         OperationService {
@@ -300,7 +390,34 @@ fn operation_state(operation: OperationId, status: wire::OperationStatus) -> wir
             value: operation.as_bytes().to_vec(),
         }),
         status: status as i32,
+        outcome: None,
     }
+}
+
+fn settled_state(
+    operation: OperationId,
+    machine: MachineId,
+    contract: wire::MachineContract,
+    attached: bool,
+) -> wire::OperationState {
+    let machine = wire::MachineState {
+        machine: Some(encode_machine(machine)),
+        status: wire::MachineStatus::Running as i32,
+        contract: Some(contract),
+        endpoints: Vec::new(),
+        last_checkpoint: None,
+        created_at_unix_ms: 1,
+        changed_at_unix_ms: 1,
+    };
+    let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
+    state.outcome = Some(wire::MutationOutcome {
+        result: Some(if attached {
+            wire::mutation_outcome::Result::VolumeAttached(machine)
+        } else {
+            wire::mutation_outcome::Result::Created(machine)
+        }),
+    });
+    state
 }
 
 fn recovered_suspend(

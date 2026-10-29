@@ -14,20 +14,30 @@ use std::process::{ChildStderr, ChildStdout};
 /// When a capture stops and how often it rechecks its owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// The capture fails with `TimedOut` once this much time has passed.
-    pub timeout: Duration,
     /// Also run the check this often while nothing else happens. `None`
     /// checks only when output, input, exit or the deadline wakes capture.
     pub check_every: Option<Duration>,
+    /// Original deadline, fixed before submission. `None` denotes overflow
+    /// and is refused before capture; it never starts a fresh worker budget.
+    pub deadline: Option<Instant>,
 }
 
 impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
-    pub const fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration) -> Self {
         Self {
-            timeout,
             check_every: None,
+            deadline: capture_now().checked_add(timeout),
+        }
+    }
+
+    /// Uses the original caller's deadline without restarting it on a worker.
+    #[must_use]
+    pub const fn until(deadline: Instant) -> Self {
+        Self {
+            check_every: None,
+            deadline: Some(deadline),
         }
     }
 
@@ -59,16 +69,51 @@ pub enum OwnedCaptureInput {
     Literal(Vec<u8>),
 }
 
+/// Owned fixed control signals for one capture.
+pub enum CaptureWakes {
+    /// Zero or one signal without a collection allocation.
+    One(Option<ProcessWake>),
+    /// An existing collection, moved without copying.
+    Many(Vec<ProcessWake>),
+}
+
+impl CaptureWakes {
+    /// Borrows the retained signals without allocation or traversal.
+    #[must_use]
+    pub fn as_slice(&self) -> &[ProcessWake] {
+        match self {
+            Self::One(wake) => wake.as_slice(),
+            Self::Many(wakes) => wakes,
+        }
+    }
+}
+
+impl From<Option<ProcessWake>> for CaptureWakes {
+    fn from(wake: Option<ProcessWake>) -> Self {
+        Self::One(wake)
+    }
+}
+
+impl From<Vec<ProcessWake>> for CaptureWakes {
+    fn from(wakes: Vec<ProcessWake>) -> Self {
+        Self::Many(wakes)
+    }
+}
+
 /// The owner callbacks of an async capture, run on the blocking pool.
 pub trait CaptureHandler: Send + 'static {
-    /// Retained owner signals that wake capture when control state changes.
-    fn wakes(&self) -> &[ProcessWake] {
-        &[]
+    /// Transfers the fixed signals once, on the first blocking turn.
+    fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
+        Ok(None.into())
     }
     /// Confirms that capture may continue; an error stops and cleans it up.
     fn check(&mut self) -> io::Result<()>;
     /// Observes newly captured output, returning exchange input.
     fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput>;
+    /// Releases live execution admission after the original physical cleanup.
+    /// Observation may retain this handler longer; it cannot delay retirement.
+    /// Owner loss skips this callback and must remain an unproved retirement.
+    fn retired(&mut self, _cleanup_completed: bool) {}
 }
 
 /// A finished async capture: its handler and the bounded result. A tree
@@ -79,6 +124,17 @@ pub struct CaptureOutcome<H> {
     pub handler: H,
     /// The bounded output, or the failure with partial output.
     pub result: Result<Output, ProcessCaptureFailure>,
+}
+
+impl<H: CaptureHandler> CaptureOutcome<H> {
+    pub(super) fn new(mut handler: H, result: Result<Output, ProcessCaptureFailure>) -> Self {
+        handler.retired(
+            result
+                .as_ref()
+                .map_or_else(|failure| failure.cleanup_completed, |_| true),
+        );
+        Self { handler, result }
+    }
 }
 
 pub(super) struct Pump<'a> {
@@ -93,6 +149,7 @@ pub(super) struct Pump<'a> {
     #[cfg(windows)]
     readers: [Option<std::sync::Arc<events::PipeOperation>>; 2],
     status: Option<ExitStatus>,
+    streaming: bool,
 }
 
 /// What a turn left to do.
@@ -108,8 +165,9 @@ pub(super) fn handled_turn<H: CaptureHandler>(
     pump: &mut Pump<'_>,
     tree: &mut ProcessTree,
     handler: &mut H,
+    wakes: &[ProcessWake],
 ) -> Turn {
-    for wake in handler.wakes() {
+    for wake in wakes {
         if let Err(error) = wake.consume() {
             return Turn::Done(Err(error));
         }
@@ -139,7 +197,7 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = now.checked_add(schedule.timeout).ok_or_else(|| {
+        let deadline = schedule.deadline.ok_or_else(|| {
             ProcessCaptureFailure::before_capture(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "process deadline overflow",
@@ -192,7 +250,50 @@ impl<'a> Pump<'a> {
             #[cfg(windows)]
             readers,
             status: None,
+            streaming: false,
         })
+    }
+
+    pub(super) fn stream_output(&mut self) {
+        self.streaming = true;
+    }
+
+    pub(super) fn take_output(&mut self) -> [Vec<u8>; 2] {
+        std::mem::take(&mut self.output)
+    }
+
+    /// While output credit is withheld, only owner control or the deadline
+    /// can advance capture. Readable output must not wake this wait.
+    pub(super) fn arm_control(&self, wakes: &[ProcessWake]) -> io::Result<events::Wait> {
+        let sources = wakes
+            .iter()
+            .map(|wake| {
+                #[cfg(unix)]
+                {
+                    use std::os::fd::AsFd;
+                    Source::Readable(wake.as_fd())
+                }
+                #[cfg(windows)]
+                {
+                    // SAFETY: the capture handler retains each event until this wait ends.
+                    Source::Exit(unsafe {
+                        std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        let deadline = Instant::now() + self.deadline.saturating_duration_since(capture_now());
+        events::arm(&sources, Some(deadline))
+    }
+
+    pub(super) fn check_deadline(&self) -> io::Result<()> {
+        if capture_now() >= self.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "process output deadline exceeded; effects may have occurred",
+            ));
+        }
+        Ok(())
     }
 
     /// Moves everything that is ready. Never waits.
@@ -226,6 +327,9 @@ impl<'a> Pump<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         loop {
+            if self.streaming {
+                self.check_deadline()?;
+            }
             let now = capture_now();
             if self.check_every.is_none_or(|_| now >= self.next_check) {
                 check()?;
@@ -282,13 +386,9 @@ impl<'a> Pump<'a> {
                 }
                 return Ok(true);
             }
-            if capture_now() >= self.deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "process output deadline exceeded; effects may have occurred",
-                ));
-            }
-            if !progressed {
+            self.check_deadline()?;
+            if !progressed || (self.streaming && self.output.iter().any(|bytes| !bytes.is_empty()))
+            {
                 return Ok(false);
             }
         }

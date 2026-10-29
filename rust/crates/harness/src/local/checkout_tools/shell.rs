@@ -38,7 +38,8 @@ impl CheckoutTools {
             invocation,
             self.clock.now_unix_millis() / 1000,
         )?;
-        let control = native_process::capture::OwnerControl::open(self.expiry_unix_ms)?;
+        let control =
+            acyclic_native_runtime::ProcessControl::open(self.expiry_unix_ms).map_err(storage)?;
         // A dropped turn stops its command; the worker still reaps the tree.
         let _stop = StopOnDrop(control.clone());
         let wake = control.wake();
@@ -86,7 +87,7 @@ impl CheckoutTools {
     }
 }
 
-pub(super) struct StopOnDrop(pub(super) native_process::capture::OwnerControl);
+pub(super) struct StopOnDrop(pub(super) acyclic_native_runtime::ProcessControl);
 
 impl Drop for StopOnDrop {
     fn drop(&mut self) {

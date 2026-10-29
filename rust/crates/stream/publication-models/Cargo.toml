@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-acyclic-stream = { path = "..", default-features = false, features = ["local"] }
-loom = "0.7.2"
+tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
+loom = { version = "0.7.2", features = ["futures"] }
 futures = "0.3.31"
 thiserror = "2.0"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }

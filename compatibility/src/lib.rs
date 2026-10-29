@@ -70,6 +70,12 @@ pub fn actor_services() -> Builder {
         .server_mod_attribute(".", "#[cfg(not(target_arch = \"wasm32\"))]")
 }
 
+/// Import root for canonical identities shared by independently published services.
+#[must_use]
+pub fn shared_protocols() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("proto")
+}
+
 /// Compile messages and selected services; only protocol changes rerun codegen.
 ///
 /// # Errors
@@ -87,9 +93,14 @@ pub fn compile(
         PathBuf::from(std::env::var_os("OUT_DIR").ok_or("OUT_DIR is unset")?).join(descriptor);
     config.file_descriptor_set_path(&output);
     let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
-    services.compile_with_config(config, &paths, &[manifest.join("proto"), include])?;
+    services.compile_with_config(
+        config,
+        &paths,
+        &[manifest.join("proto"), shared_protocols(), include],
+    )?;
     std::fs::write(&output, canonicalize(&std::fs::read(&output)?, protos)?)?;
     println!("cargo:rerun-if-changed=proto");
+    println!("cargo:rerun-if-changed={}", shared_protocols().display());
     Ok(())
 }
 
@@ -107,7 +118,11 @@ pub fn descriptor(
     let paths: Vec<_> = protos.iter().map(|path| manifest.join(path)).collect();
     config.load_fds(
         &paths,
-        &[manifest.join("proto"), protoc_bin_vendored::include_path()?],
+        &[
+            manifest.join("proto"),
+            shared_protocols(),
+            protoc_bin_vendored::include_path()?,
+        ],
     )?;
     std::fs::write(output, canonicalize(&std::fs::read(output)?, protos)?)?;
     Ok(())

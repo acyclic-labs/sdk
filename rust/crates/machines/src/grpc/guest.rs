@@ -38,13 +38,37 @@ pub(super) fn decode_exec_output(
     }
     match value.output {
         Some(wire::exec_output::Output::Data(data))
-            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
+            if !data.bytes.is_empty() && data.bytes.len() <= MAX_OUTPUT_READ_BYTES as usize =>
         {
-            Ok(ExecOutput::Data(data))
+            match wire::ExecStream::try_from(data.stream) {
+                Ok(wire::ExecStream::Stdout) => Ok(ExecOutput::Data(data.bytes)),
+                Ok(wire::ExecStream::Stderr) => Ok(ExecOutput::Stderr(data.bytes)),
+                _ => Err(ProviderError::Rejected("exec output channel is invalid; recovery: return STDOUT or STDERR on the original stream".into())),
+            }
         }
         Some(wire::exec_output::Output::ExitCode(code)) => {
             *exited = true;
             Ok(ExecOutput::ExitCode(code))
+        }
+        Some(wire::exec_output::Output::Stopped(stop)) => {
+            let kind =
+                match wire::ExecStopKind::try_from(stop.kind) {
+                    Ok(wire::ExecStopKind::Timeout) => ExecStopKind::Timeout,
+                    Ok(wire::ExecStopKind::Expired) => ExecStopKind::Expired,
+                    Ok(wire::ExecStopKind::OutputLimit) => ExecStopKind::OutputLimit,
+                    Ok(wire::ExecStopKind::ControlStopped) => ExecStopKind::ControlStopped,
+                    Ok(wire::ExecStopKind::CaptureFailed) => ExecStopKind::CaptureFailed,
+                    _ => return Err(ProviderError::Rejected(
+                        "exec stop kind is invalid; recovery: repair the producer's terminal frame"
+                            .into(),
+                    )),
+                };
+            *exited = true;
+            Ok(ExecOutput::Stopped(ExecStop {
+                kind,
+                message: stop.message,
+                cleanup_completed: stop.cleanup_completed,
+            }))
         }
         _ => Err(ProviderError::Rejected("invalid exec output frame".into())),
     }

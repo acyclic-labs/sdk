@@ -7,6 +7,27 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
     fn assurance(&self) -> ProviderAssurance {
         self.inner().assurance()
     }
+    async fn read_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+        limit: u32,
+    ) -> Result<FileRead, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner().read_file(machine, access, limit).await
+    }
+    async fn write_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+        data: Vec<u8>,
+        truncate: bool,
+    ) -> Result<FileWrite, ProviderError> {
+        self.record(RequestClass::Data);
+        self.inner()
+            .write_file(machine, access, data, truncate)
+            .await
+    }
     async fn exec(
         &self,
         machine: MachineId,
@@ -31,6 +52,15 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         self.record(RequestClass::Metadata);
         self.inner().create(request).await
+    }
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        self.record(RequestClass::Metadata);
+        self.inner().attach_volume(machine, volume, key).await
     }
     async fn inspect_machine(
         &self,

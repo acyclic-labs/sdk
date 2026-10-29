@@ -1,6 +1,248 @@
 use super::*;
 
 #[tokio::test]
+async fn create_binds_image_and_canonical_selected_volume_without_redispatch()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (mut service, script, machine) = scripted_operation_service(Vec::new(), Vec::new());
+    let key = service.expected_key;
+    let operation = service.expected_operation;
+    let volume = wire::selection::VolumeRef {
+        provider: Some(wire::selection::ProviderRef {
+            namespace: "example".into(),
+            family: "filesystem".into(),
+            version: "1".into(),
+        }),
+        id: "selected-workspace".into(),
+        volume_class: wire::selection::VolumeClass::Project as i32,
+        owner: Some(wire::selection::VolumeOwner {
+            owner: Some(wire::selection::volume_owner::Owner::Project(
+                "project".into(),
+            )),
+        }),
+    };
+    let mut contract = codecs::wire_contract(&[]);
+    contract.selected_volume_ref = Some(volume.clone());
+    let terminal = WatchReply::Items(vec![WatchItem::State(settled_state(
+        operation,
+        machine,
+        contract.clone(),
+        false,
+    ))]);
+    script
+        .lock()
+        .expect("script")
+        .watches
+        .extend([terminal.clone(), terminal.clone(), terminal]);
+    service.recovered.result = Some(wire::recovered_admission::Result::Create(
+        wire::MachineAdmission {
+            machine: Some(encode_machine(machine)),
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            contract: Some(contract.clone()),
+        },
+    ));
+    let (provider, shutdown, server) = serve_operation_service(service).await?;
+    let mut default = CreateMachine::new(key, None, [8; 32]);
+    default.selected_volume_ref = Some(volume.clone());
+    let MutationOutcome::Created(created) = provider.create(default).await? else {
+        panic!("create did not settle");
+    };
+    assert_eq!(created.id, machine);
+    assert_eq!(created.contract.image, Image::custom([7; 32])?);
+    assert_eq!(created.contract.selected_volume_ref, Some(volume.clone()));
+    let mut exact = CreateMachine::new(key, Some(created.contract.image.clone()), [8; 32]);
+    exact.selected_volume_ref = Some(volume.clone());
+    assert_eq!(
+        provider.create(exact).await?,
+        MutationOutcome::Created(created.clone())
+    );
+    let mut later = codecs::wire_contract(&[]);
+    let mut later_volume = volume.clone();
+    later_volume.id = "later-attachment".into();
+    later.selected_volume_ref = Some(later_volume.clone());
+    script.lock().expect("script").current_contract = Some(later);
+    assert_eq!(
+        provider
+            .inspect_machine(machine)
+            .await?
+            .contract
+            .selected_volume_ref,
+        Some(later_volume)
+    );
+    assert_eq!(
+        provider.recover(key).await?,
+        MutationOutcome::Created(created)
+    );
+    let mut substituted = CreateMachine::new(key, Some(Image::custom([9; 32])?), [8; 32]);
+    substituted.selected_volume_ref = Some(volume.clone());
+    assert_eq!(
+        provider.create(substituted).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    let omitted = CreateMachine::new(key, None, [8; 32]);
+    assert_eq!(
+        provider.create(omitted).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    let mut foreign = volume.clone();
+    foreign.id = "another-workspace".into();
+    let mut substituted = CreateMachine::new(key, None, [8; 32]);
+    substituted.selected_volume_ref = Some(foreign.clone());
+    assert_eq!(
+        provider.create(substituted).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    assert_eq!(
+        script.lock().expect("script").selected_volumes,
+        [
+            Some(volume.clone()),
+            Some(volume.clone()),
+            Some(volume),
+            None,
+            Some(foreign)
+        ]
+    );
+    assert_eq!(
+        script.lock().expect("script").calls,
+        [
+            "create_default",
+            "watch",
+            "create_explicit",
+            "watch",
+            "inspect_machine",
+            "watch",
+            "create_explicit",
+            "create_default",
+            "create_default",
+        ]
+    );
+    let mut substituted_contract = contract.clone();
+    substituted_contract.selected_volume_ref = None;
+    for terminal in [
+        operation_state(operation, wire::OperationStatus::Succeeded),
+        settled_state(operation, machine, contract.clone(), true),
+        settled_state(operation, machine, substituted_contract, false),
+    ] {
+        script
+            .lock()
+            .expect("script")
+            .watches
+            .push_back(WatchReply::Items(vec![WatchItem::State(terminal)]));
+        let before = script.lock().expect("script").calls.len();
+        let mut request = CreateMachine::new(key, None, [8; 32]);
+        request.selected_volume_ref = contract.selected_volume_ref.clone();
+        assert_eq!(
+            provider.create(request).await,
+            Err(ProviderError::Indeterminate(key))
+        );
+        assert_eq!(
+            script
+                .lock()
+                .expect("script")
+                .calls
+                .get(before..)
+                .expect("new calls"),
+            ["create_default", "watch"]
+        );
+    }
+    let _ = shutdown.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn attach_settles_and_recovers_the_original_selected_volume_without_redispatch()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (mut service, script, machine) = scripted_operation_service(Vec::new(), Vec::new());
+    let key = service.expected_key;
+    let operation = service.expected_operation;
+    let volume = wire::selection::VolumeRef {
+        provider: Some(wire::selection::ProviderRef {
+            namespace: "example".into(),
+            family: "filesystem".into(),
+            version: "1".into(),
+        }),
+        id: "selected-workspace".into(),
+        volume_class: wire::selection::VolumeClass::Project as i32,
+        owner: Some(wire::selection::VolumeOwner {
+            owner: Some(wire::selection::volume_owner::Owner::Project(
+                "project".into(),
+            )),
+        }),
+    };
+    let mut contract = codecs::wire_contract(&[]);
+    contract.selected_volume_ref = Some(volume.clone());
+    service.recovered.result = Some(wire::recovered_admission::Result::AttachVolume(
+        wire::MachineAdmission {
+            machine: Some(encode_machine(machine)),
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            contract: Some(contract.clone()),
+        },
+    ));
+    let terminal = WatchReply::Items(vec![WatchItem::State(settled_state(
+        operation,
+        machine,
+        contract.clone(),
+        true,
+    ))]);
+    script
+        .lock()
+        .expect("script")
+        .watches
+        .extend([terminal.clone(), terminal]);
+    let (provider, shutdown, server) = serve_operation_service(service).await?;
+    let attached = provider.attach_volume(machine, volume.clone(), key).await?;
+    let MutationOutcome::VolumeAttached(observation) = &attached else {
+        panic!("attach did not settle");
+    };
+    assert_eq!(observation.id, machine);
+    assert_eq!(
+        observation.contract.selected_volume_ref.as_ref(),
+        Some(&volume)
+    );
+    let mut later = contract;
+    later.selected_volume_ref = None;
+    script.lock().expect("script").current_contract = Some(later);
+    assert_eq!(
+        provider
+            .inspect_machine(machine)
+            .await?
+            .contract
+            .selected_volume_ref,
+        None
+    );
+    assert_eq!(provider.recover(key).await?, attached);
+    let mut foreign = volume.clone();
+    foreign.id = "another-workspace".into();
+    assert_eq!(
+        provider.attach_volume(machine, foreign, key).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    let foreign_machine = MachineId::parse("00000000-0000-0000-0000-000000000055")?;
+    assert_eq!(
+        provider.attach_volume(foreign_machine, volume, key).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    assert_eq!(
+        script.lock().expect("script").calls,
+        [
+            "attach_volume",
+            "watch",
+            "inspect_machine",
+            "watch",
+            "attach_volume",
+            "attach_volume"
+        ]
+    );
+    let _ = shutdown.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn operation_for_rejects_a_substituted_nested_admission_operation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
@@ -18,10 +260,10 @@ async fn operation_for_rejects_a_substituted_nested_admission_operation()
     };
     let (machines, shutdown, server) = serve_operation_service(service).await?;
 
-    assert!(matches!(
+    assert_eq!(
         machines.recover_operation(key).await,
-        Err(ProviderError::Rejected(_))
-    ));
+        Err(ProviderError::Indeterminate(key))
+    );
 
     let _ = shutdown.send(());
     server.await??;

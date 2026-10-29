@@ -22,6 +22,8 @@ use std::{num::NonZeroU32, sync::Arc};
 mod host;
 mod identity;
 pub use host::MachinesHost;
+mod workspace;
 use identity::{machines_key, map_error, parse_uuid};
+pub use workspace::MachinesWorkspace;
 #[cfg(test)]
 mod tests;

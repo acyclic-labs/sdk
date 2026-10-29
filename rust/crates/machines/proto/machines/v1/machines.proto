@@ -2,6 +2,7 @@ syntax = "proto3";
 package acyclic.machines.v1;
 
 import "validation/v1/options.proto";
+import "harness/v2/resources.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/machines/v1;machinesv1";
 
@@ -99,6 +100,8 @@ message MachineContract {
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
   Budgets budgets = 9;
+  // Exact selected volume admitted under the original caller's hosted scope.
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
 }
 message QualifyImageRequest {
   ProtocolVersion protocol = 1;
@@ -115,11 +118,23 @@ message CreateMachineRequest {
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
   Budgets budgets = 9;
+  // Selects the authenticated host's canonical workspace view. This is a
+  // reference, never a capability, filesystem locator or guest mapping fence.
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
 }
 message MachineMutationRequest {
   ProtocolVersion protocol = 1;
   IdempotencyKey idempotency_key = 2;
   MachineId machine = 3;
+}
+// Enrolls the selected workspace on the original Machine incarnation. The
+// server retains its existing physical custodian through hosted admission;
+// neither the volume reference nor a transport close proves retirement.
+message AttachVolumeRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 4;
 }
 message CheckpointMachineRequest {
   ProtocolVersion protocol = 1;
@@ -191,6 +206,9 @@ enum OperationStatus {
 message OperationState {
   OperationId operation = 1;
   OperationStatus status = 2;
+  // Original committed result, retained with terminal success. Later mutations
+  // of the resource cannot replace this operation's settled observations.
+  MutationOutcome outcome = 3;
 }
 enum MachineStatus {
   MACHINE_STATUS_UNSPECIFIED = 0;
@@ -282,10 +300,11 @@ message RecoveredAdmission {
     PolicyAdmission set_suspension_policy = 8;
     MutationAdmission destroy_checkpoint = 9;
     ForkMachineAdmission fork_machine = 10;
+    MachineAdmission attach_volume = 11;
   }
 }
 
-// Terminal simulator result. Unlike an admission, this contains the checked
+// Retained terminal result. Unlike an admission, this contains the checked
 // observations produced after the operation has completed.
 message ForkedMachines {
   repeated MachineState machines = 1;
@@ -310,6 +329,7 @@ message MutationOutcome {
     MachineId machine_destroyed = 7;
     CheckpointId checkpoint_destroyed = 8;
     ForkedLiveMachines machine_forked = 9;
+    MachineState volume_attached = 10;
   }
 }
 message OperationPage {
@@ -369,22 +389,83 @@ message UsageReceipt {
 
 // Executes once in the current admitted guest. A lost reply, cancellation or
 // timeout does not prove the command did not run; clients must not redispatch.
-message ExecRequest {
+message ExecStart {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
-  // 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
-  // argv[0] is nonempty. Shell evaluation requires an explicit shell program.
-  repeated string argv = 3;
-  // Command deadline in milliseconds, 1..60000.
+  reserved 3, 8;
+  reserved "argv", "stdin";
+  // Positive command deadline in milliseconds. The caller authority's expiry
+  // remains an independent upper bound, even while no output is produced.
   uint32 timeout_ms = 4;
+  optional uint64 expiry_unix_ms = 5;
+  // Combined stdout/stderr allowance; absent is unbounded, zero allows no bytes.
+  optional uint64 maximum_output_bytes = 6;
+  // Guest working directory, never a path on the client host.
+  optional string cwd = 7;
+}
+// One original ordered RPC, without replay or replacement after uncertain delivery.
+// Start occurs exactly once, first, and fixes account/incarnation/deadline admission.
+// One or more arguments follow, then command_complete permits execution. Native
+// OS exec, not a transport envelope, determines the command's argument capacity.
+// Incomplete command input can never launch a process. EOF before command_complete
+// cancels assembly; input loss afterwards retains uncertainty until original cleanup.
+// After command_complete, stdin frames and stdin_eof are distinct process input.
+// Pull input only as original guest consumed-input credit permits; transport flow
+// control must propagate backpressure, never accumulate a whole-command queue.
+message ExecInput {
+  oneof input {
+    ExecStart start = 1;
+    ExecArgument argument = 2;
+    ExecMarker command_complete = 3;
+    // 1..65536 exact binary bytes, followed by exactly one stdin_eof marker.
+    bytes stdin = 4;
+    ExecMarker stdin_eof = 5;
+  }
+}
+message ExecArgument {
+  // At most 65536 bytes; empty data requires end=true. UTF-8 code points may span
+  // frames. Validate the complete
+  // argument as NUL-free UTF-8; argv[0] is nonempty. Empty later arguments survive.
+  bytes data = 1;
+  bool end = 2;
+}
+message ExecMarker {}
+enum ExecStopKind {
+  EXEC_STOP_KIND_UNSPECIFIED = 0;
+  EXEC_STOP_KIND_TIMEOUT = 1;
+  EXEC_STOP_KIND_EXPIRED = 2;
+  EXEC_STOP_KIND_OUTPUT_LIMIT = 3;
+  EXEC_STOP_KIND_CONTROL_STOPPED = 4;
+  EXEC_STOP_KIND_CAPTURE_FAILED = 5;
+}
+message ExecStop {
+  ExecStopKind kind = 1;
+  string message = 2;
+  // False preserves uncertainty about surviving guest processes.
+  bool cleanup_completed = 3;
+}
+enum ExecStream {
+  EXEC_STREAM_UNSPECIFIED = 0;
+  EXEC_STREAM_STDOUT = 1;
+  EXEC_STREAM_STDERR = 2;
+}
+message ExecData {
+  ExecStream stream = 1;
+  // Exact binary channel bytes, 1..65536 per frame.
+  bytes bytes = 2;
 }
 message ExecOutput {
   MachineId machine = 1;
-  // Data is merged stdout/stderr in observed console order, 1..65536 bytes.
-  // Exactly one exit-code frame terminates the stream; no frame follows it.
+  reserved 2, 4;
+  reserved "stderr";
+  // Protocol 1.2 tags each Data frame as STDOUT or STDERR and preserves its
+  // channel's exact order. Earlier protocol revisions must be refused before
+  // execution, not interpreted as tagged channels.
+  // Exactly one exit-code or stopped frame terminates the stream.
   oneof output {
-    bytes data = 2;
+    ExecData data = 6;
     int32 exit_code = 3;
+    ExecStop stopped = 5;
   }
 }
 // Reads the live retained guest console, without a lifecycle operation identity.
@@ -404,11 +485,63 @@ message MachineOutput {
   bytes data = 3;
 }
 
+// Native guest IO; these are not lifecycle mutations or shell commands. The
+// server joins the caller's original account/incarnation and file grant before
+// touching the guest. One absolute deadline covers admission and completion.
+// A file RPC binds its first FileAccess machine/path/deadline for its lifetime;
+// later chunks retain that admission and supply their own exact offsets. Each
+// request yields one ordered native completion. The producer pulls requests and
+// yields replies under transport backpressure, without eagerly collecting either
+// side. Dropping either side retires that session; writes are never redispatched.
+message FileAccess {
+  MachineId machine = 1;
+  // Absolute, NUL-free guest path, never a client host path.
+  string path = 2;
+  uint64 offset = 3;
+  uint64 deadline_unix_ms = 4;
+}
+message ReadFileRequest {
+  ProtocolVersion protocol = 1;
+  FileAccess access = 2;
+  // One chunk, 1..65536 bytes. The file itself has no size limit.
+  uint32 limit = 3;
+}
+message ReadFileResponse {
+  MachineId machine = 1;
+  uint64 offset = 2;
+  oneof result {
+    // Empty data is EOF; a short read is preserved exactly.
+    bytes data = 3;
+    // Nonzero POSIX errno from the native guest operation.
+    uint32 errno = 4;
+  }
+}
+message WriteFileRequest {
+  ProtocolVersion protocol = 1;
+  FileAccess access = 2;
+  // At most 65536 bytes. No shell or text encoding is involved.
+  bytes data = 3;
+  // Create if absent. Truncate first only when true, with offset zero.
+  bool truncate = 4;
+}
+message WriteFileResponse {
+  MachineId machine = 1;
+  uint64 offset = 2;
+  oneof result {
+    // A short write is preserved; a lost reply never authorizes redispatch.
+    uint32 written = 3;
+    uint32 errno = 4;
+  }
+}
+
 service MachinesService {
-  rpc Exec(ExecRequest) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
+  rpc ReadFile(stream ReadFileRequest) returns (stream ReadFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/read-file" extractor: "machines.read-file" }; }
+  rpc WriteFile(stream WriteFileRequest) returns (stream WriteFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/write-file" extractor: "machines.write-file" }; }
+  rpc Exec(stream ExecInput) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
   rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }
   rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/create" extractor: "machines.create" }; }
+  rpc AttachVolume(AttachVolumeRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/checkpoint" extractor: "machines.checkpoint" }; }
   rpc Fork(ForkCheckpointRequest) returns (ForkAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-checkpoint" }; }
   rpc ForkMachine(ForkMachineRequest) returns (ForkMachineAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-machine" }; }

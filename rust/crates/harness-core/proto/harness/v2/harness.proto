@@ -2,6 +2,7 @@ syntax = "proto3";
 package acyclic.harness.v2;
 
 import "protocol/v1/protocol.proto";
+import "harness/v2/resources.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/harness/v2;harnessv2";
 
@@ -173,35 +174,6 @@ message SchedulerEventEnvelope {
   bytes canonical_event_json = 5;
   bytes event_digest = 6;
   optional uint64 committed_at_ms = 7;
-}
-
-// Canonical ref-only conversation values. File bodies are never protocol events.
-message ProviderRef {
-  string namespace = 1;
-  string family = 2;
-  string version = 3;
-}
-
-enum VolumeClass {
-  VOLUME_CLASS_UNSPECIFIED = 0;
-  VOLUME_CLASS_PROJECT = 1;
-  VOLUME_CLASS_AGENT_PRIVATE = 2;
-  VOLUME_CLASS_SESSION_SHARED = 3;
-}
-
-message VolumeOwner {
-  oneof owner {
-    string project = 1;
-    string agent_id = 2;
-    string session = 3;
-  }
-}
-
-message VolumeRef {
-  ProviderRef provider = 1;
-  string id = 2;
-  VolumeClass volume_class = 3;
-  VolumeOwner owner = 4;
 }
 
 message FileDescriptor {

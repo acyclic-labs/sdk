@@ -5,6 +5,27 @@ impl MachinesProvider for SimulatedMachines {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::ProcessLocalSimulation
     }
+    async fn read_file(
+        &self,
+        _machine: MachineId,
+        _access: FileAccess,
+        _limit: u32,
+    ) -> Result<FileRead, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no guest filesystem".into(),
+        ))
+    }
+    async fn write_file(
+        &self,
+        _machine: MachineId,
+        _access: FileAccess,
+        _data: Vec<u8>,
+        _truncate: bool,
+    ) -> Result<FileWrite, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no guest filesystem".into(),
+        ))
+    }
     async fn exec(
         &self,
         _machine: MachineId,
@@ -31,11 +52,29 @@ impl MachinesProvider for SimulatedMachines {
             compatibility_revision: Self::revision(),
         })
     }
+    async fn attach_volume(
+        &self,
+        _machine: MachineId,
+        _volume: wire::selection::VolumeRef,
+        _key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no hosted guest admission; recovery: use a physical Machines provider".into(),
+        ))
+    }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
+        if request.selected_volume_ref.is_some() {
+            return Err(ProviderError::Unsupported(
+                "the simulator has no hosted guest admission; recovery: use a physical Machines provider".into(),
+            ));
+        }
         let key = request.idempotency_key;
         let intent = MemoryIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();
         self.apply(key, intent, move |state| {
+            let image = request.image.clone().ok_or_else(|| ProviderError::Unsupported(
+                "the simulator has no installed default image; recovery: supply an explicit immutable image".into(),
+            ))?;
             if let CompatibilityPolicy::Require(required) = &request.compatibility
                 && (required.is_empty() || !required.is_subset(&capabilities))
             {
@@ -50,7 +89,7 @@ impl MachinesProvider for SimulatedMachines {
             }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
-            let contract = Self::contract(&request, capabilities);
+            let contract = Self::contract(&request, image, capabilities);
             let observation = MachineObservation {
                 id,
                 state: MachineState::Running,

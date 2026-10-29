@@ -7,7 +7,7 @@ export const writeChanged = (path, content) => {
 
 // Canonical generation inputs and their published copies live here.
 // Every family that negotiates a protocol ships the shared handshake schema.
-/** @type {[string, string[]][]} */
+/** @type {[string, string[], string?][]} */
 export const packagedTypeScriptBindings = [
   ["filesystem/v2/filesystem_pb", ["filesystem"]],
   ["protocol/v1/protocol_pb", ["filesystem"]],
@@ -16,6 +16,7 @@ export const packagedTypeScriptBindings = [
   ["auth/v1/auth_pb", ["auth"]],
   ["inference/v1/inference_pb", ["inference"]],
   ["machines/v1/machines_pb", ["machines"]],
+  ["harness/v2/resources_pb", ["machines"], "compatibility"],
   ["objects/v1/objects_pb", ["objects"]],
   ["stream/v1/stream_pb", ["stream"]],
   ["stream/v1/session_pb", ["stream"]],

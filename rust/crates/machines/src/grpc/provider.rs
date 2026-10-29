@@ -36,6 +36,16 @@ machine_mutations! {
         ProviderAssurance::CustomerHosted
     }
 
+    async fn read_file(&self, machine: MachineId, access: FileAccess, limit: u32)
+        -> Result<FileRead, ProviderError> {
+        self.guest_read_file(machine, access, limit).await
+    }
+
+    async fn write_file(&self, machine: MachineId, access: FileAccess, data: Vec<u8>, truncate: bool)
+        -> Result<FileWrite, ProviderError> {
+        self.guest_write_file(machine, access, data, truncate).await
+    }
+
     #[tracing::instrument(
         name = "acyclic.machines.exec",
         skip_all,
@@ -48,38 +58,32 @@ machine_mutations! {
     ) -> Result<ExecStream, ProviderError> {
         obs::finish(
             async {
-                let mut client = self.client().await?;
                 let timeout =
                     Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
-                let deadline = tokio::time::Instant::now() + timeout;
-                let mut request = Request::new(wire::ExecRequest {
-                    protocol: Some(protocol()),
-                    machine: Some(encode_machine(machine)),
-                    argv: command.argv,
-                    timeout_ms: command.timeout_ms,
-                });
-                request.set_timeout(timeout);
-                let output = client.exec(request)
-                    .await
+                let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
+                let mut client = deadline.run(self.client()).await
+                    .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
+                let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
+                let mut request = Request::new(input);
+                request.set_timeout(deadline.remaining());
+                let output = deadline.run(client.exec(request)).await
+                    .ok_or(ProviderError::CommandIndeterminate(machine))?
                     .map_err(|error| command_error(machine, &error))?
                     .into_inner();
                 let output = stream::try_unfold(
-                    (output, false),
-                    move |(mut output, mut exited)| async move {
-                        let frame = if exited {
-                            output.message().await
-                        } else {
-                            tokio::time::timeout_at(deadline, output.message())
-                                .await
-                                .map_err(|_| ProviderError::CommandIndeterminate(machine))?
+                    (output, false, deadline, input_guard),
+                    move |(mut output, mut exited, deadline, input_guard)| async move {
+                        if exited {
+                            return Ok(None);
                         }
+                        let frame = deadline.run(output.message()).await
+                            .ok_or(ProviderError::CommandIndeterminate(machine))?
                         .map_err(|error| command_stream_error(machine, exited, &error))?;
                         match frame {
-                            None if exited => Ok(None),
                             None => Err(ProviderError::CommandIndeterminate(machine)),
                             Some(frame) => {
                                 let frame = decode_exec_output(frame, machine, &mut exited)?;
-                                Ok(Some((frame, (output, exited))))
+                                Ok(Some((frame, (output, exited, deadline, input_guard))))
                             }
                         }
                     },
@@ -128,20 +132,7 @@ machine_mutations! {
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
     )]
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        obs::finish(
-            async {
-                let response = self.client().await?
-                    .qualify_image(wire::QualifyImageRequest {
-                        protocol: Some(protocol()),
-                        image: Some(encode_image(&image)?),
-                    })
-                    .await
-                    .map_err(|error| read_error(&error))?
-                    .into_inner();
-                decode_qualification(response, &image)
-            }
-            .await,
-        )
+        obs::finish(self.qualification(Some(image)).await)
     }
 
     #[tracing::instrument(
@@ -157,7 +148,8 @@ machine_mutations! {
                     .create(wire::CreateMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
-                        image: Some(encode_image(&request.image)?),
+                        image: request.image.as_ref().map(encode_image).transpose()?,
+                        selected_volume_ref: request.selected_volume_ref.clone(),
                         compatibility: Some(encode_compatibility(&request.compatibility)?),
                         suspension: Some(encode_suspension(request.suspension)?),
                         expiration: Some(encode_expiration(request.expiration)?),
@@ -170,16 +162,31 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(response.operation.as_ref())?;
-                let machine = decode_machine(response.machine.as_ref())?;
-                let _contract = decode_contract(response.contract.as_ref())?;
-                wait(self, key, operation).await?;
-                self.inspect_machine(machine)
-                    .await
-                    .map(MutationOutcome::Created)
+                settle_machine(self, key, response, false, |_, contract|
+                    request.image.as_ref().is_none_or(|image| image == &contract.image)
+                    && request.selected_volume_ref == contract.selected_volume_ref
+                ).await.map(MutationOutcome::Created)
             }
             .await,
         )
+    }
+
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let response = self.client().await?
+            .attach_volume(wire::AttachVolumeRequest {
+                protocol: Some(protocol()),
+                idempotency_key: Some(encode_key(key)),
+                machine: Some(encode_machine(machine)),
+                selected_volume_ref: Some(volume.clone()),
+            }).await.map_err(|error| mutation_error(key, &error))?.into_inner();
+        settle_machine(self, key, response, true, |actual, contract|
+            actual == machine && contract.selected_volume_ref.as_ref() == Some(&volume)
+        ).await.map(MutationOutcome::VolumeAttached)
     }
 
     #[tracing::instrument(
@@ -285,17 +292,12 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(value.operation.as_ref())?;
-                let checkpoint = decode_checkpoint(value.checkpoint.as_ref())?;
-                if decode_machine(value.source.as_ref())? != machine {
-                    return Err(ProviderError::Rejected(
-                        "checkpoint source was substituted".into(),
-                    ));
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                if value.source != Some(encode_machine(machine)) {
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, operation).await?;
-                self.inspect_checkpoint(checkpoint)
-                    .await
-                    .map(MutationOutcome::Checkpointed)
+                let outcome = wait(self, key, operation).await?;
+                settled_checkpoint(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -353,20 +355,16 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint
+                if value.checkpoint != Some(encode_checkpoint(checkpoint))
                     || value.children.len()
                         != usize::try_from(count.get())
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
                 {
-                    return Err(ProviderError::Rejected(
-                        "fork result was substituted".into(),
-                    ));
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                let operation = decode_operation(value.operation.as_ref())?;
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::Forked(
-                    inspect_children(self, fork_children(&value.children, None)?).await?,
-                ))
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                let outcome = wait(self, key, operation).await?;
+                settled_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -398,20 +396,16 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let (source, fidelity, children, operation) = decode_fork_machine_admission(&value)?;
-                if source != machine
-                    || children.len()
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                if value.source != Some(encode_machine(machine))
+                    || value.children.len()
                         != usize::try_from(count.get())
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
                 {
-                    return Err(ProviderError::Rejected(
-                        "fork result was substituted".into(),
-                    ));
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, operation).await?;
-                Ok(MutationOutcome::MachineForked {
-                    source, fidelity, children: inspect_children(self, children).await?,
-                })
+                let outcome = wait(self, key, operation).await?;
+                settled_live_fork(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -586,8 +580,8 @@ machine_mutations! {
         obs::finish(
             async {
                 let (operation, value) = recovered_admission(self, key).await?;
-                wait(self, key, operation).await?;
-                decode_recovered(self, value).await
+                let outcome = wait(self, key, operation).await?;
+                decode_recovered(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )

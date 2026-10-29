@@ -23,6 +23,11 @@ name = "platform-shell"
 path = "tests/platform_shell.rs"
 
 [[test]]
+name = "machine-workspace"
+path = "tests/machine_workspace.rs"
+required-features = ["filesystem-local", "native-execution", "machines"]
+
+[[test]]
 name = "git_executor"
 path = "tests/git_executor.rs"
 required-features = ["filesystem-local", "native-execution"]
@@ -50,7 +55,7 @@ wasm = ["acyclic-stream/wasm", "dep:js-sys", "dep:tsify", "dep:wasm-bindgen", "d
 filesystem = ["acyclic-fs/memory", "dep:hex", "dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 filesystem-local = ["filesystem", "acyclic-fs/local", "acyclic-fs/session", "acyclic-stream/local", "acyclic-stream/session", "dep:dirs", "dep:getrandom", "dep:tempfile"]
 # Explicit native host composition; portable defaults never select it.
-native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio"]
+native-execution = ["filesystem", "acyclic-fs/native-mount", "hooks", "mcp-stdio", "acyclic-machines?/local"]
 # Native lifecycle commands can also be embedded without filesystem mounts.
 hooks = ["dep:regex-lite", "dep:toml"]
 # Optional native HTTP I/O. Browser hosts implement the same portable boundary.
@@ -109,6 +114,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 dirs.workspace = true
 blake3.workspace = true

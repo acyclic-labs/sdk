@@ -1,0 +1,52 @@
+diff --git a/dist/esm/protocol/run-call.js b/dist/esm/protocol/run-call.js
+--- a/dist/esm/protocol/run-call.js
++++ b/dist/esm/protocol/run-call.js
+@@ -101,6 +101,10 @@
+ function setupSignal(opt) {
+     const { signal, cleanup } = createDeadlineSignal(opt.timeoutMs);
+     const controller = createLinkedAbortController(opt.signal, signal);
++    if (controller.signal.aborted)
++        cleanup();
++    else
++        controller.signal.addEventListener("abort", cleanup, { once: true });
+     return [
+         controller.signal,
+         function abort(reason) {
+@@ -110,11 +114,9 @@
+                 ? ConnectError.from(getAbortSignalReason(controller.signal), Code.Canceled)
+                 : ConnectError.from(reason);
+             controller.abort(e);
+-            cleanup();
+             return Promise.reject(e);
+         },
+         function done() {
+-            cleanup();
+             controller.abort();
+         },
+     ];
+diff --git a/dist/cjs/protocol/run-call.js b/dist/cjs/protocol/run-call.js
+--- a/dist/cjs/protocol/run-call.js
++++ b/dist/cjs/protocol/run-call.js
+@@ -104,6 +104,10 @@
+ function setupSignal(opt) {
+     const { signal, cleanup } = (0, signals_js_1.createDeadlineSignal)(opt.timeoutMs);
+     const controller = (0, signals_js_1.createLinkedAbortController)(opt.signal, signal);
++    if (controller.signal.aborted)
++        cleanup();
++    else
++        controller.signal.addEventListener("abort", cleanup, { once: true });
+     return [
+         controller.signal,
+         function abort(reason) {
+@@ -113,11 +117,9 @@
+                 ? connect_error_js_1.ConnectError.from((0, signals_js_1.getAbortSignalReason)(controller.signal), code_js_1.Code.Canceled)
+                 : connect_error_js_1.ConnectError.from(reason);
+             controller.abort(e);
+-            cleanup();
+             return Promise.reject(e);
+         },
+         function done() {
+-            cleanup();
+             controller.abort();
+         },
+     ];

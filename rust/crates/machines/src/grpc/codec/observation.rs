@@ -2,10 +2,10 @@ use super::*;
 
 pub(in super::super) fn decode_qualification(
     value: wire::ImageQualification,
-    expected: &Image,
+    expected: Option<&Image>,
 ) -> Result<ImageQualification, ProviderError> {
     let image = decode_image(value.image.as_ref())?;
-    if &image != expected {
+    if expected.is_some_and(|expected| &image != expected) {
         return Err(ProviderError::Rejected(
             "qualified image was substituted".into(),
         ));
@@ -43,6 +43,7 @@ pub(in super::super) fn decode_contract(
         .ok_or_else(|| ProviderError::Rejected("budgets are missing".into()))?;
     Ok(MachineContract {
         image: decode_image(value.image.as_ref())?,
+        selected_volume_ref: value.selected_volume_ref.clone(),
         compatibility: decode_compatibility(value.compatibility.as_ref(), &capabilities)?,
         capabilities,
         compatibility_revision: digest(&value.compatibility_revision, "compatibility revision")?,
@@ -226,6 +227,11 @@ pub(in super::super) fn decode_operation_observation(
             ));
         }
     };
+    if phase != OperationPhase::Succeeded && value.outcome.is_some() {
+        return Err(ProviderError::Rejected(
+            "non-successful operation contains a settled result".into(),
+        ));
+    }
     Ok(OperationObservation { id, phase })
 }
 pub(in super::super) fn decode_usage_receipt(

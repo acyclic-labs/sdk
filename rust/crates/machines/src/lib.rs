@@ -31,7 +31,18 @@ pub mod wire {
         clippy::allow_attributes_without_reason,
         reason = "generated protobuf bindings"
     )]
-    include!(concat!(env!("OUT_DIR"), "/acyclic.machines.v1.rs"));
+    pub mod harness {
+        pub mod v2 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
+        }
+    }
+    pub mod machines {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.machines.v1.rs"));
+        }
+    }
+    pub use harness::v2 as selection;
+    pub use machines::v1::*;
 }
 
 /// Canonical public descriptor set.
@@ -40,7 +51,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Current public protocol major.
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
-pub const PROTOCOL_MINOR: u32 = 1;
+pub const PROTOCOL_MINOR: u32 = 3;
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
@@ -60,6 +71,10 @@ mod provider;
 pub use provider::*;
 mod simulation;
 pub use simulation::*;
+
+/// Native process execution over the same public output stream.
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub mod local;
 
 #[cfg(feature = "grpc")]
 pub mod grpc;

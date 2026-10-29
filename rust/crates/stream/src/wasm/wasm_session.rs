@@ -135,7 +135,7 @@ impl WasmSession {
         .try_flatten()
         .boxed_local();
         Ok(WasmApplicationSubscription {
-            state: Rc::new(FollowState::new(source)),
+            state: Rc::new(FollowState::new(source, StreamError::Unavailable)),
         })
     }
 
@@ -154,7 +154,7 @@ impl WasmSession {
         .map(|item| item.map(|frame| frame.encode_to_vec()))
         .boxed_local();
         Ok(WasmFollow {
-            state: Rc::new(FollowState::new(stream)),
+            state: Rc::new(FollowState::new(stream, StreamError::Unavailable)),
         })
     }
 }

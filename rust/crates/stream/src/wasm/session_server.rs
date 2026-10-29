@@ -133,6 +133,6 @@ fn serve(
         })
         .boxed_local();
     Ok(WasmFollow {
-        state: Rc::new(FollowState::new(frames)),
+        state: Rc::new(FollowState::new(frames, StreamError::Unavailable)),
     })
 }

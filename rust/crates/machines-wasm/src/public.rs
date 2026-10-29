@@ -98,7 +98,7 @@ impl Serialize for SafeNumber {
 fn err(message: impl Into<String>) -> JsValue {
     crate::js_error("invalid", message.into())
 }
-fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
+pub(crate) fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
     serde_wasm_bindgen::from_value(value).map_err(|e| err(e.to_string()))
 }
 
@@ -110,13 +110,13 @@ fn reject_retired_mode(value: &JsValue) -> Result<(), JsValue> {
     }
     Ok(())
 }
-fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+pub(crate) fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_large_number_types_as_bigints(true)
         .serialize_missing_as_null(true);
     value.serialize(&serializer).map_err(|e| err(e.to_string()))
 }
-fn provider_error(error: ProviderError) -> JsValue {
+pub(crate) fn provider_error(error: ProviderError) -> JsValue {
     let code = match &error {
         ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
@@ -126,7 +126,8 @@ fn provider_error(error: ProviderError) -> JsValue {
         ProviderError::Unavailable => "unavailable",
         ProviderError::Indeterminate(_)
         | ProviderError::OperationIndeterminate(_)
-        | ProviderError::CommandIndeterminate(_) => "indeterminate",
+        | ProviderError::CommandIndeterminate(_)
+        | ProviderError::FileIndeterminate(_) => "indeterminate",
         ProviderError::Failed => "failed",
         ProviderError::Cancelled => "cancelled",
     };
@@ -153,7 +154,7 @@ fn machine(value: String) -> Result<MachineId, JsValue> {
 fn checkpoint(value: String) -> Result<CheckpointId, JsValue> {
     parse_id("checkpoint", value, CheckpointId::parse)
 }
-fn operation(value: String) -> Result<OperationId, JsValue> {
+pub(crate) fn operation(value: String) -> Result<OperationId, JsValue> {
     parse_id("operation", value, OperationId::parse)
 }
 
@@ -453,7 +454,10 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
-    image: ImageIn,
+    #[tsify(optional)]
+    image: Option<ImageIn>,
+    #[tsify(optional)]
+    selected_volume_ref: Option<acyclic_machines::wire::selection::VolumeRef>,
     compatibility: CompatibilityIn,
     suspension: SuspensionIn,
     expiration: ExpirationIn,
@@ -463,7 +467,8 @@ pub struct CreateIn {
 fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
     Ok(CreateMachine {
         idempotency_key: key(value.idempotency_key)?,
-        image: image_in(value.image)?,
+        image: value.image.map(image_in).transpose()?,
+        selected_volume_ref: value.selected_volume_ref,
         compatibility: compatibility_in(value.compatibility)?,
         suspension: suspension_in(value.suspension)?,
         expiration: expiration_in(value.expiration)?,
@@ -476,6 +481,7 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
 #[serde(rename_all = "camelCase")]
 pub struct ContractOut {
     image: ImageOut,
+    selected_volume_ref: Option<acyclic_machines::wire::selection::VolumeRef>,
     #[tsify(type = "readonly CapabilityIn[]")]
     capabilities: Vec<CapabilityIn>,
     compatibility: CompatibilityOut,
@@ -488,6 +494,7 @@ pub struct ContractOut {
 fn contract_out(value: &MachineContract) -> ContractOut {
     ContractOut {
         image: image_out(&value.image),
+        selected_volume_ref: value.selected_volume_ref.clone(),
         capabilities: value.capabilities.iter().map(capability_out).collect(),
         compatibility: compatibility_out(&value.compatibility),
         compatibility_revision_hex: encode(value.compatibility_revision),
@@ -715,7 +722,7 @@ pub enum ForkFidelityOut {
     MemoryAndDisk,
     DiskOnly,
 }
-fn operation_out(value: OperationObservation) -> OperationOut {
+pub(crate) fn operation_out(value: OperationObservation) -> OperationOut {
     OperationOut {
         id: value.id.to_string(),
         phase: match value.phase {
@@ -731,6 +738,9 @@ fn operation_out(value: OperationObservation) -> OperationOut {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MutationOut {
     Created {
+        machine: ObservationOut,
+    },
+    VolumeAttached {
         machine: ObservationOut,
     },
     Checkpointed {
@@ -774,6 +784,9 @@ pub enum MutationOut {
 fn mutation_out(value: MutationOutcome) -> MutationOut {
     match value {
         MutationOutcome::Created(v) => MutationOut::Created {
+            machine: observation_out(v),
+        },
+        MutationOutcome::VolumeAttached(v) => MutationOut::VolumeAttached {
             machine: observation_out(v),
         },
         MutationOutcome::Checkpointed(v) => MutationOut::Checkpointed {
@@ -1033,17 +1046,6 @@ pub async fn dispatch<P: MachinesProvider>(
                 provider.cancel(operation(from_js(payload)?)?),
                 operation_out
             )
-        }
-        "watchOperation" => {
-            let mut stream = provider
-                .watch_operation(operation(from_js(payload)?)?)
-                .await
-                .map_err(provider_error)?;
-            let mut values = Vec::new();
-            while let Some(value) = futures::StreamExt::next(&mut stream).await {
-                values.push(operation_out(value.map_err(provider_error)?));
-            }
-            to_js(&values)
         }
         _ => Err(err("unknown Machines operation")),
     }

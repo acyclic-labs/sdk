@@ -7,5 +7,7 @@ mod configuration;
 pub use configuration::*;
 mod observation;
 pub use observation::*;
+mod files;
+pub use files::*;
 mod error;
 pub use error::*;

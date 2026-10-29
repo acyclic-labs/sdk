@@ -60,7 +60,7 @@ export type Budgets = ReadonlyGenerated<RustBudgetsIn>;
 type PublicCreate = ReadonlyGenerated<RustCreateIn>;
 export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "compatibility" | "suspension" | "expiration" | "budgets"> & {
   readonly idempotencyKey: IdempotencyKey;
-  readonly image: Image;
+  readonly image?: Image;
   readonly compatibility: CompatibilityPolicy;
   readonly suspension: SuspensionPolicy;
   readonly expiration: ExpirationPolicy;

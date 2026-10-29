@@ -21,6 +21,10 @@ pub enum ProviderError {
     OperationIndeterminate(OperationId),
     #[error("guest command outcome is indeterminate on machine {0}")]
     CommandIndeterminate(MachineId),
+    #[error(
+        "guest file outcome is indeterminate on machine {0}; recovery: reconcile the original file operation without redispatch"
+    )]
+    FileIndeterminate(MachineId),
     #[error("operation failed")]
     Failed,
     #[error("operation cancelled")]
@@ -40,6 +44,7 @@ impl ProviderError {
             Self::Indeterminate(_) => "indeterminate",
             Self::OperationIndeterminate(_) => "operation_indeterminate",
             Self::CommandIndeterminate(_) => "command_indeterminate",
+            Self::FileIndeterminate(_) => "file_indeterminate",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
         }

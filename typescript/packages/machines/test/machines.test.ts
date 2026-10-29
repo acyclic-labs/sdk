@@ -58,6 +58,12 @@ describe("Machines simulation", () => {
       budgets: { spendMicros: 0n, concurrency: 0 },
     };
     try {
+      await reject(() => wasm.create({ ...base, selectedVolumeRef: {
+        provider: { namespace: "example", family: "filesystem", version: "1" },
+        id: "selected-workspace", volumeClass: 1, owner: { owner: { project: "project" } },
+      } }), "no hosted guest admission");
+      expect((await wasm.listMachines({ after: null, limit: 1 })).machines).toEqual([]);
+      await reject(() => wasm.create({ ...base, image: undefined }), "no installed default image");
       await reject(() => wasm.create({ ...base, performance: "dedicated" } as never), "unknown field");
       await reject(() => wasm.fork({ checkpointId: "old-mode", count: 1, idempotencyKey: "old-mode", performance: "elastic" } as never), "unknown field");
       await reject(() => wasm.listMachines({ after: null, limit: 1.5 as never }));
@@ -196,7 +202,7 @@ describe("Machines simulation", () => {
     expect((await provider.inspectMachine(created.machine.id)).contract.budgets.concurrency).toBe(0);
   });
 
-  test("recovers and observes durable mutation operations", async () => {
+  test("recovers and pulls terminal mutation observations", async () => {
     const provider = new SimulatedMachines();
     await provider.create(request("operation-1"));
     const operation = await provider.recoverOperation("operation-1");
@@ -206,6 +212,22 @@ describe("Machines simulation", () => {
     const observations = [];
     for await (const observation of provider.watchOperation(operation)) observations.push(observation);
     expect(observations).toEqual([expected]);
+    const unopened = provider.watchOperation(operation);
+    await unopened.return();
+    expect(await unopened.next()).toEqual({ done: true, value: undefined });
+    const wasm = new WasmSimulatedMachines();
+    try {
+      await wasm.create(request("pull-operation"));
+      const id = await wasm.recoverOperation("pull-operation");
+      const watch = await wasm.watchOperation(id);
+      try {
+        expect(await watch.next()).toEqual({ id, phase: "succeeded" });
+        expect(await watch.next()).toBeNull();
+        watch.close();
+        expect(await watch.next()).toBeNull();
+      } finally { watch.free(); }
+    } finally { wasm.free(); }
+
     await expect(provider.recoverOperation("unknown")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
     await expect(provider.inspectOperation("operation:unknown:0")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
   });
@@ -406,7 +428,15 @@ describe("Machines simulation", () => {
     if (created.kind !== "created") throw new Error("wrong create outcome");
     const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: btoa(String.fromCharCode(...item)) } : item);
     const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(encode(value)) });
+    const { image: _requestedImage, ...defaultImageRequest } = request("hosted-mutation-bindings");
+    expect(await serve(created).create(defaultImageRequest)).toEqual(created);
+    expect(await serve(created).create({ ...defaultImageRequest, image: null } as never)).toEqual(created);
+    const resolvedDefault = { ...created, machine: { ...created.machine, contract: { ...created.machine.contract, image: { kind: "custom", digestHex: "09".repeat(32) } } } };
+    expect(await serve(resolvedDefault).create(defaultImageRequest)).toEqual(resolvedDefault);
+    await expect(serve(resolvedDefault).create(request("hosted-mutation-bindings"))).rejects.toThrow("image was substituted");
+    await expect(serve({ ...resolvedDefault, machine: { ...resolvedDefault.machine, contract: { ...resolvedDefault.machine.contract, image: null } } }).create(defaultImageRequest)).rejects.toThrow();
     await expect(serve({ ...created, machine: { ...created.machine, contract: { ...created.machine.contract, suspension: { kind: "manual" } } } }).create(request("hosted-mutation-bindings"))).rejects.toThrow();
+    await expect(serve({ ...resolvedDefault, machine: { ...resolvedDefault.machine, contract: { ...resolvedDefault.machine.contract, suspension: { kind: "manual" } } } }).create(defaultImageRequest)).rejects.toThrow();
 
     const checkpointed = await simulated.checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"));
     if (checkpointed.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");

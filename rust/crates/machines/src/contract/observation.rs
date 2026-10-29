@@ -114,6 +114,8 @@ pub enum ProviderAssurance {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MutationOutcome {
     Created(MachineObservation),
+    /// Settled original Machine contract with its exact selected volume.
+    VolumeAttached(MachineObservation),
     Checkpointed(CheckpointObservation),
     Forked(Vec<MachineObservation>),
     /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the children were forked at, and the children in index order.
@@ -150,28 +152,77 @@ pub struct OperationObservation {
 pub type OperationStream =
     Pin<Box<dyn Stream<Item = Result<OperationObservation, ProviderError>> + Send + 'static>>;
 
-/// One bounded guest command, dispatched once without an idempotency key.
+/// One guest command, dispatched once without an idempotency key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
     pub(crate) timeout_ms: u32,
+    pub(crate) cwd: Option<String>,
+    pub(crate) stdin: Vec<u8>,
+    pub(crate) expiry_unix_ms: Option<u64>,
+    pub(crate) maximum_output_bytes: Option<u64>,
 }
 
 impl ExecCommand {
-    /// Checks the protocol's argv and 1..60000 millisecond deadline bounds.
+    /// Checks argv admission and a positive command deadline.
     pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
         if argv.is_empty()
-            || argv.len() > 64
             || argv.first().is_none_or(String::is_empty)
-            || argv
-                .iter()
-                .any(|value| value.len() > 4096 || value.contains('\0'))
-            || argv.iter().map(String::len).sum::<usize>() > 32768
-            || !(1..=60000).contains(&timeout_ms)
+            || argv.iter().any(|value| value.contains('\0'))
+            || timeout_ms == 0
         {
             return Err(ProviderError::Invalid("invalid guest command".into()));
         }
-        Ok(Self { argv, timeout_ms })
+        Ok(Self {
+            argv,
+            timeout_ms,
+            cwd: None,
+            stdin: Vec::new(),
+            expiry_unix_ms: None,
+            maximum_output_bytes: None,
+        })
+    }
+
+    /// Selects a guest working directory before dispatch.
+    pub fn with_cwd(mut self, cwd: String) -> Result<Self, ProviderError> {
+        if cwd.is_empty() || cwd.contains('\0') {
+            return Err(ProviderError::Invalid(
+                "guest cwd admission failed; recovery: supply a nonempty NUL-free directory".into(),
+            ));
+        }
+        self.cwd = Some(cwd);
+        Ok(self)
+    }
+
+    /// Supplies exact binary stdin followed by EOF, without environment variables.
+    pub fn with_stdin(mut self, bytes: Vec<u8>) -> Self {
+        self.stdin = bytes;
+        self
+    }
+
+    /// Applies an authenticated authority's absolute expiration, including silence.
+    pub fn with_expiry(mut self, expiry_unix_ms: u64) -> Self {
+        self.expiry_unix_ms = Some(expiry_unix_ms);
+        self
+    }
+
+    /// Bounds combined captured output. Zero allows no output bytes.
+    pub fn with_output_limit(mut self, maximum_output_bytes: u64) -> Self {
+        self.maximum_output_bytes = Some(maximum_output_bytes);
+        self
+    }
+
+    pub fn cwd(&self) -> Option<&str> {
+        self.cwd.as_deref()
+    }
+    pub fn stdin(&self) -> &[u8] {
+        &self.stdin
+    }
+    pub fn expiry_unix_ms(&self) -> Option<u64> {
+        self.expiry_unix_ms
+    }
+    pub fn maximum_output_bytes(&self) -> Option<u64> {
+        self.maximum_output_bytes
     }
 
     #[must_use]
@@ -185,11 +236,31 @@ impl ExecCommand {
     }
 }
 
-/// Merged stdout/stderr bytes or the single terminal guest exit code.
+/// Exact stdout/stderr bytes followed by one terminal exit or stopped capture.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecOutput {
     Data(Vec<u8>),
+    Stderr(Vec<u8>),
     ExitCode(i32),
+    Stopped(ExecStop),
+}
+
+/// Why a guest command stopped before normal completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecStopKind {
+    Timeout,
+    Expired,
+    OutputLimit,
+    ControlStopped,
+    CaptureFailed,
+}
+
+/// Original capture failure and whether the producer completed process cleanup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecStop {
+    pub kind: ExecStopKind,
+    pub message: String,
+    pub cleanup_completed: bool,
 }
 
 /// Disposable guest output view. Dropping it cancels the RPC, never retries it.

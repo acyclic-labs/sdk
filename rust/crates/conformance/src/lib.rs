@@ -149,6 +149,8 @@ mod tests {
         .await?;
         machines(&acyclic_machines::conformance::Fixture::new(
             SimulatedMachines::default(),
+            acyclic_machines::Image::custom([17; 32]).map_err(|error| error.to_string())?,
+            [19; 32],
         ))
         .await?;
         Ok(())

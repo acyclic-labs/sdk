@@ -57,6 +57,11 @@ fn provider_causes_survive_and_only_receipted_uncertainty_becomes_indeterminate(
             ErrorCode::Indeterminate,
             true,
         ),
+        (
+            ProviderError::FileIndeterminate(machine),
+            ErrorCode::Indeterminate,
+            true,
+        ),
     ];
     for (cause, code, uncertain) in causes {
         let retained = map_error(cause.clone(), None);
@@ -81,7 +86,8 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
         .create(
             OperationId::from_bytes([1; 16]),
             &IdempotencyKey::new("create-sandbox")?,
-            &artifact,
+            Some(&artifact),
+            None,
             [2; 32],
             |_| {},
         )
@@ -97,6 +103,140 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
     assert!(matches!(
         host.inspect(&foreign).await,
         Err(Error::Invalid(_))
+    ));
+    let command = acyclic_machines::ExecCommand::new(vec!["true".into()], 300_000)
+        .map_err(|error| map_error(error, None))?;
+    assert!(matches!(
+        host.exec(&foreign, command).await,
+        Err(Error::Invalid(_))
+    ));
+    let access = acyclic_machines::FileAccess::new("/file".into(), 0, 4_102_444_800_000)
+        .map_err(|error| map_error(error, None))?;
+    assert!(matches!(
+        host.read_file(&foreign, access.clone(), 1).await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(matches!(
+        host.write_file(&foreign, access, vec![0, 255], true).await,
+        Err(Error::Invalid(_))
+    ));
+    let stop_key = IdempotencyKey::new("stop-sandbox")?;
+    assert!(matches!(
+        host.suspend(OperationId::from_bytes([2; 16]), &stop_key, &foreign)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    host.suspend(OperationId::from_bytes([2; 16]), &stop_key, &sandbox)
+        .await?;
+    assert_eq!(
+        host.inspect(&sandbox).await?.state,
+        acyclic_machines::MachineState::Suspended
+    );
+    let delete_key = IdempotencyKey::new("delete-sandbox")?;
+    assert!(matches!(
+        host.destroy(OperationId::from_bytes([3; 16]), &delete_key, &foreign)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    host.destroy(OperationId::from_bytes([3; 16]), &delete_key, &sandbox)
+        .await?;
+    assert_eq!(
+        host.inspect(&sandbox).await?.state,
+        acyclic_machines::MachineState::Destroyed
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation() -> Result<()> {
+    use crate::{
+        conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+        core::{AggregateKind, Authority, AuthorityRoot},
+    };
+    let issuer = AuthorityRoot::new(
+        "machine-shell",
+        [106; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "machine-shell".into(),
+        },
+    );
+    let volume = VolumeRef::new(
+        ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
+        "project".into(),
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+        &mut None,
+    )?;
+    let provider_ref =
+        ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+    let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
+    let sandbox = SandboxRef::new(provider_ref, vec![1; 16], None)?;
+    let admitted = MachineObservation {
+        id: host.machine_id(&sandbox)?,
+        state: acyclic_machines::MachineState::Running,
+        contract: acyclic_machines::MachineContract {
+            image: Image::custom([1; 32]).map_err(Error::Machines)?,
+            selected_volume_ref: Some((&volume).into()),
+            capabilities: Default::default(),
+            compatibility: acyclic_machines::CompatibilityPolicy::BestEffort,
+            compatibility_revision: [1; 32],
+            suspension: acyclic_machines::SuspensionPolicy::Manual,
+            expiration: acyclic_machines::ExpirationPolicy::Never,
+            network_policy_digest: [2; 32],
+            budgets: Default::default(),
+        },
+        endpoints: Vec::new(),
+        last_checkpoint: None,
+        created_at_unix_ms: 1,
+        changed_at_unix_ms: 1,
+    };
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
+    let write = volume.capability(VolumeOperation::Write, &mut None)?;
+    let shell = crate::contract::capability::tool_call("shell");
+    for missing in 0..3 {
+        let grants = crate::Capabilities::new(
+            [read.clone(), write.clone(), shell.clone()]
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, grant)| (index != missing).then_some(grant)),
+        );
+        let scope = issuer.bootstrap_scope("missing", &grants, None, &mut None)?;
+        assert!(matches!(
+            MachinesWorkspace::new(
+                host.clone(),
+                sandbox.clone(),
+                admitted.clone(),
+                &volume,
+                scope,
+                issuer.verifier(&mut None)?
+            ),
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    let grants = crate::Capabilities::new([read, write, shell]);
+    let scope = issuer.bootstrap_scope("full", &grants, None, &mut None)?;
+    let workspace = MachinesWorkspace::new(
+        host,
+        sandbox,
+        admitted,
+        &volume,
+        scope.clone(),
+        issuer.verifier(&mut None)?,
+    )?;
+    issuer.revoke_workload(&scope)?;
+    assert!(matches!(
+        workspace
+            .shell(
+                crate::tools::ShellInput {
+                    command: "true".into(),
+                    cwd: None,
+                    timeout: None
+                },
+                1024
+            )
+            .await,
+        Err(Error::Unauthorized(_))
     ));
     Ok(())
 }
@@ -115,6 +255,20 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
         host.qualify(&foreign).await,
         Err(Error::Invalid(_))
     ));
+    assert!(matches!(
+        host.create(
+            OperationId::from_bytes([3; 16]),
+            &IdempotencyKey::new("provider-default")?,
+            None,
+            None,
+            [2; 32],
+            |_| {},
+        )
+        .await,
+        Err(Error::Machines(
+            acyclic_machines::ProviderError::Unsupported(_)
+        ))
+    ));
 
     let artifact = ArtifactRef::new(
         ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
@@ -125,7 +279,8 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
         host.create(
             OperationId::from_bytes([2; 16]),
             &IdempotencyKey::new("zero-policy")?,
-            &artifact,
+            Some(&artifact),
+            None,
             [0; 32],
             |_| {},
         )

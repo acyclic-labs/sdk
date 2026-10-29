@@ -15,19 +15,21 @@ categories = ["api-bindings"]
 
 
 [features]
-conformance = ["dep:acyclic-stream", "tokio/time"]
+conformance = ["dep:acyclic-stream", "acyclic-stream/conformance", "tokio/time"]
 default = ["grpc"]
-grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
+
+local = ["dep:acyclic-native-runtime", "dep:acyclic-stream", "dep:rustix", "tokio/time", "tokio/macros"]
+grpc = ["dep:acyclic-native-runtime", "dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"], optional = true }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, optional = true }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 futures.workspace = true
 hex.workspace = true
 hyper-util = { workspace = true, optional = true }
 prost.workspace = true
-rustix = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["fs"] }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -45,9 +47,17 @@ tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 tracing.workspace = true
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tsify.workspace = true
+wasm-bindgen.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "test-support"] }
+tempfile = "3.27.0"
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", features = ["test-support"] }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
 

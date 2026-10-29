@@ -539,6 +539,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
@@ -774,6 +775,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
+ "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
@@ -787,6 +789,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
@@ -795,25 +798,9 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "tsify",
  "uuid",
-]
-
-[[package]]
-name = "acyclic-machines-daytona"
-version = "0.2.0"
-dependencies = [
- "acyclic-conformance",
- "acyclic-machines",
- "acyclic-native-runtime",
- "async-trait",
- "futures",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tokio",
- "tracing",
- "tracing-subscriber",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -821,6 +808,7 @@ name = "acyclic-machines-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-machines",
+ "acyclic-stream",
  "base64 0.23.1",
  "futures",
  "hex",

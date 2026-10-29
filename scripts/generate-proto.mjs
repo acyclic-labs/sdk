@@ -24,21 +24,21 @@ export function generateProto(packages = new Set([...packagedTypeScriptBindings.
       }
     }
   };
-  /** @type {[string, string[]][]} */
+  /** @type {[string, string[], string?][]} */
   const bindings = [];
-  for (const [stem, names] of packagedTypeScriptBindings) {
+  for (const [stem, names, sourceRoot] of packagedTypeScriptBindings) {
     const selected = names.filter(name => packages.has(name));
-    if (selected.length > 0) bindings.push([stem, selected]);
+    if (selected.length > 0) bindings.push([stem, selected, sourceRoot]);
   }
   if (bindings.length === 0) { prune(); return; }
-  const paths = bindings.map(([stem]) => {
+  const paths = bindings.map(([stem, , sourceRoot]) => {
     const family = stem.split("/")[0];
     // A family's crate is wherever its published schema lives, so moving a
     // schema between crates moves its generation input with it. The shared
     // handshake and validation options have one canonical owner each.
-    const crate = family === "protocol" ? "rust/crates/harness-core"
+    const crate = sourceRoot ?? (family === "protocol" ? "rust/crates/harness-core"
       : family === "validation" ? "rust/crates/contract-derive"
-      : compatibilityArtifacts[family].schemaDigest.slice(0, compatibilityArtifacts[family].schemaDigest.indexOf("/proto/"));
+      : compatibilityArtifacts[family].schemaDigest.slice(0, compatibilityArtifacts[family].schemaDigest.indexOf("/proto/")));
     return `${crate}/proto/${stem.replace(/_pb$/, ".proto")}`;
   });
   const temporary = mkdtempSync(join(root, "target-proto-"));

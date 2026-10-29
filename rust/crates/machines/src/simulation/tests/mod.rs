@@ -3,7 +3,7 @@ use super::*;
 fn request(key: IdempotencyKey) -> CreateMachine {
     CreateMachine::new(
         key,
-        Image::custom([7; 32]).unwrap_or_else(|_| unreachable!()),
+        Some(Image::custom([7; 32]).unwrap_or_else(|_| unreachable!())),
         [8; 32],
     )
 }

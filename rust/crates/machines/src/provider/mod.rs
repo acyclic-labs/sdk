@@ -5,6 +5,21 @@ use super::*;
 pub trait MachinesProvider: Send + Sync {
     /// Describes the provider's actual security/durability boundary.
     fn assurance(&self) -> ProviderAssurance;
+    /// Reads one native guest-file chunk, without shell execution or retries.
+    async fn read_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+        limit: u32,
+    ) -> Result<FileRead, ProviderError>;
+    /// Writes one native chunk. Truncation is admitted only at offset zero.
+    async fn write_file(
+        &self,
+        machine: MachineId,
+        access: FileAccess,
+        data: Vec<u8>,
+        truncate: bool,
+    ) -> Result<FileWrite, ProviderError>;
     /// Dispatches once. Lost replies and cancellation never authorize redispatch.
     async fn exec(
         &self,
@@ -21,6 +36,14 @@ pub trait MachinesProvider: Send + Sync {
 
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError>;
+    /// Admits the canonical selected volume under the original caller's scope
+    /// and held physical incarnation. Settlement retains the original key.
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError>;
     async fn inspect_machine(
         &self,
         machine: MachineId,
@@ -117,3 +140,11 @@ pub fn intent_digest<T: Serialize>(intent: &T) -> Result<[u8; 32], ProviderError
 
 mod client;
 pub use client::*;
+mod capture;
+pub use capture::{CapturedExec, capture_exec};
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) mod admitted;
+#[cfg(all(any(feature = "local", feature = "grpc"), not(target_arch = "wasm32")))]
+pub(crate) mod deadline;
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+pub(crate) mod journal;

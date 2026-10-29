@@ -37,7 +37,8 @@ pub(super) fn map_error(error: ProviderError, operation: Option<OperationId>) ->
         (
             ProviderError::Indeterminate(_)
             | ProviderError::Unavailable
-            | ProviderError::CommandIndeterminate(_),
+            | ProviderError::CommandIndeterminate(_)
+            | ProviderError::FileIndeterminate(_),
             Some(operation),
         ) => Error::Indeterminate(operation),
         (cause, _) => Error::Machines(cause),
