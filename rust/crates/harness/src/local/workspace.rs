@@ -262,7 +262,7 @@ impl LocalWorkspace {
             Arc::clone(files),
             project,
             verifier,
-            maximum,
+            Some(maximum),
         );
         Ok((tools, Arc::new(publisher)))
     }
