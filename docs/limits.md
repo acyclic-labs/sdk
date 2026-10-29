@@ -1690,3 +1690,10 @@ Costs: one shared native watch and original UNBOUNDED native work owner per wait
 Source/fingerprint/content `9de256d1e46e6b20c04086f529ef52a9c008e6d7 7c924f4a0b4ae29e07c9fa25d1ac68294da87a1b d982a4ec7665a1f52902743cb817122c64445e063d332fdab249ec4d3c2b1286 (client /mnt/q/wt/unbounded-20261028)`; job `1793274308166-77754-6a50923c`. `[build-slot buildbox] 11:52:03 rc=101 in 445.4s; log /home/var/log/buildbox/1793274278135-77754-4b8c9647.log`
 
 FAIL: independent Linux native-mount-qualify test compilation and Windows production cross-compilation both reject the same `NativeWatchOptions: Default` constructor (E0277). No runtime ran; neither stage qualifies the marker changes. Signed9f0f41b083 corrects the constructor to explicit existing `VolumeLimits::default()` and `recursive: false`, without changing capacity or the native event mechanism. Corrected source qualification remains pending. The earlier runtime3247/7 covers only the prior concurrent exit waiter.
+
+
+## Check326 — qualifier native marker and child completion
+
+Source/fingerprint/content `25aab24bed1e640356d415b865a8b06efe7bf252 e650425757a3baf39c651be33e5611fd2388df0a bbdca38ae28dc370c428210f771afdc6b41f42fc0a97c3d4a175b50ba693dd72 (client /mnt/q/wt/unbounded-20261028)`; job `1793274884693-80640-97db1ec0`. `[build-slot buildbox] 12:02:35 rc=0 in 503.6s; log /home/var/log/buildbox/1793274851362-80640-7a6f8be6.log`
+
+PASS complete Linux native-mount-qualify binary8/8,.03s,0ignored/filtered, plus complete Windows production cross-compilation via the tracked with-xwin-cache wrapper and documented original compiler helper. Both independent stages complete successfully. Actual contained subprocesses exercise early retained marker, atomic later marker, death before readiness, malformed marker, expired deadline, complete sibling success and suffix failure behind a blocked prefix. Physical retirement and full disk-spooled failure diagnostics remain. Original transient NFS controls and receipt verification remain. Constructor failure325 stays recorded; no local compilation/runtime, NFS mount, Windows runtime, idle-probe measurement, p99 or RSS/speedup claim.
