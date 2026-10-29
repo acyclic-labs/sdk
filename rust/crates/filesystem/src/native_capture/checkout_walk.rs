@@ -200,7 +200,7 @@ pub(super) fn validate_path_count(
     options: &CaptureOptions,
 ) -> Result<(), CaptureError> {
     if options.maximum_paths == Some(0)
-        || options.maximum_extent_spans == 0
+        || options.maximum_extent_spans == Some(0)
         || options
             .maximum_paths
             .is_some_and(|maximum| paths.len() as u64 > u64::from(maximum))

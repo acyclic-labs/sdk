@@ -406,7 +406,7 @@ pub(in crate::local) fn configuration(
         source_root: workspace.path.clone(),
         expected_root_identity: workspace.identity,
         maximum_paths: None,
-        maximum_extent_spans: 65_536,
+        maximum_extent_spans: None,
     };
     let mut excluded = EXCLUDED
         .iter()

@@ -5,7 +5,7 @@ use super::*;
 pub struct NativeMaterializeOptions {
     pub destination: String,
     pub maximum_directory_entries: NapiU32,
-    pub maximum_extent_spans: NapiU32,
+    pub maximum_extent_spans: Option<NapiU32>,
     pub transfer_bytes: BigInt,
 }
 
@@ -149,7 +149,7 @@ impl NativeCheckout {
                         destination: options.destination.into(),
                         expected_root_identity: None,
                         maximum_directory_entries: options.maximum_directory_entries.into_inner(),
-                        maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+                        maximum_extent_spans: options.maximum_extent_spans.map(NapiU32::into_inner),
                         transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
                     },
                     acyclic_fs::WorkBudget::UNBOUNDED,
@@ -178,10 +178,10 @@ impl NativeCheckout {
         source_root: String,
         paths: Vec<String>,
         maximum_paths: Option<NapiU32>,
-        maximum_extent_spans: NapiU32,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeCaptureResult> {
         let maximum_paths = maximum_paths.map(NapiU32::into_inner);
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
@@ -213,10 +213,10 @@ impl NativeCheckout {
         &self,
         source_root: String,
         maximum_paths: Option<NapiU32>,
-        maximum_extent_spans: NapiU32,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeCaptureResult> {
         let maximum_paths = maximum_paths.map(NapiU32::into_inner);
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
@@ -279,7 +279,7 @@ impl NativeWatcher {
     async fn capture_reconcile_baseline(
         &self,
         maximum_paths: Option<u32>,
-        maximum_extent_spans: u32,
+        maximum_extent_spans: Option<u32>,
     ) -> Result<PendingReconcileScan> {
         let operation_id = OperationId::new();
         let mut checkout = Box::pin(self.checkout.lock()).await;
@@ -336,10 +336,10 @@ impl NativeWatcher {
     pub async fn reconcile(
         &self,
         maximum_paths: Option<NapiU32>,
-        maximum_extent_spans: NapiU32,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeWatchReconcileResult> {
         let maximum_paths = maximum_paths.map(NapiU32::into_inner);
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let _operation = self.operation.lock().await;
         ensure_no_pending_interval(&self.pending)?;
@@ -397,11 +397,11 @@ impl NativeWatcher {
         &self,
         maximum_changes: NapiU32,
         maximum_paths: Option<NapiU32>,
-        maximum_extent_spans: NapiU32,
+        maximum_extent_spans: Option<NapiU32>,
     ) -> Result<NativeWatchCaptureResult> {
         let maximum_changes = maximum_changes.into_inner();
         let maximum_paths = maximum_paths.map(NapiU32::into_inner);
-        let maximum_extent_spans = maximum_extent_spans.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.map(NapiU32::into_inner);
 
         let _operation = self.operation.lock().await;
         self.verify_capture_root()?;

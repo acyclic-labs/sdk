@@ -61,7 +61,7 @@ pub async fn capture_watch_batch<
         let (epoch, first_sequence, next_sequence) = (*epoch, *first_sequence, *next_sequence);
         let cancellation = meter.cancellation();
         if options.maximum_paths == Some(0)
-            || options.maximum_extent_spans == 0
+            || options.maximum_extent_spans == Some(0)
             || options
                 .maximum_paths
                 .is_some_and(|maximum| changes.len() as u64 > u64::from(maximum))

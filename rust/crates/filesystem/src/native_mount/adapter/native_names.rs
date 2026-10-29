@@ -158,7 +158,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             source_root,
             expected_root_identity,
             maximum_paths: None,
-            maximum_extent_spans: 65_536,
+            maximum_extent_spans: None,
         };
         Ok((
             rooted,
