@@ -385,6 +385,7 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 path: stream.clone(),
                 from: 0,
                 limit: u32::MAX,
+                key: None,
                 at_least: Default::default(),
             })
             .await?;

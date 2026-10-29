@@ -289,7 +289,6 @@ pub fn read_key_from_wire(
                 key: value.key.into(),
                 before: value.before,
             };
-            key.validate()?;
             Ok(key)
         })
         .transpose()
