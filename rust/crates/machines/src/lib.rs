@@ -79,7 +79,7 @@ pub mod local;
 pub mod grpc;
 #[cfg(feature = "grpc")]
 mod obs;
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use grpc::Tls;
 
 /// Shared provider qualification, checked benchmarks and request accounting.

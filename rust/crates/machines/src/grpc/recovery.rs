@@ -1,11 +1,11 @@
 use super::*;
 
-pub(super) async fn settle_machine(
-    provider: &GrpcProvider,
+pub(super) async fn settle_machine<E: RpcEndpoint>(
+    provider: &Provider<E>,
     key: IdempotencyKey,
     admission: wire::MachineAdmission,
     attached: bool,
-    accepts: impl FnOnce(MachineId, &MachineContract) -> bool + Send,
+    accepts: impl FnOnce(MachineId, &MachineContract) -> bool + acyclic_stream::ProviderTask,
 ) -> Result<MachineObservation, ProviderError> {
     let operation = decode_operation(admission.operation.as_ref())
         .map_err(|_| ProviderError::Indeterminate(key))?;
@@ -46,8 +46,8 @@ fn settled_machine(
     Ok(observation)
 }
 
-pub(super) async fn recovered_admission(
-    provider: &GrpcProvider,
+pub(super) async fn recovered_admission<E: RpcEndpoint>(
+    provider: &Provider<E>,
     key: IdempotencyKey,
 ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
     let value = provider
@@ -66,10 +66,10 @@ pub(super) async fn recovered_admission(
     Ok((operation, value))
 }
 
-#[tracing::instrument(name = "acyclic.machines.wait", level = "debug", skip_all,
-    fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty))]
-pub(super) async fn wait(
-    provider: &GrpcProvider,
+#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(name = "acyclic.machines.wait", level = "debug", skip_all,
+    fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)))]
+pub(super) async fn wait<E: RpcEndpoint>(
+    provider: &Provider<E>,
     key: IdempotencyKey,
     operation: OperationId,
 ) -> Result<Option<wire::MutationOutcome>, ProviderError> {
