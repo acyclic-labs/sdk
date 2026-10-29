@@ -130,7 +130,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn delete_requires_actor_and_bounded_idempotency_key() {
+    fn delete_requires_actor_and_idempotency_identity() {
         let valid = wire::DeleteAllRequest {
             namespace: None,
             account_id: Vec::new(),
@@ -155,12 +155,6 @@ mod tests {
                 idempotency_key: String::new(),
                 ..valid.clone()
             },
-            wire::DeleteAllRequest {
-                namespace: None,
-                account_id: Vec::new(),
-                idempotency_key: "k".repeat(257),
-                ..valid.clone()
-            },
         ] {
             assert_eq!(
                 validate_delete(&invalid),
@@ -168,13 +162,26 @@ mod tests {
             );
             assert!(domain::DeleteAllRequest::try_from(invalid).is_err());
         }
-        let boundary = wire::DeleteAllRequest {
+        let complete = wire::DeleteAllRequest {
             namespace: None,
             account_id: Vec::new(),
-            idempotency_key: "k".repeat(256),
+            idempotency_key: "k".repeat(4096),
             ..valid
         };
-        assert_eq!(validate_delete(&boundary), Ok(()));
+        assert_eq!(validate_delete(&complete), Ok(()));
+        let semantic =
+            domain::DeleteAllRequest::try_from(complete.clone()).expect("complete identity");
+        assert_eq!(wire::DeleteAllRequest::from(semantic), complete);
+        let worker = domain::DeleteWorkerRequest::new(
+            domain::ActorNamespace::new("worker".into()).expect("worker namespace"),
+            complete.idempotency_key.clone(),
+        )
+        .expect("same canonical key admission");
+        let wire: wire::DeleteWorkerRequest = worker.clone().into();
+        assert_eq!(
+            domain::DeleteWorkerRequest::try_from(wire).expect("complete worker identity"),
+            worker
+        );
         assert_eq!(
             domain::DeleteAllResponse::try_from(wire::DeleteAllResponse {}),
             Ok(domain::DeleteAllResponse::default())
