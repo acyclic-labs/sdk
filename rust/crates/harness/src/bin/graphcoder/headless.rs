@@ -8,14 +8,19 @@ use acyclic_harness::local::{
     Event,
     agent_conversation::{Conversation, ended},
 };
+use acyclic_native_runtime::lines::AsyncLines;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, io::Write, sync::Arc};
-use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 type Failure = Box<dyn std::error::Error>;
 
-fn stdin_lines() -> tokio::io::Lines<BufReader<tokio::io::Stdin>> {
-    BufReader::new(tokio::io::stdin()).lines()
+/// Stdin's lines, read off the coordination runtime's blocking slot: an open
+/// stdin's read may never return.
+fn stdin_lines() -> std::io::Result<AsyncLines<acyclic_native_runtime::Stdin>> {
+    Ok(AsyncLines::new(
+        acyclic_native_runtime::stdin()?,
+        usize::MAX,
+    ))
 }
 
 /// Send `prompt` as message `operation` and print its answer; rerunning the
@@ -29,7 +34,8 @@ pub async fn prompt(
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(operation, prompt).await?;
-    let mut answers = stdin_lines();
+    // Stdin is read only once an approval asks for an answer.
+    let mut answers = None;
     // Subscribed first, so a reply committed after this read wakes a status.
     let mut status = None;
     loop {
@@ -48,6 +54,10 @@ pub async fn prompt(
             }
             if let Phase::WaitingApproval { id } = status.phase {
                 eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
+                let answers = match &mut answers {
+                    Some(answers) => answers,
+                    None => answers.insert(stdin_lines()?),
+                };
                 let answer = answers.next_line().await?.unwrap_or_default();
                 let approved = matches!(answer.trim(), "y" | "Y" | "yes");
                 conversation.decide(&id, approved).await?;
@@ -119,7 +129,7 @@ pub async fn jsonl(
     output: &mut impl Write,
 ) -> Result<u8, Failure> {
     let mut events = conversation.observe(conversation.settled().await?).await?;
-    let mut lines = stdin_lines();
+    let mut lines = stdin_lines()?;
     let mut open = true;
     let mut sent = 0_u64;
     // Outstanding prompts by inbox sequence: message id and display id.

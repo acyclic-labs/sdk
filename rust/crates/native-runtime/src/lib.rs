@@ -27,6 +27,10 @@ mod linux;
 pub use held_sync::sync_descriptor_once;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lines;
+#[cfg(not(target_arch = "wasm32"))]
+mod stdin;
+#[cfg(not(target_arch = "wasm32"))]
+pub use stdin::{Stdin, stdin};
 pub mod obs;
 mod process_tree;
 #[cfg(windows)]

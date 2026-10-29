@@ -11,8 +11,9 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
-/// fixed service through [`spawn_persistence`]. Interactive blocking reads may
-/// occupy the incidental Tokio worker without starving storage producers.
+/// fixed service through [`spawn_persistence`]. Its one blocking slot runs only
+/// work that completes on its own, in submission order; an open stdin, whose
+/// read may never return, is read on its own thread through [`crate::stdin`].
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
