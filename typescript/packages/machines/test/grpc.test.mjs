@@ -58,7 +58,7 @@ function authenticate(context) {
 
 function commandRequest(request) {
   const { argv, stdin = new Uint8Array(), ...start } = request;
-  return { ...create(wire.ExecStartSchema, start), argv, stdin };
+  return { ...create(wire.ExecStartSchema, { ...start, timeoutMs: start.timeoutMs === undefined ? undefined : BigInt(start.timeoutMs) }), argv, stdin };
 }
 
 // Internal service vectors, not a provider capture or a production command engine.
@@ -183,7 +183,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
     },
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, commandRequest({ protocol, machine, argv, timeoutMs: 0xffff_ffff }));
+      assert.deepEqual(query, commandRequest({ protocol, machine, argv, timeoutMs: 0x1_0000_0000 }));
       assert.ok(context.timeoutMs() > 0 && context.timeoutMs() <= 1000);
       calls.push("exec");
       yield { machine, output: channelData(new TextEncoder().encode("sdk-token\n")) };
@@ -208,7 +208,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
   const observation = await machines.inspectMachine({ protocol, machine: admission.machine });
   assert.equal(observation.status, wire.MachineStatus.RUNNING);
   assert.equal(observation.createdAtUnixMs, 9007199254740993n);
-  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv, timeoutMs: 0xffff_ffff }, { timeoutMs: 1000 }), 0);
+  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv, timeoutMs: 0x1_0000_0000 }, { timeoutMs: 1000 }), 0);
   assert.equal(new TextDecoder().decode((await machines.readOutput({ protocol, machine: admission.machine, offset: 0n, limit: MAX_OUTPUT_READ_BYTES })).data), "sdk-token\n");
   assert.deepEqual((await machines.destroyMachine({ protocol, machine: admission.machine, idempotencyKey: identity(6) })).machine, admission.machine);
   assert.deepEqual(calls, ["create", "inspect", "exec", "read", "destroy"]);
@@ -441,7 +441,7 @@ test("exec and console request bounds fail before reaching the server", async t 
   for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"]]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
-  for (const timeoutMs of [0, -1, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const timeoutMs of [0, -1, Number.MAX_SAFE_INTEGER + 1, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
   for (const cwd of ["", "a\0b"]) await assert.rejects(exec(machines, { ...request, cwd }), RangeError);
   for (const limit of [0, Number.MAX_SAFE_INTEGER + 1, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
@@ -487,7 +487,10 @@ test("return interrupts a pending stream pull and terminal watch needs no EOF", 
   const execCancelled = Promise.withResolvers();
   const watchCancelled = Promise.withResolvers();
   const { machines } = await fixture(t, {
-    async *exec(_query, context) {
+    async *exec(query, context) {
+      authenticate(context);
+      assert.equal(query.timeoutMs, undefined);
+      assert.equal(context.requestHeader.get("grpc-timeout"), null);
       context.signal.addEventListener("abort", execCancelled.resolve, { once: true });
       yield { machine, output: channelData(new Uint8Array([1])) };
       await execCancelled.promise;
@@ -500,7 +503,7 @@ test("return interrupts a pending stream pull and terminal watch needs no EOF", 
       await watchCancelled.promise;
     },
   });
-  const stream = machines.exec({ protocol, machine, argv: ["sleep"], timeoutMs: 300000 });
+  const stream = machines.exec({ protocol, machine, argv: ["sleep"] });
   assert.equal((await stream.next()).value.output.case, "data");
   const pending = assert.rejects(stream.next(), error => error.code === Code.Canceled);
   await stream.return();
@@ -552,7 +555,7 @@ test("original guest deadlines bound stalled credentials even with timeout zero"
   for (const method of ["readFile", "writeFile", "exec"]) {
     const deadline = BigInt(Date.now() + 100);
     const access = { machine, path: "/file", deadlineUnixMs: deadline };
-    if (method === "exec") await assert.rejects(exec(client.machines, { protocol, machine, argv: ["sleep"], timeoutMs: 300000, expiryUnixMs: deadline }, { timeoutMs: 0 }), expired);
+    if (method === "exec") await assert.rejects(exec(client.machines, { protocol, machine, argv: ["sleep"], expiryUnixMs: deadline }, { timeoutMs: 0 }), expired);
     else if (method === "readFile") await assert.rejects(client.machines.readFile({ protocol, access, limit: 1 }, { timeoutMs: 0 }), expired);
     else await assert.rejects(client.machines.writeFile({ protocol, access, data: new Uint8Array([1]) }, { timeoutMs: 0 }), expired);
   }

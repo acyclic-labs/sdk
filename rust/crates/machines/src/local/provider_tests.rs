@@ -44,7 +44,7 @@ fn child() -> ExecCommand {
             "local::tests::child".into(),
             "--nocapture".into(),
         ],
-        5_000,
+        None,
     )
     .unwrap()
 }
