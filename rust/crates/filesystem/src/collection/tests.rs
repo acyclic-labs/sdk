@@ -1,5 +1,5 @@
 use super::*;
-use crate::storage::{ObjectId, ObjectKind};
+use crate::storage::{ObjectId, ObjectKind, ObjectStoreError};
 
 fn object(byte: u8) -> ObjectId {
     ObjectId {

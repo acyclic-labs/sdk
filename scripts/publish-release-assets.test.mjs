@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { admitAsset, admitRelease, publish } from './publish-release-assets.mjs';
+import { commandOutput } from './process-capture.mjs';
 
 test('retries accept only the original source and version', () => {
   const source = 'a'.repeat(40);
@@ -94,5 +95,67 @@ test('an interrupted publication resumes its exact remaining assets', async () =
     const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
     assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
     fs.rmSync(directory, { recursive: true });
+  }
+});
+
+
+test('nested real Git tags resolve completely before release mutation', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-release-tags-'));
+  t.after(() => {
+    const relative = path.relative(path.resolve(os.tmpdir()), path.resolve(directory));
+    assert.ok(relative && !relative.startsWith('..') && !path.isAbsolute(relative));
+    fs.rmSync(directory, { recursive: true });
+  });
+  const repository = path.join(directory, 'repository');
+  const qualified = path.join(directory, 'assets');
+  fs.mkdirSync(repository);
+  fs.mkdirSync(qualified);
+  const git = (args, input) => commandOutput('git', args, { cwd: repository, input, encoding: 'utf8' }).trim();
+  git(['init', '--quiet']);
+  const tree = git(['hash-object', '-w', '-t', 'tree', '--stdin'], '');
+  const source = git(['hash-object', '-w', '-t', 'commit', '--stdin'],
+    `tree ${tree}\nauthor Release <release@example.test> 1 +0000\ncommitter Release <release@example.test> 1 +0000\n\nqualified source\n`);
+  let head = source, kind = 'commit';
+  for (let index = 0; index < 33; index++) {
+    head = git(['mktag'], `object ${head}\ntype ${kind}\ntag nested-${index}\ntagger Release <release@example.test> 1 +0000\n\nnested tag\n`);
+    kind = 'tag';
+  }
+  git(['update-ref', 'refs/tags/acyclic-v1.2.3', head]);
+  const file = path.join(qualified, 'artifact.tgz');
+  fs.writeFileSync(file, 'complete qualified asset');
+  const asset = { name: path.basename(file), digest: 'sha256:' + createHash('sha256').update(fs.readFileSync(file)).digest('hex') };
+  const env = { SOURCE_SHA: source, VERSION: '1.2.3', GITHUB_REPOSITORY: 'owner/sdk' };
+  for (const mode of ['complete', 'wrong-source', 'cycle']) {
+    let tagReads = 0, mutations = 0;
+    const gh = (...args) => {
+      if (args[0] === 'api' && args[1].includes('/git/ref/')) {
+        return JSON.stringify({ object: { type: 'tag', sha: git(['rev-parse', 'refs/tags/acyclic-v1.2.3']) } });
+      }
+      if (args[0] === 'api' && args[1].includes('/git/tags/')) {
+        tagReads++;
+        const sha = args[1].split('/').at(-1);
+        assert.equal(git(['cat-file', '-t', sha]), 'tag');
+        const tag = git(['cat-file', '-p', sha]);
+        const object = { sha: /^object ([0-9a-f]+)$/m.exec(tag)[1], type: /^type (.+)$/m.exec(tag)[1] };
+        if (mode === 'cycle') object.sha = sha;
+        return JSON.stringify({ object });
+      }
+      assert.equal(mode, 'complete', 'invalid tag reached release observation or mutation');
+      assert.equal(tagReads, 33, 'release began before resolving the entire tag chain');
+      if (args[0] === 'api') return JSON.stringify({ tag_name: 'acyclic-v1.2.3', target_commitish: source, assets: [asset] });
+      assert.deepEqual(args, ['release', 'edit', 'acyclic-v1.2.3', '--repo', 'owner/sdk', '--draft=false']);
+      mutations++;
+      return '';
+    };
+    const publishing = publish({ env: mode === 'wrong-source' ? { ...env, SOURCE_SHA: tree } : env, directory: qualified, gh });
+    if (mode === 'complete') {
+      await publishing;
+      assert.equal(tagReads, 33);
+      assert.equal(mutations, 1);
+    } else {
+      await assert.rejects(publishing, mode === 'cycle' ? /cycle/ : /different source/);
+      assert.equal(tagReads, mode === 'cycle' ? 1 : 33);
+      assert.equal(mutations, 0);
+    }
   }
 });

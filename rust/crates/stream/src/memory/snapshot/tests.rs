@@ -572,20 +572,19 @@ fn corrupt_retained(
     for ordinal in 0..count {
         let flags = input.u8().ok_or_else(invalid)?;
         let mut observation = if flags & RETAINS_REPLAY != 0 {
+            let bytes = input.bytes().ok_or_else(invalid)?;
             Some(crate::persistence::observation_from_wire(
                 crate::persistence::decode::<crate::wire::IdempotencyObservation>(
-                    input.bytes().ok_or_else(invalid)?,
-                    retained_fact_bound().ok_or_else(invalid)?,
+                    bytes,
+                    bytes.len(),
                 )?,
             )?)
         } else {
             None
         };
         let mut envelope = if flags & RETAINS_COMMIT != 0 {
-            Some(crate::persistence::decode_envelope(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
-            )?)
+            let bytes = input.bytes().ok_or_else(invalid)?;
+            Some(crate::persistence::decode_envelope(bytes, bytes.len())?)
         } else {
             None
         };
