@@ -71,7 +71,7 @@ test("standalone package WASM targets follow references while groups keep exclus
     process: { env: grouped ? { ACYCLIC_WASM_GROUPS_PREPARED: "1" } : {} },
   }));
   assert.deepEqual(targets("filesystem", false), ["auth", "actors", "filesystem"]);
-  assert.deepEqual(targets("harness", false), ["harness"]);
+  assert.deepEqual(targets("harness", false), ["auth", "actors", "machines", "objects", "harness"]);
   for (const name of names) assert.deepEqual(targets(name, true), [name]);
 });
 
