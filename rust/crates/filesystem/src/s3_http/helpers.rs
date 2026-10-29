@@ -134,7 +134,7 @@ fn request_operation<T>(request: &S3Request<T>) -> S3Result<IdempotencyKey> {
         .ok_or_else(|| s3s::s3_error!(InvalidRequest))?
         .to_str()
         .map_err(|_| s3s::s3_error!(InvalidRequest))?;
-    if supplied.is_empty() || supplied.len() > 1_024 {
+    if supplied.is_empty() {
         return Err(s3s::s3_error!(InvalidRequest));
     }
     let mut hasher = blake3::Hasher::new();
