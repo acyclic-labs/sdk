@@ -1,6 +1,6 @@
 //! gRPC I/O for the same pool used by browser Streams sessions.
 use super::*;
-use crate::grpc;
+use crate::grpc::{self, ChannelConnector as Connect};
 use acyclic_auth::credential::{CredentialAction, ResolvedCredential};
 use futures::{
     channel::oneshot,
@@ -12,14 +12,6 @@ use tonic::{
     metadata::{Ascii, MetadataValue},
     transport::Channel as TransportChannel,
 };
-
-pub(super) type Connect = std::sync::Arc<
-    dyn Fn(
-            wire::SessionNode,
-        ) -> futures::future::BoxFuture<'static, Result<TransportChannel, StreamError>>
-        + Send
-        + Sync,
->;
 
 struct Grpc {
     channel: TransportChannel,
@@ -229,7 +221,7 @@ impl Client {
         )
     }
 
-    fn connector(
+    pub(crate) fn connector(
         channel: TransportChannel,
         authorization: Option<MetadataValue<Ascii>>,
         credential: Option<grpc::CredentialProvider>,

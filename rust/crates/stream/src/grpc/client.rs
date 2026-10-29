@@ -34,6 +34,15 @@ impl Client {
         Ok(self
             .sessions
             .get_or_try_init(|| {
+                if let Some(connect) = &self.session_connector {
+                    return crate::session::Client::connector(
+                        self.channel.clone(),
+                        self.authorization.clone(),
+                        self.credential.clone(),
+                        connect.clone(),
+                        crate::query_sync::Arc::clone(&self.revisions),
+                    );
+                }
                 crate::session::Client::open(
                     self.channel.clone(),
                     self.authorization.clone(),

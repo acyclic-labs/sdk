@@ -68,6 +68,9 @@ pub enum ConnectError {
 }
 
 /// Authenticated remote provider over one TLS channel.
+///
+/// Routed sessions retain the supplied connection policy, including peer
+/// verification and mutual TLS, through [`Client::from_authenticated_channel`].
 #[derive(Clone)]
 pub struct Client {
     operation_claims: Arc<crate::OperationClaims>,
@@ -81,7 +84,18 @@ pub struct Client {
     revisions: crate::query_sync::Arc<crate::RevisionTracker>,
     session_ca: Option<Arc<[u8]>>,
     session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
+    session_connector: Option<ChannelConnector>,
 }
+
+/// Caller-owned policy for a service-provided session route. The connector must
+/// authenticate the advertised member and admit the endpoint before connecting;
+/// a route's URL is not itself trust evidence. Use Auth's shared channel setup
+/// with the same member/SVID policy and client identity as the home channel.
+pub type ChannelConnector = Arc<
+    dyn Fn(wire::SessionNode) -> futures::future::BoxFuture<'static, Result<Channel, StreamError>>
+        + Send
+        + Sync,
+>;
 
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
@@ -105,6 +119,19 @@ impl<P> Clone for Service<P> {
 }
 
 impl Client {
+    /// Adopt an authenticated home channel and an explicit policy for every
+    /// routed connection. No credential resolution or connection starts here.
+    /// There is no fallback from the supplied connector to platform trust.
+    pub fn from_authenticated_channel(
+        channel: Channel,
+        credential: CredentialProvider,
+        connect: ChannelConnector,
+    ) -> Self {
+        let mut client = Self::from_channel_with_credential(channel, credential);
+        client.session_connector = Some(connect);
+        client
+    }
+
     /// Uses a request-local credential while retaining this client's TLS channel.
     pub fn with_credential(&self, bearer_token: &str) -> Result<Self, ConnectError> {
         let mut client = self.clone();
@@ -220,6 +247,7 @@ impl Client {
             revisions: crate::query_sync::Arc::default(),
             session_ca: None,
             session_verifier: None,
+            session_connector: None,
         }
     }
 
@@ -237,6 +265,7 @@ impl Client {
             revisions: crate::query_sync::Arc::default(),
             session_ca: None,
             session_verifier: None,
+            session_connector: None,
         }
     }
 

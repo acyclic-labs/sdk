@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 mod native;
 #[cfg(test)]
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
-use native::Connect;
+use crate::grpc::ChannelConnector as Connect;
 #[cfg(all(any(test, loom), feature = "grpc", not(target_arch = "wasm32")))]
 use tonic::transport::Channel as TransportChannel;
 pub mod transport;

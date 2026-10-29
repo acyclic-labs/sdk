@@ -193,7 +193,9 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     let started = Arc::new(tokio::sync::Notify::new());
     let dialing = Arc::clone(&started);
     let connect: Connect = Arc::new(move |node| {
-        assert_eq!(node.node_id, "new");
+        if node.node_id != "new" || node.endpoint != "https://new.invalid" {
+            return Box::pin(future::ready(Err(StreamError::AccessDenied)));
+        }
         observed.fetch_add(1, Ordering::Relaxed);
         dialing.notify_one();
         let gate = blocked.lock().ok().and_then(|mut gate| gate.take());
@@ -205,12 +207,12 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
             Ok(channel)
         })
     });
-    let client = Client::with_connector(
+    let owner = grpc::Client::from_authenticated_channel(
         old._channel.clone(),
-        Some("Bearer fixture".parse()?),
-        None,
+        grpc::CredentialProvider::new(|| future::ready(Ok("fixture".into()))),
         connect,
     );
+    let client = owner.session_client()?;
     client.register_credential(0, crate::session::testing::credential())?;
     let mut moving = client
         .follow(crate::FollowRequest::new(StreamPath::new("move")?, 1))
@@ -267,6 +269,24 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
         assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
         assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     }
+    // A route is an untrusted suggestion. Refusal must not fall back to a
+    // different TLS policy or dial the suggested endpoint.
+    new.controls.send(Ok(frame(
+        1,
+        2,
+        Body::Moved(wire::SessionMoved {
+            node: Some(wire::SessionNode {
+                node_id: "foreign".into(),
+                endpoint: "http://untrusted.invalid".into(),
+                placement_epoch: 2,
+            }),
+            resume: Some(cursor(999)),
+        }),
+    )))?;
+    assert!(
+        matches!(next(&mut moving).await, Err(error) if error.downcast_ref::<StreamError>() == Some(&StreamError::AccessDenied))
+    );
+    assert_eq!(dials.load(Ordering::Relaxed), 1);
     Ok(())
 }
 

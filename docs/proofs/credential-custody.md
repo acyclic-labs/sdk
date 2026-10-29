@@ -314,15 +314,26 @@ contract. Reentrant invalidation completes the returned signal immediately;
 an observation failure removes its registration before propagating. The
 unchanged and closed-watch controls remain unnotified.
 
-## Actors operation budget and injected native channel
+## Operation context and injected native channels
 
-`actors::client::Client::from_channel` adopts the caller's existing authenticated
-channel. The channel owner selects Auth's platform, private-CA or member/SVID
+`actors::client::Client::from_channel`, `objects::grpc::GrpcObjects::from_channel`
+and `stream::grpc::Client::from_authenticated_channel` adopt the caller's existing
+authenticated channel. The channel owner selects Auth's platform, private-CA or member/SVID
 verifier and optional mutual-TLS identity once. The product constructor starts
 no connection, parses no certificate and resolves no bearer. It installs the
 same dispatch guard, interceptor, tracing and message ceilings as the endpoint
 constructor. This is a transport injection boundary, not evidence that a caller
 supplied channel authenticated its peer.
+
+Streams additionally requires an explicit `ChannelConnector` for every routed
+session. It must validate the advertised member and endpoint and preserve the
+home connection's peer and client-identity policy. A route URL is not evidence
+of authority. Its refusal is propagated through the existing session pool;
+there is no fallback to platform roots or a separate connection pool. Credential
+changes replace the session cache while preserving that same connector.
+The real two-node move control verifies one home connection and one accepted
+route connection while an unrelated follow remains live. A foreign route is
+refused with `AccessDenied` and does not increment the accepted-dial count.
 
 Use the original `auth::operation::Context` for connection as well:
 
@@ -362,6 +373,14 @@ separate. Static counts compared with the preceding Actors implementation:
 | Operation | Before | After |
 | --- | --- | --- |
 | Adopt an already authenticated channel | No public constructor | 0 connections, certificate parses or credential callbacks; 1 existing channel moved into the shared guard |
+| Objects client bookkeeping | 1 revision-tracker owner allocation | Same; adopting a channel adds no owner, RPC or payload copy |
+| Streams client bookkeeping | 3 top-level owner allocations for claims, session cache and revisions, plus claim watch/identity initialization | Same; 1 caller-owned route connector moved into the client, no extra pool or connection |
+
+The constructor counts identify their explicit top-level owners. Existing
+claim initialization additionally creates its notification owner and obtains
+one random identity; entropy-provider/syscall and allocator internals are not
+measured here and are unchanged by channel adoption. No total allocator or
+system-call count is inferred from these source counts.
 | Caller budget across one operation | No gRPC context | 1 original stop event shared at 3 boundaries; 0 additional timers, tasks, syscalls, barriers, RPCs, payload allocations or copies |
 | Successful reply admission | 1 lease check before semantic conversion | 2 lease checks, bracketing semantic conversion; 0 added response copies |
 | Ended budget | Could decode input and call the credential source | 0 decodes, credential callbacks or RPCs |

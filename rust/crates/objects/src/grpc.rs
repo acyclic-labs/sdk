@@ -71,6 +71,13 @@ impl GrpcObjects {
         client
     }
 
+    /// Adopt a caller-authenticated channel, including member/SVID or mutual TLS.
+    /// Peer trust stays with the channel owner; every RPC resolves and retains
+    /// its exact request credential through the existing admission path.
+    pub fn from_channel(channel: Channel, credential: CredentialProvider) -> Self {
+        Self::over(channel, None, Some(credential))
+    }
+
     /// The last revision observed per authority, shared by every clone and
     /// forwarded as the minimum of each GET, HEAD and LIST. Observing a
     /// revision another client returned makes later reads cover it.

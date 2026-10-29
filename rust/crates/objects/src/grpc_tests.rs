@@ -121,10 +121,9 @@ fn client(replica: &Arc<Replica>) -> GrpcObjects {
             }
         }),
     );
-    GrpcObjects::over(
+    GrpcObjects::from_channel(
         channel,
-        Some(MetadataValue::from_static("Bearer fixture")),
-        None,
+        CredentialProvider::new(|| std::future::ready(Ok("fixture".into()))),
     )
 }
 
