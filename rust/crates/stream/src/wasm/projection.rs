@@ -1,3 +1,10 @@
+/// Canonical gRPC status for a public Stream failure; platform bodies and native
+/// gRPC servers use the same mapping.
+#[wasm_bindgen(js_name = grpcErrorStatus)]
+pub fn grpc_error_status(code: &str) -> i32 {
+    let error = StreamError::from_code(code).unwrap_or(StreamError::Unavailable);
+    wire_codec::error_status(&error).code() as i32
+}
 /// Canonical Rust failure vocabulary for JavaScript gRPC platform I/O.
 #[wasm_bindgen(js_name = grpcErrorCode)]
 pub fn grpc_error_code(code: i32, message: &str) -> String {

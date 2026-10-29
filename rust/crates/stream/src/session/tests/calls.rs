@@ -39,6 +39,7 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
         None,
         Arc::new(Calls(calls.clone())),
         Arc::new(crate::runtime::PlatformExecutor),
+        None,
     );
     client.register_credential(0, testing::credential())?;
     let mut records = client
@@ -103,6 +104,7 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         None,
         Arc::new(Calls(calls.clone())),
         Arc::new(crate::runtime::PlatformExecutor),
+        None,
     );
     client.register_credential(0, credential.into())?;
     let response = client

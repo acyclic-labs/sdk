@@ -12,6 +12,7 @@ readme = "README.md"
 [features]
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
+actors-hosting = ["client-session", "acyclic-harness/serve", "acyclic-harness/conformance", "dep:acyclic-auth"]
 storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "acyclic-fs/conformance", "acyclic-stream/local", "acyclic-harness/serve", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
@@ -145,3 +146,12 @@ tracing-subscriber.workspace = true
 name = "inference"
 path = "tests/inference.rs"
 required-features = ["inference"]
+
+[[bin]]
+name = "client-fixture-conformance"
+test = false
+required-features = ["client-session"]
+
+[[test]]
+name = "hosted_actors"
+required-features = ["actors-hosting"]

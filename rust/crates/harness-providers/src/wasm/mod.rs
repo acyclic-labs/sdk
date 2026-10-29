@@ -214,6 +214,22 @@ struct Dispatch {
 
 #[wasm_bindgen]
 impl WasmModelProvider {
+    /// Binds this production provider to the ordinary admitted agent host.
+    /// Requests, content verification, counting and events stay in Rust.
+    pub fn install(
+        &self,
+        registry: &mut acyclic_harness::WasmAgentRegistry,
+        #[wasm_bindgen(unchecked_param_type = "CompactionPolicy")] compaction: JsValue,
+    ) -> Result<(), JsValue> {
+        registry
+            .bind_model(
+                self.provider.model().clone(),
+                self.provider.clone(),
+                from_js(compaction)?,
+            )
+            .map_err(error)
+    }
+
     #[wasm_bindgen(getter, unchecked_return_type = "PublicModel")]
     pub fn model(&self) -> Result<JsValue, JsValue> {
         to_js_json(self.provider.model())

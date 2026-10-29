@@ -22,14 +22,14 @@ async function key() {
 async function sign(key: CryptoKey, transcript: Uint8Array) {
   return new Uint8Array(await crypto.subtle.sign("Ed25519", key, new Uint8Array(transcript)));
 }
-export async function bindLocalSession(stream: WasmStream): Promise<void> {
+export async function localSessionAuthority(resources = [{ name: "streams:/", prefix: true, actions: ["streams/follow", "streams/list"] }]) {
   const environment = await key(), account = await key(), runtime = await key(), tip = await key();
   const now = BigInt(Math.floor(Date.now() / 1000));
   const birth = create(BirthSchema, { accountId: "account", environment: "fixture", genesisPublicKey: account.publicBytes, issuedAtUnixSeconds: now - 60n });
   const certified = create(CertifiedKeySchema, {
     accountId: "account", keyId: "runtime", publicKey: runtime.publicBytes, keyEpoch: 1n,
     validity: { notBeforeUnixSeconds: now - 60n, expiresAtUnixSeconds: now + 60n },
-    grants: { grants: [{ kind: { case: "resource", value: { resource: { name: "streams:/", prefix: true }, actions: ["streams/follow", "streams/list"] } } }] },
+    grants: { grants: resources.map(({ name, prefix, actions }) => ({ kind: { case: "resource", value: { resource: { name, prefix }, actions } } })) },
     principal: { kind: PrincipalKind.SERVICE, id: "runtime" },
   });
   const block = create(BlockSchema, {
@@ -46,6 +46,11 @@ export async function bindLocalSession(stream: WasmStream): Promise<void> {
   const credential = toBinary(CapabilitySchema, create(CapabilitySchema, { blocks: [{ payload, signature }], proof: { case: "secret", value: privateTip.slice(-32) }, version: 1 }));
   privateTip.fill(0);
   const authority = new WasmSessionAuthority(JSON.stringify({ environment: "fixture", environment_keys: [Array.from(environment.publicBytes)], account: "account", issuer_keys: [Array.from(account.publicBytes)], minimum_key_epoch: 1, revoked_key_ids: [], revoked_block_ids: [] }), "workers:/test", "account");
+  return { authority, credential };
+}
+
+export async function bindLocalSession(stream: WasmStream): Promise<void> {
+  const { authority, credential } = await localSessionAuthority();
   try { stream.bindSession(authority); stream.registerCredential(0, credential); }
   finally { credential.fill(0); authority.free(); }
 }

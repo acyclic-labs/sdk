@@ -102,6 +102,9 @@ impl Error {
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
+            Self::Turn(cause) if cause.code() == crate::wire::ErrorCode::Conflict => {
+                "agent_conflict"
+            }
             Self::Turn(_) => "agent_turn_error",
         }
     }

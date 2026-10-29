@@ -11,6 +11,7 @@ struct Local<P: ?Sized> {
     authority: Arc<super::Authority>,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
+    lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
     fn session(
@@ -27,6 +28,11 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
                 Limits::default(),
                 Box::pin(source.map(Ok)),
                 self.executor.clone(),
+                self.lifetime.clone().map(|mut lifetime| {
+                    Box::pin(async move {
+                        let _ = lifetime.changed().await;
+                    }) as BoxProviderFuture<'static, ()>
+                }),
             )
         })
     }
@@ -40,7 +46,7 @@ impl Client {
         authority: Arc<super::Authority>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, None, None, executor)
+        Self::local(provider, authority, None, None, executor, None)
     }
 
     /// The in-process pool whose product follows, such as `fs:/` filesystem
@@ -52,18 +58,27 @@ impl Client {
         resources: Arc<dyn ResourceProvider>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, Some(resources), None, executor)
+        Self::local(provider, authority, Some(resources), None, executor, None)
     }
 
     /// Uses the identical channel admission/credit/dispatch as a network host.
+    /// When supplied, the host's lifetime closes outstanding calls and follows.
     pub fn in_process_with_products<P: StreamProvider + ?Sized>(
         provider: Arc<P>,
         authority: Arc<super::Authority>,
         resources: Option<Arc<dyn ResourceProvider>>,
         calls: Arc<dyn CallProvider>,
         executor: Arc<dyn Executor>,
+        lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
-        Self::local(provider, authority, resources, Some(calls), executor)
+        Self::local(
+            provider,
+            authority,
+            resources,
+            Some(calls),
+            executor,
+            lifetime,
+        )
     }
 
     fn local<P: StreamProvider + ?Sized>(
@@ -72,6 +87,7 @@ impl Client {
         resources: Option<Arc<dyn ResourceProvider>>,
         calls: Option<Arc<dyn CallProvider>>,
         executor: Arc<dyn Executor>,
+        lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
         let endpoint: transport::Endpoint = Arc::new(Local {
             provider,
@@ -79,6 +95,7 @@ impl Client {
             authority,
             resources,
             calls,
+            lifetime,
         });
         let local = endpoint.clone();
         Self::with_transport(

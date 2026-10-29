@@ -4,23 +4,11 @@ use crate::replicated::{AppendIf, CommandJournal, JournalEntry, JournalFrame, Jo
 pub(super) struct HostPort {
     pub(super) journal: HostJournal,
     pub(super) limits: JournalStreamLimits,
-    pub(super) configured: bool,
     pub(super) bytes: u64,
 }
 
 impl CommandJournal for HostPort {
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
-        if !self.configured {
-            let maximum = u32::try_from(MAX_COMMAND_BYTES + 17).map_err(unavailable)?;
-            JsFuture::from(
-                self.journal
-                    .configure(&self.limits.configuration(), maximum)
-                    .map_err(unavailable)?,
-            )
-            .await
-            .map_err(unavailable)?;
-            self.configured = true;
-        }
         JsFuture::from(self.journal.flush().map_err(unavailable)?)
             .await
             .map_err(unavailable)?;

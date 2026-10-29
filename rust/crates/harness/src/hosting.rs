@@ -311,10 +311,7 @@ where
     /// The `fs:/` resource announcing the root's tool output, on a host whose
     /// volumes announce it.
     async fn tool_resource(&self) -> Result<String, Error> {
-        #[cfg(feature = "filesystem-local")]
-        return self.bound.tool_resource(&self.root).await;
-        #[cfg(not(feature = "filesystem-local"))]
-        Err(Error::Record("this host announces no tool output"))
+        self.bound.tool_resource(&self.root).await
     }
 
     async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {

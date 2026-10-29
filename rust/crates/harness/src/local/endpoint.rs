@@ -163,6 +163,7 @@ impl LocalHarness {
             Some(Arc::new(changes)),
             server.clone(),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
         );
         let failures = Failures {
             sender: hosted.failures().clone(),

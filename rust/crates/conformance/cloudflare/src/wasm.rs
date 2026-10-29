@@ -27,7 +27,14 @@ pub async fn qualify_journal_deadline(
             idempotency_key: key.clone(),
             deadline_unix_millis: None,
         };
-        let provider = JournalStream::open(journal.clone(), JournalStreamLimits::default()).await?;
+        let (provider, peer) = futures::try_join!(
+            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
+            JournalStream::open(journal.clone(), JournalStreamLimits::default()),
+        )?;
+        if peer.tail(path.clone()).await != Err(StreamError::NotFound) {
+            return Err(StreamError::InvalidResponse);
+        }
+        drop(peer);
         if provider.tail(path.clone()).await != Err(StreamError::NotFound)
             || provider.inspect_idempotency(key.clone()).await?.is_some()
         {
@@ -61,8 +68,26 @@ pub async fn qualify_journal_deadline(
             if !matches!(outcome, CommitOutcome::Committed(_)) {
                 return Err(StreamError::InvalidResponse);
             }
+            let CommitOutcome::Committed(receipt) = &outcome else {
+                return Err(StreamError::InvalidResponse);
+            };
+            let issued = receipt.revision.clone();
             drop(provider);
             let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            let applied = reopened
+                .wait_applied(&acyclic_stream::RevisionCut::of(issued.clone()))
+                .await?;
+            if !applied.same_authority(&issued) || applied.index < issued.index {
+                return Err(StreamError::InvalidResponse);
+            }
+            let foreign = acyclic_stream::AppliedRevisions::in_process().at(0);
+            if reopened
+                .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
+                .await
+                != Err(StreamError::RevisionForeign)
+            {
+                return Err(StreamError::InvalidResponse);
+            }
             if reopened
                 .commit(CommitRequest {
                     deadline_unix_millis: Some(0),
@@ -236,7 +261,7 @@ pub async fn qualify(
     fresh: js_sys::Function,
     hosted: js_sys::Function,
 ) -> std::result::Result<(), JsValue> {
-    verify(&Sqlite(fresh, hosted)).await
+    verify(&Sqlite(fresh, hosted), "sqlite").await
 }
 
 /// The same suites over actual cross-DO canonical RPC, including pull cursors.
@@ -245,16 +270,28 @@ pub async fn qualify_rpc(
     fresh: js_sys::Function,
     hosted: js_sys::Function,
 ) -> std::result::Result<(), JsValue> {
-    verify(&Rpc(fresh, hosted)).await
+    verify(&Rpc(fresh, hosted), "rpc").await
 }
 
-async fn verify(backend: &(impl Backend + StreamFixture)) -> std::result::Result<(), JsValue> {
-    let result: Result = async {
-        let stream = backend.stream().await?;
-        acyclic_stream::conformance::verify(stream.as_ref()).await?;
-        drop(stream);
-        acyclic_agent_host_conformance::verify(backend).await
-    }
-    .await;
-    result.map_err(|error| JsValue::from_str(&format!("STEP cloudflare-conformance failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
+async fn verify(
+    backend: &(impl Backend + StreamFixture),
+    name: &str,
+) -> std::result::Result<(), JsValue> {
+    let stream = backend
+        .stream()
+        .await
+        .map_err(|error| failure(name, "stream-open", error))?;
+    acyclic_stream::conformance::verify(stream.as_ref())
+        .await
+        .map_err(|error| failure(name, "stream-suite", error))?;
+    drop(stream);
+    acyclic_agent_host_conformance::verify(backend)
+        .await
+        .map_err(|error| failure(name, "agent-host-suite", error))
+}
+
+fn failure(backend: &str, step: &str, error: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&format!(
+        "STEP cloudflare-{backend}-{step} failed: {error}; recovery: bash scripts/qualify-cloudflare.sh"
+    ))
 }

@@ -1,4 +1,9 @@
-The `client-conformance` runner calls the public
+For a live model task against any served tree, use `client-conformance` as
+described in [GraphCoder on Actors](../../../docs/backends/hosted-swarm.md).
+It selects an explicit endpoint before `ACYCLIC_ENDPOINT` and the managed default,
+and reads `ACYCLIC_API_KEY` separately from its credential-free task scenario.
+
+The `client-fixture-conformance` runner calls the public
 `acyclic_conformance::client::verify<P: StreamProvider>` suite with the real
 endpoint provider and its shared authenticated Streams session. The same
 function accepts local providers and their existing in-process session adapter.
@@ -21,7 +26,7 @@ Configure these environment variables:
 - `ACYCLIC_CONFORMANCE_CA`: optional private CA file.
 
 Invoke `cargo run --locked -p acyclic-conformance --features client-session
---bin client-conformance` on the build host. A successful invocation emits
+--bin client-fixture-conformance`. A successful invocation emits
 six named observation cases. A provider refusal preserves its diagnostic and
 failing step. There is no memory fallback, timeout wrapper or automatic retry.
 

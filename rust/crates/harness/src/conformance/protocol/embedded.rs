@@ -196,6 +196,7 @@ pub async fn open<B: Backend + ?Sized>(
         None,
         server.clone(),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
     );
     client.register_credential(0, credential(server.resource()))?;
     let binding = wire::InvokeActorRequest {

@@ -182,6 +182,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         None,
         server.clone(),
         Arc::new(acyclic_stream::runtime::PlatformExecutor),
+        None,
     );
     client.register_credential(0, credential(server.resource()))?;
     let root = server.root().clone();

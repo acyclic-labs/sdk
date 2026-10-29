@@ -58,14 +58,18 @@ export class Agent extends DurableObject {
   private readonly registry = new WasmAgentRegistry();
   private agent?: ReturnType<typeof openCloudflareAgent>;
   private executions = 0;
+  private failAlarmClear = false;
+  private retainedRecoveryAlarm = false;
   private grants = hostFixtureGrants();
   private readonly timeout = { started: false, aborted: false };
+  private readonly started = Promise.withResolvers<void>();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.blockConcurrencyWhile(async () => {
       this.grants = await this.ctx.storage.get("fixture-grants") ?? this.grants;
     });
     const timeout = this.timeout;
+    const started = this.started;
     const hangs = ctx.id.name === "timeout" || ctx.id.name === "cancel";
     const protocol = ctx.id.name?.startsWith("protocol-");
     if (protocol) this.registry.registerTool(hostFixtureTool(),
@@ -75,6 +79,7 @@ export class Agent extends DurableObject {
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
           timeout.started = true;
+          started.resolve();
           await new Promise<void>(resolve => {
             const aborted = () => { timeout.aborted = true; resolve(); };
             if (signal.aborted) aborted();
@@ -93,7 +98,21 @@ export class Agent extends DurableObject {
   private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
     const audience = { kind: "task" as const, id: "00112233-4455-6677-8899-aabbccddeeff" };
     const name = this.ctx.id.name!;
-    return this.agent ??= openCloudflareAgent(this.ctx, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
+    const context = { storage: {
+      sql: this.ctx.storage.sql,
+      transactionSync: <T>(operation: () => T) => this.ctx.storage.transactionSync(operation),
+      sync: () => this.ctx.storage.sync(),
+      setAlarm: (time: number) => this.ctx.storage.setAlarm(time),
+      deleteAlarm: async () => {
+        if (this.failAlarmClear) {
+          this.failAlarmClear = false;
+          this.retainedRecoveryAlarm = await this.ctx.storage.getAlarm() !== null;
+          throw new Error("STEP injected alarm-clear failure; recovery: deliver the retained recovery alarm");
+        }
+        return this.ctx.storage.deleteAlarm();
+      },
+    } };
+    return this.agent ??= openCloudflareAgent(context, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
       { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry,
       { admission: { audience, scope: this.owner.issueScope("host", this.grants, undefined),
         account: [...new TextEncoder().encode("browser")], namespace: "agents" },
@@ -106,6 +125,8 @@ export class Agent extends DurableObject {
     this.grants = grants;
   }
   configureProtocol(policy: Preset["approval_policy"]) { this.host({ ...options.preset, approval_policy: policy }); }
+  failNextAlarmClear() { this.failAlarmClear = true; }
+  alarmFailureRetainedRecovery() { return this.retainedRecoveryAlarm; }
   binding() { return this.host().binding(); }
   call(invocation: Uint8Array) { return this.host().call(invocation, hostFixtureCredential()); }
   effects() { return BigInt(this.executions); }
@@ -120,6 +141,7 @@ export class Agent extends DurableObject {
   pause(paused: boolean) { return this.host().pause(paused); }
   cancel(intent: string) { return this.host().cancel(intent); }
   timeoutState() { return this.timeout; }
+  waitStarted() { return this.started.promise; }
   readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
   wake() { return this.host().wake(); }
   alarm() { return this.host().wake(); }
@@ -148,7 +170,7 @@ export class Suite extends DurableObject {
   async deadline(retry: boolean): Promise<void> {
     const journal = new SqliteJournal(this.ctx.storage, "deadline-admission");
     await qualifyJournalDeadline({
-      configure: (configuration: Uint8Array, maximum: number) => journal.configure(configuration, maximum),
+      configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => journal.configure(configuration, maximum, authority),
       flush: () => journal.flush(),
       read: (index: number) => journal.read(index),
       async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]) {
@@ -200,6 +222,28 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/alarm-recovery") {
+      const agent = env.AGENT.getByName("alarm-recovery");
+      await agent.create("alarm-root", "Reply once after committing this prompt");
+      await agent.failNextAlarmClear();
+      let failed = false;
+      try { await agent.wake(); }
+      catch (error) { failed = String(error).includes("injected alarm-clear failure"); }
+      const before = await agent.read("conversation");
+      if (!failed || before.length !== 1 || !await agent.alarmFailureRetainedRecovery()) {
+        throw new Error("STEP alarm-clear retention failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      await agent.wake();
+      await agent.create("alarm-root", "Reply once after committing this prompt");
+      if ((await agent.read("conversation")).length !== before.length) {
+        throw new Error("STEP alarm recovery replayed a committed turn; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      await agent.send("after-alarm-recovery", "Reply after the failed alarm write");
+      if ((await agent.read("conversation")).length !== before.length + 1) {
+        throw new Error("STEP alarm recovery closed its healthy host; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      return Response.json({ alarm: "failed clear retains recovery; the same host resumes without replay and accepts the next turn" });
+    }
     if (new URL(request.url).pathname === "/creation-interrupted") {
       const agent = env.AGENT.getByName("saved-creating");
       let interrupted = false;
@@ -315,12 +359,9 @@ export default {
       const agent = env.AGENT.getByName("cancel");
       const creation = agent.create("cancel-root", "Wait for an inbox cancellation").then(
         value => ({ value }), error => ({ error: String(error) }));
-      for (let attempt = 0; attempt < 100 && !(await agent.timeoutState()).started; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      if (!(await agent.timeoutState()).started) {
-        throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
-      }
+      await Promise.race([agent.waitStarted(), creation.then(outcome => {
+        throw new Error(`STEP guest-cancel start failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
+      })]);
       await agent.cancel("cancel-running-guest");
       const outcome = await creation;
       if ("error" in outcome || !(await agent.timeoutState()).aborted) {

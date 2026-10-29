@@ -11,6 +11,7 @@ export interface ImmutableObjects {
 export interface StreamLedger {
   register(actor: string, paths: string[]): Promise<Placement>;
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>>;
+  /** Length-delimited SessionFrame bytes; transport chunks need not preserve messages. */
   open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>>;
   objectLength(key: Uint8Array): Promise<number | null>;
   objectRead(key: Uint8Array, maximum: bigint): Promise<Uint8Array | null>;

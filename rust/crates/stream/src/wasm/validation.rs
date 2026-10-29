@@ -6,7 +6,8 @@ fn error_code_str(error: &StreamError) -> &'static str {
     clippy::needless_pass_by_value,
     reason = "passed to map_err, which hands over the error by value"
 )]
-fn js_error(error: StreamError) -> JsValue {
+/// JavaScript error retaining the canonical Stream failure code.
+pub fn js_error(error: StreamError) -> JsValue {
     let value = js_sys::Error::new(&error.to_string());
     let _property_result = Reflect::set(
         value.as_ref(),

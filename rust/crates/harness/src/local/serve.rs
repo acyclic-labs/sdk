@@ -12,6 +12,7 @@ impl Composition for LocalHarnessConfig {
     type Stream = LocalStream;
     type Objects = LocalObjectBackend;
     type Owner = Arc<LocalHarness>;
+    type Error = Error;
 
     fn open(
         self,
