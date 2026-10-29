@@ -264,12 +264,17 @@ impl AgentTool {
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    async fn recipient(&self, agent: &str, parent: bool) -> Result<Option<AgentPath>> {
+    async fn recipient(&self, reference: &str, parent: bool) -> Result<Option<AgentPath>> {
         let turn = &*self.turn;
-        if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
+        if parent
+            && let Some(to) = turn
+                .parent
+                .as_ref()
+                .filter(|path| path.as_str() == reference)
+        {
             return Ok(Some(to.clone()));
         }
-        let Some(child) = named_child(&turn.agent, agent) else {
+        let Some(child) = named_child(&turn.agent, reference) else {
             return Ok(None);
         };
         Ok(turn
