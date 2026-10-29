@@ -446,7 +446,9 @@ fn native_error(
     }
     match error.into_cause() {
         NativeObjectsCause::Service(service) => service_error(service),
-        NativeObjectsCause::Admission(error) => ObjectStoreError::Native(original.runtime_error(error)),
+        NativeObjectsCause::Admission(error) => {
+            ObjectStoreError::Native(original.runtime_error(error))
+        }
         NativeObjectsCause::Unsupported => ObjectStoreError::NativeUnavailable,
     }
 }

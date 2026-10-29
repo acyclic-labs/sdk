@@ -210,7 +210,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                     object_probes: requests.len() as u64,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let results = future.await.map_err(|error| native_error(error, original))?;
+                let results = future
+                    .await
+                    .map_err(|error| native_error(error, original))?;
                 values = self.finish_reads::<STORED>(
                     results.map(|value| value.map_err(|error| native_error(error, original))),
                     requests,
