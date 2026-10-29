@@ -103,13 +103,30 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
         })
     };
     assert!(matches!(
-        hosted.guest_session(enrollment(&reference)?, &work).await,
+        {
+            let selected = enrollment(&reference)?;
+            hosted
+                .guest_session(
+                    selected.volume,
+                    selected.posix,
+                    selected.writable,
+                    None,
+                    &work,
+                )
+                .await
+        },
         Err(acyclic_harness_core::Error::Unsupported(_))
     ));
     let other = ProviderRef::new("other".into(), "filesystem".into(), "2".into(), &mut None)?;
     assert!(
         local
-            .guest_session(enrollment(&other)?, &work)
+            .guest_session(
+                enrollment(&other)?.volume,
+                enrollment(&other)?.posix,
+                true,
+                None,
+                &work
+            )
             .await
             .is_err()
     );

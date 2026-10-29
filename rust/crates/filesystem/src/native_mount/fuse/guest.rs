@@ -5,7 +5,7 @@ use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
 use super::vhost_session::VhostSession;
 use super::*;
-use crate::native_mount::LocalGuestSource;
+use crate::native_mount::{GuestMappingAdmission, GuestSource};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::os::unix::net::UnixStream;
 
@@ -49,22 +49,30 @@ pub(super) fn require_metadata(
     Ok(())
 }
 
-/// One local-root source admission. Cache behavior is fixed by this transport:
-/// direct I/O, zero TTLs and no writeback or private-mapping revocation claim.
+/// One authenticated source admission. Cache behavior is fixed by this transport:
+/// direct I/O, zero TTLs and no writeback. Hosted admissions additionally retain
+/// the original physical mapping custodian through the last callback's drain.
 /// Session consumers accept this admission, never a path, uid or cache flag.
 pub struct GuestSessionAdmission {
     protocol: PacketSession,
     work: crate::NativeMaterializationWork,
+    mappings: Option<GuestMappingAdmission>,
 }
 
 impl GuestSessionAdmission {
-    /// Admits an enrollment issued by the trusted local source composition.
+    /// Admits an enrollment issued by the trusted source composition.
     /// Rechecks its original source guard before the first volume operation.
-    pub fn local_root(owner: Arc<dyn LocalGuestSource>) -> Result<Self, NativeMountError> {
+    pub fn admit(
+        owner: Arc<dyn GuestSource>,
+        mappings: Option<GuestMappingAdmission>,
+    ) -> Result<Self, NativeMountError> {
         let source = owner.filesystem();
         let work = source
             .native_original_work()?
             .ok_or(NativeMountError::ControlPending)?;
+        if let Some(mappings) = &mappings {
+            mappings.require_work(&work)?;
+        }
         let (_original, guard) = super::super::shared::metering::install(source.as_ref(), &work)?;
         if guard.is_none() {
             return Err(MountSourceError::AccessDenied.into());
@@ -92,7 +100,11 @@ impl GuestSessionAdmission {
             NonZeroU32::new(4096).ok_or(libc::EINVAL)?,
         )?;
         protocol.guest = Some(owner);
-        Ok(Self { protocol, work })
+        Ok(Self {
+            protocol,
+            work,
+            mappings,
+        })
     }
 
     /// Largest request/reply storage needed by the admitted packet entry.
@@ -128,15 +140,76 @@ impl GuestSessionAdmission {
         self,
         connection: UnixStream,
         tag: &[u8],
-    ) -> Result<GuestSessionRetired, NativeMountError> {
-        VhostSession::new(
-            self.protocol,
+    ) -> Result<GuestSessionRetired, GuestSessionFailure> {
+        let Self {
+            protocol,
+            work,
+            mut mappings,
+        } = self;
+        let drained = VhostSession::new(
+            protocol,
             connection,
-            NonZeroU16::new(512).ok_or(libc::EINVAL)?,
+            NonZeroU16::MIN.saturating_add(511),
             tag,
-            &self.work,
+            &work,
         )
-        .map(|session| GuestSessionRetired(session.run()))
+        .map_err(|cause| GuestSessionFailure {
+            cause,
+            drained: None,
+        })?
+        .run();
+        if let Some(mappings) = mappings.as_mut()
+            && let Err(cause) = mappings.fence.retire()
+        {
+            return Err(GuestSessionFailure {
+                cause,
+                drained: Some(drained),
+            });
+        }
+        Ok(GuestSessionRetired(drained))
+    }
+}
+
+/// Failed admission or physical retirement, retaining the original joined
+/// filesystem outcome. A physical failure cannot be promoted to retirement.
+pub struct GuestSessionFailure {
+    cause: NativeMountError,
+    drained: Option<super::vhost_session::VhostRetired>,
+}
+
+impl GuestSessionFailure {
+    /// The original admission or physical retirement error.
+    pub fn cause(&self) -> &NativeMountError {
+        &self.cause
+    }
+    /// The original callback error and counters, if filesystem workers joined.
+    pub fn take_callback_failure(&self) -> Option<(NativeMountError, crate::WorkCounters)> {
+        self.drained.as_ref()?.take_callback_failure()
+    }
+    /// Both original physical and transport errors, without replacing either.
+    pub fn into_causes(self) -> (NativeMountError, Option<Result<(), NativeMountError>>) {
+        (self.cause, self.drained.map(|drained| drained.transport))
+    }
+}
+
+impl std::fmt::Debug for GuestSessionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuestSessionFailure")
+            .field("cause", &self.cause)
+            .field("filesystem_joined", &self.drained.is_some())
+            .finish()
+    }
+}
+
+impl std::fmt::Display for GuestSessionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+
+impl std::error::Error for GuestSessionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 

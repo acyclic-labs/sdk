@@ -41,7 +41,7 @@ pub type Turner<P, O> = FilesystemTurnHost<P, StreamAuthorityStore<P>, O>;
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
 mod guest;
 #[cfg(all(target_os = "linux", feature = "native-execution"))]
-pub use guest::LocalGuestEnrollment;
+pub use guest::{GuestAuthority, GuestMappingSource, LocalGuestEnrollment};
 
 /// The caller a host's platform verified for one request, before any of the
 /// request's IO: the audience its scope was issued for, and the scope itself.

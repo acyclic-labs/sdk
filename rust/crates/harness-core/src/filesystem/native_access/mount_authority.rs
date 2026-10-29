@@ -150,7 +150,8 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn mount_port_cannot_outlive_runtime_or_revoked_parent() -> Result<()> {
-        acyclic_native_runtime::initialize_native_io_services()?;
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|error| Error::Storage(error.to_string()))?;
         acyclic_fs::initialize_native_mount_services()?;
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
