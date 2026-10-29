@@ -4,7 +4,7 @@ use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
 use reqwest::Url;
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 #[cfg(all(test, feature = "filesystem"))]
 mod native_tests;
@@ -53,6 +53,11 @@ impl HttpFetch {
                 || host.eq_ignore_ascii_case("localhost")
         });
         let mut redirected = false;
+        // Declare custody before its collection so the physical URLs/table
+        // retire before their original-ledger owners on every return path.
+        let mut previous_held = allocation(work, 0)?;
+        let mut table_held = allocation(work, 0)?;
+        let mut previous = HashSet::new();
         loop {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
@@ -97,6 +102,32 @@ impl HttpFetch {
                     if endpoint.scheme() == "https" && next.scheme() != "https" {
                         return Err(rejection(work, "fetch redirect cannot downgrade HTTPS"));
                     }
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let Some(work) = work {
+                        let hashed = endpoint
+                            .as_str()
+                            .len()
+                            .checked_add(next.as_str().len())
+                            .ok_or_else(|| {
+                                crate::error(Some(work), "fetch redirect size overflow")
+                            })?;
+                        work.charge(acyclic_fs::WorkCounters {
+                            bytes_hashed: hashed as u64,
+                            items_examined: 2,
+                            ..Default::default()
+                        })?;
+                    }
+                    if next == endpoint || previous.contains(&next) {
+                        return Err(rejection(work, "fetch redirect cycle"));
+                    }
+                    reserve_redirect(&mut previous, &mut table_held, work)?;
+                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                    if let (Some(previous), Some(current)) =
+                        (&mut previous_held, &mut endpoint_held)
+                    {
+                        previous.absorb(current)?;
+                    }
+                    previous.insert(endpoint);
                     redirected = true;
                     endpoint = next;
                     endpoint_held = next_held;
@@ -126,12 +157,52 @@ impl HttpFetch {
                         output.absorb(input)?;
                         output.resize(super::response_bytes(&response)?)?;
                     }
-                    let _ = (&mut held, &endpoint_held);
+                    let _ = (&mut held, &endpoint_held, &mut previous_held);
                     return Ok((response, output_held));
                 }
             }
         }
     }
+}
+
+/// Admit the replacement hash table before its allocator runs. Retained URL
+/// buffers move from the current endpoint into `previous` without cloning.
+fn reserve_redirect(
+    previous: &mut HashSet<Url>,
+    table_held: &mut NativeCustody,
+    work: NativeWork<'_>,
+) -> Result<()> {
+    if previous.len() < previous.capacity() {
+        return Ok(());
+    }
+    // The standard table rounds to power-of-two buckets. Four buckets per
+    // entry cover rounding and spare load; include the control tail/alignment.
+    let bytes = previous
+        .len()
+        .checked_add(1)
+        .and_then(|entries| entries.checked_mul(4))
+        .and_then(|buckets| buckets.checked_mul(std::mem::size_of::<Url>() + 1))
+        .and_then(|bytes| bytes.checked_add(64))
+        .ok_or_else(|| crate::error(work, "fetch redirect ownership overflow"))?;
+    let replacement = allocation(work, bytes)?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(work) = work {
+        let hashed = previous.iter().try_fold(0u64, |bytes, url| {
+            bytes
+                .checked_add(url.as_str().len() as u64)
+                .ok_or_else(|| crate::error(Some(work), "fetch redirect size overflow"))
+        })?;
+        work.charge(acyclic_fs::WorkCounters {
+            allocation_operations: 1,
+            bytes_hashed: hashed,
+            items_examined: previous.len() as u64,
+            ..Default::default()
+        })?;
+    }
+    previous.try_reserve(1).map_err(Error::Allocation)?;
+    // try_reserve retired the old backing table before its credit is released.
+    *table_held = replacement;
+    Ok(())
 }
 
 fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
