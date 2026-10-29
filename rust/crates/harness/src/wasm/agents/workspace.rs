@@ -170,7 +170,7 @@ mod deadline {
             remaining,
             _registration: registration,
         };
-        if budget.remaining().is_zero() || !budget.current() {
+        if !budget.current() {
             return Err(ProviderError::Cancelled);
         }
         Ok(budget)
@@ -178,19 +178,22 @@ mod deadline {
 
     impl Budget {
         fn current(&self) -> bool {
-            self.original.check().is_ok()
+            !self.remaining().is_some_and(|value| value.is_zero())
+                && self.original.check().is_ok()
                 && self.narrowed.check().is_ok()
                 && self.authority.verifier(&mut None).is_ok()
         }
     }
 
     impl Deadline for Budget {
-        fn remaining(&self) -> Duration {
-            self.remaining
-                .call0(&self.observation)
-                .ok()
-                .and_then(|value| crate::wasm::from_js::<u64>(value).ok())
-                .map_or(Duration::ZERO, Duration::from_millis)
+        fn remaining(&self) -> Option<Duration> {
+            let Ok(value) = self.remaining.call0(&self.observation) else {
+                return Some(Duration::ZERO);
+            };
+            if value.is_undefined() {
+                return None;
+            }
+            Some(crate::wasm::from_js::<u64>(value).map_or(Duration::ZERO, Duration::from_millis))
         }
 
         async fn run<F>(&self, future: F) -> Option<F::Output>
@@ -198,7 +201,7 @@ mod deadline {
             F: Future + ProviderTask,
             F::Output: ProviderTask,
         {
-            if self.remaining().is_zero() || !self.current() {
+            if !self.current() {
                 return None;
             }
             let result = self
@@ -207,7 +210,7 @@ mod deadline {
                 .await
                 .ok()?
                 .ok()?;
-            (!self.remaining().is_zero() && self.current()).then_some(result)
+            self.current().then_some(result)
         }
     }
 }
@@ -233,9 +236,11 @@ export interface WasmMachinesWorkspaceSource {
      * registration; it does not claim remote physical cancellation. */
     budget(timeoutMilliseconds: bigint | undefined, expiryUnixMilliseconds: bigint | undefined,
         signal: AbortSignal): {
-        /** Synchronous original-clock observation; zero on stop/producer loss.
+        /** Synchronous original-clock observation; undefined only when the
+         * original caller, command and authenticated grant have no deadline.
+         * Zero on stop/producer loss.
          * Throwing or invalid output is closed, including in a completing poll. */
-        remainingMilliseconds(): bigint;
+        remainingMilliseconds(): bigint | undefined;
         /** Original earlier-deadline/caller-stop event. Producer loss must
          * settle or reject this promise, waking every pending observer. */
         readonly stopped: Promise<"deadline" | "cancelled">;
