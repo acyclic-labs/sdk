@@ -163,7 +163,7 @@ impl<A, O> FilesystemHost<A, O> {
 mod content;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
-mod authentication;
+pub(super) mod authentication;
 mod directory;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;

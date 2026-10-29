@@ -338,16 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                     })
                 }?;
-                let committed = self
-                    .read_retained_file(&prior, &reference, maximum_bytes, io)?
-                    .await?;
-                if committed.as_ref() != bytes {
-                    return Err(stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Conflict,
-                        "upload identity belongs to different content",
-                    ));
-                }
+                host::authentication::authenticate_input(&prior, &reference, bytes, io)?.await?;
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
@@ -436,8 +427,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     )
                 })
             }?;
-            self.read_retained_file(&generation, &reference, maximum_bytes, io)?
-                .await?;
+            host::authentication::authenticate_input(&generation, &reference, bytes, io)?.await?;
             // Carry the verified immutable publication through runtime admission.
             grant.recheck(io)?;
             self.seal_publication(reference, io)
