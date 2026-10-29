@@ -139,7 +139,9 @@ fn home() -> Result<PathBuf> {
 }
 
 fn host_directory(variable: &str, default: &str) -> Result<PathBuf> {
-    env::var_os(variable).map_or_else(|| Ok(home()?.join(default)), |path| Ok(path.into()))
+    env::var_os(variable)
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| Ok(home()?.join(default)), |path| Ok(path.into()))
 }
 
 fn check_codex() -> Result<()> {

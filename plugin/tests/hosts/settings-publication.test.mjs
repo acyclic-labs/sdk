@@ -36,6 +36,17 @@ for (const host of ["claude-code", "pi"]) for (const selection of ["settings arg
         if (process.env[key]) env[key] = process.env[key];
       }
       const path = join(settings, host === "pi" ? "acyclic.ts" : "settings.json");
+      if (selection === "native profile") {
+        step = "refuse an empty native profile without a default home";
+        const refused = await processes.runOwned(binary,
+          ["install", host, "--plugin-root", packageRoot], {
+            cwd: fixture,
+            env: { ...env, [host === "pi" ? "PI_CODING_AGENT_DIR" : "CLAUDE_CONFIG_DIR"]: "" },
+          });
+        t.diagnostic(JSON.stringify(refused));
+        assert.notEqual(refused.code, 0, `step=${step}; recovery=${recovery}`);
+        assert.match(refused.stderr, /host home is unset/, `step=${step}; recovery=${recovery}`);
+      }
       const foreign = {
         permissions: { allow: ["Read"], deny: ["Bash(rm *)"] }, fixtureMarker: "preserve",
         hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign-fixture-hook" }] }] },

@@ -16,6 +16,12 @@ Codex requires **0.164.0 or later**; install and doctor reject older or unknown
 versions. Pi targets **1.1.0**. Use `--plugin-root PATH` for package assets and
 `--settings PATH` for a Claude settings file or Pi extension file.
 
+Without `--settings`, installation follows `CLAUDE_CONFIG_DIR` or
+`PI_CODING_AGENT_DIR`, falling back to the native default when the selector is
+unset or empty. Use an absolute configuration directory. Selecting a profile
+does not supply authentication: each host retains its own login and refresh
+lifecycle. Pi uses its own native OAuth login; `CODEX_HOME` does not select it.
+
 The plugin's `spawn` tool starts a separate native host process in the admitted
 lazy view under `<workspace>/.volumes/agents/`: `codex exec`, `claude -p`, or
 `pi --mode json -p`. Native instruction/config discovery and tools run there.
@@ -129,10 +135,6 @@ same N sessions remain alive through the 2N sample. Releasing and waiting for
 children before sampling must fail that barrier. The per-child-mount
 counterfactual must fail the same resource check. The real-host e2e
 owner runs the corresponding scale and sandbox matrix with native sessions.
-
-The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
-`Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
-native model-session acceptance.
 
 The canonical scripted qualifier also exposes one selected scenario to an
 acceptance caller that already owns its admitted artifacts, process scope,
