@@ -26,7 +26,7 @@ export function assertBrowserWasmExports(value: unknown): void {
   const machines = hasClass(exports, "WasmMachinesWorkspace", "wasmmachinesworkspace", ["free"])
     && hasStaticMethods(exports, "WasmMachinesWorkspace", "wasmmachinesworkspace", ["open"]);
   const agents = hasClass(exports, "WasmAgents", "wasmagents", [
-    "create", "send", "cancel", "archive", "pause", "list", "read", "readFile", "free",
+    "create", "send", "cancel", "archive", "pause", "list", "read", "follow", "readFile", "free",
   ]) && hasStaticMethods(exports, "WasmAgents", "wasmagents", ["open", "openHosting"]);
   const guest = hasClass(exports, "AgentGuest", "agentguest", ["manifest", "onRecord", "free"])
     && hasStaticMethods(exports, "AgentGuest", "agentguest", ["open", "abiVersion"]);
@@ -54,7 +54,7 @@ export function assertClientWasmExports(value: unknown): void {
   const commands = hasClass(exports, "WasmAgentCommand", "wasmagentcommand", [
     "bytes", "value", "reply", "free",
   ], true) && hasStaticMethods(exports, "WasmAgentCommand", "wasmagentcommand", [
-    "maximumCommandBytes", "maximumInvocationBytes", "maximumReplyBytes",
+    "maximumInvocationBytes",
   ]);
   const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);

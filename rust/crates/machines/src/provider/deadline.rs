@@ -3,22 +3,22 @@ use super::*;
 /// One deadline through credential admission, dispatch and streamed completion.
 /// WallAlarm also wakes a silent transport when authenticated wall time expires.
 pub struct GuestDeadline {
-    until: tokio::time::Instant,
+    until: Option<tokio::time::Instant>,
     expiry: Option<u64>,
     wake: Arc<tokio::sync::Notify>,
     _alarm: Option<acyclic_native_runtime::WallAlarm>,
 }
 
 impl GuestDeadline {
-    pub(crate) fn new(timeout: Duration, expiry: Option<u64>) -> Result<Self, ProviderError> {
-        let until = tokio::time::Instant::now()
-            .checked_add(timeout)
-            .ok_or_else(|| {
-                ProviderError::Invalid(
-                    "guest deadline overflow; recovery: supply a representable original deadline"
-                        .into(),
-                )
-            })?;
+    pub(crate) fn new(
+        timeout: Option<Duration>,
+        expiry: Option<u64>,
+    ) -> Result<Self, ProviderError> {
+        let until = timeout.map(|timeout| {
+            tokio::time::Instant::now().checked_add(timeout).ok_or_else(|| {
+                ProviderError::Invalid("guest deadline overflow; recovery: supply a representable original deadline".into())
+            })
+        }).transpose()?;
         let wake = Arc::new(tokio::sync::Notify::new());
         let alarm = expiry.map(|expiry| {
             let notify = wake.clone();
@@ -37,16 +37,16 @@ impl GuestDeadline {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| ProviderError::Rejected(format!("guest clock admission failed: {error}; recovery: restore the system clock before dispatch")))?;
         let timeout = Duration::from_millis(expiry).saturating_sub(now);
-        Self::new(timeout, Some(expiry))
+        Self::new(Some(timeout), Some(expiry))
     }
 
-    pub(crate) fn remaining(&self) -> Duration {
+    pub(crate) fn remaining(&self) -> Option<Duration> {
         self.until
-            .saturating_duration_since(tokio::time::Instant::now())
+            .map(|until| until.saturating_duration_since(tokio::time::Instant::now()))
     }
 
-    pub(crate) fn until(&self) -> std::time::Instant {
-        self.until.into_std()
+    pub(crate) fn until(&self) -> Option<std::time::Instant> {
+        self.until.map(tokio::time::Instant::into_std)
     }
 
     pub(crate) async fn run<T>(&self, future: impl std::future::Future<Output = T>) -> Option<T> {
@@ -57,8 +57,14 @@ impl GuestDeadline {
         }) {
             return None;
         }
+        let completion = async {
+            match self.until {
+                Some(until) => tokio::time::timeout_at(until, future).await.ok(),
+                None => Some(future.await),
+            }
+        };
         tokio::select! {
-            value = tokio::time::timeout_at(self.until, future) => value.ok(),
+            value = completion => value,
             () = self.wake.notified() => None,
         }
     }

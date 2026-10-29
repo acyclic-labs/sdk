@@ -1,8 +1,9 @@
+import { commandOutput } from "./process-capture.mjs";
 // Each Cargo invocation selects exactly one workspace member, so another
 // member's features cannot make its tests compile. Reuse one target directory,
 // with one persistent intermediate cache per worker: cargo check does not write
 // final artifacts, so independent build-directory locks permit real overlap.
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -28,7 +29,7 @@ export async function checkCrateTests(packages, workers, target, run) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const packages = workspacePackages(JSON.parse(execFileSync("cargo",
+  const packages = workspacePackages(JSON.parse(commandOutput("cargo",
     ["metadata", "--locked", "--no-deps", "--format-version", "1"], { encoding: "utf8" })));
   const target = process.env.CARGO_TARGET_DIR ?? "target";
   const failures = await checkCrateTests(packages, Number(process.argv[2] ?? 2), target, async (args, buildDirectory) => {

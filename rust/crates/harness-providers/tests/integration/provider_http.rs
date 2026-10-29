@@ -179,9 +179,18 @@ impl HttpTransport for Recorded {
         })
     }
 }
+// Explicit fixture policies make stalled responses exercise timeout redelivery.
+const RECORDED_TIMEOUTS: acyclic_harness_providers::TimeoutSpec =
+    acyclic_harness_providers::TimeoutSpec {
+        idle_ms: Some(300_000),
+        total_ms: Some(3_600_000),
+    };
+
 /// Advances `clock` by `wait` once polled, or never for a wait as long as the total deadline.
 async fn elapse(clock: Arc<AtomicU64>, wait: Duration) {
-    let total = acyclic_harness_providers::TimeoutSpec::DEFAULT.total_ms;
+    let total = RECORDED_TIMEOUTS
+        .total_ms
+        .expect("finite recorded total deadline");
     if wait.as_millis() >= u128::from(total) {
         futures::future::pending::<()>().await;
     }
@@ -223,9 +232,9 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
                 response_field: TokenCountField::InputTokens,
                 framing_tokens: 0,
             }),
-            max_event_bytes: 4096,
+            max_event_bytes: Some(4096),
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
-            timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
+            timeouts: RECORDED_TIMEOUTS,
         },
     )?;
     registry.resolve("recorded/model")

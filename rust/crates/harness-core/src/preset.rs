@@ -27,9 +27,9 @@ pub struct Preset {
     /// configured provider.
     pub web_tools: bool,
     /// Model rounds per turn; each round may run several tool calls. `None`
-    /// keeps the harness limit.
+    /// is unbounded unless the host explicitly selects a finite policy.
     #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
-    pub max_steps: Option<usize>,
+    pub max_steps: Option<std::num::NonZeroUsize>,
     /// Open children each agent may have at once; `None` is unbounded.
     #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
     pub max_children: Option<u32>,
@@ -39,8 +39,8 @@ pub struct Preset {
 
 impl Preset {
     /// `GraphCoder`'s defaults: the host's model, a coding-agent prompt, every
-    /// standard tool and the web tools, at most eight open children per
-    /// agent, and approvals that accept every action.
+    /// standard tool and the web tools, unbounded children, and approvals
+    /// that accept every action.
     #[must_use]
     pub fn graphcoder() -> Self {
         Self {
@@ -49,7 +49,7 @@ impl Preset {
             tools: crate::tools::default_names(),
             web_tools: true,
             max_steps: None,
-            max_children: Some(8),
+            max_children: None,
             approval_policy: ApprovalPolicy::accept_all("graphcoder-default"),
         }
     }
