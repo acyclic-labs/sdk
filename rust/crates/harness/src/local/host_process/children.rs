@@ -39,7 +39,7 @@ struct Running {
     /// A spawn or stdin failure, settled as the turn's failure.
     failure: Option<String>,
     events: acyclic_native_runtime::lines::LineBuffer,
-    answer: String,
+    answer: std::result::Result<String, String>,
     /// The settlement once decided. A retry after an unknown outcome resends
     /// exactly it, under the same claim.
     settlement: Option<Outcome<TurnOutput>>,
@@ -370,7 +370,7 @@ impl NativeChildren {
             claim,
             failure: None,
             events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
-            answer: String::new(),
+            answer: Ok(String::new()),
             settlement: None,
             wake,
             armed: None,
@@ -472,12 +472,17 @@ impl NativeChildren {
         }
         let outcome = match exited {
             Err(message) => Outcome::Failed { message },
-            Ok(Some(status)) if status.success() => Outcome::Succeeded(TurnOutput {
-                text: running.answer.clone(),
-                metadata: Value::Null,
-                steps: 1,
-                attachments: Vec::new(),
-            }),
+            Ok(Some(status)) if status.success() => match &running.answer {
+                Ok(text) => Outcome::Succeeded(TurnOutput {
+                    text: text.clone(),
+                    metadata: Value::Null,
+                    steps: 1,
+                    attachments: Vec::new(),
+                }),
+                Err(message) => Outcome::Failed {
+                    message: message.clone(),
+                },
+            },
             Ok(Some(status)) => Outcome::Failed {
                 message: format!("native host exited {status}"),
             },
@@ -622,7 +627,7 @@ fn output(running: &mut Running) -> Result<()> {
                 // A dropped answer must replace an earlier preview. Keep
                 // draining through the same bounded framer and process
                 // owner; later complete answers remain usable.
-                running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
+                running.answer = Ok("[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into());
                 // The saved log marks where the event was dropped.
                 running.process.record_event(EVENT_OMITTED)?;
                 continue;
@@ -642,25 +647,41 @@ fn output(running: &mut Running) -> Result<()> {
 
 /// The answer a native event carries: a Codex agent message, a Claude Code
 /// result, or a Pi assistant message end.
-fn answer(event: &Value) -> Option<String> {
+fn answer(event: &Value) -> Option<std::result::Result<String, String>> {
     let text = if event.pointer("/item/type").and_then(Value::as_str) == Some("agent_message") {
         event.pointer("/item/text")
     } else {
         event.get("result")
     };
     if let Some(text) = text.and_then(Value::as_str) {
-        return Some(bounded(text));
+        return Some(Ok(bounded(text)));
+    }
+    // Pi can report a failed assistant turn and still exit successfully. Keep
+    // its semantic outcome until process exit; a subsequent successful turn
+    // replaces it if the native host retries the request itself.
+    if event.get("type").and_then(Value::as_str) == Some("message_end")
+        && event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
+        && matches!(
+            event.pointer("/message/stopReason").and_then(Value::as_str),
+            Some("error" | "aborted")
+        )
+    {
+        return Some(Err(event
+            .pointer("/message/errorMessage")
+            .and_then(Value::as_str)
+            .unwrap_or("native assistant turn failed")
+            .to_owned()));
     }
     let parts = (event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
         && event.get("type").and_then(Value::as_str) == Some("message_end"))
     .then(|| event.pointer("/message/content").and_then(Value::as_array))
     .flatten()?;
-    Some(bounded(
+    Some(Ok(bounded(
         &parts
             .iter()
             .filter_map(|part| part.get("text").and_then(Value::as_str))
             .collect::<String>(),
-    ))
+    )))
 }
 
 fn bounded(text: &str) -> String {
@@ -678,6 +699,22 @@ mod tests;
 #[cfg(test)]
 mod framing {
     use super::*;
+
+    #[test]
+    fn native_assistant_refusal_is_not_a_successful_empty_answer() {
+        let mut captured = include_str!("fixtures/pi-assistant-error.jsonl").lines();
+        let event: Value = serde_json::from_str(captured.next().expect("captured assistant"))
+            .expect("captured Pi event");
+        assert_eq!(
+            answer(&event),
+            Some(Err("No API key for provider: fixture".into()))
+        );
+        // The session-level settlement event has no assistant outcome. It must
+        // not erase a preceding terminal error while the process exits.
+        let settled: Value = serde_json::from_str(captured.next().expect("captured settlement"))
+            .expect("captured Pi settlement");
+        assert_eq!(answer(&settled), None);
+    }
 
     #[test]
     fn a_receipt_follows_its_child_to_a_remounted_view() {
@@ -724,7 +761,7 @@ mod framing {
             panic!("valid frame after omitted event: {lines:?}");
         };
         let event: Value = serde_json::from_str(line).expect("frame is JSON");
-        assert_eq!(answer(&event).as_deref(), Some("probe"));
+        assert_eq!(answer(&event), Some(Ok("probe".into())));
     }
 
     #[test]

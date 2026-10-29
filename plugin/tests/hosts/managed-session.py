@@ -1,6 +1,6 @@
 """Linux, no models: native-process fixture plus the real Codex sandbox.
 
-Run on bb2: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER lifecycle|recursive|resume.
+Run on Linux: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER lifecycle|recursive|resume.
 Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
@@ -62,6 +62,10 @@ checked=subprocess.run(base+['sh','-c',
 assert checked.returncode==(17 if prompt=='failed' else 0),checked.stderr
 if prompt=='recursive':
  nested=subprocess.Popen([os.environ['FIXTURE_ACYCLIC'],'__mcp','codex'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+ nested.stdin.write((json.dumps({'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'native-session-conformance','version':'1'}}})+'\\n').encode());nested.stdin.flush()
+ initialized=json.loads(nested.stdout.readline())
+ assert initialized.get('id')==0 and 'result' in initialized,('step=initialize recursive MCP client; recovery=python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX recursive',initialized)
+ nested.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\\n');nested.stdin.flush()
  def call(identifier,name):
   arguments={'reference':'nested'}
   if name=='spawn':arguments['prompt']='first'
@@ -105,12 +109,15 @@ if prompt=='resumed':
   pending=b'';responses={}
   inherited=json.loads((workspace/'root-launch.json').read_text())['args']
   bridge=subprocess.Popen([acyclic,'__mcp','codex'],cwd=workspace,env={**env,'ACYCLIC_HOST_ARGS':json.dumps(inherited),'ACYCLIC_WORKSPACE':str(workspace),'ACYCLIC_TASK':task},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'bridge.log').open('w+'))
+  bridge.stdin.write((json.dumps({'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'native-session-conformance','version':'1'}}})+'\n').encode());bridge.stdin.flush()
+  response(0,initialize=True)
+  bridge.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n');bridge.stdin.flush()
  def submit(name,reference,prompt=None):
   global sequence
   sequence+=1;args={'reference':reference}
   if prompt is not None:args['prompt']=prompt
   bridge.stdin.write((json.dumps({'jsonrpc':'2.0','id':sequence,'method':'tools/call','params':{'name':name,'arguments':args}})+'\n').encode());bridge.stdin.flush();return sequence
- def response(identifier):
+ def response(identifier,initialize=False):
   global pending
   deadline=time.monotonic()+3
   with selectors.DefaultSelector() as ready:
@@ -122,6 +129,9 @@ if prompt=='resumed':
     while b'\n' in pending:
      line,pending=pending.split(b'\n',1);message=json.loads(line);responses[message['id']]=message
   message=responses.pop(identifier);assert 'error' not in message,message
+  if initialize:
+   assert 'protocolVersion' in message.get('result',{}),('step=initialize MCP client; recovery=python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario,message)
+   return message['result']
   result=message['result'];assert not result.get('isError'),result
   return json.loads(result['content'][0]['text'])
  def tool(name,reference,prompt=None):return response(submit(name,reference,prompt))
