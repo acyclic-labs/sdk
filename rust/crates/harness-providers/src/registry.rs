@@ -15,6 +15,7 @@ pub struct Registry {
     credentials: Credentials,
     selection: snapshot::Snapshot<selection::Observations>,
     transport: Arc<dyn HttpTransport>,
+    resolver: Option<Arc<dyn crate::CredentialResolver>>,
     files: crate::files::Files,
     #[cfg(not(target_arch = "wasm32"))]
     codex_login: Option<Arc<crate::CodexLogin>>,
@@ -38,10 +39,25 @@ impl Registry {
             credentials,
             selection: snapshot::Snapshot::default(),
             transport,
+            resolver: None,
             files: crate::files::Files::default(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_login: None,
         }
+    }
+
+    /// Inject the deployment owner's protected credential binder. It receives
+    /// logical references and admitted native sources, never caller authority.
+    pub fn with_credential_resolver(
+        mut self,
+        resolver: Arc<dyn crate::CredentialResolver>,
+    ) -> Self {
+        self.set_credential_resolver(resolver);
+        self
+    }
+
+    pub(crate) fn set_credential_resolver(&mut self, resolver: Arc<dyn crate::CredentialResolver>) {
+        self.resolver = Some(resolver);
     }
 
     /// Binds the owner's bounded content reader used by every adapter.
@@ -142,13 +158,20 @@ impl Registry {
         } else {
             config
         };
-        let authenticated = key.is_some();
+        let binding = crate::authorization::bind(
+            &config,
+            key,
+            self.resolver.as_deref(),
+            self.transport.clone(),
+        )?;
+        let (key, credential_scope, transport) = (binding.key, binding.scope, binding.transport);
+        let authenticated = key.is_some() || credential_scope.is_some();
         #[cfg(not(target_arch = "wasm32"))]
         let authenticated = authenticated || codex_login.is_some();
         if !authenticated && config.authentication != Authentication::Optional {
             return Err(invalid("model provider API key is unavailable"));
         }
-        let transport = crate::deadline::Bounded::new(self.transport.clone(), config.timeouts);
+        let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
             files: self.files.clone(),
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
@@ -156,6 +179,7 @@ impl Registry {
             config,
             capacity,
             key,
+            credential_scope,
             transport,
             #[cfg(not(target_arch = "wasm32"))]
             codex_count: std::sync::Arc::default(),
@@ -197,6 +221,9 @@ pub(crate) fn validate_spec(provider: &str, config: &ProviderSpec) -> Result<()>
         return Err(invalid("invalid provider registration"));
     }
     validate_url(&config.base_url)?;
+    if let Some(reference) = config.authentication.secret_reference() {
+        crate::authorization::reference(reference)?;
+    }
     config.timeouts.validate()?;
     for (name, value) in &config.headers {
         if name.is_empty()

@@ -64,6 +64,25 @@ export async function collectModel(iterator) {
   for await (const event of iterator) events.push(event);
   return events;
 }
+export function modelRefusalFixture(data, status, code) {
+  const state = { calls: 0, aborted: 0 };
+  state.bind = () => ({credentialScope:new Uint8Array(32).fill(7),
+    fetch(url, init) {
+      state.calls++;
+      if (new Headers(init.headers).has('authorization')) throw new Error('guest credential');
+      init.signal.addEventListener('abort', () => state.aborted++, {once:true});
+      let prefix = true;
+      return Promise.resolve(new Response(new ReadableStream({pull(controller) {
+        if (prefix) {
+          prefix = false;
+          controller.enqueue(new TextEncoder().encode(data));
+        } else if (code) {
+          controller.error(Object.assign(new Error('private diagnostic'), {code}));
+        } else controller.close();
+      }}, {highWaterMark:0}), {status}));
+    }});
+  return state;
+}
 export async function cancelModel(iterator, signal, ready, useReturn) {
   const pending = iterator.next();
   await ready;
@@ -89,6 +108,8 @@ extern "C" {
     fn watch_input(state: &JsValue, request: &JsValue);
     #[wasm_bindgen(js_name = collectModel)]
     fn collect_model(iterator: JsValue) -> Promise;
+    #[wasm_bindgen(js_name = modelRefusalFixture)]
+    fn refusal_fixture(data: &str, status: u16, code: i32) -> JsValue;
     #[wasm_bindgen(js_name = cancelModel)]
     fn cancel_model(
         iterator: JsValue,
@@ -155,6 +176,58 @@ fn request(
 
 fn dispatch() -> Result<JsValue, JsValue> {
     to_js(&json!({"operationId":"00000000-0000-4000-8000-000000000001","step":2}))
+}
+
+#[wasm_bindgen_test]
+async fn refusal_body_failures_keep_their_class_without_generation_or_count_retries()
+-> Result<(), JsValue> {
+    use acyclic_harness_core::wire::ErrorCode;
+    let body = include_str!("../../../conformance/fixtures/inference/llamacpp/rate.body");
+    assert!(body.len() < crate::EXCERPT_BYTES);
+    for status in [429, 503] {
+        for code in [
+            Some(ErrorCode::Storage),
+            Some(ErrorCode::Indeterminate),
+            Some(ErrorCode::Cancelled),
+            None,
+        ] {
+            let fixture = refusal_fixture(body, status, code.map_or(0, |code| code as i32));
+            let mut registry = WasmProviderRegistry::new(
+                to_js(&json!({}))?,
+                to_js(&Limits::default())?,
+                None,
+                None,
+            )?;
+            registry.bind_credentials(field(&fixture, "bind")?.dyn_into()?);
+            registry.register("fixture".into(), to_js(&json!({
+                "adapter":"chat", "base_url":"https://example.test/v1",
+                "authentication":{"bearer":{"secret_reference":"secrets:/models/primary"}},
+                "models":{"model":{"capacity":{"context_tokens":4096,"output_tokens":512}}},
+                "token_counter":{"path":"count_tokens","adapter":"chat","response_field":"input_tokens","framing_tokens":0},
+                "max_event_bytes":4096,
+                "retry":{"attempts":1,"base_delay_ms":0,"max_delay_ms":0}
+            }))?)?;
+            let provider = registry.resolve("fixture/model", None)?;
+            let prepared = provider.prepare(request(&provider, None)?).await?;
+            let failure = JsFuture::from(collect_model(prepared.generate(dispatch()?)?))
+                .await
+                .unwrap_err();
+            let expected = code.unwrap_or(ErrorCode::Unavailable) as i32;
+            assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
+            assert!(
+                !js_sys::Error::from(failure)
+                    .message()
+                    .includes("private diagnostic", 0)
+            );
+            let attempts = if code.is_some() { 1.0 } else { 2.0 };
+            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(attempts));
+            let failure = prepared.count_tokens().await.unwrap_err();
+            assert_eq!(field(&failure, "code")?.as_f64(), Some(f64::from(expected)));
+            assert_eq!(field(&fixture, "calls")?.as_f64(), Some(2.0 * attempts));
+            assert_eq!(field(&fixture, "aborted")?.as_f64(), Some(2.0 * attempts));
+        }
+    }
+    Ok(())
 }
 
 #[wasm_bindgen_test]

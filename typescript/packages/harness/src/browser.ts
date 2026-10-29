@@ -4,6 +4,7 @@ export {
   WasmAgentRegistry as BrowserAgentRegistry,
   WasmAgents as BrowserAgents,
   WasmAgentProviders as BrowserAgentProviders,
+  WasmMachinesWorkspace as BrowserMachinesWorkspace,
   AgentGuest,
   type WasmBrowserAgentOptions as BrowserAgentOptions,
   type WasmDelivered as BrowserDelivered,

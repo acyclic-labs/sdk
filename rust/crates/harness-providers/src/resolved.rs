@@ -19,6 +19,7 @@ pub struct ResolvedModel {
     pub(crate) config: Arc<ProviderSpec>,
     pub(crate) capacity: ModelContextCapacity,
     pub(crate) key: Option<Arc<str>>,
+    pub(crate) credential_scope: Option<[u8; 32]>,
     /// The platform transport under the endpoint's deadlines: the only way to the network.
     pub(crate) transport: Arc<crate::deadline::Bounded>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -40,13 +41,20 @@ impl ResolvedModel {
         let family = crate::stream::family(self.config.adapter);
         let mut scope = blake3::Hasher::new();
         scope.update(b"harness-reasoning-scope-v1\0");
+        if self.credential_scope.is_some() {
+            scope.update(b"protected-account\0");
+        }
+        let credential = self.credential_scope.as_ref().map_or_else(
+            || account.or(key).unwrap_or("").as_bytes(),
+            |scope| scope.as_slice(),
+        );
         for value in [
-            family,
-            self.config.base_url.as_str(),
-            account.or(key).unwrap_or(""),
+            family.as_bytes(),
+            self.config.base_url.as_bytes(),
+            credential,
         ] {
             scope.update(&(value.len() as u64).to_be_bytes());
-            scope.update(value.as_bytes());
+            scope.update(value);
         }
         acyclic_harness_core::model::ReasoningOrigin {
             provider: family.into(),
@@ -98,6 +106,7 @@ impl ModelProvider for ResolvedModel {
             config: self.config.clone(),
             capacity: self.capacity,
             key: self.key.clone(),
+            credential_scope: self.credential_scope,
             transport: self.transport.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             codex_count: Arc::clone(&self.codex_count),

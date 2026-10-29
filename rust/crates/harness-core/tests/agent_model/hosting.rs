@@ -262,12 +262,43 @@ async fn create_root_is_its_prepared_commit_and_an_unknown_resubmits_it_exactly(
         },
     );
     // The root's private volume is live: an input stages on it.
-    bound
-        .stage_text(&created, "message", &alice, &intent("m1"), "hello")
+    let staged = bound
+        .stage_text(
+            &created,
+            "message",
+            &alice,
+            &intent("m1"),
+            ("/command", "hello"),
+        )
         .await?;
+    assert_eq!(
+        bound
+            .staged_text(&created, "message", &alice, &intent("m1"), "/command")
+            .await?,
+        Some(staged)
+    );
+    // Equal expanded bytes do not make a changed original request a replay.
+    assert!(matches!(
+        bound
+            .staged_text(&created, "message", &alice, &intent("m1"), "/changed")
+            .await,
+        Err(acyclic_harness_core::agent::Error::Conflict(_))
+    ));
+    assert!(
+        bound
+            .stage_text(
+                &created,
+                "message",
+                &alice,
+                &intent("m1"),
+                ("/changed", "hello")
+            )
+            .await
+            .is_err()
+    );
     // Another sender's same intent with different text stages its own input.
     bound
-        .stage_text(&created, "message", &bob, &intent("m1"), "hi")
+        .stage_text(&created, "message", &bob, &intent("m1"), ("hi", "hi"))
         .await?;
     Ok(())
 }

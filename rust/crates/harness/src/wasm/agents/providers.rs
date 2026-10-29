@@ -12,8 +12,8 @@ use super::{
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
     filesystem::{
-        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors,
-        TurnAdmission, TurnLimits,
+        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors, Tasks,
+        TurnAdmission, TurnContext, TurnLimits,
     },
 };
 use acyclic_actors::domain::ActorLimits;
@@ -278,10 +278,11 @@ impl Providers {
         admission: &TurnAdmission,
     ) -> Result<BrowserHandler, JsValue> {
         // The options a handler runs under are its own, not its providers'.
-        options.limits.validate(&mut None).map_err(js_error)?;
+        let limits = options.preset.execution_limits(options.limits);
+        limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
-            maximum_bytes: options.limits.file_bytes,
-            max_steps: u32::try_from(options.limits.model_steps)
+            maximum_bytes: limits.file_bytes,
+            max_steps: u32::try_from(limits.model_steps)
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
@@ -315,20 +316,49 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
         registry: &WasmAgentRegistry,
     ) -> Result<StockExecutors, JsValue> {
-        options.limits.validate(&mut None).map_err(js_error)?;
+        let limits = options.preset.execution_limits(options.limits);
+        limits.validate(&mut None).map_err(js_error)?;
         let (model, provider, compaction) = registry
             .model
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-        let mut tools = options.preset.tools(false, Vec::new()).map_err(js_error)?;
+        let mut tools = options
+            .preset
+            .tools(
+                |name| {
+                    registry
+                        .workspace
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.tools.contains(&name))
+                },
+                Vec::new(),
+            )
+            .map_err(js_error)?;
         tools.extend(registry.tools.clone()).map_err(js_error)?;
         let grants = options.preset.tool_grants(&tools).map_err(js_error)?;
-        Ok(options.preset.executors(
-            (model, provider),
-            tools,
-            (options.limits, compaction),
-            Arc::new(Grants(grants)),
-        ))
+        let context: Arc<dyn TurnContext> = match &registry.workspace {
+            Some(workspace) => Arc::new(Tasks(
+                crate::runtime::Bindings {
+                    workspace_tools: Some(Arc::clone(&workspace.executor)),
+                    scope: crate::runtime::RuntimeScope::new(
+                        crate::Capabilities::new(
+                            grants
+                                .into_iter()
+                                .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
+                        ),
+                        limits,
+                    )
+                    .map_err(js_error)?,
+                    ..Default::default()
+                }
+                .build()
+                .map_err(js_error)?,
+            )),
+            None => Arc::new(Grants(grants)),
+        };
+        Ok(options
+            .preset
+            .executors((model, provider), tools, (limits, compaction), context))
     }
 
     pub(super) fn spawn_volumes(

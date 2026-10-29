@@ -42,7 +42,7 @@ pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};
 mod stock_turns;
-pub use stock_turns::{Grants, StockExecutors, TurnContext};
+pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_turns;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,

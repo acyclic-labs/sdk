@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod alloy_tests;
 mod cancel;
+mod credentials;
 mod stream;
 #[cfg(test)]
 mod tests;
@@ -20,6 +21,12 @@ use wasm_bindgen::prelude::*;
 
 fn error(error: impl std::fmt::Display) -> JsValue {
     js_sys::Error::new(&error.to_string()).into()
+}
+
+fn model_error(cause: acyclic_harness_core::Error) -> JsValue {
+    let error = js_sys::Error::new(&cause.to_string());
+    let _ = Reflect::set(&error, &"code".into(), &(cause.code() as i32).into());
+    error.into()
 }
 
 fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue> {
@@ -67,6 +74,18 @@ fn to_js_json(value: &impl Serialize) -> Result<JsValue, JsValue> {
 #[wasm_bindgen(typescript_custom_section)]
 const TYPES: &str = r#"
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+/** Admitted by the host; never contains secret bytes. */
+export interface ModelCredentialBinding {
+  readonly credentialScope: Uint8Array;
+  /** Resolve/inject outside the guest on each exchange. Retain the signal,
+   * origin, redirect refusal and lazy body; owner loss rejects pending fetch
+   * and body reads. Failures carry the numeric harness ErrorCode. */
+  readonly fetch: ProviderFetch;
+}
+/** Select existing deployment authority without IO. Scope is 32 authenticated
+ * account bytes, stable across rotation. Bind never resolves a secret value. */
+export type ModelCredentialResolver = (origin: string, secretReference: string,
+  scheme: 'bearer' | 'api_key' | 'google_api_key') => ModelCredentialBinding;
 "#;
 
 /// Shared adapters using explicit browser credentials and an injectable fetch.
@@ -106,6 +125,17 @@ impl WasmProviderRegistry {
         Ok(Self { registry, limits })
     }
 
+    /// Inject the host's protected exchange before resolving models. Native
+    /// keys keep their existing source and never enter this callback.
+    #[wasm_bindgen(js_name = bindCredentials)]
+    pub fn bind_credentials(
+        &mut self,
+        #[wasm_bindgen(unchecked_param_type = "ModelCredentialResolver")] resolver: Function,
+    ) {
+        self.registry
+            .set_credential_resolver(Arc::new(credentials::Resolver(resolver)));
+    }
+
     /// Registers endpoint dialect and exact local or remote model capacities.
     pub fn register(
         &mut self,
@@ -114,7 +144,7 @@ impl WasmProviderRegistry {
     ) -> Result<(), JsValue> {
         self.registry
             .register(provider, from_js::<ProviderSpec>(config)?)
-            .map_err(error)
+            .map_err(model_error)
     }
 
     pub fn resolve(
@@ -133,7 +163,7 @@ impl WasmProviderRegistry {
             provider: Arc::new(
                 self.registry
                     .resolve_with_options(selection, options)
-                    .map_err(error)?,
+                    .map_err(model_error)?,
             ),
             limits: self.limits,
         })
@@ -153,7 +183,7 @@ impl WasmProviderRegistry {
                     from_js::<AlloySpec>(spec)?,
                     from_js::<ModelFeatures>(required)?,
                 )
-                .map_err(error)?,
+                .map_err(model_error)?,
             limits: self.limits,
         })
     }
@@ -260,7 +290,7 @@ impl WasmModelProvider {
             async {
                 crate::prepared::PreparedInput::new(&self.provider, admitted)
                     .await
-                    .map_err(error)
+                    .map_err(model_error)
             },
             signal.clone(),
         )
@@ -308,7 +338,12 @@ impl WasmPreparedModelRequest {
     #[wasm_bindgen(js_name = countTokens, unchecked_return_type = "PublicModelTokenCount")]
     pub async fn count_tokens(&self) -> Result<JsValue, JsValue> {
         let count = cancel::run(
-            async { self.prepared.count(&self.provider).await.map_err(error) },
+            async {
+                self.prepared
+                    .count(&self.provider)
+                    .await
+                    .map_err(model_error)
+            },
             self.signal.clone(),
         )
         .await?;

@@ -13,7 +13,7 @@ use crate::{
     executor::{Executor, StockExecutor},
     model::{Model, ModelContent, ModelProvider},
     preset::Preset,
-    runtime::RuntimeScope,
+    runtime::{AgentHarness, RuntimeScope, TaskContext},
     tool::ToolRegistry,
 };
 use acyclic_stream::BoxProviderFuture;
@@ -38,6 +38,45 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
 /// under exactly the grants its admission gives it, plus `grants`, and the
 /// model may generate.
 pub struct Grants(pub Vec<String>);
+
+/// Stock turns backed by the opener's immutable runtime bindings. Workspace
+/// tools receive the turn's original content, journal and task identity.
+pub struct Tasks(pub Arc<AgentHarness>);
+
+impl Tasks {
+    /// Binds one executor and returns the same task context for host hooks.
+    pub fn bind(
+        harness: &Arc<AgentHarness>,
+        executor: StockExecutor,
+        agent: &AgentState,
+        turn: OperationId,
+        authority: &TurnAuthority,
+    ) -> Result<(StockExecutor, TaskContext)> {
+        let context = harness
+            .agent_context(&authority.grants, authority.content.clone())?
+            .with_execution_journal(Arc::clone(&authority.journal))
+            .for_agent(agent.path.clone(), agent.volumes.clone());
+        let executor = executor
+            .with_tool_authority(context.scope().clone(), authority.approval.clone())?
+            .with_task_context(&context, turn)?;
+        Ok((executor, context))
+    }
+}
+
+impl TurnContext for Tasks {
+    fn prepare<'a>(
+        &'a self,
+        (executor, _): (StockExecutor, Limits),
+        agent: &'a AgentState,
+        turn: OperationId,
+        _: &'a ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        Box::pin(async move {
+            Self::bind(&self.0, executor, agent, turn, authority).map(|(executor, _)| executor)
+        })
+    }
+}
 
 impl TurnContext for Grants {
     fn prepare<'a>(
@@ -80,6 +119,15 @@ pub struct StockExecutors {
 }
 
 impl Preset {
+    /// The limits shared by this preset's executor, task scope and turn host.
+    #[must_use]
+    pub fn execution_limits(&self, mut limits: Limits) -> Limits {
+        if let Some(steps) = self.max_steps {
+            limits.model_steps = steps;
+        }
+        limits
+    }
+
     /// This preset's stock turns over `model` served by `provider`, with
     /// `tools` (the host's registry of this preset's tools) under `limits`,
     /// `compaction` and `context`. The preset's step limit, open-children
@@ -91,25 +139,31 @@ impl Preset {
         &self,
         model: (Model, Arc<dyn ModelProvider>),
         tools: ToolRegistry,
-        (mut limits, compaction): (Limits, CompactionPolicy),
+        (limits, compaction): (Limits, CompactionPolicy),
         context: Arc<dyn TurnContext>,
     ) -> StockExecutors {
-        if let Some(steps) = self.max_steps {
-            limits.model_steps = steps;
-        }
-        StockExecutors::new(model, tools, (limits, compaction), context)
-            .with_agent_tools(&self.tools, self.max_children)
+        StockExecutors::new(
+            model,
+            tools,
+            (self.execution_limits(limits), compaction),
+            context,
+        )
+        .with_agent_tools(&self.tools, self.max_children)
     }
 
     /// This preset's tools, the one construction every host takes them from:
     /// the catalog tools it selects that the host can back (the volume tools
-    /// always; the workspace tools, the shell among them, only with
-    /// `workspace`), then the host's own `tools`. Its agent tools are bound
+    /// always; each workspace tool only when `workspace` admits its name),
+    /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
     ///
     /// # Errors
     /// When the preset names an unknown tool, or two tools share a name.
-    pub fn tools(&self, workspace: bool, tools: Vec<crate::tool::Tool>) -> Result<ToolRegistry> {
+    pub fn tools(
+        &self,
+        workspace: impl Fn(&str) -> bool,
+        tools: Vec<crate::tool::Tool>,
+    ) -> Result<ToolRegistry> {
         let mut registry = ToolRegistry::default();
         crate::tools::bind_defaults(
             &mut registry,

@@ -88,7 +88,8 @@ pub enum Error {
         /// Bounded, control-free excerpt of the response body or the transport's root cause.
         excerpt: String,
     },
-    /// A definitive provider rejection, rather than an accounting failure.
+    /// A provider failure retaining its original semantic classification.
+    /// Storage, indeterminate and cancelled classes require reconciliation, not settlement.
     /// Native callers retain the original ledger custody until task settlement.
     #[error("{message}")]
     ModelDiagnostic {
@@ -545,10 +546,11 @@ impl Error {
     /// Native work, storage and uncertain publication errors are never provider outcomes.
     #[must_use]
     pub(crate) fn is_model_failure(&self) -> bool {
-        match self {
-            Self::ModelUnavailable { .. } | Self::ModelDiagnostic { .. } => true,
-            _ => false,
-        }
+        matches!(self, Self::ModelUnavailable { .. })
+            || matches!(self, Self::ModelDiagnostic { code, .. }
+                if !matches!(code, crate::wire::ErrorCode::Storage
+                    | crate::wire::ErrorCode::Indeterminate
+                    | crate::wire::ErrorCode::Cancelled))
     }
 
     /// An accepted effect that ended this way may have happened: reconcile it, never reject it.

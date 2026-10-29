@@ -10,8 +10,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAuthority, TurnContext, TurnExecutors,
-        TurnLimits,
+        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
+        TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
@@ -38,7 +38,7 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 /// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
     server: Arc<LocalServer>,
-    run: tokio::task::JoinHandle<()>,
+    pub(super) runtime: crate::hosting::Runtime,
 }
 
 /// The local harness's agent tree, served as every host serves one.
@@ -55,12 +55,6 @@ impl Hosted {
 
     pub(super) const fn server(&self) -> &Arc<LocalServer> {
         &self.server
-    }
-}
-
-impl Drop for Hosted {
-    fn drop(&mut self) {
-        self.run.abort();
     }
 }
 
@@ -147,26 +141,23 @@ impl TurnContext for LocalContext {
                         .await?
                 }
             };
-            let context = local
-                .harness
-                .agent_context(&authority.grants, authority.content.clone())?
-                .with_execution_journal(Arc::clone(&authority.journal))
-                .for_agent(agent.path.clone(), agent.volumes.clone());
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
-                .await?
-                .with_tool_authority(context.scope().clone(), authority.approval.clone())?
-                .with_task_context(&context, turn)?
-                .with_live_reply(crate::executor::LiveReply::new(
-                    Arc::clone(writer),
-                    format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
-                ));
+                .await?;
+            let (executor, context) =
+                Tasks::bind(&local.harness, executor, agent, turn, authority)?;
+            let executor = executor.with_live_reply(crate::executor::LiveReply::new(
+                Arc::clone(writer),
+                format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
+            ));
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]
             let executor = executor
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
+            #[cfg(not(any(test, feature = "hooks")))]
+            let _ = context;
             Ok(executor)
         })
     }
@@ -411,19 +402,8 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let runner = Arc::clone(&server);
-        // A delivery that fails here retries only an uncertain commit: a
-        // turn that fails for good commits its agent's failure, which every
-        // observer reads from the agent's status.
-        let run = tokio::spawn(async move {
-            let error = runner
-                .run(|actor, error| {
-                    tracing::warn!(?actor, %error, "agent delivery failed");
-                })
-                .await;
-            tracing::error!(%error, "agent runtime stopped");
-        });
-        Ok(Hosted { server, run })
+        let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
+        Ok(Hosted { server, runtime })
     }
 }
 

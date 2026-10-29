@@ -13,6 +13,36 @@ remain in the host. The preset supplies GraphCoder's prompt, tools and approval
 policy. Additional workspace tools and task context are explicit host choices.
 Storage implementations stay below the shared filesystem and Actors engines.
 
+An admitted workspace executor belongs in `runtime::Bindings.workspace_tools`.
+Build those bindings once, then pass `filesystem::Tasks(bindings)` as the turn
+context. It binds each turn's original volume grants, content access, execution
+journal and approval policy to that turn's operation. Native context manifests
+and hooks use the same `Tasks::bind` operation. The workspace executor therefore
+receives the original task context rather than an unrelated tool callback.
+Workspace availability is selected per tool name: a Machines shell binding
+declares `shell`, without also advertising the separate `fs` workspace command.
+Unimplemented tools receive neither model definitions nor call grants.
+
+For a portable host, retain the original Machine admission observation and the
+selected `VolumeRef`. Construct the public workspace with the same caller and
+verifier used to admit the server:
+
+```rust
+let workspace = machines.workspace(observation, &volume, scope, verifier)?;
+let workspace = acyclic_harness::WasmMachinesWorkspace::from(workspace);
+registry.bind_machines_workspace(&workspace);
+```
+
+The trusted Rust platform opener returns that opaque handle from the same WASM
+module. JavaScript can pass it to `registry.bindMachinesWorkspace(workspace)`
+before opening `WasmAgentServer` or `AgentGuest`. Both use the same registry and
+`Providers::executors` composition. The handle retains the actual authenticated
+provider, selected Machine and volume, parent verifier and execution authority;
+each turn supplies its original task context and cancellation. It accepts no
+replacement shell callback or serialized credential. The platform must supply
+its actual public Machines transport and admitted workspace opener; this handle
+alone does not supply that transport or deployment admission.
+
 Keep the same root intent when reopening storage. An uncertain root publication
 returns `ActorsError::Unknown` with its `PendingActors` composition. Retain that
 handle, then pass it as `ServerConfig::harness` after the provider's recovery
@@ -23,6 +53,16 @@ publication. A runtime that ends during credential publication also ends startup
 without announcing an endpoint. The endpoint owns its runtime:
 dropping the endpoint aborts execution, and a failed runtime ends serving instead
 of accepting work without a producer. TLS is required away from loopback.
+
+Native applications use `hosting::Runtime::start(server)` to own that loop.
+Both the local composition and `server::Actors` use this owner. Its `lifetime()`
+feeds the existing in-process Session engine, and `completion()` ends network
+serving. A failed delivery retains its original input for recovery and closes
+the application's sessions. A client connecting after failure also sees the
+closed lifetime. Local observers receive errors through the Session, without
+an additional per-agent failure channel. Native workspace tools, admitted
+filesystem authority, approval policy and root reopen remain in their original
+compositions; this runtime owner alone does not provide deployment admission.
 
 ## Public client qualification
 

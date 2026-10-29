@@ -156,12 +156,26 @@ async fn http_status_classes_are_distinct_and_refusals_carry_only_a_bounded_exce
                 }
                 // Negative controls: other statuses are never redelivered nor excerpted.
                 401 | 403 => {
-                    assert!(matches!(error, Error::Unauthorized(_)));
+                    assert!(matches!(
+                        error,
+                        Error::ModelDiagnostic {
+                            code: acyclic_harness_core::wire::ErrorCode::Unauthorized,
+                            custody: None,
+                            ..
+                        }
+                    ));
                     assert_eq!(sent, 1);
                     assert!(!error.to_string().contains("usage"));
                 }
                 _ => {
-                    assert!(matches!(error, Error::Invalid(_)));
+                    assert!(matches!(
+                        error,
+                        Error::ModelDiagnostic {
+                            code: acyclic_harness_core::wire::ErrorCode::Invalid,
+                            custody: None,
+                            ..
+                        }
+                    ));
                     assert_eq!(sent, 1);
                     assert!(!error.to_string().contains("usage"));
                 }

@@ -241,6 +241,8 @@ fn composition(
             tools: Vec::new(),
             workspace: false,
             context: None,
+            approvers: Default::default(),
+            goals: Some(Default::default()),
         },
         Arc::new(owner),
     ))

@@ -9,6 +9,8 @@ export {
   type AlloySelection,
   type ModelFeatures,
   type ProviderSpec,
+  type ModelCredentialBinding,
+  type ModelCredentialResolver,
   type Model,
   type ModelEvent,
   type ModelRole,

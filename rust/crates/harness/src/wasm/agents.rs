@@ -42,9 +42,11 @@ mod guest;
 mod host;
 mod providers;
 mod serving;
+mod workspace;
 use host::{HostModel, HostTool};
 pub use providers::WasmAgentProviders;
 use providers::{Objects, Providers};
+pub use workspace::WasmMachinesWorkspace;
 
 type Authorities = StreamAuthorityStore<dyn StreamProvider>;
 type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>;
@@ -168,9 +170,26 @@ struct WasmAgentRecord {
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
     model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
+    workspace: Option<Workspace>,
+}
+
+struct Workspace {
+    executor: Arc<dyn crate::tool::ToolExecutor>,
+    tools: &'static [&'static str],
 }
 
 impl WasmAgentRegistry {
+    /// Retains the opener's admitted workspace executor. Machines hosts pass
+    /// their `MachinesWorkspace` with `["shell"]`; each turn supplies its own
+    /// task authority. Only the declared tools enter model requests or grants.
+    pub fn bind_workspace(
+        &mut self,
+        executor: Arc<dyn crate::tool::ToolExecutor>,
+        tools: &'static [&'static str],
+    ) {
+        self.workspace = Some(Workspace { executor, tools });
+    }
+
     /// Installs a production provider without translating its admitted requests,
     /// token counts, content custody or streamed events through JavaScript.
     pub fn bind_model(
@@ -190,6 +209,13 @@ impl WasmAgentRegistry {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Retains the platform's admitted Machines workspace. The same binding
+    /// supplies shell execution to guests and the ordinary agent server.
+    #[wasm_bindgen(js_name = bindMachinesWorkspace)]
+    pub fn bind_machines_workspace(&mut self, workspace: &WasmMachinesWorkspace) {
+        self.bind_workspace(workspace.executor(), &["shell"]);
     }
 
     /// Registers one immutable tool revision; turns may call it.
