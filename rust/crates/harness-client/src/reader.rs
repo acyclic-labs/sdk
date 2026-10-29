@@ -583,7 +583,7 @@ impl Reader {
     }
 
     /// Warm start from persisted bytes. While the registered source resolves,
-    /// retain one bounded snapshot for atomic validation after lease admission.
+    /// retain private cache residency for atomic validation after lease admission.
     ///
     /// # Errors
     /// Refuses malformed bytes or replacement while reads or follows are active.
