@@ -1880,3 +1880,6 @@ The release traversal review's P2 remains a follow-up: incremental DFS retains a
 ## Script qualification340
 
 The complete package-generation/grouping test files run23 controls:21 pass,2 fail, none skipped/cancelled/todo. The new real-filesystem manifest/dependency/refusal control and graph generators pass. One failure comes from an accidental import edit inside an embedded test program; the other is a stale expected WASM closure omitting the newly required Auth dependency. Both fixture errors are corrected while retaining exact dependency ordering, exclusive grouped targets and all generation-failure/child-join negatives. The command stops before any native/WASM/Windows compiler or filesystem runtime; none is claimed.
+
+
+Script qualification341 runs23 complete controls:22 pass/1 fails, with none skipped/cancelled/todo. The embedded parser and all manifest/missing-dependency/refusal controls pass. The remaining expected harness closure still included the retired direct Objects dependency; actual package manifests/references require Auth, Actors, Harness. That exact fixture is corrected. No compiler/runtime phase ran in341.
