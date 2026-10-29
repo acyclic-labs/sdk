@@ -76,7 +76,7 @@ impl LocalHarness {
                     "",
                     path,
                     Some(&generation),
-                    maximum,
+                    Some(maximum),
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await;
