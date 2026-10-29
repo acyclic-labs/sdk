@@ -4,7 +4,6 @@
 
 use super::{NativeProcessResult, NativeProcessStop, NativeProcessStopKind};
 use crate::{Error, Result};
-use std::sync::Arc;
 
 #[doc(hidden)]
 pub mod capture;

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::Arc;
 
 #[test]
 fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
