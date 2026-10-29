@@ -113,6 +113,7 @@ for (let abortAfterJobs = 0; abortAfterJobs <= 16; abortAfterJobs++) {
   });
   await assert.rejects(client.inspectActor({ actorId: "actor-a" }, { signal: controller.signal }), error => {
     if (error === entered) return true;
+    if (error.code === "ERR_ASSERTION") throw error;
     assert.equal(error.code, "cancelled");
     cancelledAfterConnect++;
     return true;
