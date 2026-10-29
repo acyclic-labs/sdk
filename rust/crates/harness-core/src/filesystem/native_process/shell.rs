@@ -78,8 +78,11 @@ pub fn prepare<T>(
         mount.check(Action::List, &path, now)?;
     }
     invocation.cwd = cwd;
-    invocation.environment = mounts.environment()?;
-    invocation.inherit_environment = true;
+    invocation.environment.extend(mounts.environment()?);
+    // Shell commands receive only the host's explicit ordinary variables and
+    // discovery hints. Ambient credentials and startup hooks stay host-owned,
+    // even when another native process caller requested inheritance.
+    invocation.inherit_environment = false;
     invocation.timeout_ms = input.timeout_ms()?;
     let (command, standard_input) = match crate::tools::shell::PLATFORM.stdin_bootstrap {
         Some(bootstrap) => (bootstrap.to_owned(), Some(input.command.into_bytes())),
