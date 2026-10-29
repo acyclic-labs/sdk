@@ -313,6 +313,7 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
     )?;
     let root = host.create(&intent("create"), adopted(id(1))).await?;
     // The primitive's missing-path contract still refuses and creates nothing.
+    host.drain(&root).await?;
     assert!(matches!(
         provider
             .follow(FollowRequest::new(root.conversation()?, 0))
