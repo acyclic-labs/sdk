@@ -251,13 +251,17 @@ async fn check_pins(native: bool) -> TestResult {
             .await?,
         request.expected
     );
+    let owner_released = owner.0.retirement.release_barrier();
     drop(first);
     drop(second);
     let weak = Arc::downgrade(&owner.0);
     drop(owner);
-    while weak.strong_count() != 0 {
-        tokio::task::yield_now().await;
-    }
+    owner_released.wait_async().await;
+    assert_eq!(
+        weak.strong_count(),
+        0,
+        "prefix owner remained after retirement"
+    );
     Ok(())
 }
 
