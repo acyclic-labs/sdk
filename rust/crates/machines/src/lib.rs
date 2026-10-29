@@ -63,11 +63,11 @@ pub const MAX_EVENT_PAGE_SIZE: u32 = 1_024;
 ///
 /// # Errors
 /// Rejects zero request hints or zero chunk widths.
-pub fn page_limit(requested: u32, chunk: u32) -> Result<u32, ProviderError> {
+pub fn page_limit(requested: u64, chunk: u32) -> Result<u32, ProviderError> {
     if requested == 0 || chunk == 0 {
         return Err(ProviderError::Invalid("page size must be positive".into()));
     }
-    Ok(requested.min(chunk))
+    Ok(u32::try_from(requested).unwrap_or(chunk).min(chunk))
 }
 
 /// Default automatic idle suspension delay.

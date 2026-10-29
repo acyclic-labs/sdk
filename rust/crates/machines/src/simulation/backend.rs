@@ -121,7 +121,7 @@ impl MachinesProvider for SimulatedMachines {
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        let limit = page_limit(limit, MAX_PAGE_SIZE)?;
+        let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
         let state = self.state.lock().await;
         let mut values = state
             .machines
@@ -430,7 +430,7 @@ impl MachinesProvider for SimulatedMachines {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        let limit = page_limit(limit, MAX_EVENT_PAGE_SIZE)?;
+        let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
         let state = self.state.lock().await;
         if !state.machines.contains_key(&machine) {
             return Err(ProviderError::NotFound(machine.to_string()));

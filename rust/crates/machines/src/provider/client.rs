@@ -94,7 +94,7 @@ impl Machine {
         offset: u64,
         limit: u32,
     ) -> Result<MachineOutput, ProviderError> {
-        let limit = page_limit(limit, MAX_OUTPUT_READ_BYTES)?;
+        let limit = page_limit(u64::from(limit), MAX_OUTPUT_READ_BYTES)?;
         self.machines
             .provider
             .read_output(self.id, offset, limit)

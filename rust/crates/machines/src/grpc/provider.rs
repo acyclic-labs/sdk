@@ -110,7 +110,7 @@ machine_mutations! {
     ) -> Result<MachineOutput, ProviderError> {
         obs::finish(
             async {
-                let limit = page_limit(limit, MAX_OUTPUT_READ_BYTES)?;
+                let limit = page_limit(u64::from(limit), MAX_OUTPUT_READ_BYTES)?;
                 let value = self.client().await?
                     .read_output(wire::ReadOutputRequest {
                         protocol: Some(protocol()),
@@ -226,7 +226,7 @@ machine_mutations! {
     ) -> Result<MachinePage, ProviderError> {
         obs::finish(
             async {
-                let limit = page_limit(limit, MAX_PAGE_SIZE)?;
+                let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
                 let page = self.client().await?
                     .list_machines(wire::ListMachinesRequest {
                         protocol: Some(protocol()),
@@ -485,7 +485,7 @@ machine_mutations! {
     ) -> Result<EventPage, ProviderError> {
         obs::finish(
             async {
-                let limit = page_limit(limit, MAX_EVENT_PAGE_SIZE)?;
+                let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
                 let value = self.client().await?
                     .events(wire::EventsRequest {
                         protocol: Some(protocol()),

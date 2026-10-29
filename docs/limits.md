@@ -1892,3 +1892,13 @@ Script qualification341 runs23 complete controls:22 pass/1 fails, with none skip
 | Test command timeout300000ms | `arena/packages/arena/src/arena.ts:113` | 1 | Removed default. RaceOptions.testTimeoutMs / --test-timeout opt in to the existing process deadline. |
 
 These source changes do not close Arena's remaining whole-buffer subprocess output, rendered diff/file omissions or inference context paging. Compilation is pending; no new runtime or performance claim is made.
+
+## Machines page binding and Arena compilation
+
+Qualification342 on signed035724832d passes the complete23 package discovery/grouping controls and the affected native all-target compile. Other phases are still pending; no whole filesystem, Windows or fresh Machines package pass is inferred.
+
+Qualification343 on signedfbdc69a3f4 passes the complete Arena source/test TypeScript compilation. No runtime or performance result is claimed for the optional deadline change.
+
+P1 Machines package import review identifies a missing WASM pageSize export. The old validatePageSize boundary also still refused hints above256. The one exported pageSize now delegates to the shared Rust page_limit; native and WASM normalize a large hint to a physical chunk and retain continuation. The shared request hint accepts u64 so an exact JavaScript safe-integer hint never needs a narrower product ceiling. JavaScript coercions, inexact/negative/zero hints and zero chunk width still fail. There is no compatibility export or second page-policy implementation.
+
+The existing package controls now exercise1025 actual simulated Machines through generated WASM, exact canonical listing with hints257 and Number.MAX_SAFE_INTEGER, and a finite explicit257-item selection. Invalid custom-provider hints are rejected before dispatch. Those controls replace the retired257-refusal expectations; runtime and fresh generated binding qualification are pending.
