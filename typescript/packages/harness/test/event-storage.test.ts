@@ -23,13 +23,34 @@ test("SQLite wake routing pages actual changed owners and preserves later genera
   try {
     const metadata = storage(database, "wakes");
     let wakes = new WakeIndex(metadata);
+    let reads = 0;
+    let pages = 0;
+    const get = metadata.get.bind(metadata);
+    const entries = metadata.entries.bind(metadata);
+    metadata.get = key => { reads++; return get(key); };
+    metadata.entries = (prefix, after, limit) => { pages++; return entries(prefix, after, limit); };
+    const changed = (path: string) => {
+      reads = 0;
+      pages = 0;
+      metadata.transaction(() => wakes.changed("", [[path, false]]));
+      return { reads, pages };
+    };
     const names = Array.from({ length: 600 }, (_, index) => `actor-${index}${index === 0 ? "a".repeat(1200) : ""}`);
     const paths = (index: number) => [`root/${index}/${"x".repeat(index === 0 ? 4200 : 1)}`, `root/${index}/inbox`];
-    for (let index = 0; index < names.length; index++) {
+    expect(await wakes.register(names[0]!, paths(0))).toEqual({ admitted: true });
+    const single = changed(paths(0)[1]!);
+    expect(single.pages).toBe(0);
+    wakes.acknowledge(names[0]!, 1);
+    for (let index = 1; index < names.length; index++) {
       expect(await wakes.register(names[index]!, paths(index))).toEqual({ admitted: true });
     }
+    // Exact-path work is independent of all other registered actors.
+    expect(changed(paths(0)[1]!)).toEqual(single);
+    wakes.acknowledge(names[0]!, 2);
     expect(await wakes.register("collision", paths(0))).toEqual({ refused: "conflict" });
     expect(await wakes.register(names[0]!, paths(1))).toEqual({ refused: "conflict" });
+    // Durable change identities remain distinct beyond Number's exact range.
+    metadata.put("change", JSON.stringify("9007199254740992"));
     metadata.transaction(() => wakes.changed(names[0]!, [["root", true], ["root/1/inbox", false]]));
     wakes = new WakeIndex(storage(database, "wakes"));
     expect(wakes.pendingCount()).toBe(599);
