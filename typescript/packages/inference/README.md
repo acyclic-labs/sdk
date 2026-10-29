@@ -17,7 +17,9 @@ console.log(models);
 
 `Inference` is the identity-preserving high-level API. A `Context` points to an immutable revision: edits, forks, and transfers return new handles. Items read from a revision use the generated protobuf `Item` type. `Context.generate(...)` returns a `Run`; save `run.id()` so you can call `inference.recoverRun(id)` after an interrupted request, inspect progress, stream `run.events()`, or obtain `run.result()`. Warm commitments have separate retain, renew, inspect, and release operations.
 
-For custom authentication, use `new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` }))))`. The transport requires an absolute HTTPS URL and enforces bounded responses. The client validates protobuf responses through the bundled Rust WebAssembly contract. Import generated protobuf types and schemas from `@acyclic-labs/inference/proto`.
+For custom authentication, pass shared Auth credential options to `HttpInferenceTransport`, for example `{ credential: cache.provider }` for a `CredentialCache`. The transport retains that exact request lease through dispatch, body reads and each streamed event. Source changes, absolute expiry and caller cancellation refuse further admission; a late HTTP 401 rejects only its original lease. HTTP 403, other service errors and transport failures leave the lease intact. No request is automatically retried. Raw header callbacks remain per-attempt callbacks without source validity or rejection custody.
+
+The transport requires an absolute HTTPS URL and enforces bounded responses. The client validates protobuf responses through the bundled Rust WebAssembly contract. Import generated protobuf types and schemas from `@acyclic-labs/inference/proto`.
 
 ## Idle KV pins (source contract)
 
