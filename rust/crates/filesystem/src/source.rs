@@ -266,7 +266,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
                 () = cancelled => return Err(SourceError::Cancelled),
                 session = self.inner.lock() => session,
             };
-            work.admit(WorkCounters::UNCHARGED)
+            work.admit(crate::WorkCounters::UNCHARGED)
                 .map_err(source_native_error)?;
             session.watcher.changed_with_native_work(work)
         };
