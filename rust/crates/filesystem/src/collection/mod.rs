@@ -59,12 +59,24 @@ pub(crate) enum Held {
 /// Keeps an admitted closure live until its publication is durable.
 pub struct PublicationHold {
     _gate: Option<tokio::sync::OwnedRwLockReadGuard<()>>,
+    _inner: Option<Box<PublicationHold>>,
 }
 
 impl PublicationHold {
     /// An empty hold for stores with their own collection gate.
     pub const fn none() -> Self {
-        Self { _gate: None }
+        Self {
+            _gate: None,
+            _inner: None,
+        }
+    }
+
+    /// Also holds the hold of the store this one composes over.
+    pub(crate) fn with(mut self, inner: Self) -> Self {
+        if inner._gate.is_some() || inner._inner.is_some() {
+            self._inner = Some(Box::new(inner));
+        }
+        self
     }
 }
 
@@ -74,6 +86,7 @@ impl Unswept {
     pub(crate) fn into_hold(self) -> PublicationHold {
         PublicationHold {
             _gate: Some(self.0),
+            _inner: None,
         }
     }
 }

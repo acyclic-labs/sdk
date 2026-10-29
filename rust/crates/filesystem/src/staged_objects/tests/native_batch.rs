@@ -45,6 +45,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         }
         Ok(())
     }
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        context: &mut AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        self.0.flush_before_publish(scope, context).await
+    }
     async fn read(
         &self,
         id: ObjectId,
@@ -149,7 +156,17 @@ fn run(
                         .map(drop),
                     Mode::Batch => {
                         match work.accounting().check().map_err(crate::async_storage::object_error) {
-                            Ok(()) => store.inner.put_many(&writes, &mut work).await,
+                            Ok(()) => match store.inner.put_many(&writes, &mut work).await {
+                                Ok(()) => store
+                                    .inner
+                                    .flush_before_publish(
+                                        PublicationScope::Closure { objects: &ids, proven_at: 0 },
+                                        &mut work,
+                                    )
+                                    .await
+                                    .map(drop),
+                                Err(error) => Err(error),
+                            },
                             Err(error) => Err(error),
                         }
                     }
@@ -158,6 +175,19 @@ fn run(
                         for write in &writes {
                             if result.is_err() { break; }
                             result = store.inner.put(write.object_id, write.bytes.clone(), &mut work).await;
+                            if result.is_ok() {
+                                result = store
+                                    .inner
+                                    .flush_before_publish(
+                                        PublicationScope::Closure {
+                                            objects: std::slice::from_ref(&write.object_id),
+                                            proven_at: 0,
+                                        },
+                                        &mut work,
+                                    )
+                                    .await
+                                    .map(drop);
+                            }
                         }
                         result
                     }
