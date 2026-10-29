@@ -1,10 +1,8 @@
 //! Complete transcript storage with a disk-backed row index and viewport cache.
 
 use crate::Layout;
-use ratatui::{
-    style::{Modifier, Style},
-    text::Line,
-};
+use ratatui::{style::Modifier, text::Line};
+use ratatui_core::style::Style;
 use std::{
     fs::File,
     io::{self, BufWriter, Read, Seek, SeekFrom, Write},
@@ -464,7 +462,9 @@ mod tests {
     fn display_width_graphemes_and_pending_text_survive_wrapping_and_resize() {
         let mut transcript = TranscriptRows::default();
         transcript.push(true, "界e\u{301}👩‍💻\ttext\nlast").unwrap();
-        transcript.pending(["still pending"].into_iter()).unwrap();
+        transcript
+            .pending([(true, "still pending")].into_iter())
+            .unwrap();
         for width in 1..12 {
             transcript.set_width(width).unwrap();
             let len = transcript.len();
