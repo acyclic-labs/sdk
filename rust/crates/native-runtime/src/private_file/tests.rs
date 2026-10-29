@@ -218,6 +218,28 @@ fn rename_custody_transfer_precedes_a_lost_acknowledgement() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "test-support")]
+#[test]
+fn reads_do_not_commit_namespace_but_publication_still_requires_durability() -> io::Result<()> {
+    use crate::testing::{DurableFault, Schedule};
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("owner");
+    create(&path)?.write_all(b"original")?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+    let (schedule, _) = Schedule::seeded(83);
+    schedule.cut_at(0, DurableFault::Failed);
+    runtime.block_on(schedule.scope(async {
+        assert_eq!(read(&path, 8)?.0, b"original");
+        assert!(schedule.durable_writes().is_empty());
+        let mut next = StagedFile::create(root.path(), ".next-")?;
+        next.as_file_mut().write_all(b"replacement")?;
+        assert!(next.publish(&path, crate::RenameMode::Replace).is_err());
+        assert_eq!(read(&path, 8)?.0, b"original");
+        Ok::<_, io::Error>(())
+    }))?;
+    Ok(())
+}
+
 #[test]
 fn bounded_reader_rejects_growth_and_admits_before_allocation() -> io::Result<()> {
     let root = tempfile::tempdir()?;

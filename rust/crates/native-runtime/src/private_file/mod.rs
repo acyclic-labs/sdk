@@ -309,7 +309,7 @@ pub fn publish(
     write: impl FnOnce(&mut File) -> io::Result<()>,
     mut observe: impl FnMut(PublicationStage) -> io::Result<()>,
 ) -> io::Result<()> {
-    let mut staged = StagedFile::create_at(temporary)?;
+    let mut staged = StagedFile::create_at(temporary.to_path_buf())?;
     observe(PublicationStage::Created)?;
     write(staged.as_file_mut())?;
     staged.publish_observed(path, mode, &mut observe)
@@ -350,10 +350,10 @@ pub struct StagedFile {
 }
 
 impl StagedFile {
-    fn create_at(path: &Path) -> io::Result<Self> {
+    fn create_at(path: std::path::PathBuf) -> io::Result<Self> {
         Ok(Self {
-            file: create(path)?,
-            path: path.to_path_buf(),
+            file: create(&path)?,
+            path,
             cleanup: true,
         })
     }
@@ -363,7 +363,7 @@ impl StagedFile {
         let mut random = [0; 16];
         crate::owner_record::fill_random(&mut random).map_err(io::Error::other)?;
         let suffix = u128::from_le_bytes(random);
-        Self::create_at(&parent.join(format!("{prefix}{suffix:032x}.next")))
+        Self::create_at(parent.join(format!("{prefix}{suffix:032x}.next")))
     }
 
     /// Borrow the private descriptor without transferring cleanup ownership.
@@ -502,7 +502,7 @@ pub fn read_with<T, E: From<io::Error>>(
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
     let file = open(path, false)?;
-    read_held_with(path, file, maximum, read)
+    read_held_with(file, maximum, read)
 }
 
 /// Read an existing owner for a format upgrade. On Windows, a legacy owner
@@ -516,7 +516,7 @@ pub fn read_for_upgrade_with<T, E: From<io::Error>>(
     maximum: u64,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
 ) -> Result<T, E> {
-    read_held_with(path, open_for_upgrade(path)?, maximum, read)
+    read_held_with(open_for_upgrade(path)?, maximum, read)
 }
 
 fn open_for_upgrade(path: &Path) -> io::Result<File> {
@@ -534,7 +534,6 @@ fn open_for_upgrade(path: &Path) -> io::Result<File> {
 }
 
 fn read_held_with<T, E: From<io::Error>>(
-    path: &Path,
     file: File,
     maximum: u64,
     read: impl FnOnce(&mut std::io::Take<File>, u64) -> Result<T, E>,
@@ -557,12 +556,6 @@ fn read_held_with<T, E: From<io::Error>>(
         )
         .into());
     }
-    crate::sync_parent(
-        path.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new(".")),
-        crate::Durability::Full,
-    )?;
     Ok(value)
 }
 

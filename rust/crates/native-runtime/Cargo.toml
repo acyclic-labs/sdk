@@ -25,6 +25,7 @@ test-support = ["tokio/macros", "tokio/time", "tokio/test-util", "tokio/net", "t
 loom = { version = "=0.7.2", optional = true }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
+dirs.workspace = true
 blake3.workspace = true
 subtle.workspace = true
 getrandom = { workspace = true, features = ["std"] }
