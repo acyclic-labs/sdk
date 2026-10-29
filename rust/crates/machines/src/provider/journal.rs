@@ -83,6 +83,32 @@ impl Journal {
         )
     }
 
+    pub(crate) async fn enroll(
+        &self,
+        machine: MachineObservation,
+    ) -> Result<MachineObservation, ProviderError> {
+        match self.machine().await {
+            Ok(retained) if retained.contract != machine.contract => Err(ProviderError::Conflict(
+                "enrollment differs from its retained incarnation; recovery: retain the original contract".into(),
+            )),
+            Ok(retained) if retained.state == MachineState::Destroyed => Ok(retained),
+            Ok(_) => Err(ProviderError::Conflict(
+                "Machine incarnation already has a physical owner; recovery: clone its original provider; after owner loss retain uncertainty and enroll a new incarnation".into(),
+            )),
+            Err(ProviderError::NotFound(_)) => {
+                let path = self.path(format_args!("machines/{}", self.machine))?;
+                self.commit(
+                    IdempotencyKey::new(),
+                    b"enroll",
+                    vec![CommitCondition::Absent { path: path.clone() }],
+                    vec![append(path, &machine)?],
+                ).await?;
+                Ok(machine)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(crate) async fn begin(
         &self,
         key: IdempotencyKey,

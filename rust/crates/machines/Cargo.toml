@@ -18,7 +18,7 @@ categories = ["api-bindings"]
 conformance = ["dep:acyclic-stream", "acyclic-stream/conformance", "tokio/time"]
 default = ["grpc"]
 
-local = ["dep:acyclic-native-runtime", "dep:acyclic-stream"]
+local = ["dep:acyclic-native-runtime", "dep:acyclic-stream", "dep:rustix", "tokio/time", "tokio/macros"]
 grpc = ["dep:acyclic-native-runtime", "dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
@@ -29,7 +29,7 @@ futures.workspace = true
 hex.workspace = true
 hyper-util = { workspace = true, optional = true }
 prost.workspace = true
-rustix = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true, features = ["fs"] }
 sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true

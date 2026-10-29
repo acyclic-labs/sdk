@@ -64,7 +64,13 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
             root.clone(),
         )
     };
-    let local = factory().await?;
+    let (first, second) = futures::join!(factory(), factory());
+    let local = match (first, second) {
+        (Ok(owner), Err(ProviderError::Conflict(_)))
+        | (Err(ProviderError::Conflict(_)), Ok(owner)) => owner,
+        _ => panic!("conditional enrollment must admit exactly one physical owner"),
+    };
+    assert!(matches!(factory().await, Err(ProviderError::Conflict(_))));
     let create_key = IdempotencyKey::new();
     let mut request =
         CreateMachine::new(create_key, None, observation.contract.network_policy_digest);
@@ -105,6 +111,7 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
     // Waiting on handler drop instead of physical completion hangs this path.
     let mut output = local.exec(machine, child()).await?;
     assert!(matches!(output.next().await, Some(Ok(ExecOutput::Data(_)))));
+    assert!(matches!(factory().await, Err(ProviderError::Conflict(_))));
     let stop = IdempotencyKey::new();
     assert_eq!(
         local.suspend(machine, stop).await?,
@@ -152,6 +159,27 @@ async fn public_local_factory_joins_native_retirement_and_retains_original_resul
         FileRead::Data(vec![0, 255, 7, 0])
     );
     std::fs::remove_file(path)?;
+    #[cfg(unix)]
+    {
+        let fifo = std::env::temp_dir().join(format!("acyclic-machine-fifo-{machine}"));
+        rustix::fs::mkfifoat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+        )?;
+        let access = FileAccess::new(fifo.to_str().unwrap().into(), 0, deadline)?;
+        // A FIFO has no offset-addressed completion producer. Opening it must
+        // not wait for a peer, and truncation must never touch a device.
+        assert!(matches!(
+            local.read_file(machine, access.clone(), 1).await,
+            Err(ProviderError::Rejected(_))
+        ));
+        assert!(matches!(
+            local.write_file(machine, access, vec![1], true).await,
+            Ok(FileWrite::Errno(_))
+        ));
+        std::fs::remove_file(fifo)?;
+    }
     let destroy = IdempotencyKey::new();
     assert_eq!(
         local.destroy_machine(machine, destroy).await?,

@@ -144,5 +144,7 @@ mod capture;
 pub use capture::{CapturedExec, capture_exec};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) mod admitted;
+#[cfg(all(any(feature = "local", feature = "grpc"), not(target_arch = "wasm32")))]
+pub(crate) mod deadline;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) mod journal;

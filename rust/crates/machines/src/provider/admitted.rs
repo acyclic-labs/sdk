@@ -43,12 +43,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         root: StreamPath,
     ) -> Result<Self, ProviderError> {
         let journal = Journal::new(streams, root, observation.id);
-        let observation = match journal.machine().await {
-            Ok(retained) if retained.contract == observation.contract => retained,
-            Ok(_) => return Err(ProviderError::Conflict("local enrollment differs from its retained incarnation; recovery: bind the original workspace and contract".into())),
-            Err(ProviderError::NotFound(_)) => observation,
-            Err(error) => return Err(error),
-        };
+        let observation = journal.enroll(observation).await?;
         if observation.state != MachineState::Running {
             backend.stop().await?;
         }
@@ -181,6 +176,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         if value.state == MachineState::Destroyed {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
+        drop(value);
         self.backend.read(access, limit).await
     }
     async fn write_file(
@@ -198,6 +194,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                     .into(),
             ));
         }
+        drop(value);
         self.backend.write(access, data, truncate).await
     }
     async fn inspect_machine(
