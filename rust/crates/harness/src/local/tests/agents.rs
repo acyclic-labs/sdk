@@ -409,7 +409,7 @@ async fn counting_server() -> Result<CountingServer> {
         while let Ok((mut stream, _)) = listener.accept().await {
             let ordinal = served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
             let mut request = [0; 8192];
-            let mut used = 0;
+            let mut used: usize = 0;
             loop {
                 let start = used.saturating_sub(3);
                 match stream.read(&mut request[used..]).await {
