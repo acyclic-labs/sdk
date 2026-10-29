@@ -36,13 +36,26 @@ type Addresses = Arc<Mutex<VecDeque<(bool, usize, usize)>>>;
 struct Handler {
     wake: ProcessWake,
     addresses: Addresses,
+    took_wakes: bool,
 }
 
 impl CaptureHandler for Handler {
-    fn wakes(&self) -> &[ProcessWake] {
-        std::slice::from_ref(&self.wake)
+    fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
+        assert!(
+            !self.took_wakes,
+            "control signals are transferred exactly once"
+        );
+        assert!(
+            std::thread::current()
+                .name()
+                .unwrap()
+                .starts_with("acyclic-host-io-")
+        );
+        self.took_wakes = true;
+        Ok(Some(self.wake.clone()).into())
     }
     fn check(&mut self) -> io::Result<()> {
+        assert!(self.took_wakes, "setup precedes the first physical turn");
         if self.wake.is_stopped() {
             return Err(io::ErrorKind::Interrupted.into());
         }
@@ -96,6 +109,7 @@ fn start(
         Handler {
             wake: wake.clone(),
             addresses: addresses.clone(),
+            took_wakes: false,
         },
     );
     Ok((output, input, pid, addresses, wake))

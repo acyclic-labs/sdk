@@ -20,12 +20,13 @@ struct Capture<H> {
     tree: ProcessTree,
     pump: pump::Pump<'static>,
     handler: H,
+    wakes: CaptureWakes,
 }
 
 impl<H: CaptureHandler> Capture<H> {
     fn check(mut self) -> (io::Result<()>, Self) {
         let checked = (|| {
-            for wake in self.handler.wakes() {
+            for wake in self.wakes.as_slice() {
                 wake.consume()?;
             }
             self.handler.check()?;
@@ -35,7 +36,12 @@ impl<H: CaptureHandler> Capture<H> {
     }
 
     fn turn(mut self, streaming: bool) -> (pump::Turn, Self, [Vec<u8>; 2]) {
-        let turn = pump::handled_turn(&mut self.pump, &mut self.tree, &mut self.handler);
+        let turn = pump::handled_turn(
+            &mut self.pump,
+            &mut self.tree,
+            &mut self.handler,
+            self.wakes.as_slice(),
+        );
         let bytes = if streaming {
             self.pump.take_output()
         } else {
@@ -114,22 +120,34 @@ impl ProcessTree {
         handler: H,
         sender: Option<mpsc::Sender<ProcessChunk>>,
     ) -> io::Result<CaptureOutcome<H>> {
-        let (tree, mut pump, handler) = match self
-            .start_capture(schedule, max_bytes, input, handler)
-            .await?
-        {
+        let streaming = sender.is_some();
+        // The initial output credit is the new, empty channel. Setup and the
+        // first pipe turn share one worker submission with the owner callbacks.
+        let started = crate::run_blocking_io(
+            move || {
+                self.start_capture(schedule, max_bytes, input, handler).map(
+                    |(tree, mut pump, handler, wakes)| {
+                        if streaming {
+                            pump.stream_output();
+                        }
+                        Capture {
+                            tree,
+                            pump,
+                            handler,
+                            wakes,
+                        }
+                        .turn(streaming)
+                    },
+                )
+            },
+            None,
+        )?
+        .await?;
+        let (turn, mut capture, bytes) = match started {
             Ok(started) => started,
             Err(outcome) => return Ok(outcome),
         };
-        let streaming = sender.is_some();
-        if streaming {
-            pump.stream_output();
-        }
-        let mut capture = Capture {
-            tree,
-            pump,
-            handler,
-        };
+        let mut initial = Some((turn, bytes));
         let result = 'capture: loop {
             // Reserve before touching either pipe. The other wait contains
             // only control/deadline sources, so a full pipe cannot spin it.
@@ -142,7 +160,7 @@ impl ProcessTree {
                         }
                         Err(mpsc::error::TrySendError::Full(_)) => {}
                     }
-                    let control = match capture.pump.arm_control(capture.handler.wakes()) {
+                    let control = match capture.pump.arm_control(capture.wakes.as_slice()) {
                         Ok(control) => control,
                         Err(error) => break 'capture Err(error),
                     };
@@ -162,9 +180,15 @@ impl ProcessTree {
             } else {
                 None
             };
-            let (turn, returned, bytes) =
-                crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
-            capture = returned;
+            let (turn, bytes) = match initial.take() {
+                Some(initial) => initial,
+                None => {
+                    let (turn, returned, bytes) =
+                        crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
+                    capture = returned;
+                    (turn, bytes)
+                }
+            };
             let [stdout, stderr] = bytes;
             let yielded = !stdout.is_empty() || !stderr.is_empty();
             if let Some(permit) = permit {
@@ -178,7 +202,7 @@ impl ProcessTree {
                 pump::Turn::Wait => {
                     let wait = match capture
                         .pump
-                        .arm_with_wake(&mut capture.tree, Some(capture.handler.wakes()))
+                        .arm_with_wake(&mut capture.tree, Some(capture.wakes.as_slice()))
                     {
                         Ok(wait) => wait,
                         Err(error) => break Err(error),
