@@ -46,7 +46,7 @@ fn callback_retains_complete_burst() -> Result<(), Box<dyn std::error::Error>> {
     };
     let (sender, receiver) = crate::watch_queue::channel(None);
     let queued = Arc::new(AtomicUsize::new(0));
-    let shared = Arc::new(Mutex::new(SharedState::new(None)));
+    let shared = Arc::new(WatchState::new(SharedState::new(None)));
     for index in 0..65_537 {
         accept_native_event(
             &Ok(event(
@@ -60,7 +60,11 @@ fn callback_retains_complete_burst() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     assert_eq!(
-        shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+        shared
+            .state
+            .lock()
+            .map_err(|_| "poisoned")?
+            .seal_invalidation(),
         None
     );
     assert_eq!(queued.load(Ordering::Acquire), 65_537);
@@ -301,7 +305,7 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
     };
     let (sender, receiver) = crate::watch_queue::channel(None);
     let queued = Arc::new(AtomicUsize::new(0));
-    let shared = Arc::new(Mutex::new(SharedState::new(None)));
+    let shared = Arc::new(WatchState::new(SharedState::new(None)));
     for event in [
         tracked_rename(RenameMode::From, vec![from.clone()], 7),
         tracked_rename(RenameMode::To, vec![to.clone()], 7),
@@ -310,7 +314,11 @@ fn linux_tracked_rename_uses_one_queue_slot_and_keeps_exact_identity()
         accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
     }
     assert_eq!(
-        shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+        shared
+            .state
+            .lock()
+            .map_err(|_| "poisoned")?
+            .seal_invalidation(),
         None
     );
     assert_eq!(queued.load(Ordering::Acquire), 1);
@@ -381,12 +389,16 @@ fn linux_unpaired_or_mismatched_rename_fails_closed() -> Result<(), Box<dyn std:
     for events in scenarios {
         let (sender, receiver) = crate::watch_queue::channel(None);
         let queued = Arc::new(AtomicUsize::new(0));
-        let shared = Arc::new(Mutex::new(SharedState::new(None)));
+        let shared = Arc::new(WatchState::new(SharedState::new(None)));
         for event in events {
             accept_native_event(&Ok(event), &context, &sender, &shared, &queued);
         }
         assert_eq!(
-            shared.lock().map_err(|_| "poisoned")?.seal_invalidation(),
+            shared
+                .state
+                .lock()
+                .map_err(|_| "poisoned")?
+                .seal_invalidation(),
             Some(WatchInvalidationReason::AmbiguousRename)
         );
         assert!(receiver.try_recv().is_err());
@@ -403,7 +415,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         NativeWatchOptions::new(VolumeLimits::default()),
     )?;
     let rescan = watch.begin_rescan()?;
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = Some(PendingRename {
         tracker: 7,
         from: relative_namespace_path(
             directory.path(),
@@ -426,6 +443,7 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
     assert!(
         watch
             .shared
+            .state
             .lock()
             .map_err(|_| "poisoned")?
             .pending_rename
@@ -435,7 +453,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
         watch.finish_rescan(rescan)?,
         WatchBatch::Changes { .. }
     ));
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = Some(PendingRename {
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = Some(PendingRename {
         tracker: 8,
         from: relative_namespace_path(
             directory.path(),
@@ -456,7 +479,12 @@ fn linux_pending_rename_invalidates_rescan_completion() -> Result<(), Box<dyn st
             ..
         }
     ));
-    watch.shared.lock().map_err(|_| "poisoned")?.pending_rename = None;
+    watch
+        .shared
+        .state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .pending_rename = None;
     assert!(matches!(
         watch
             .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
