@@ -17,6 +17,7 @@ impl WasmFollow {
                         })
                     })
                     .boxed_local(),
+                StreamError::Unavailable,
             )),
         }
     }

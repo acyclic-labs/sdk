@@ -111,14 +111,14 @@ impl ProcessTree {
         self,
         spawner: &crate::TaskSpawner,
         schedule: impl Into<CaptureSchedule>,
-        max_bytes: usize,
+        max_bytes: impl Into<Option<usize>>,
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> ProcessCaptureStream<H> {
         let (sender, receiver) = mpsc::channel(1);
         let completion = spawner.spawn(self.capture_driven(
             schedule.into(),
-            max_bytes,
+            max_bytes.into(),
             input,
             handler,
             Some(sender),
