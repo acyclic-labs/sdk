@@ -63,9 +63,9 @@ struct View {
     /// Sent compactions, rewinds and clears not yet settled, by inbox
     /// sequence.
     checkpoints: Vec<u64>,
-    /// Inbox sequences below this were shown by a cancel's stop: their
-    /// cancelled entries are not shown again.
-    cancel_shown: u64,
+    /// A cancel's settled status, shown once every entry it announced was:
+    /// its inbox cursor and conversation tail.
+    stopped: Option<(u64, u64)>,
     /// A cancelled entry already marked its turn's stop.
     cancel_marked: bool,
     /// The running turn's answer while it streams.
@@ -110,7 +110,14 @@ impl View {
         }
     }
 
-    async fn apply(&mut self, conversation: &Conversation, event: Event) -> Result<(), Failure> {
+    /// Applies `event`; `seen` is the next conversation sequence the
+    /// observer has not returned.
+    async fn apply(
+        &mut self,
+        conversation: &Conversation,
+        event: Event,
+        seen: u64,
+    ) -> Result<(), Failure> {
         match event {
             Event::Turn(entry) => {
                 self.pending_dirty = true;
@@ -136,9 +143,8 @@ impl View {
                     .iter()
                     .position(|(pending, _)| *pending == entry.inbox)
                     .map(|at| self.pending.remove(at).1);
-                if cancelled && entry.inbox < self.cancel_shown {
-                    return Ok(());
-                }
+                // A turn's text is its committed entry's, a cancelled one's
+                // too, whichever of it and its status arrived first.
                 let (prompt, answer) = conversation.turn(&entry).await?;
                 if let Some(text) = sent.or(prompt) {
                     self.transcript.push(true, &text);
@@ -150,11 +156,13 @@ impl View {
                 if cancelled {
                     self.transcript.push(false, CANCELLED);
                     self.outcome = Outcome::Cancelled;
-                    self.cancel_marked = true;
+                    // It marks the stop a cancel in flight would otherwise mark.
+                    self.cancel_marked = self.cancelling || self.stopped.is_some();
                 } else {
                     self.outcome = Outcome::Settled;
                 }
                 self.ring = true;
+                self.stop(seen);
             }
             Event::Output => return Ok(()),
             Event::Status(status) => {
@@ -178,35 +186,24 @@ impl View {
                     self.outcome = Outcome::Failed;
                     self.ring = true;
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
-                    // After a cancel, a prompt the cursor passed without a
-                    // turn was dropped by it; otherwise its turn's entry
-                    // shows it.
-                    let mut dropped = Vec::new();
-                    self.pending.retain(|(inbox, prompt)| {
-                        let kept = *inbox >= status.cursor;
-                        if !kept {
-                            dropped.push(prompt.clone());
-                        }
-                        kept
-                    });
                     if std::mem::take(&mut self.cancelling) {
-                        for prompt in dropped {
-                            self.transcript.push(true, &prompt);
-                        }
-                        self.cancel_shown = status.cursor;
-                        if !std::mem::take(&mut self.cancel_marked) {
-                            self.interrupted();
-                        }
+                        // The cancel's stop shows once the entries this status
+                        // announced did: they hold the stopped turn's text.
+                        self.stopped = Some((status.cursor, status.conversation));
                         // A cancelled approval fails its task; the next
                         // prompt clears the report.
                         if matches!(self.phase, Some(Phase::WaitingApproval { .. })) {
                             self.notice =
                                 Some(format!("task {} failed: cancelled", conversation.task()));
                         }
+                    } else if self.stopped.is_none() {
+                        // A prompt the cursor passed shows with its turn's entry.
+                        self.pending.retain(|(inbox, _)| *inbox >= status.cursor);
                     }
                 }
                 self.pending_dirty = true;
                 self.phase = Some(status.phase);
+                self.stop(seen);
             }
         }
         Ok(())
@@ -251,15 +248,36 @@ impl View {
         self.pending_dirty = true;
     }
 
-    /// The running turn stopped: its streamed answer stays, marked.
-    fn interrupted(&mut self) {
-        if !self.reply.is_empty() {
-            self.transcript
-                .push(false, &std::mem::take(&mut self.reply));
+    /// Shows a cancel's stop once every entry its status announced was
+    /// shown (`seen` is past them): the prompts it dropped without a turn,
+    /// and its mark unless a cancelled entry already made it. The text a
+    /// stopped turn saved is its entry's, never the streamed preview's.
+    fn stop(&mut self, seen: u64) {
+        let Some((cursor, announced)) = self.stopped else {
+            return;
+        };
+        if seen < announced {
+            return;
         }
-        self.transcript.push(false, CANCELLED);
-        self.outcome = Outcome::Cancelled;
-        self.ring = true;
+        self.stopped = None;
+        let mut dropped = Vec::new();
+        self.pending.retain(|(inbox, prompt)| {
+            let kept = *inbox >= cursor;
+            if !kept {
+                dropped.push(prompt.clone());
+            }
+            kept
+        });
+        for prompt in dropped {
+            self.transcript.push(true, &prompt);
+        }
+        if !std::mem::take(&mut self.cancel_marked) {
+            self.reply.clear();
+            self.transcript.push(false, CANCELLED);
+            self.outcome = Outcome::Cancelled;
+            self.ring = true;
+        }
+        self.pending_dirty = true;
     }
 
     /// Append and transient-prompt changes leave settled rows wrapped once.
@@ -490,7 +508,7 @@ pub async fn run(
                 // Only a turn this view waited on rings; a reopened
                 // history is not news.
                 let waited = view.busy();
-                view.apply(&conversation, event).await?;
+                view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
                 // A settled turn clears the output and the streamed answer.
                 if view.reply != events.reply() {
