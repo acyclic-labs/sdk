@@ -2,6 +2,25 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+async fn projection_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+    owner: &mut tokio::task::JoinHandle<Result<()>>,
+) -> Result<()> {
+    let failed = |cause| {
+        Error::Storage(format!(
+            "step=observe workspace conformance: {cause}; recovery=cargo test -p acyclic-harness --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state"
+        ))
+    };
+    tokio::select! {
+        event = events.recv() => match event {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(error)) => Err(failed(error.to_string())),
+            None => Err(failed("notification producer closed".into())),
+        },
+        result = owner => Err(failed(format!("workspace owner ended: {result:?}"))),
+    }
+}
+
 #[test]
 fn projection_reads_cannot_wake_either_endpoint() {
     use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
@@ -41,6 +60,16 @@ fn projection_reads_cannot_wake_either_endpoint() {
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    let (changed, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if projection_changed(&event) {
+            let _ = changed.send(event);
+        }
+    })
+    .map_err(storage)?;
+    watcher
+        .watch(checkout.path(), RecursiveMode::Recursive)
+        .map_err(storage)?;
     let local = Arc::new(
         LocalHarness::open(
             LocalHarnessConfig::native_host(checkout.path())
@@ -48,19 +77,22 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
+    let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
     tokio::time::timeout(Duration::from_secs(2), async {
         while !descriptor.is_file() {
-            assert!(
-                !owner.is_finished(),
-                "workspace owner stopped before readiness"
-            );
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
+        Ok::<_, Error>(())
     })
     .await
-    .map_err(storage)?;
+    .map_err(storage)??;
+    // Follow only coordination files once published, before any native view
+    // is admitted. The observer never traverses mounted agent filesystems.
+    watcher.unwatch(checkout.path()).map_err(storage)?;
+    watcher
+        .watch(&checkout.path().join(DIRECTORY), RecursiveMode::Recursive)
+        .map_err(storage)?;
     assert!(
         serve(Arc::clone(&local)).await.is_err(),
         "a second workspace owner must not dispatch the same requests"
@@ -234,8 +266,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .next()
             .is_some()
         {
-            assert!(!owner.is_finished(), "invalid request stopped the owner");
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
         Ok::<_, Error>(())
     })
@@ -273,7 +304,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             if pending == 0 {
                 return Ok::<_, Error>(());
             }
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
     })
     .await
@@ -356,6 +387,12 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
     );
+    let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    drop(producer);
+    assert!(matches!(
+        projection_event(&mut ended, &mut owner).await,
+        Err(Error::Storage(ref error)) if error.contains("notification producer closed")
+    ));
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
     owner.abort();
