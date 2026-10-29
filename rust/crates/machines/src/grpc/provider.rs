@@ -16,11 +16,12 @@ macro_rules! machine_mutations {
                     idempotency_key: Some(encode_key(key)),
                     machine: Some(encode_machine(machine)),
                 }).await.map_err(|error| mutation_error(key, &error))?.into_inner();
-                if decode_machine(value.machine.as_ref())? != machine {
-                    return Err(ProviderError::Rejected("machine result was substituted".into()));
+                if decode_machine(value.machine.as_ref()).map_err(|_| ProviderError::Indeterminate(key))? != machine {
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?).await?;
-                Ok(MutationOutcome::$outcome(machine))
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                settled_change(wait(self, key, operation).await?, MutationOutcome::$outcome(machine), key)
+                    .map_err(|_| ProviderError::Indeterminate(key))
             }.await)
         }
         )+
@@ -435,16 +436,14 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                if decode_machine(value.machine.as_ref())? != machine
-                    || decode_suspension(value.policy.as_ref())? != policy
+                if decode_machine(value.machine.as_ref()).map_err(|_| ProviderError::Indeterminate(key))? != machine
+                    || decode_suspension(value.policy.as_ref()).map_err(|_| ProviderError::Indeterminate(key))? != policy
                 {
-                    return Err(ProviderError::Rejected(
-                        "policy result was substituted".into(),
-                    ));
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?)
-                    .await?;
-                Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                settled_change(wait(self, key, operation).await?, MutationOutcome::SuspensionPolicySet(machine, policy), key)
+                    .map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -470,14 +469,12 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                if decode_checkpoint(value.checkpoint.as_ref())? != checkpoint {
-                    return Err(ProviderError::Rejected(
-                        "checkpoint result was substituted".into(),
-                    ));
+                if decode_checkpoint(value.checkpoint.as_ref()).map_err(|_| ProviderError::Indeterminate(key))? != checkpoint {
+                    return Err(ProviderError::Indeterminate(key));
                 }
-                wait(self, key, decode_operation(value.operation.as_ref())?)
-                    .await?;
-                Ok(MutationOutcome::CheckpointDestroyed(checkpoint))
+                let operation = decode_operation(value.operation.as_ref()).map_err(|_| ProviderError::Indeterminate(key))?;
+                settled_change(wait(self, key, operation).await?, MutationOutcome::CheckpointDestroyed(checkpoint), key)
+                    .map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )
@@ -582,7 +579,7 @@ machine_mutations! {
             async {
                 let (operation, value) = recovered_admission(self, key).await?;
                 let outcome = wait(self, key, operation).await?;
-                decode_recovered(value, outcome).map_err(|_| ProviderError::Indeterminate(key))
+                decode_recovered(value, outcome, key).map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )

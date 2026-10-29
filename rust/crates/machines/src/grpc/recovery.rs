@@ -107,6 +107,7 @@ pub(super) async fn wait<E: RpcEndpoint>(
 pub(super) fn decode_recovered(
     value: wire::RecoveredAdmission,
     outcome: Option<wire::MutationOutcome>,
+    key: IdempotencyKey,
 ) -> Result<MutationOutcome, ProviderError> {
     use wire::recovered_admission::Result as ResultKind;
     validate_recovered_admission(&value)?;
@@ -131,23 +132,64 @@ pub(super) fn decode_recovered(
         ResultKind::Checkpoint(value) => settled_checkpoint(value, outcome),
         ResultKind::Fork(value) => settled_fork(value, outcome),
         ResultKind::ForkMachine(value) => settled_live_fork(value, outcome),
-        ResultKind::Suspend(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
+        ResultKind::Suspend(value) => settled_change(
+            outcome,
+            MutationOutcome::Suspended(decode_machine(value.machine.as_ref())?),
+            key,
+        ),
+        ResultKind::Wake(value) => settled_change(
+            outcome,
+            MutationOutcome::Woken(decode_machine(value.machine.as_ref())?),
+            key,
+        ),
+        ResultKind::DestroyMachine(value) => settled_change(
+            outcome,
+            MutationOutcome::MachineDestroyed(decode_machine(value.machine.as_ref())?),
+            key,
+        ),
+        ResultKind::SetSuspensionPolicy(value) => settled_change(
+            outcome,
+            MutationOutcome::SuspensionPolicySet(
+                decode_machine(value.machine.as_ref())?,
+                decode_suspension(value.policy.as_ref())?,
+            ),
+            key,
+        ),
+        ResultKind::DestroyCheckpoint(value) => settled_change(
+            outcome,
+            MutationOutcome::CheckpointDestroyed(decode_checkpoint(value.checkpoint.as_ref())?),
+            key,
+        ),
+    }
+}
+
+pub(super) fn settled_change(
+    outcome: Option<wire::MutationOutcome>,
+    expected: MutationOutcome,
+    key: IdempotencyKey,
+) -> Result<MutationOutcome, ProviderError> {
+    use wire::mutation_outcome::Result as Outcome;
+    let actual = match outcome.and_then(|value| value.result) {
+        Some(Outcome::Suspended(machine)) => {
+            MutationOutcome::Suspended(decode_machine(Some(&machine))?)
         }
-        ResultKind::Wake(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::Woken)
+        Some(Outcome::Woken(machine)) => MutationOutcome::Woken(decode_machine(Some(&machine))?),
+        Some(Outcome::MachineDestroyed(machine)) => {
+            MutationOutcome::MachineDestroyed(decode_machine(Some(&machine))?)
         }
-        ResultKind::DestroyMachine(value) => {
-            decode_machine(value.machine.as_ref()).map(MutationOutcome::MachineDestroyed)
-        }
-        ResultKind::SetSuspensionPolicy(value) => Ok(MutationOutcome::SuspensionPolicySet(
+        Some(Outcome::SuspensionPolicySet(value)) => MutationOutcome::SuspensionPolicySet(
             decode_machine(value.machine.as_ref())?,
             decode_suspension(value.policy.as_ref())?,
-        )),
-        ResultKind::DestroyCheckpoint(value) => {
-            decode_checkpoint(value.checkpoint.as_ref()).map(MutationOutcome::CheckpointDestroyed)
+        ),
+        Some(Outcome::CheckpointDestroyed(checkpoint)) => {
+            MutationOutcome::CheckpointDestroyed(decode_checkpoint(Some(&checkpoint))?)
         }
+        _ => return Err(ProviderError::Indeterminate(key)),
+    };
+    if actual != expected {
+        return Err(ProviderError::Indeterminate(key));
     }
+    Ok(actual)
 }
 
 pub(super) fn settled_checkpoint(
