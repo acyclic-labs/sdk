@@ -781,7 +781,7 @@ mod framing {
             panic!("valid frame after omitted event: {lines:?}");
         };
         let event: Value = serde_json::from_str(line).expect("frame is JSON");
-        assert_eq!(answer(&event), Some(Ok("probe".into())));
+        assert_eq!(answer(&event), Some(Outcome::Succeeded("probe".into())));
     }
 
     #[test]
