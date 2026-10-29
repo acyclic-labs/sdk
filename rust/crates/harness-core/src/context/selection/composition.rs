@@ -178,11 +178,11 @@ fn preflight_context_composition(
                 metadata: JoinedMetadata(&context.metadata, &contribution.metadata),
                 current_input_index,
             },
-            Some(limits.render_bytes),
+            limits.render_bytes,
             work,
         )
     })?;
-    let mut remaining = Some(limits.render_bytes - bytes);
+    let mut remaining = limits.render_bytes.map(|maximum| maximum - bytes);
     crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
     crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)

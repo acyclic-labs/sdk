@@ -274,8 +274,12 @@ impl SchemaRegistry {
         let byte_length = u64::try_from(bytes.len())
             .map_err(|_| Error::Invalid("configuration byte length is not portable".into()))?;
         if byte_length > limits.file_bytes
-            || byte_length > limits.render_bytes
-            || record.content.descriptor().byte_length() > limits.render_bytes
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| byte_length > maximum)
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| record.content.descriptor().byte_length() > maximum)
         {
             return Err(Error::Invalid(
                 "configuration exceeds native option byte limits".into(),
