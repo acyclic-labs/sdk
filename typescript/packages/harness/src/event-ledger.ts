@@ -1,12 +1,9 @@
 import { WasmStream, type WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
 import { WakeIndex, type EventStorage, type StreamChange, type Placement } from "./event-storage.js";
+import type { ImmutableObjects } from "@acyclic-labs/objects";
+export type { ImmutableObjects } from "@acyclic-labs/objects";
 
 export type ProviderReply<T> = { value: T } | { code: string };
-export interface ImmutableObjects {
-  length(key: Uint8Array): Promise<number | null>;
-  read(key: Uint8Array, maximum: bigint): Promise<Uint8Array | null>;
-  put(keys: Uint8Array[], values: Uint8Array[]): Promise<void>;
-}
 /** Private provider RPC contract, independent of its transport. */
 export interface StreamLedger {
   register(actor: string, paths: string[]): Promise<Placement>;

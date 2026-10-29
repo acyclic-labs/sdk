@@ -1,4 +1,5 @@
 /** Canonical logical Objects v1 public SDK. */
 export * from './v1.js';
 export * from './v1-http.js';
+export * from './immutable.js';
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "@acyclic-labs/actors/observe";
