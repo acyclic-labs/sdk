@@ -20,7 +20,7 @@ pub(super) fn dense_attributes(attributes: u32) -> bool {
 pub(super) fn regular_data_ranges(
     file: &std::fs::File,
     metadata: &HostStat,
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     meter: &NativeMaterializationWork,
 ) -> Result<Option<Vec<HostDataRange>>, CaptureError> {
     let dense = dense_attributes(metadata.raw.FileAttributes);
@@ -32,7 +32,7 @@ pub(super) fn regular_data_ranges(
             .map_err(capture_demand_error);
     }
     meter.clone().check().map_err(capture_demand_error)?;
-    if maximum_ranges == 0 || i64::try_from(metadata.len()).is_err() {
+    if maximum_ranges == Some(0) || i64::try_from(metadata.len()).is_err() {
         return Err(capture_demand_error(DemandError::InvalidRequest));
     }
     // FSCTL_QUERY_ALLOCATED_RANGES returns precisely this range for ordinary files.
@@ -54,7 +54,7 @@ pub(super) async fn settled_sparse_ranges(
     native: &acyclic_native_runtime::NativeFile,
     metadata: &HostStat,
     reported: Vec<HostDataRange>,
-    maximum_ranges: u32,
+    maximum_ranges: Option<u32>,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<HostDataRange>, CaptureError> {
     use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_SPARSE_FILE;
@@ -116,7 +116,7 @@ pub(super) async fn settled_sparse_ranges(
                             .checked_add(block_end - start)
                             .ok_or(WorkError::Overflow)?;
                     } else {
-                        if settled.len() == maximum_ranges as usize {
+                        if maximum_ranges.is_some_and(|maximum| settled.len() == maximum as usize) {
                             let bytes = vector_bytes(&settled);
                             drop(settled);
                             meter.clone().release(bytes).map_err(capture_demand_error)?;

@@ -113,7 +113,7 @@ impl McpCallbackRequest {
                 &self.policy.revision,
                 id,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )?;
         let mut bytes = [0; 16];

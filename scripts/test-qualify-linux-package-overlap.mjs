@@ -28,14 +28,15 @@ bash() {
   [[ "$#" == 2 && "$1" == scripts/check-harness-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/harness" ]]
   touch "$SDK_TEMP_DIR/harness-started"
-  while [[ ! -f "$SDK_TEMP_DIR/generated-done" || ! -f "$SDK_TEMP_DIR/finish-entered" ]]; do sleep 0.01; done
+  node scripts/graphcoder-e2e/wait-path.mjs "$SDK_TEMP_DIR/generated-done" 60
+  node scripts/graphcoder-e2e/wait-path.mjs "$SDK_TEMP_DIR/finish-entered" 60
   echo harness-complete
   touch "$SDK_TEMP_DIR/harness-done"
   return ${harnessStatus}
 }
 bun() {
   [[ "$#" == 2 && "$1" == run && "$2" == check:baselines ]]
-  while [[ ! -f "$SDK_TEMP_DIR/harness-started" ]]; do sleep 0.01; done
+  node scripts/graphcoder-e2e/wait-path.mjs "$SDK_TEMP_DIR/harness-started" 60
   [[ ! -f "$SDK_TEMP_DIR/harness-done" ]]
   echo generated-complete
   touch "$SDK_TEMP_DIR/generated-done"

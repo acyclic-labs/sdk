@@ -130,14 +130,16 @@ message ListBlobsResponse {
 // A retained root, typically one stream's retained records. Retaining appends
 // one exact reference batch atomically; releasing drops every batch.
 message RetainRequest {
-  bytes root = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 1024];
+  // Nonempty; the root identity is validated by the shared account provider.
+  bytes root = 1;
   repeated Digest references = 2 [(acyclic.validation.v1.min_items) = 1];
 }
 message RetainResponse {
   uint64 references = 1;
 }
 message ReleaseRequest {
-  bytes root = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 1024];
+  // Nonempty; the root identity is validated by the shared account provider.
+  bytes root = 1;
 }
 message ReleaseResponse {
   bool existed = 1;

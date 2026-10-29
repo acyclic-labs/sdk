@@ -4,6 +4,7 @@
 import argparse
 import gzip
 import hashlib
+from http.client import IncompleteRead
 import json
 from pathlib import Path
 import platform
@@ -34,15 +35,23 @@ def run(step, command, **kwargs):
     return result.stdout
 
 
-def fetch(url, limit):
+def fetch(url, destination):
     for attempt in range(2):
         try:
+            destination.seek(0)
+            destination.truncate()
+            checksum = hashlib.sha256()
             with urllib.request.urlopen(url, timeout=60) as response:
-                contents = response.read(limit + 1)
-            if len(contents) > limit:
-                raise ValueError("release response exceeds its admitted artifact size")
-            return contents
-        except (OSError, ValueError) as error:
+                expected = response.length
+                received = 0
+                while chunk := response.read(64 * 1024):
+                    destination.write(chunk)
+                    checksum.update(chunk)
+                    received += len(chunk)
+                if expected is not None and received != expected:
+                    raise IncompleteRead(b"", expected - received)
+            return checksum.hexdigest()
+        except (OSError, IncompleteRead) as error:
             if attempt:
                 raise RuntimeError(
                     f"step=fetch public guest tool: {error}; "
@@ -128,16 +137,19 @@ poweroff -f
     (output / "initramfs.gz").write_bytes(initramfs)
 
     metadata_url = "https://api.github.com/repos/cloud-hypervisor/cloud-hypervisor/releases/latest"
-    metadata = json.loads(fetch(metadata_url, 2 * 1024 * 1024))
+    with tempfile.TemporaryFile() as downloaded:
+        fetch(metadata_url, downloaded)
+        downloaded.seek(0)
+        metadata = json.load(downloaded)
     asset = next(asset for asset in metadata["assets"] if asset["name"] == "cloud-hypervisor-static")
     expected = asset.get("digest", "")
     if not expected.startswith("sha256:"):
         raise RuntimeError(f"step=verify official VMM release: missing SHA256 digest; recovery: {recovery}")
-    vmm = fetch(asset["browser_download_url"], 64 * 1024 * 1024)
-    if "sha256:" + digest(vmm) != expected:
-        raise RuntimeError(f"step=verify official VMM release: digest mismatch; recovery: {recovery}")
     executable = output / "cloud-hypervisor"
-    executable.write_bytes(vmm)
+    with executable.open("wb") as downloaded:
+        actual = fetch(asset["browser_download_url"], downloaded)
+    if "sha256:" + actual != expected:
+        raise RuntimeError(f"step=verify official VMM release: digest mismatch; recovery: {recovery}")
     executable.chmod(0o755)
     manifest = {
         "kernel": {"source": str(kernel), "release": release, "sha256": digest(kernel_bytes)},

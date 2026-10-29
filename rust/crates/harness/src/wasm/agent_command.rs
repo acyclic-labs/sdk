@@ -5,8 +5,7 @@ mod tests;
 
 use acyclic_harness_client::{
     AgentBinding, AgentControlFailure, AgentControls, AgentExchangeError, CommandError,
-    MAX_AGENT_COMMAND_BYTES, MAX_AGENT_REPLY_BYTES, PreparedAgentInvocation, PreparedCommand,
-    decode_agent_reply,
+    PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
 };
 use js_sys::Uint8Array;
 use std::rc::Rc;
@@ -235,22 +234,12 @@ pub struct WasmAgentCommand {
 
 #[wasm_bindgen]
 impl WasmAgentCommand {
-    /// Canonical pre-copy limits, shared with endpoint conformance drivers.
-    #[wasm_bindgen(js_name = maximumCommandBytes)]
-    pub fn maximum_command_bytes() -> u32 {
-        MAX_AGENT_COMMAND_BYTES as u32
-    }
+    /// Current logical invocation transport bound, pending shared chunking.
     #[wasm_bindgen(js_name = maximumInvocationBytes)]
     pub fn maximum_invocation_bytes() -> u32 {
         acyclic_stream::MAX_COMMAND_BYTES as u32
     }
-    #[wasm_bindgen(js_name = maximumReplyBytes)]
-    pub fn maximum_reply_bytes() -> u32 {
-        MAX_AGENT_REPLY_BYTES as u32
-    }
-
-    /// Admit an encoded command of any size: past one frame, the shared
-    /// Rust codec stages it in parts.
+    /// Snapshot the complete command before canonical Rust validation.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
         let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |_| Ok(()))?;
@@ -275,13 +264,7 @@ impl WasmAgentCommand {
     /// result throws the shared typed error with its owned protobuf request.
     #[wasm_bindgen(unchecked_return_type = "AgentReply")]
     pub fn reply(&self, encoded: &Uint8Array) -> Result<JsValue, JsValue> {
-        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |length| {
-            if length > MAX_AGENT_REPLY_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
+        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |_| Ok(()))?;
         let command = self.command.decoded().map_err(command_error)?;
         match decode_agent_reply(&bytes, &command).map_err(command_error)? {
             Ok(reply) => super::json::to_js_client_admitted(&reply),
