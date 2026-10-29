@@ -63,7 +63,8 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    const events=new Events(model.child.stdout,model.closed),{port}=await events.wait(event=>event.event==='ready');
    step='complete installed native model request';let args;
    if(host==='codex') {
-    const initialized=await run('git',['init','--quiet']);assert.equal(initialized.code,0,initialized.stderr);
+    const initialized=await scope.run(env.E2E_GIT_BINARY??'git',['init','--quiet'],{cwd:workspace,env});
+    captures.push({role:'initialize-workspace',...initialized});assert.equal(initialized.code,0,initialized.stderr);
     // Open through the same workspace API as the native launcher. The runtime
     // supplies the task; the fixture never invents an agent or execution claim.
     const opened=await scope.run(executable,['__workspace'],{cwd:workspace,env},
