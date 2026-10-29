@@ -25,8 +25,9 @@ use std::collections::BTreeSet;
 
 /// Largest agent checkpoint.
 pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
-/// Most bytes a step's own settlement adds after the size check: the
-/// conversation and status tails, two `u64`s in decimal.
+/// Maximum encoded width of the conversation and status tails, used by the
+/// worst-case record construction proof.
+#[cfg(test)]
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
 /// The checkpoint codec every agent actor commits with.
@@ -70,7 +71,10 @@ struct Encoded {
 
 /// Artifact state as checkpoint bytes, refused above [`MAX_CHECKPOINT_BYTES`].
 pub(crate) fn checkpoint(state: &AgentState) -> Result<Checkpoint, Error> {
-    let bytes = encode(state)?;
+    from_encoded(encode(state)?)
+}
+
+pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(Error::Record(
             "agent checkpoint exceeds MAX_CHECKPOINT_BYTES",
