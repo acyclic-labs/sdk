@@ -208,7 +208,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         io: Option<&'a ContentIo>,
     ) -> Result<BoundedContentFuture<'a, ()>> {
         BoundedContentFuture::new(io, || async move {
-            verified_content_bytes(self, reference, maximum_bytes, None, io).await?;
+            verified_content_bytes(self, reference, Some(maximum_bytes), None, io).await?;
             Ok(())
         })
     }

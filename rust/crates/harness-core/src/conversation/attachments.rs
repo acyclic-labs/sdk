@@ -205,11 +205,11 @@ pub fn decode_attachment_manifest(
 pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     verifier: &'a V,
     reference: &'a FileRef,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     ceiling: Option<&'a crate::Capabilities>,
     io: Option<&'a ContentIo>,
 ) -> Result<(acyclic_stream::OwnedBytes, Option<ContentHold<'a>>)> {
-    if reference.descriptor().byte_length() > maximum_bytes {
+    if maximum_bytes.is_some_and(|maximum| reference.descriptor().byte_length() > maximum) {
         return Err(content_error(
             io,
             crate::wire::ErrorCode::Invalid,
@@ -218,7 +218,7 @@ pub async fn verified_content_bytes<'a, V: ContentResidencyVerifier + ?Sized>(
     }
     let hold;
     let bytes = verifier
-        .read(reference, maximum_bytes, ceiling, io)?
+        .read(reference, reference.descriptor().byte_length(), ceiling, io)?
         .await?;
     #[cfg(feature = "filesystem")]
     {
@@ -318,7 +318,7 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
             }
             limits.validate_file(&item.file, work)
         })?;
-        verified_content_bytes(verifier, &item.file, limits.file_bytes, None, io).await?;
+        verified_content_bytes(verifier, &item.file, Some(limits.file_bytes), None, io).await?;
     }
     Ok(output)
 }

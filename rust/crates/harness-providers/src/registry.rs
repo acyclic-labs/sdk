@@ -59,11 +59,11 @@ impl Registry {
         self.resolver = Some(resolver);
     }
 
-    /// Binds the owner's bounded content reader used by every adapter.
+    /// Binds the owner's content reader and optional aggregate byte policy.
     pub fn with_content(
         mut self,
         reader: Arc<dyn acyclic_harness_core::conversation::ContentResidencyVerifier>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> Self {
         self.files = crate::files::Files {
             reader: Some(reader),
