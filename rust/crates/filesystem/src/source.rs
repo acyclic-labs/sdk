@@ -140,12 +140,14 @@ struct SourceSession<A: 'static, O: 'static> {
 /// Cloneable handle to one exact attached native directory.
 pub struct Source<A: 'static, O: 'static> {
     inner: Arc<Mutex<SourceSession<A, O>>>,
+    changes: crate::watch::NativeWatchSubscription,
 }
 
 impl<A: 'static, O: 'static> Clone for Source<A, O> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            changes: self.changes.clone(),
         }
     }
 }
@@ -257,23 +259,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), SourceError> {
-        let changed = {
-            let cancelled = work
-                .scope_cancellation_wait()
-                .map_err(source_native_error)?;
-            let session = tokio::select! {
-                biased;
-                () = cancelled => return Err(SourceError::Cancelled),
-                session = self.inner.lock() => session,
-            };
-            work.admit(crate::WorkCounters::UNCHARGED)
-                .map_err(source_native_error)?;
-            session.watcher.changed_with_native_work(work)
-        };
-        changed.await.map_err(|error| match error {
-            crate::watch::NativeWatchError::Cancelled(_) => SourceError::Cancelled,
-            error => engine(error),
-        })
+        self.changes
+            .changed_with_native_work(work)
+            .await
+            .map_err(|error| match error {
+                crate::watch::NativeWatchError::Cancelled(_) => SourceError::Cancelled,
+                error => engine(error),
+            })
     }
 
     /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
@@ -752,6 +744,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .map_err(engine)?
             .value;
         let source = Source {
+            changes: watcher.subscription(),
             inner: Arc::new(Mutex::new(SourceSession {
                 workspace: workspace.clone(),
                 checkout,
@@ -1467,13 +1460,6 @@ fn engine(error: impl std::fmt::Display) -> SourceError {
     SourceError::Engine(error.to_string())
 }
 
-fn source_native_error(error: crate::NativeTreeMaterializationError) -> SourceError {
-    match error {
-        crate::NativeTreeMaterializationError::Cancelled => SourceError::Cancelled,
-        error => engine(error),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1494,7 +1480,8 @@ mod tests {
         ))
         .await?;
         let source = workspace.source().ok_or("source missing")?;
-        let session = source.inner.lock().await;
+        let mut session = source.inner.lock().await;
+        let scan = session.watcher.begin_rescan()?;
         for cancel_authority in [false, true] {
             for cancel_early in [false, true] {
                 let authority = CancellationToken::new();
@@ -1532,6 +1519,7 @@ mod tests {
                 );
             }
         }
+        scan.abort(WatchInvalidationReason::BackendError);
         drop(session);
         Ok(())
     }
