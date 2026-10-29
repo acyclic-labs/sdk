@@ -92,7 +92,7 @@ fn logged_session_id(log: &[u8]) -> Option<String> {
 }
 
 fn valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+    !id.is_empty() && !id.chars().any(char::is_control)
 }
 
 /// The claim exchange fused onto request `operation`: its own inbox identity.

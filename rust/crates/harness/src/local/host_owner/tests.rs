@@ -161,12 +161,13 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         .join(".acyclic-sdk/host-processes")
         .join(child.id().as_str());
     std::fs::create_dir_all(&custody).map_err(storage)?;
+    let resume_id = "opaque-native-resume-id".repeat(33);
     std::fs::write(
         custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
-        b"{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
-{\"thread_id\":\"opaque-native-resume-id\"}
-not json naming a session_id
-",
+        format!(
+            "{{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}}\n{}\nnot json naming a session_id\n{{\"thread_id\":\"\"}}\n{{\"thread_id\":\"invalid\\nreference\"}}\n",
+            json!({"thread_id": resume_id}),
+        ),
     )
     .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
@@ -198,10 +199,7 @@ not json naming a session_id
     let next = fixture.session(&reference, SessionAction::Next).await?;
     assert_eq!(next["turn"], 2);
     assert_eq!(next["prompt"], "follow-up");
-    assert_eq!(
-        next.pointer("/session/id"),
-        Some(&json!("opaque-native-resume-id"))
-    );
+    assert_eq!(next.pointer("/session/id"), Some(&json!(resume_id)));
     assert_eq!(
         std::fs::read(cwd(&next)?.join("child.txt")).map_err(storage)?,
         b"native"
