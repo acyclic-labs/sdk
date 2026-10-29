@@ -16,7 +16,7 @@ const PROTOCOL_MINOR: u32 = 31;
 pub(super) const MAXIMUM_WRITE: u32 = 16 * 1024 * 1024;
 
 pub(super) struct PacketSession {
-    pub(super) guest: Option<Arc<dyn super::super::LocalGuestSource>>,
+    pub(super) guest: Option<Arc<dyn super::super::GuestSource>>,
     router: PacketRouter,
     phase: AtomicU8,
     maximum_write: u32,

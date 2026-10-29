@@ -6,7 +6,7 @@
 )]
 
 mod guest;
-pub use guest::{GuestSessionAdmission, GuestSessionRetired};
+pub use guest::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,

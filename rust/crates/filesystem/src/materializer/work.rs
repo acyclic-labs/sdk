@@ -41,8 +41,7 @@ impl NativeMaterializationWork {
     pub fn cancellation_wait(
         &self,
     ) -> Result<crate::Cancelled<'static>, NativeTreeMaterializationError> {
-        self.state
-            .cancellation()
+        self.cancellation()
             .prepare_cancelled_with_native_work(self)
             .map_err(crate::cancellation::CancellationWaitError::into_native)
     }

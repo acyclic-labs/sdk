@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::native_mount::{
-    GuestPosixPolicy, GuestSessionAdmission, LocalGuestSource, NativeMountCallbackFuture,
+    GuestPosixPolicy, GuestSessionAdmission, GuestSource, NativeMountCallbackFuture,
     NativeMountCallbackGuard,
 };
 
@@ -10,7 +10,7 @@ struct Enrolled {
     source: Arc<dyn MountFilesystem>,
     posix: GuestPosixPolicy,
 }
-impl LocalGuestSource for Enrolled {
+impl GuestSource for Enrolled {
     fn filesystem(&self) -> &Arc<dyn MountFilesystem> {
         &self.source
     }
@@ -126,7 +126,7 @@ fn revoked_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error
     let (owner, guard, work) = enrollment(true)?;
     guard.0.store(false, Ordering::Release);
     let before = work.receipt();
-    assert!(GuestSessionAdmission::local_root(owner).is_err());
+    assert!(GuestSessionAdmission::admit(owner, None).is_err());
     let after = work.receipt();
     assert_eq!(
         after.backend_read_operations,
@@ -143,7 +143,7 @@ fn revoked_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error
 fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
 -> Result<(), Box<dyn std::error::Error>> {
     let (owner, guard, work) = enrollment(true)?;
-    let admission = GuestSessionAdmission::local_root(owner)?;
+    let admission = GuestSessionAdmission::admit(owner, None)?;
     let mut response = vec![0; admission.packet_capacity()];
     let init = captured(26)?;
     admission.packet(&init, &mut response, |_| Ok(()))?;
@@ -211,7 +211,7 @@ fn guest_identity_metadata_and_late_revocation_refuse_before_volume_io()
 fn unguarded_source_is_refused_before_volume_io() -> Result<(), Box<dyn std::error::Error>> {
     let (owner, _, work) = enrollment(false)?;
     let before = work.receipt();
-    assert!(GuestSessionAdmission::local_root(owner).is_err());
+    assert!(GuestSessionAdmission::admit(owner, None).is_err());
     assert_eq!(
         work.receipt().backend_read_operations,
         before.backend_read_operations
@@ -231,7 +231,7 @@ fn nonroot_enrollment_negotiates_without_granting_root_filesystem_access()
         .ok_or("unique enrollment")?
         .posix
         .identities = vec![(1000, 1000)];
-    let admission = GuestSessionAdmission::local_root(owner)?;
+    let admission = GuestSessionAdmission::admit(owner, None)?;
     let mut response = vec![0; admission.packet_capacity()];
     // Actual kernel INIT carries root. No credential mutation is needed for
     // negotiation; this must not enroll root for later filesystem requests.
@@ -283,7 +283,7 @@ fn nonroot_enrollment_negotiates_without_granting_root_filesystem_access()
 fn kernel_negotiation_still_checks_the_original_revocable_guard()
 -> Result<(), Box<dyn std::error::Error>> {
     let (owner, guard, work) = enrollment(true)?;
-    let admission = GuestSessionAdmission::local_root(owner)?;
+    let admission = GuestSessionAdmission::admit(owner, None)?;
     guard.0.store(false, Ordering::Release);
     let before = work.receipt();
     let mut response = vec![0; admission.packet_capacity()];
@@ -301,5 +301,108 @@ fn kernel_negotiation_still_checks_the_original_revocable_guard()
         before.backend_write_operations
     );
     assert!(admission.take_callback_failure().is_some());
+    Ok(())
+}
+
+struct MappingOwner {
+    retired: Arc<AtomicBool>,
+    fail: bool,
+}
+
+impl crate::native_mount::GuestMappingFence for MappingOwner {
+    fn attach(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        Ok(())
+    }
+    fn retire(&mut self) -> Result<(), NativeMountError> {
+        if self.fail {
+            Err(NativeMountError::ControlPending)
+        } else {
+            self.retired.store(true, Ordering::Release);
+            Ok(())
+        }
+    }
+}
+
+impl Drop for MappingOwner {
+    fn drop(&mut self) {
+        self.retired.store(true, Ordering::Release);
+    }
+}
+
+#[test]
+fn original_guest_cancellation_refuses_captured_reads_and_writes_before_io()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (owner, _, work) = enrollment(true)?;
+    let retired = Arc::new(AtomicBool::new(false));
+    let mapping = crate::native_mount::GuestMappingAdmission::new(
+        Box::new(MappingOwner {
+            retired: retired.clone(),
+            fail: false,
+        }),
+        &work,
+    )?;
+    let admission = GuestSessionAdmission::admit(owner, Some(mapping))?;
+    let mut response = vec![0; admission.packet_capacity()];
+    admission.packet(&captured(26)?, &mut response, |_| Ok(()))?;
+    let before = work.receipt();
+    work.cancellation().cancel();
+    for opcode in [15, 16] {
+        assert!(
+            admission
+                .packet(&captured(opcode)?, &mut response, |_| Ok(()))
+                .is_err()
+        );
+    }
+    assert_eq!(
+        work.receipt().backend_read_operations,
+        before.backend_read_operations
+    );
+    assert_eq!(
+        work.receipt().backend_write_operations,
+        before.backend_write_operations
+    );
+    drop(admission);
+    assert!(retired.load(Ordering::Acquire));
+    // A replacement owns independent native custody and remains admissible.
+    let (replacement, _, _) = enrollment(true)?;
+    let replacement = GuestSessionAdmission::admit(replacement, None)?;
+    replacement.packet(&captured(26)?, &mut response, |_| Ok(()))?;
+    Ok(())
+}
+
+#[test]
+fn physical_join_failure_retains_original_transport_and_never_certifies_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    crate::initialize_native_mount_services()?;
+    for fail in [false, true] {
+        let (owner, _, work) = enrollment(true)?;
+        let retired = Arc::new(AtomicBool::new(false));
+        let mappings = crate::native_mount::GuestMappingAdmission::new(
+            Box::new(MappingOwner {
+                retired: retired.clone(),
+                fail,
+            }),
+            &work,
+        )?;
+        let admission = GuestSessionAdmission::admit(owner, Some(mappings))?;
+        let (source, peer) = std::os::unix::net::UnixStream::pair()?;
+        drop(peer);
+        let completion = admission.serve(source, b"guest");
+        assert!(retired.load(Ordering::Acquire));
+        if fail {
+            let (physical, transport) = completion
+                .err()
+                .ok_or("physical failure certified as retirement")?
+                .into_causes();
+            assert!(matches!(physical, NativeMountError::ControlPending));
+            assert!(transport.ok_or("lost original filesystem drain")?.is_err());
+        } else {
+            assert!(
+                completion?.transport().is_err(),
+                "peer loss is not successful transport"
+            );
+        }
+    }
     Ok(())
 }

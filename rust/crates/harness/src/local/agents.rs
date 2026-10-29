@@ -241,7 +241,15 @@ impl LocalHarness {
             },
         )
         .map_err(storage)?;
-        bound.guest_session(enrollment, work).await
+        bound
+            .guest_session(
+                enrollment.volume,
+                enrollment.posix,
+                enrollment.writable,
+                None,
+                work,
+            )
+            .await
     }
 
     /// Every agent of this harness on one A4 runtime, and its root agent.

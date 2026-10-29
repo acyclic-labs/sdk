@@ -66,9 +66,9 @@ pub use customer::{
     NativeMountPublicationFailure, NativeWorkingSet, native_file_io,
 };
 #[cfg(target_os = "linux")]
-pub use fuse::{GuestSessionAdmission, GuestSessionRetired};
+pub use fuse::{GuestSessionAdmission, GuestSessionFailure, GuestSessionRetired};
 #[cfg(target_os = "linux")]
-pub use guest::{GuestPosixPolicy, LocalGuestSource};
+pub use guest::{GuestMappingAdmission, GuestMappingFence, GuestPosixPolicy, GuestSource};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod device;

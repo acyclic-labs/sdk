@@ -194,11 +194,20 @@ async fn cancelled_compaction_preserves_retirement_without_copying() -> TestResu
         let first = open(root.path(), &work).await?;
         let second = open(root.path(), &work).await?;
         let (invocation, invocation_cancel) = work.invocation_view()?;
+        let mut cancelled = invocation.cancellation_wait()?;
+        assert!(futures::poll!(&mut cancelled).is_pending());
         if cancel_original {
             cancellation.cancel();
         } else {
             invocation_cancel.cancel();
         }
+        assert!(
+            futures::poll!(&mut cancelled).is_ready(),
+            "the original invocation cancellation did not wake its registered waiter"
+        );
+        let waiter_live = work.live_allocation_bytes();
+        cancelled.await;
+        assert!(work.live_allocation_bytes() < waiter_live);
         drop(first);
         let before = work.receipt();
         let retained = work.live_allocation_bytes();
