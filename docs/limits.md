@@ -1787,3 +1787,8 @@ The shared Collection admission no longer retains swept-digest history or evicts
 
 
 | Release annotated-tag nesting10 | `scripts/publish-release-assets.mjs:47` (original source) | 1 logical traversal cap | DELETE the depth counter and refusal. Resolve every nested immutable tag through the same API until the qualified commit; retain an identity index to reject actual cycles from malformed responses, plus exact source/version/asset digest conflicts. No extra normal-path request is introduced. Runtime qualification pending; nested-tag completeness and actual cycle/wrong-target negatives must settle before any release mutation. |
+
+
+## Closure composition compile331
+
+Input `a4ba777f52ff2576fa0a2e9f8042643b297edbf1`, fingerprint `6d3d35ee077556de411101d0a98cdc438af942f8`, content `5dbc91052026d0812e7af2928763051bfe90b0e1dfb6dfb47c9adc27f4292dd5`; job `1793280873559-60741-faf51642`. Terminal13:37:50 UTC, exit101,236.8s. All-target qualification reaches Stream snapshot mutation controls and fails two stale references to the deleted retained_fact_bound. They now decode the exact retained slice length through the SAME canonical decoder, matching production; all malformed receipt/record/phantom-payload assertions remain. The new collection sources reach checking without a reported type error, but no complete affected compile or runtime pass is inferred. Full filesystem runtime did not start. The unused production collection import is removed.

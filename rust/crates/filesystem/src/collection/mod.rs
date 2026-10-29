@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crate::kernel::GenerationRoot;
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::performance::WorkCounters;
-use crate::storage::{ObjectId, ObjectStoreError};
+use crate::storage::ObjectId;
 
 #[derive(Default)]
 /// Shared collection state for a store and its checkouts.
