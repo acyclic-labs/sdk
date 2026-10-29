@@ -22,12 +22,18 @@ public static class GraphcoderConPty {
         try {
             RequireNativeCustody();
             step = "arguments";
-            int deadline;
-            if (args.Length != 7 || !Int32.TryParse(args[5], out deadline) ||
-                (args[6] != "fresh" && args[6] != "resume"))
-                throw new ArgumentException("usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL DEADLINE fresh|resume");
+            // Typed options only; the caller's owner holds the one deadline.
+            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID]";
+            if (args.Length < 5) throw new ArgumentException(usage);
+            var options = new StringBuilder(); bool resume = false, operation = false;
+            for (int index = 5; index < args.Length; index++) {
+                if (args[index] == "--resume" && !resume) { resume = true; options.Append(" --resume"); }
+                else if (args[index] == "--operation" && !operation && index + 1 < args.Length && args[index + 1].Length != 0) {
+                    operation = true; options.Append(" --operation " + Quote(args[++index]));
+                } else throw new ArgumentException(usage);
+            }
             step = "terminal";
-            return Run(args[0], args[1], args[2], args[3], args[4], deadline, args[6] == "resume");
+            return Run(args[0], args[1], args[2], args[3], args[4], options.ToString());
         } catch (Exception error) { Refuse(step, error); return 125; }
     }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
@@ -96,11 +102,9 @@ public static class GraphcoderConPty {
             }
         }
     }
-    static int Run(string binary, string workspace, string catalog, string settings, string model, int deadline, bool resume) {
+    static int Run(string binary, string workspace, string catalog, string settings, string model, string options) {
         if (!Path.IsPathRooted(binary) || !Path.IsPathRooted(workspace) || !Path.IsPathRooted(catalog) || !Path.IsPathRooted(settings))
             throw new ArgumentException("ConPTY paths must be absolute");
-        if (deadline < 1000 || deadline > 120000)
-            throw new ArgumentException("ConPTY deadline must be finite (1000..120000 ms)");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr console = IntPtr.Zero, attributes = IntPtr.Zero;
         ProcessInfo process = new ProcessInfo(); bool attributeInitialized = false, rootExited = false;
@@ -126,7 +130,7 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + (resume ? " --resume" : "")), IntPtr.Zero, IntPtr.Zero, false,
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + options),IntPtr.Zero, IntPtr.Zero, false,
                     0x00080004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
@@ -174,15 +178,13 @@ public static class GraphcoderConPty {
             inputThread.IsBackground = true; inputThread.Start();
             step = "child-wait";
             Console.Error.WriteLine("conpty-host primitive=CreatePseudoConsole process-attribute=PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE child-process-id=" + process.processId);
-            uint waited = WaitForSingleObject(process.process, (uint)deadline);
-            if (waited == 258) { Refuse("child-deadline", new TimeoutException("finite real ConPTY process deadline exceeded")); Environment.Exit(124); }
-            Require(waited == 0, "WaitForSingleObject");
+            Require(WaitForSingleObject(process.process, UInt32.MaxValue) == 0, "WaitForSingleObject");
             rootExited = true;
             uint exit; Require(GetExitCodeProcess(process.process, out exit), "GetExitCodeProcess");
             step = "terminal-drain";
             // Drain concurrently while closing; ClosePseudoConsole can wait for its output reader.
             ClosePseudoConsole(console); console = IntPtr.Zero;
-            if (!outputThread.Join(5000)) throw new TimeoutException("finite ConPTY output-drain deadline exceeded");
+            outputThread.Join();
             return unchecked((int)exit);
         } catch (Exception error) {
             Refuse(step, error);

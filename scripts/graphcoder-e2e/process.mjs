@@ -50,15 +50,17 @@ export class Processes {
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
     this.children.set(child, { kill, closed, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
-    return { child, exited, closed, get stdout() { return stdout; } };
+    return { child, exited, closed, killExecutable: () => child.kill("SIGKILL"), get stdout() { return stdout; } };
   }
   async run(program, args, options, input = "") {
     const process = this.start(program, args, options);
     process.child.stdin.end(input);
     return process.closed;
   }
+  // Windows Job custody kills the whole tree with its host; POSIX custody
+  // kills only the executable on SIGUSR1 and still drains and reports it.
   startOwned(program, args, options = {}) {
-    const { scopeMountRoot, scopeInheritInput = false, ...spawnOptions } = options;
+    const { scopeMountRoot, scopeInheritInput = false, scopePty = false, ...spawnOptions } = options;
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
@@ -67,8 +69,18 @@ export class Processes {
     }
     const mountLease = process.platform === "linux" && scopeMountRoot
       ? ["--mount-root", scopeMountRoot, "--"] : [];
-    return this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)), ...mountLease, program, ...args],
-      { ...spawnOptions, scopeTreeControl: true });
+    const owned = this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
+      ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
+    return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1"), get stdout() { return owned.stdout; } };
+  }
+  // The one real-terminal transport: ConPTY inside native Job custody on
+  // Windows, or a PTY whose root leads its own session under the POSIX owner.
+  startTerminal(binary, args, options = {}) {
+    const env = { ...(options.env ?? process.env), TERM: "xterm-256color" };
+    if (process.platform !== "win32") return this.startOwned(binary, args, { scopeReportSignal: "SIGTERM", ...options, env, scopePty: true });
+    const host = env.E2E_CONPTY_HOST;
+    assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
+    return this.startOwned(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
@@ -92,6 +104,23 @@ export class Processes {
     for (const child of children) child.kill();
     await Promise.all(children.map(child => child.closed));
   }
+}
+
+// The ConPTY host admits the launch paths plus typed options; the case owner holds the only deadline.
+export function conptyArgs(binary, args) {
+  const flags = new Map();
+  let resume = false;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === "--resume" && !resume) { resume = true; continue; }
+    assert.ok(["--workspace", "--settings-root", "--catalog", "--model", "--operation"].includes(args[index])
+      && !flags.has(args[index]) && index + 1 < args.length, `ConPTY host cannot launch argument ${args[index]}`);
+    flags.set(args[index], args[++index]);
+  }
+  const [workspace, catalog, settings, model] = ["--workspace", "--catalog", "--settings-root", "--model"].map(flag => flags.get(flag));
+  assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
+  const operation = flags.get("--operation");
+  return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
+    ...(operation === undefined ? [] : ["--operation", operation])];
 }
 
 export class Events {

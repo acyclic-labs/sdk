@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
 
@@ -35,29 +33,10 @@ function expectedTaskFailure(visible, condition) {
 }
 
 export async function pty(processes, binary, fixture, input, capture) {
-  let program, args;
-  if (process.platform === "win32") {
-    assert.ok(process.env.E2E_CONPTY_HOST, "cross-build the ConPTY host on bb2 and set E2E_CONPTY_HOST");
-    program = process.env.E2E_CONPTY_HOST;
-    args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
-  } else {
-    // Python sets the controlling terminal on Linux and macOS and exposes a
-    // kill signal targeting the executable, so wrapper death cannot fake SIGKILL.
-    program = "python3";
-    args = [fileURLToPath(new URL("../graphcoder-pty/transport.py", import.meta.url)), binary, ...fixture.args];
-    if (input.resume) args.push("--resume");
-  }
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const frames = new TerminalFrames(screen), failures = new FailureHistory();
-  const killSignal = process.platform === "win32" ? "SIGKILL" : "SIGUSR1";
-  const start = process.platform === "win32" ? processes.startOwned.bind(processes) : processes.start.bind(processes);
-  const running = start(program, args, {
-    cwd: fixture.workspace,
-    env: { ...fixture.env, TERM: "xterm-256color" },
-    scopeKillSignal: killSignal,
-    ...(process.platform !== "win32" ? { scopeReportSignal: "SIGTERM" } : {}),
-    ...(process.platform === "win32" ? { scopeInheritInput: true } : {}),
-  });
+  const running = processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
+    { cwd: fixture.workspace, env: fixture.env });
   screen.onData(data => running.child.stdin.write(data));
   let index = 0, failure;
   const snapshots = [];
@@ -77,10 +56,8 @@ export async function pty(processes, binary, fixture, input, capture) {
       index++;
       if (action.prompt !== undefined) running.child.stdin.write(`\x1b[200~${action.prompt}\x1b[201~\r`);
       if (action.send !== undefined) running.child.stdin.write(action.send);
-      if (action.kill) {
-        running.child.kill(killSignal);
-      }
-    } catch (error) { failure = error; running.child.kill(killSignal); }
+      if (action.kill) running.killExecutable();
+    } catch (error) { failure = error; running.killExecutable(); }
   }
   const unsubscribe = fixture.onRequest(frame);
   running.child.stdout.on("data", bytes => {
