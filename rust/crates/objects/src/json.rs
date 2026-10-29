@@ -1,7 +1,7 @@
 //! Descriptor-authoritative Protobuf JSON mapping shared by native and WASM clients.
 use crate::{Error, FILE_DESCRIPTOR_SET, wire};
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
+use prost_reflect::{DescriptorPool, DynamicMessage, MessageDescriptor};
 
 fn pool() -> Result<&'static DescriptorPool, Error> {
     static POOL: std::sync::OnceLock<Result<DescriptorPool, Error>> = std::sync::OnceLock::new();
@@ -16,8 +16,8 @@ pub fn encode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
-    let message = decode_input(name, bytes)?;
-    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+    acyclic_protobuf_json::encode(descriptor(name)?, bytes)
+        .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
 /// Decodes bounded descriptor JSON to generated binary wire bytes.
 pub fn decode_binary(name: &str, bytes: &[u8], maximum: usize) -> Result<Vec<u8>, Error> {
@@ -27,9 +27,7 @@ fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessag
     if bytes.len() > maximum {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
-    let descriptor = pool()?
-        .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
+    let descriptor = descriptor(name)?;
     let mut json = serde_json::Deserializer::from_slice(bytes);
     let message = DynamicMessage::deserialize(descriptor, &mut json)
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
@@ -39,15 +37,13 @@ fn decode_json(name: &str, bytes: &[u8], maximum: usize) -> Result<DynamicMessag
 }
 /// Encodes a canonical message using its generated descriptor, without parallel JSON shapes.
 pub fn encode(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
-    let message = decode_input(name, &value.encode_to_vec())?;
-    serde_json::to_vec(&message).map_err(|_| wire::ErrorCode::InvalidArgument.into())
+    acyclic_protobuf_json::encode(descriptor(name)?, &value.encode_to_vec())
+        .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
-fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
-    let descriptor = pool()?
+fn descriptor(name: &str) -> Result<MessageDescriptor, Error> {
+    pool()?
         .get_message_by_name(&format!("acyclic.objects.v1.{name}"))
-        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
-    DynamicMessage::decode(descriptor, bytes)
-        .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
+        .ok_or(Error::from(wire::ErrorCode::InvalidArgument))
 }
 /// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
 pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {

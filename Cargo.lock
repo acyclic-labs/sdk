@@ -913,6 +913,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
  "acyclic-proto-build",
+ "acyclic-protobuf-json",
  "acyclic-stream",
  "async-trait",
  "axum",
