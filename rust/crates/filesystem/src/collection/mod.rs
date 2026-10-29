@@ -19,11 +19,21 @@ const REMEMBERED_COLLECTIONS: usize = 4;
 #[derive(Default)]
 /// Shared collection state for a store and its checkouts.
 pub struct Collection {
-    gate: Arc<tokio::sync::RwLock<()>>,
+    /// The current generation's gate. Each admission holds it until its
+    /// publication is durable; a collection retires it for a fresh one and
+    /// waits only on the retired one, so no admission ever waits on a
+    /// collection's drain.
+    gate: Mutex<Arc<tokio::sync::RwLock<()>>>,
     running: Arc<tokio::sync::Mutex<()>>,
     epochs: Epochs,
     state: Mutex<State>,
     holds: Mutex<Holds>,
+    /// Signalled whenever an admission waits on a gate.
+    #[cfg(test)]
+    pub(crate) gate_waits: tokio::sync::Notify,
+    /// Signalled when a collection starts waiting on admitted publications.
+    #[cfg(test)]
+    pub(crate) draining: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -34,6 +44,9 @@ struct State {
     collections: VecDeque<u64>,
     forgotten: u64,
     admitted: Option<HashSet<crate::Digest>>,
+    /// Retired gates not yet drained. A collection dropped mid-drain leaves
+    /// them here, and the next one drains them before it marks.
+    retiring: Vec<Arc<tokio::sync::RwLock<()>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -117,9 +130,12 @@ impl Unswept {
     }
 }
 
+/// The one collection allowed to run, from before it reads its epoch.
+pub(crate) struct Running(tokio::sync::OwnedMutexGuard<()>);
+
 pub(crate) struct Collecting {
     collection: Arc<Collection>,
-    _running: tokio::sync::OwnedMutexGuard<()>,
+    _running: Running,
 }
 
 impl Collection {
@@ -170,9 +186,45 @@ impl Collection {
     }
 
     pub(crate) async fn begin(self: &Arc<Self>) -> Collecting {
-        // One at a time: a collection owns the admitted set until it ends.
-        let running = Arc::clone(&self.running).lock_owned().await;
-        let _admitted_before = self.gate.write().await;
+        let running = self.run().await;
+        self.begin_then(running, || {}).await
+    }
+
+    /// Waits until no other collection runs. A collection owns the admitted
+    /// set and the epoch until it ends.
+    pub(crate) async fn run(&self) -> Running {
+        Running(Arc::clone(&self.running).lock_owned().await)
+    }
+
+    /// Begins a collection. `opened` runs as the current generation retires:
+    /// every later admission joins the next generation, and the collection
+    /// returns once every admission of every retired one has finished.
+    pub(crate) async fn begin_then(
+        self: &Arc<Self>,
+        running: Running,
+        opened: impl FnOnce(),
+    ) -> Collecting {
+        // Admissions of the next generation are recorded from its start.
+        self.state().admitted = Some(HashSet::new());
+        let retired = {
+            let mut gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
+            opened();
+            std::mem::take(&mut *gate)
+        };
+        let retiring = {
+            let mut state = self.state();
+            state.retiring.push(retired);
+            state.retiring.clone()
+        };
+        for retired in retiring {
+            // A retired generation with no publication in flight drains at once.
+            if retired.try_write().is_err() {
+                #[cfg(test)]
+                self.draining.notify_one();
+                drop(retired.write().await);
+            }
+        }
+        self.state().retiring.clear();
         // Before marking: a proof cached under an earlier epoch is never reused.
         self.epochs.begin();
         let mut state = self.state();
@@ -184,15 +236,35 @@ impl Collection {
             state.swept.retain(|_, swept| *swept > forgotten);
             state.forgotten = forgotten;
         }
-        state.admitted = Some(HashSet::new());
         Collecting {
             collection: Arc::clone(self),
             _running: running,
         }
     }
 
+    fn gate(&self) -> Arc<tokio::sync::RwLock<()>> {
+        Arc::clone(&self.gate.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+
+    /// Admits into the current generation. A retired generation is skipped,
+    /// so this retries once per collection that begins meanwhile, and waits
+    /// only while a sweep batch holds the current one.
     pub(crate) async fn unswept(&self) -> Unswept {
-        Unswept(Arc::clone(&self.gate).read_owned().await)
+        loop {
+            let gate = self.gate();
+            let guard = match Arc::clone(&gate).try_read_owned() {
+                Ok(guard) => guard,
+                Err(_) if Arc::ptr_eq(&gate, &self.gate()) => {
+                    #[cfg(test)]
+                    self.gate_waits.notify_one();
+                    Arc::clone(&gate).read_owned().await
+                }
+                Err(_) => continue,
+            };
+            if Arc::ptr_eq(&gate, &self.gate()) {
+                return Unswept(guard);
+            }
+        }
     }
 
     pub(crate) fn writing(&self, _unswept: &Unswept, objects: impl IntoIterator<Item = ObjectId>) {
@@ -218,7 +290,7 @@ impl Collecting {
         &self,
         batch: Vec<crate::Digest>,
     ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<crate::Digest>) {
-        let guard = Arc::clone(&self.collection.gate).write_owned().await;
+        let guard = self.collection.gate().write_owned().await;
         let state = self.collection.state();
         let sweepable = batch
             .into_iter()
@@ -250,11 +322,13 @@ mod buffers;
 mod epoch;
 mod holds;
 mod roots;
+mod sweep;
 pub(crate) use buffers::{clone_generation_root, clone_generation_root_with_accounting};
 use buffers::{held_owned_bytes, root_parent_bytes};
 pub(crate) use epoch::{CollectionEpoch, Epochs};
 pub(crate) use holds::Hold;
 use holds::{Holds, Slot};
 pub(crate) use roots::CheckoutRoots;
+pub(crate) use sweep::Worklist;
 #[cfg(test)]
 mod tests;

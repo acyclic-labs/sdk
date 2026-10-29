@@ -314,7 +314,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .await?,
             );
             let objects = crate::cache::CachedObjectStore::new(
-                crate::LogicalObjectStore::new(objects).with_object_limit(maximum_object_bytes)?,
+                crate::LogicalObjectStore::new(objects)
+                    .with_epoch(
+                        crate::logical_objects::Epoch::open(root.join("objects-epoch"))
+                            .map_err(FsError::LocalRoot)?,
+                    )
+                    .with_object_limit(maximum_object_bytes)?,
                 object_cache,
             )?;
             Ok::<_, FsError>(crate::staged_objects::StagedObjects::open(

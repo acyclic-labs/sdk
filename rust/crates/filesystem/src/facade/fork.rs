@@ -452,7 +452,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         let hold = self
             .flush_publication(
-                crate::PublicationScope::Closure {
+                crate::PublicationScope {
                     objects: &fork_root.objects,
                     proven_at: fork_root.proven_at,
                 },

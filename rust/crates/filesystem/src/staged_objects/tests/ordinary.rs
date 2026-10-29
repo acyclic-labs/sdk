@@ -235,7 +235,14 @@ async fn failed_drain_keeps_objects_private_until_a_durable_retry()
     insufficient.object_bytes_written = 0;
     assert!(
         {
-            let __object_args = (PublicationScope::Everything, insufficient, &token);
+            let __object_args = (
+                PublicationScope {
+                    objects: &[object_id],
+                    proven_at: 0,
+                },
+                insufficient,
+                &token,
+            );
             let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
             let __object_result = store
                 .flush_before_publish(__object_args.0, &mut __object_work)
@@ -264,7 +271,14 @@ async fn failed_drain_keeps_objects_private_until_a_durable_retry()
     );
 
     {
-        let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+        let __object_args = (
+            PublicationScope {
+                objects: &[object_id],
+                proven_at: 0,
+            },
+            WorkBudget::UNBOUNDED,
+            &token,
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result = store
             .flush_before_publish(__object_args.0, &mut __object_work)
@@ -336,7 +350,14 @@ async fn overflow_spills_privately_until_the_publication_drain()
         assert_eq!(&read.value.bytes, bytes);
     }
     {
-        let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+        let __object_args = (
+            PublicationScope {
+                objects: &objects.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                proven_at: 0,
+            },
+            WorkBudget::UNBOUNDED,
+            &token,
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result = store
             .flush_before_publish(__object_args.0, &mut __object_work)
@@ -489,7 +510,7 @@ async fn publication_drains_exactly_its_closure_and_keeps_the_rest_private()
 
     {
         let __object_args = (
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &closure,
                 proven_at: 0,
             },
@@ -568,7 +589,7 @@ async fn each_publication_writes_only_what_is_not_already_durable()
             }?;
             let flushed = {
                 let __object_args = (
-                    PublicationScope::Closure {
+                    PublicationScope {
                         objects: &[shared, fresh],
                         proven_at: store.collection.sweeps(),
                     },
@@ -589,7 +610,8 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     let mut published = Vec::new();
     for index in 1..32 {
         let (fresh, work) = publish(index).await?;
-        assert_eq!(work.backend_write_operations, 1);
+        // The drain's one batch and the epoch's one retained batch.
+        assert_eq!(work.backend_write_operations, 2);
         assert_eq!(work.backend_read_operations, 0);
         assert_eq!(work.object_bytes_written, 14);
         assert!(store.index().objects.is_empty());
@@ -600,11 +622,19 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     let collecting = store.collection.begin().await;
     let (gate, _) = collecting.sweepable(vec![shared.digest]).await;
     collecting.sweeping(shared.digest);
+    // Only an object no epoch retains is swept.
     provider
-        .delete(acyclic_objects::Digest::from_bytes(
-            *shared.digest.as_bytes(),
-        ))
+        .release(&crate::logical_objects::Epoch::root(0))
         .await?;
+    assert_eq!(
+        provider
+            .delete(acyclic_objects::Digest::from_bytes(
+                *shared.digest.as_bytes(),
+            ))
+            .await?
+            .outcome,
+        acyclic_objects::Delete::Deleted
+    );
     drop(gate);
     drop(collecting);
     let (fresh, work) = publish(32).await?;
@@ -653,7 +683,14 @@ async fn hashed_admission_skips_rehashing_and_unproven_bytes_are_refused()
     let other = DecodedCacheKey::new::<u64>(object.object_id(), DecodeLimits::default());
     assert!(store.decoded_cache_get(other)?.is_none());
     {
-        let __object_args = (PublicationScope::Everything, WorkBudget::UNBOUNDED, &token);
+        let __object_args = (
+            PublicationScope {
+                objects: &[object.object_id()],
+                proven_at: 0,
+            },
+            WorkBudget::UNBOUNDED,
+            &token,
+        );
         let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
         let __object_result = store
             .flush_before_publish(__object_args.0, &mut __object_work)
@@ -734,7 +771,7 @@ async fn concurrent_admissions_reads_and_publication_agree()
     writers.await?;
     {
         let __object_args = (
-            PublicationScope::Closure {
+            PublicationScope {
                 objects: &closure,
                 proven_at: 0,
             },
@@ -865,7 +902,7 @@ async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
             let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, token);
             store
                 .flush_before_publish(
-                    PublicationScope::Closure {
+                    PublicationScope {
                         objects: &objects,
                         proven_at: store.collection.sweeps(),
                     },

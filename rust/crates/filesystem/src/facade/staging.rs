@@ -73,7 +73,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await?;
                 return self
                     .flush_publication(
-                        crate::PublicationScope::Closure {
+                        crate::PublicationScope {
                             objects: &closure,
                             proven_at,
                         },
@@ -106,7 +106,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .map_err(|error| FsError::from(crate::kernel::closure::closure_error(error)))?;
             drop(guard);
             self.flush_publication(
-                crate::PublicationScope::Closure {
+                crate::PublicationScope {
                     objects: &closure,
                     proven_at,
                 },
@@ -142,7 +142,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await?;
             let result = self
                 .flush_publication(
-                    crate::PublicationScope::Closure {
+                    crate::PublicationScope {
                         objects: &publication.value.objects,
                         proven_at: publication.value.proven_at,
                     },

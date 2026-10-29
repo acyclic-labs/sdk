@@ -8,10 +8,9 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
         let mut spill = self.spill_io.write().await;
-        let (objects, proven_at) = match scope {
-            PublicationScope::Closure { objects, proven_at } => (objects, proven_at),
-            PublicationScope::Everything => (&[][..], self.collection.sweeps()),
-        };
+        let PublicationScope {
+            objects, proven_at, ..
+        } = scope;
         let unswept = self
             .collection
             .admit(
@@ -22,11 +21,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             .await?;
         let targets = {
             let index = self.index();
-            let capacity = match scope {
-                PublicationScope::Closure { objects, .. } => objects.len(),
-                PublicationScope::Everything => index.objects.len(),
-            };
-            let targets = work.vec_owned(capacity)?;
+            let targets = work.vec_owned(objects.len())?;
             let mut targets = Retained::from_owned(targets, &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             let mut visit = |id: ObjectId| -> Result<(), ObjectStoreError> {
@@ -38,17 +33,8 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 }
                 Ok(())
             };
-            match scope {
-                PublicationScope::Closure { objects, .. } => {
-                    for &id in objects {
-                        visit(id)?;
-                    }
-                }
-                PublicationScope::Everything => {
-                    for &id in index.objects.keys() {
-                        visit(id)?;
-                    }
-                }
+            for &id in objects {
+                visit(id)?;
             }
             targets
         };

@@ -18,39 +18,7 @@ pub struct LogicalObjectStore<P: ?Sized, S = PlainObjects> {
     provider: Arc<P>,
     maximum_object_bytes: u64,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
-    publication_root: Option<acyclic_objects::RootId>,
-    /// Stored blobs some publication root has not retained yet, shared by
-    /// every clone whatever its root.
-    staged: Arc<std::sync::Mutex<Staged>>,
-}
-
-/// Stored blobs in staging order, with each publication root's position:
-/// a root has retained every blob before its position. Positions only
-/// advance, each by its own root's retention, so one root's retention never
-/// covers another's. Blobs every root has passed are dropped.
-#[derive(Default)]
-struct Staged {
-    /// The position of the oldest kept blob.
-    base: u64,
-    digests: std::collections::VecDeque<acyclic_objects::Digest>,
-    roots: std::collections::HashMap<acyclic_objects::RootId, u64>,
-}
-
-impl Staged {
-    fn end(&self) -> u64 {
-        self.base + self.digests.len() as u64
-    }
-
-    /// Records that `root` retained every blob before `end`.
-    fn retained(&mut self, root: &acyclic_objects::RootId, end: u64) {
-        if let Some(position) = self.roots.get_mut(root) {
-            *position = (*position).max(end);
-        }
-        let oldest = self.roots.values().copied().min().unwrap_or(self.end());
-        while self.base < oldest && self.digests.pop_front().is_some() {
-            self.base += 1;
-        }
-    }
+    epoch: Arc<Epoch>,
 }
 
 impl<P: ?Sized> LogicalObjectStore<P> {
@@ -61,8 +29,7 @@ impl<P: ?Sized> LogicalObjectStore<P> {
             sealer: PlainObjects,
             maximum_object_bytes: 5 * 1024 * 1024 * 1024,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
-            publication_root: None,
-            staged: Arc::default(),
+            epoch: Arc::default(),
         }
     }
 }
@@ -74,24 +41,20 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
             maximum_object_bytes: self.maximum_object_bytes,
             decoded: self.decoded,
             sealer,
-            publication_root: self.publication_root,
-            staged: self.staged,
+            epoch: self.epoch,
         }
     }
 
-    /// Retains every published closure under `root` before its record is
-    /// written, so no number of collections removes a live generation.
-    ///
-    /// Clones share staged blobs, and each root retains them independently:
-    /// a root starts from the oldest blob some root still owes.
+    /// Retains publications under `epoch`, which a collection advances.
     #[must_use]
-    pub fn with_publication_root(mut self, root: acyclic_objects::RootId) -> Self {
-        let mut staged = self.staged();
-        let base = staged.base;
-        staged.roots.entry(root.clone()).or_insert(base);
-        drop(staged);
-        self.publication_root = Some(root);
+    pub fn with_epoch(mut self, epoch: Epoch) -> Self {
+        self.epoch = Arc::new(epoch);
         self
+    }
+
+    /// The collection epoch publications retain under.
+    pub fn epoch(&self) -> &Arc<Epoch> {
+        &self.epoch
     }
 
     /// Applies the composition's existing positive per-object bound.
@@ -107,21 +70,6 @@ impl<P: ?Sized, S> LogicalObjectStore<P, S> {
         }
         self.maximum_object_bytes = maximum;
         Ok(self)
-    }
-
-    fn staged(&self) -> std::sync::MutexGuard<'_, Staged> {
-        self.staged
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Notes stored objects for each root's next publication that cannot
-    /// enumerate its closure.
-    fn published(&self, ids: impl IntoIterator<Item = ObjectId>) {
-        let mut staged = self.staged();
-        if !staged.roots.is_empty() {
-            staged.digests.extend(ids.into_iter().map(blob));
-        }
     }
 
     /// Returns the exact public provider used by this stateless adapter.
@@ -141,34 +89,6 @@ fn accounting<'a>(
         context.read_budget()?,
         context.cancellation,
     ))
-}
-impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
-    /// The stream entry is the commit: its closure is durable first, in one
-    /// durability round.
-    async fn flush_scope(
-        &self,
-        scope: crate::PublicationScope<'_>,
-        work: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
-        work.charge(WorkCounters {
-            durability_operations: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        let flushed = match scope {
-            crate::PublicationScope::Closure { objects, .. } => {
-                let (mut blobs, custody) = vector(objects.len(), work)?;
-                let bytes = (blobs.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
-                blobs.extend(objects.iter().copied().map(blob));
-                let result = self.provider.flush(Some(&blobs)).await;
-                drop(blobs);
-                release(work, custody, bytes)?;
-                result
-            }
-            crate::PublicationScope::Everything => self.provider.flush(None).await,
-        };
-        flushed.map_err(ObjectStoreError::LogicalObjects)?;
-        work.check()
-    }
 }
 macro_rules! operate {
     ($context:ident, $work:ident, $body:expr) => {{
@@ -350,16 +270,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> AsyncObjectStore for LogicalObjectStore
         accounting(context)?
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let Some(root) = &self.publication_root else {
-            operate!(context, work, self.flush_scope(scope, &mut work).await)?;
-            return Ok(crate::PublicationHold::none());
-        };
-        let root = root.clone();
-        operate!(
-            context,
-            work,
-            self.retain_scope(root, scope, &mut work).await
-        )?;
+        // The stream entry is the commit: its volume retains the closure,
+        // which also makes it durable, first.
+        operate!(context, work, self.retain_scope(scope, &mut work).await)?;
         Ok(crate::PublicationHold::none())
     }
     fn read(
@@ -454,8 +367,10 @@ fn native_error(
 }
 mod requests;
 use requests::*;
+pub(crate) mod epoch;
 mod read;
 mod write;
+pub use epoch::Epoch;
 
 #[cfg(test)]
 #[cfg(feature = "memory")]

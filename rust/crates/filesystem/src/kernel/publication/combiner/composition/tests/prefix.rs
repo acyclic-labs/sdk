@@ -273,7 +273,13 @@ async fn sweep_prepared_prefix(
     fs.objects().put_hashed(orphan, &mut work).await?;
     drop(
         fs.objects()
-            .flush_before_publish(crate::PublicationScope::Everything, &mut work)
+            .flush_before_publish(
+                crate::PublicationScope {
+                    objects: &[orphan_id],
+                    proven_at: 0,
+                },
+                &mut work,
+            )
             .await?,
     );
     let collected = fs.collect_local_garbage(None, cancellation).await?;
