@@ -47,9 +47,6 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 scope,
                 volume,
                 VolumeOperation::Write,
-                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 &mut quota,
             )?;
             let volume = volume.copy_in_quota(&mut quota)?;

@@ -314,7 +314,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                super::MAXIMUM_PAYLOAD_BYTES,
                 work,
             )
         })?;

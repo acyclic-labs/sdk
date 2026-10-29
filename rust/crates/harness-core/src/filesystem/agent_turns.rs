@@ -168,7 +168,6 @@ impl<'v> AdmittedAgent<'v> {
                 scope,
                 &private.volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?;
             require_structured_write(scope, owner, &private.volume)?;
@@ -626,7 +625,6 @@ where
                 &scope,
                 &private.volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
         );

@@ -45,9 +45,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 work,
             )
         })?;
@@ -133,9 +130,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Write,
-                io.map_or(Ok(u64::MAX), |io| {
-                    io.remaining().map(|budget| budget.bytes_encoded)
-                })?,
                 work,
             )
         })?;
@@ -190,7 +184,6 @@ where
                 &self.scope,
                 &self.volume,
                 VolumeOperation::Read,
-                maximum,
                 work,
             )
         })?;
@@ -229,9 +222,6 @@ where
                 &self.scope,
                 &self.volume,
                 operation,
-                io.map(|io| io.remaining().map(|budget| budget.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 work,
             )
         })
@@ -440,7 +430,6 @@ where
                         &self.scope,
                         reference.volume(),
                         VolumeOperation::Read,
-                        io.remaining()?.bytes_encoded,
                         work,
                     )
                 })?;
@@ -464,7 +453,6 @@ where
                     &self.scope,
                     reference.volume(),
                     VolumeOperation::Read,
-                    super::MAXIMUM_PAYLOAD_BYTES,
                     &mut None,
                 )?
             };

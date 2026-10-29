@@ -26,7 +26,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         &scope,
         &private,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let unsigned = issuer.bootstrap_scope(
@@ -41,7 +40,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             &unsigned,
             &private,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -54,7 +52,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         &inherited,
         &private,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let foreign_issuer = crate::core::AuthorityRoot::new(
@@ -77,7 +74,6 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
             &copied,
             &private,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -269,14 +265,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
         ContentGrant::verify_read(&verifier, &scope, &selected)?,
         ContentGrant::verify_directory_read(&verifier, &scope, volume, "scratch", &mut None)?,
     ];
-    let write = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        u64::MAX,
-        &mut None,
-    )?;
+    let write = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
     for grant in &reads {
         grant.require_file_read(&selected, None)?;
     }

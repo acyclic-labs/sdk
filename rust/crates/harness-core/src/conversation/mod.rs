@@ -328,7 +328,7 @@ impl TryFrom<ConversationStateWire> for ConversationState {
     type Error = Error;
 
     fn try_from(wire: ConversationStateWire) -> Result<Self> {
-        Self::from_wire(wire, 1, &mut None).map(|(state, _)| state)
+        Self::from_wire(wire, None, &mut None).map(|(state, _)| state)
     }
 }
 
@@ -411,11 +411,11 @@ fn turn_outcome_parent(message: &ConversationMessage) -> Option<Uuid> {
 fn advance_history_digest(
     previous: [u8; 32],
     message: &ConversationMessage,
-    maximum_encoded_bytes: u64,
+    maximum_encoded_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let digest =
-        crate::executor::json::canonical_json_digest(message, Some(maximum_encoded_bytes), work)?;
+        crate::executor::json::canonical_json_digest(message, maximum_encoded_bytes, work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
     }

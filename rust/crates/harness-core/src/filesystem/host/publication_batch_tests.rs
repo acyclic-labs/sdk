@@ -21,22 +21,8 @@ fn publication_grants(volume: &VolumeRef, agent: AgentId) -> Result<(ContentGran
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    let write = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Write,
-        64,
-        &mut None,
-    )?;
-    let read = ContentGrant::verify(
-        &verifier,
-        &scope,
-        volume,
-        VolumeOperation::Read,
-        64,
-        &mut None,
-    )?;
+    let write = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Write, &mut None)?;
+    let read = ContentGrant::verify(&verifier, &scope, volume, VolumeOperation::Read, &mut None)?;
     Ok((write, read))
 }
 

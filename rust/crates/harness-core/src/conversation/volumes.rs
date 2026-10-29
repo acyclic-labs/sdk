@@ -479,11 +479,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
-            Self::verify_in_quota(verifier, scope, volume, operation, maximum_bytes, quota)
+            Self::verify_in_quota(verifier, scope, volume, operation, quota)
         })
         .map(|(grant, _)| grant)
     }
@@ -493,11 +492,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         Self::build_in_quota(verifier, scope, quota, |scope, quota| {
-            Self::check_volume(scope, volume, operation, maximum_bytes, quota.work())?;
+            Self::check_volume(scope, volume, operation, quota.work())?;
             Ok(Boundary {
                 volume: volume.clone_in_quota(quota)?,
                 operation,
@@ -537,18 +535,16 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
-        Self::check_volume(scope, volume, operation, maximum_bytes, work)
+        Self::check_volume(scope, volume, operation, work)
     }
 
     fn check_volume(
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         volume.validate(work)?;
@@ -561,7 +557,7 @@ impl ContentGrant {
             volume.require_writer(scope.agent(), work)?;
         }
         volume.validate(work)?;
-        let digest = volume.identity_digest(Some(maximum_bytes), work)?;
+        let digest = volume.identity_digest(None, work)?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {
             return Err(conversation_error(
                 work,
