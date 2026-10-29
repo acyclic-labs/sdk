@@ -642,6 +642,12 @@ mod tests {
                 && std::fs::read_dir(&records).unwrap().count() == 1;
             // Always drain through the sole production owner before asserting.
             tree.terminate(None).unwrap();
+            if former_order {
+                // The captured former ordering removed the record directly
+                // after losing Child. Retire its abandoned fixture handle;
+                // the recovery observation above must remain unchanged.
+                super::super::custody::Record::retire(&mut tree.custody, None).unwrap();
+            }
             assert_eq!(failure.unwrap_err().kind(), io::ErrorKind::Interrupted);
             assert_eq!(
                 retained, !former_order,
