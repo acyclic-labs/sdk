@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
 const identity = value => typeof value === "string" && /^[0-9a-f]{32}$/.test(value);
-const outcomes = new Set(["report", "empty", "sink-failed", "owner-exited", "unsupported"]);
+const outcomes = new Set(["report", "empty", "write-failed", "exited", "unsupported"]);
 const wait = value => value && typeof value.primitive === "string" && typeof value.key === "string"
   && Number.isFinite(value.since) && Number.isFinite(value.elapsed) && value.elapsed >= 0;
 
@@ -32,24 +32,27 @@ export class ProcessReport {
       partial = lines.pop();
       for (const line of lines) {
         try { this.#receive(JSON.parse(line)); }
-        catch { this.#finish("sink-failed", "invalid-acknowledgement"); }
+        catch { this.#finish("write-failed", "invalid-acknowledgement"); }
       }
     });
-    channel.on("error", error => this.#finish("sink-failed", error.code ?? "transport-error"));
+    channel.on("error", error => this.#finish("write-failed", error.code ?? "transport-error"));
     const ended = () => {
       this.#ended = true;
+      if (this.#ownerExited && this.#request) this.#finish("exited");
     };
     channel.on("end", ended);
     channel.on("close", ended);
     child.once("exit", () => {
       this.#ownerExited = true;
-      if (this.#request) this.#finish("owner-exited");
+      // Exit can precede delivery of bytes already written to the control
+      // pipe. Drain that same pipe before classifying a missing reply.
+      if (this.#ended && this.#request) this.#finish("exited");
     });
     this.#write = () => {
       if (!this.#request || !this.#ready || this.#terminal || this.#sent) return;
       this.#sent = true;
       channel.write(JSON.stringify(this.#request) + "\n", error => {
-        if (error) this.#finish("sink-failed", error.code ?? "transport-error");
+        if (error) this.#finish("write-failed", error.code ?? "transport-error");
       });
     };
   }
@@ -66,7 +69,7 @@ export class ProcessReport {
       || message.generation !== request.generation || !outcomes.has(message.outcome)
       || !Array.isArray(message.waits) || !message.waits.every(wait)
       || (message.outcome === "report" ? message.waits.length === 0 : message.waits.length !== 0)) {
-      this.#finish("sink-failed", "foreign-or-invalid-acknowledgement");
+      this.#finish("write-failed", "foreign-or-invalid-acknowledgement");
       return;
     }
     this.#finish(message.outcome, undefined, message.waits);
@@ -79,14 +82,15 @@ export class ProcessReport {
   request(deadline) {
     if (!this.#request) {
       this.#request = { request_id: this.requestId, generation: this.generation, deadline_unix_ms: deadline };
-      if (this.#ownerExited) this.#finish("owner-exited");
-      else if (this.#ended) this.#finish("sink-failed", "control-eof-before-request");
+      if (this.#ownerExited && this.#ended) this.#finish("exited");
+      else if (this.#ended) this.#finish("write-failed", "control-eof-before-request");
       this.#write?.();
     }
     return this.#completion;
   }
   expire() {
-    this.#finish(this.#ended ? "sink-failed" : "unacknowledged",
+    if (this.#ownerExited) { this.#finish("exited"); return; }
+    this.#finish(this.#ended ? "write-failed" : "unacknowledged",
       this.#ended ? "control-eof-before-acknowledgement" : "original-drain-deadline");
   }
   get termination() {
