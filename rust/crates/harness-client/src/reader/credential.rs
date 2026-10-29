@@ -915,7 +915,8 @@ mod tests {
                 let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
                 reader.credentials = Some(Credentials::new(source.clone().into(), 0, Some(10_000)));
                 reader.reset_source();
-                let waker = futures::task::noop_waker();
+                let ready = Arc::new(Ready(AtomicBool::new(false)));
+                let waker = Waker::from(ready.clone());
                 let mut cx = Context::from_waker(&waker);
                 reader.advance_credentials(0, &mut cx);
                 reader.plan([(
@@ -961,6 +962,14 @@ mod tests {
                 reader.advance_credentials(1, &mut cx);
                 assert!(reader.readable());
                 assert!(reader.restore(&snapshot).is_err());
+                ready.0.store(false, Ordering::SeqCst);
+                pending.advance_credentials(1, &mut cx);
+                // Registration captured the prior source cut. Its invalidation
+                // wakes the owner to register the replacement before resolving.
+                assert!(!pending.readable());
+                assert_eq!(pending.credential_status(), CredentialStatus::Pending);
+                assert!(ready.0.load(Ordering::SeqCst));
+                assert!(pending.residency().snapshot_bytes > 0);
                 pending.advance_credentials(1, &mut cx);
                 assert!(pending.readable());
                 assert!(pending.cache().record(&path, 0).is_none());
