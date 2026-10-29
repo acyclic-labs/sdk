@@ -56,6 +56,7 @@ struct Rendered {
     text: BufWriter<File>,
     index: Index<2>,
     bytes: u64,
+    reading: bool,
 }
 
 impl Rendered {
@@ -64,6 +65,7 @@ impl Rendered {
             text: BufWriter::new(tempfile::tempfile()?),
             index: Index::new()?,
             bytes: 0,
+            reading: false,
         })
     }
 
@@ -77,6 +79,10 @@ impl Rendered {
             .bytes
             .checked_add(text.len() as u64)
             .ok_or_else(overflow)?;
+        if self.reading {
+            self.text.seek(SeekFrom::Start(self.bytes))?;
+            self.reading = false;
+        }
         self.index.push([self.bytes, text.len() as u64])?;
         self.text.write_all(&text)?;
         self.bytes = end;
@@ -89,6 +95,7 @@ impl Rendered {
         self.text.get_mut().set_len(bytes)?;
         self.text.seek(SeekFrom::Start(bytes))?;
         self.bytes = bytes;
+        self.reading = false;
         Ok(())
     }
 
@@ -151,9 +158,11 @@ impl Rendered {
 }
 
 struct Spool {
-    source: File,
+    source: BufWriter<File>,
     blocks: Index<5>,
     rendered: Rendered,
+    reading: bool,
+    failed: bool,
 }
 
 /// Complete settled and pending text. Source and wrapped rows live in temporary
@@ -203,9 +212,11 @@ impl TranscriptRows {
     fn append(&mut self, prompt: bool, text: &str) -> io::Result<()> {
         if self.spool.is_none() {
             self.spool = Some(Spool {
-                source: tempfile::tempfile()?,
+                source: BufWriter::new(tempfile::tempfile()?),
                 blocks: Index::new()?,
                 rendered: Rendered::new()?,
+                reading: false,
+                failed: false,
             });
         }
         let spool = self.spool.as_mut().expect("created above");
@@ -214,11 +225,18 @@ impl TranscriptRows {
             Ok::<_, io::Error>((block.source.end, block.rendered_end))
         })?;
         let end = source.checked_add(text.len() as u64).ok_or_else(overflow)?;
-        // An earlier failed append owns no visible block. Retire its partial
-        // writes before retrying, rather than publishing a partial row index.
-        spool.source.set_len(source)?;
-        spool.source.seek(SeekFrom::Start(source))?;
-        spool.rendered.truncate(self.rows, rendered)?;
+        // Ordinary appends keep all four writers buffered. Only an earlier
+        // failed append can leave unpublished source or row bytes to retire.
+        if spool.failed {
+            spool.source.flush()?;
+            spool.source.get_mut().set_len(source)?;
+            spool.rendered.truncate(self.rows, rendered)?;
+        }
+        if spool.failed || spool.reading {
+            spool.source.seek(SeekFrom::Start(source))?;
+            spool.reading = false;
+        }
+        spool.failed = true;
         spool.source.write_all(text.as_bytes())?;
         spool.rendered.block(prompt, text, self.width)?;
         let rows = spool.rendered.index.len();
@@ -232,6 +250,7 @@ impl TranscriptRows {
             .record()?,
         )?;
         self.rows = rows;
+        spool.failed = false;
         Ok(())
     }
 
@@ -246,15 +265,24 @@ impl TranscriptRows {
             return Ok(());
         }
         if let Some(spool) = &mut self.spool {
+            spool.source.flush()?;
+            // Reads may fail partway through a block. The next append restores
+            // the original published source end before writing in either case.
+            spool.reading = true;
             let mut rendered = Rendered::new()?;
             let mut blocks = Index::new()?;
             for start in (0..spool.blocks.len()).step_by(BLOCK_PAGE) {
                 let end = start.saturating_add(BLOCK_PAGE).min(spool.blocks.len());
                 for record in spool.blocks.page(start..end)? {
                     let mut block = Block::from_record(record)?;
-                    spool.source.seek(SeekFrom::Start(block.source.start))?;
-                    let bytes =
-                        read_bytes(&mut spool.source, block.source.end - block.source.start)?;
+                    spool
+                        .source
+                        .get_mut()
+                        .seek(SeekFrom::Start(block.source.start))?;
+                    let bytes = read_bytes(
+                        spool.source.get_mut(),
+                        block.source.end - block.source.start,
+                    )?;
                     let text = std::str::from_utf8(&bytes).map_err(invalid)?;
                     rendered.block(block.prompt, text, width)?;
                     block.row_end = rendered.index.len();
@@ -309,7 +337,10 @@ impl TranscriptRows {
             let block = Block::from_record(record)?;
             (block.source.end, block.row_end, block.rendered_end)
         };
-        spool.source.set_len(source)?;
+        spool.source.flush()?;
+        spool.source.get_mut().set_len(source)?;
+        spool.source.seek(SeekFrom::Start(source))?;
+        spool.reading = false;
         spool.rendered.truncate(rows, bytes)?;
         spool.blocks.truncate(self.settled)?;
         self.rows = rows;
@@ -349,6 +380,7 @@ impl TranscriptRows {
             let [last, length] = entries[entries.len() - 1];
             let end = last.checked_add(length).ok_or_else(overflow)?;
             let length = end.checked_sub(first).ok_or_else(overflow)?;
+            rendered.reading = true;
             rendered.text.get_mut().seek(SeekFrom::Start(first))?;
             let bytes = read_bytes(rendered.text.get_mut(), length)?;
             for [offset, length] in entries {
