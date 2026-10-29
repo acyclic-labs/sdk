@@ -265,7 +265,7 @@ impl TaskContext {
                 granted_prefix,
                 path,
                 expected_generation,
-                Some(self.scope.limits.file_bytes),
+                self.scope.limits.file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(self.scope.grants()),
                     io: None,
@@ -366,7 +366,7 @@ impl TaskContext {
         let (file, hold) = writer
             .observe_staged_once(
                 operation_id,
-                Some(scope.limits.file_bytes),
+                scope.limits.file_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: Some(scope.grants()),
                     io,
