@@ -70,16 +70,19 @@ fn check_decisions<const CORRUPT_DECISION: bool>(
         now: input.now,
         approvals: 2,
     };
-    let Ok(trie) = PathTrie::compile(
+    let mut work = 4_194_304;
+    let Ok(trie) = PathTrie::compile_with_work(
         &input.policy,
         &input.principal,
         resource,
         context,
         &input.capability,
+        &mut work,
+        |_| Ok(()),
     ) else {
         return Ok(()); // Invalid input and policies exceeding compilation budgets fail closed.
     };
-    let mut work = usize::MAX;
+    let mut work = 4_194_304;
     let shared = CompiledPolicy::compile_with_work(&input.policy, config, &mut work, |_| Ok(()));
     let shared = shared.and_then(|policy| {
         std::sync::Arc::new(policy).bind_with_work(

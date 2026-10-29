@@ -503,7 +503,7 @@ fn unicode_admission_matches_the_volume() -> Result<(), InvalidPolicy> {
 }
 
 #[test]
-fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
+fn exponential_policy_and_delegation_preserve_explicit_compilation_credit() {
     let caller = principal();
     let context = Context {
         now: 100,
@@ -519,16 +519,20 @@ fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
         &adversarial,
     )]);
     let cap = capability();
-    assert!(
-        PathTrie::compile(
+    let mut work = 4_194_304;
+    assert!(matches!(
+        PathTrie::compile_with_work(
             &restricted,
             &caller,
             resource(&caller.lineage, "", 10),
             context,
-            &cap
-        )
-        .is_err()
-    );
+            &cap,
+            &mut work,
+            |_| Ok(()),
+        ),
+        Err(InvalidPolicy("glob compilation exceeds work limit"))
+    ));
+    assert!(work < 4_194_304, "failed work must remain charged");
     let delegated = cap.attenuate(
         vec![Grant {
             actions: Action::ALL.into_iter().collect(),
@@ -536,16 +540,20 @@ fn review_exponential_globs_are_bounded_in_policy_and_delegation() {
         }],
         None,
     );
-    assert!(
-        PathTrie::compile(
+    let mut work = 4_194_304;
+    assert!(matches!(
+        PathTrie::compile_with_work(
             &policy,
             &caller,
             resource(&caller.lineage, "", 10),
             context,
-            &delegated
-        )
-        .is_err()
-    );
+            &delegated,
+            &mut work,
+            |_| Ok(()),
+        ),
+        Err(InvalidPolicy("glob compilation exceeds work limit"))
+    ));
+    assert!(work < 4_194_304, "failed work must remain charged");
 }
 
 #[test]
