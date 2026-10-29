@@ -136,13 +136,9 @@ async fn one_stock_turn_continues_its_admitted_request_from_one_to_a_thousand_st
 }
 
 #[tokio::test]
-async fn main_context_prepared_resumes_before_model_started_with_one_inline_schema() -> Result<()> {
-    let provider = Arc::new(ContinuingModel {
-        turns: 0,
-        warm: false,
-        seen: AtomicUsize::new(0),
-    });
-    let executor = uncompacted_executor(
+async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch() -> Result<()> {
+    let (provider, counts) = counted_model(65_536, None, [ScriptedTurn::Text("done".into())], []);
+    let executor = StockExecutor::new(
         Model::new(
             "test".into(),
             "continuation".into(),
@@ -153,7 +149,10 @@ async fn main_context_prepared_resumes_before_model_started_with_one_inline_sche
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    let journal = Journal::default();
+    let storage =
+        crate::filesystem::MemoryHarnessStorage::new(crate::AgentId::new(), 65_536).await?;
+    let journal = storage.journal();
+    let journal = journal.as_ref();
     let input = TurnInput {
         operation_id: OperationId::new(),
         input: ModelContent::Text("input".into()),
@@ -161,14 +160,17 @@ async fn main_context_prepared_resumes_before_model_started_with_one_inline_sche
         max_steps: 1,
     };
     let execution = StockExecution::ordinary(&executor);
-    execution.ensure_started(&journal, &input).await?;
-    let (projection, _, prepared) = execution
-        .capture_response(&journal, &input, 0, &[], 1)
+    execution.ensure_started(journal, &input).await?;
+    let (tail, _) = execution
+        .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
         .await?;
-    let reference = journal
-        .0
-        .lock()
-        .unwrap()
+    let (projection, accounting, prepared) = execution
+        .capture_response(journal, &input, 0, &[], tail)
+        .await?;
+    let (_, records) = execution
+        .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
+        .await?;
+    let reference = records
         .iter()
         .find_map(|record| match &record.event {
             ExecutionEvent::ContextPrepared { projection, .. } => Some(projection.clone()),
@@ -176,31 +178,41 @@ async fn main_context_prepared_resumes_before_model_started_with_one_inline_sche
         })
         .unwrap();
     let bytes = journal.load(&reference, None)?.await?;
-    let main = serde_json::json!({
+    let retained = serde_json::json!({
         "context": { "messages": prepared.request().messages, "metadata": projection.context.metadata, "current_input_index": projection.context.current_input_index },
         "canonical": projection.canonical, "checkpoint": projection.checkpoint,
+        "accounting": accounting,
     });
     assert_eq!(
         &*bytes,
-        crate::contract::canonical_json_bytes(&main)?,
-        "durable projection changed main's schema"
+        crate::contract::canonical_json_bytes(&retained)?,
+        "projection and accounting must share one immutable publication"
     );
     assert!(
-        !journal
-            .0
-            .lock()
-            .unwrap()
+        !records
             .iter()
             .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. }))
     );
-    let resumed = executor.execute(input, &journal).await?;
-    assert_eq!(resumed.text, "done");
-    assert_eq!(provider.seen.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.load(Ordering::SeqCst), 1);
+    assert!(provider.requests().is_empty());
+    let recovered = StockExecution::ordinary(&executor.clone())
+        .prepared_response(journal, &input, 0, &[], &mut DispatchPhase::new())
+        .await?;
+    assert_eq!(recovered.bytes(), prepared.bytes());
     assert_eq!(
-        journal
-            .0
-            .lock()
-            .unwrap()
+        counts.load(Ordering::SeqCst),
+        1,
+        "recovery must not recount"
+    );
+    let resumed = executor.execute(input.clone(), journal).await?;
+    assert_eq!(resumed.text, "done");
+    assert_eq!(provider.requests().len(), 1);
+    assert_eq!(counts.load(Ordering::SeqCst), 1);
+    let (_, records) = execution
+        .model_records(journal, input.operation_id, 0, ModelPurpose::Response)
+        .await?;
+    assert_eq!(
+        records
             .iter()
             .filter(|record| matches!(record.event, ExecutionEvent::ContextPrepared { .. }))
             .count(),

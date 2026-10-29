@@ -215,17 +215,12 @@ impl ExecutionEvent {
         let (call, files): (Option<&String>, [Option<&FileRef>; 3]) = match self {
             Started { .. } | ModelStopped { .. } => (None, [None; 3]),
             ModelInline { event, .. } => (Some(event), [None; 3]),
-            ContextPrepared {
-                projection,
-                accounting,
-                ..
-            } => (None, [Some(projection), accounting.as_ref(), None]),
+            ContextPrepared { projection, .. } => (None, [Some(projection), None, None]),
             ContextCompacted {
                 projection,
                 compaction,
-                accounting,
                 ..
-            } => (None, [Some(projection), Some(compaction), Some(accounting)]),
+            } => (None, [Some(projection), Some(compaction), None]),
             ModelStarted { request: file, .. } | Model { event: file, .. } => {
                 (None, [Some(file), None, None])
             }

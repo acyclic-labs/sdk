@@ -38,7 +38,7 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         )?
         .await?;
     let projection_bytes = serde_json::to_vec(&serde_json::json!({
-        "canonical": null, "checkpoint": null,
+        "canonical": null, "checkpoint": null, "accounting": null,
         "context": {"current_input_index": 0, "metadata": {}, "messages": request.request().messages},
     }))
     .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -55,7 +55,6 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
         step: 0,
         projection: context.clone(),
         compaction: context.clone(),
-        accounting: context.clone(),
     };
     assert!(
         journal
@@ -80,7 +79,6 @@ pub(super) async fn local_journal_admits_compaction_only_after_one_settled_summa
             &ExecutionEvent::ContextPrepared {
                 step: 0,
                 projection: context.clone(),
-                accounting: None,
             },
             None,
         )?

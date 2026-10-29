@@ -375,6 +375,18 @@ async fn inline_projection_custody_releases_decoder_scratch_before_checkpoint_re
             canonical: Some(reference.clone()),
             checkpoint: Some(reference.clone()),
             working: Some(reference.clone()),
+            accounting: Some(ContextAccounting {
+                capacity: crate::context::ModelContextCapacity {
+                    context_tokens: 65_536,
+                    output_tokens: Some(4096),
+                },
+                count: crate::context::ModelTokenCount {
+                    request_digest: [9; 32],
+                    input_tokens: 128,
+                    fixed_tokens: 0,
+                    message_tokens: vec![128],
+                },
+            }),
         };
         // Includes physical peak/residence, malformed diagnostics, sparse maps,
         // original native custody, and resident-Value decoding through one codec.

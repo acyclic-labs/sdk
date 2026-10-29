@@ -100,6 +100,7 @@ impl StockExecution<'_> {
             canonical,
             checkpoint: None,
             working: None,
+            accounting: None,
         };
         let projection_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}"), work)
@@ -117,26 +118,10 @@ impl StockExecution<'_> {
             &projection_key,
             &projection,
             &stored_request,
+            accounting.as_ref(),
             self.io,
         )
         .await?;
-        let accounting_ref = if let Some(accounting) = &accounting {
-            let accounting_key = with_history_io(self.io, |work| {
-                crate::executor::preparation_format(format_args!("context:{step}:accounting"), work)
-            })?;
-            Some(
-                stage_json(
-                    journal,
-                    input.operation_id,
-                    &accounting_key,
-                    accounting,
-                    self.io,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
         let prepared_key = with_history_io(self.io, |work| {
             crate::executor::preparation_format(format_args!("context:{step}:prepared"), work)
         })?;
@@ -148,7 +133,6 @@ impl StockExecution<'_> {
                 &ExecutionEvent::ContextPrepared {
                     step,
                     projection: reference,
-                    accounting: accounting_ref,
                 },
                 self.io,
             )?
@@ -173,8 +157,7 @@ impl StockExecution<'_> {
             ExecutionEvent::ContextPrepared {
                 step: recorded,
                 projection,
-                accounting,
-            } if *recorded == step => Some((projection, accounting.as_ref())),
+            } if *recorded == step => Some(projection),
             _ => None,
         });
         let first = retained.next();
@@ -193,18 +176,14 @@ impl StockExecution<'_> {
                 self.capture_response_original(journal, input, step, prior_messages, tail)
                     .await?
             }
-            Some((reference, accounting)) => (
-                retain_preparation(
+            Some(reference) => {
+                let mut projection = retain_preparation(
                     load_response_projection(journal, reference, self.stock.limits, self.io)
                         .await?,
-                )?,
-                match accounting {
-                    Some(reference) => Some(retain_preparation(
-                        load_json::<ContextAccounting>(journal, reference, self.io).await?,
-                    )?),
-                    None => None,
-                },
-            ),
+                )?;
+                let accounting = projection.accounting.take();
+                (projection, accounting)
+            }
         };
         crate::context::validate_projected_context(
             &projection.context,

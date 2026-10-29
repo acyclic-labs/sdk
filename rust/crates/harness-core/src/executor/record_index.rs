@@ -88,25 +88,18 @@ impl ExecutionEvent {
             Started { request_digest } => Started {
                 request_digest: *request_digest,
             },
-            ContextPrepared {
-                step,
-                projection,
-                accounting,
-            } => ContextPrepared {
+            ContextPrepared { step, projection } => ContextPrepared {
                 step: *step,
                 projection: file(projection)?,
-                accounting: accounting.as_ref().map(file).transpose()?,
             },
             ContextCompacted {
                 step,
                 projection,
                 compaction,
-                accounting,
             } => ContextCompacted {
                 step: *step,
                 projection: file(projection)?,
                 compaction: file(compaction)?,
-                accounting: file(accounting)?,
             },
             ModelStarted {
                 step,

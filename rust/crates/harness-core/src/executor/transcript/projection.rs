@@ -37,6 +37,7 @@ impl ResponseProjection {
             stored.canonical,
             stored.checkpoint,
             stored.working,
+            stored.accounting,
         ));
         #[cfg(feature = "filesystem")]
         {
@@ -52,6 +53,7 @@ impl ResponseProjection {
             canonical: None,
             checkpoint: None,
             working,
+            accounting: None,
         };
         Ok(projection)
     }
@@ -93,6 +95,11 @@ pub(crate) async fn load_projection<'a>(
             .working
             .as_ref()
             .map(|file| crate::model::clone_file(file, io))
+            .transpose()?,
+        accounting: stored
+            .accounting
+            .as_ref()
+            .map(|accounting| accounting.copy(io))
             .transpose()?,
     };
     drop(stored);

@@ -96,6 +96,7 @@ async fn a_thousand_request_deltas_write_only_the_suffix_and_reopen_exact_bytes(
                     canonical: None,
                     checkpoint: None,
                     working: None,
+                    accounting: None,
                 })?;
                 assert!(old_request.len() + old_projection.len() > 4096);
                 eprintln!(

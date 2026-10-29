@@ -110,13 +110,13 @@ test("Rust execution checkpoint wire preserves ref-only observations and rejects
     descriptor: contracts.fileDescriptor(new TextEncoder().encode("null"), "application/json"),
     display_name: "context.json",
   } as const;
-  const event = { kind: "context_compacted", step: 7, projection: file, compaction: file, accounting: file } as const;
+  const event = { kind: "context_compacted", step: 7, projection: file, compaction: file } as const;
   const bytes = contracts.encodeCanonicalJson(event);
   const decoded = contracts.decodeExecutionEventJson(bytes);
   expect(decoded as unknown).toEqual(event);
   expect(contracts.encodeCanonicalJson(decoded)).toEqual(bytes);
   if (decoded.kind !== "context_compacted") throw new Error("wrong generated event kind");
-  expect(decoded.accounting.descriptor.byte_length).toBe(4);
+  expect(decoded.projection.descriptor.byte_length).toBe(4);
   for (const malformed of [
     { ...event, step: -1 }, { ...event, step: 0.5 }, { ...event, step: 4_294_967_296 },
     { ...event, accounting: null }, { ...event, projection: { ...file, path: "../private" } },

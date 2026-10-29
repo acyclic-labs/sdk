@@ -458,7 +458,6 @@ impl PreparationRecord for Observation {
                 "request_digest",
                 "step",
                 "projection",
-                "accounting",
                 "compaction",
                 "purpose",
                 "request",

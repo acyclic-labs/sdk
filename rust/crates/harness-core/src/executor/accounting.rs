@@ -1,5 +1,25 @@
 use super::*;
 
+impl ContextAccounting {
+    pub(super) fn copy(&self, io: Option<&PreparationIo>) -> Result<Self> {
+        with_history_io(io, |work| {
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+            let message_tokens =
+                crate::core::copy_copy_vector(&self.count.message_tokens, &mut quota)?;
+            quota.transfer();
+            Ok(Self {
+                capacity: self.capacity,
+                count: crate::context::ModelTokenCount {
+                    request_digest: self.count.request_digest,
+                    input_tokens: self.count.input_tokens,
+                    fixed_tokens: self.count.fixed_tokens,
+                    message_tokens,
+                },
+            })
+        })
+    }
+}
+
 pub(super) fn stock_context_capacity(
     provider: &dyn ModelProvider,
     model: &Model,

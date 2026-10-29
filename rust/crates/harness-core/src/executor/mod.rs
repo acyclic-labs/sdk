@@ -268,9 +268,6 @@ pub enum ExecutionEvent {
         /// Exact context; model/tools/options are pinned by the Started composition.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         projection: FileRef,
-        /// Provider-owned capacities and exact request token bounds, when enabled.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire | null"))]
-        accounting: Option<FileRef>,
     },
     /// Pins a verified compacted projection before response admission.
     ContextCompacted {
@@ -282,9 +279,6 @@ pub enum ExecutionEvent {
         /// Proof binding this projection to the prepared source and admitted summary.
         #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
         compaction: FileRef,
-        /// Final provider-owned request accounting.
-        #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-        accounting: FileRef,
     },
     /// A model request identity committed before provider dispatch.
     ModelStarted {
@@ -557,20 +551,15 @@ pub(crate) struct ResponseProjection {
     pub(crate) checkpoint: Option<FileRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) working: Option<FileRef>,
+    /// Request-bound accounting published atomically with this projection.
+    pub(crate) accounting: Option<ContextAccounting>,
 }
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
-struct ContextAccounting {
-    capacity: crate::context::ModelContextCapacity,
-    count: crate::context::ModelTokenCount,
-}
-
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for ContextAccounting {
-    fn diagnostic_label_bytes() -> u64 {
-        native_stock::stock_serde_diagnostic_label_bytes()
-    }
+pub(crate) struct ContextAccounting {
+    pub(crate) capacity: crate::context::ModelContextCapacity,
+    pub(crate) count: crate::context::ModelTokenCount,
 }
 
 /// Validated retained model artifacts without provider dispatch.
