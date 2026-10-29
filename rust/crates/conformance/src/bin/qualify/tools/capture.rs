@@ -374,16 +374,10 @@ pub(super) fn volume_config() -> VolumeConfig {
         _ if cfg!(windows) => FilesystemProfile::Windows,
         _ => FilesystemProfile::Posix,
     };
-    let mut config = VolumeConfig {
+    VolumeConfig {
         profile,
         ..VolumeConfig::portable(Lifecycle::Durable)
-    };
-    // A baseline capture is one atomic authored transaction covering every
-    // path in the repo; the default 2,048-mutation batch cap rejects any
-    // real tree. Sized for large monorepos.
-    config.limits.maximum_mutations_per_batch = 4_194_304;
-    config.limits.maximum_paths_per_batch = 4_194_304;
-    config
+    }
 }
 
 pub(super) async fn capture_and_commit(
