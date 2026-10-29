@@ -1,9 +1,9 @@
 use crate::Adapter;
 
-/// Frozen fixture clock: redelivery waits elapse immediately; default exchange deadlines
-/// never elapse. Deadline tests use their own progressing virtual clock.
+/// Frozen fixture clock: redelivery waits elapse immediately; the explicit parked
+/// wait stays pending. Deadline tests use their own progressing virtual clock.
 pub(crate) fn delay(wait: std::time::Duration) -> acyclic_stream::BoxProviderFuture<'static, ()> {
-    if wait >= std::time::Duration::from_millis(crate::TimeoutSpec::DEFAULT.idle_ms.into()) {
+    if wait == std::time::Duration::MAX {
         Box::pin(futures::future::pending())
     } else {
         Box::pin(async {})
@@ -21,8 +21,7 @@ pub(crate) fn native_delay(
     wait: std::time::Duration,
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> acyclic_harness_core::Result<acyclic_harness_core::NativeFutureBundle<'static, ()>> {
-    let frozen =
-        wait >= std::time::Duration::from_millis(crate::TimeoutSpec::DEFAULT.idle_ms.into());
+    let frozen = wait == std::time::Duration::MAX;
     acyclic_harness_core::NativeFutureBundle::new(work, move || async move {
         if frozen {
             futures::future::pending::<()>().await;

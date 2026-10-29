@@ -23,7 +23,9 @@ impl<E: RpcEndpoint> Provider<E> {
                 limit,
             })));
         let mut request = Request::new(input);
-        request.set_timeout(deadline.remaining());
+        if let Some(remaining) = deadline.remaining() {
+            request.set_timeout(remaining);
+        }
         let mut output = deadline
             .run(client.read_file(request))
             .await
@@ -75,7 +77,9 @@ impl<E: RpcEndpoint> Provider<E> {
                 truncate,
             })));
         let mut request = Request::new(input);
-        request.set_timeout(deadline.remaining());
+        if let Some(remaining) = deadline.remaining() {
+            request.set_timeout(remaining);
+        }
         let mut output = deadline
             .run(client.write_file(request))
             .await

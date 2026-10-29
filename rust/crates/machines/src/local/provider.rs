@@ -172,7 +172,7 @@ impl NativeMachine for LocalBackend {
     async fn exec(
         &self,
         command: ExecCommand,
-        until: std::time::Instant,
+        until: Option<std::time::Instant>,
     ) -> Result<ExecStream, ProviderError> {
         let owner = self.execution()?;
         let mut observed = owner.state.subscribe();

@@ -7,8 +7,12 @@ impl ModelEventAdmission {
     #[doc(hidden)]
     pub fn from_state(mut state: Self, limits: Limits) -> Result<Self> {
         if state.text_bytes > limits.file_bytes
-            || state.count > limits.model_events_per_step
-            || state.calls.len() > limits.tool_calls_per_step
+            || limits
+                .model_events_per_step
+                .is_some_and(|maximum| state.count > maximum.get())
+            || limits
+                .tool_calls_per_step
+                .is_some_and(|maximum| state.calls.len() > maximum.get())
         {
             return Err(Error::Invalid(
                 "model event admission state exceeds its limit".into(),
@@ -40,7 +44,10 @@ impl ModelEventAdmission {
             }
             Ok::<_, Error>(())
         })?;
-        if self.count >= limits.model_events_per_step {
+        if limits
+            .model_events_per_step
+            .is_some_and(|maximum| self.count >= maximum.get())
+        {
             return Err(stock_boundary(io, Invalid, "model event limit exceeded"));
         }
         if self.completed {
@@ -73,7 +80,10 @@ impl ModelEventAdmission {
         };
         crate::tool::validate_model_call_recorded(call, limits, io)?;
         let call_id = &call.call_id;
-        if self.calls.len() >= limits.tool_calls_per_step {
+        if limits
+            .tool_calls_per_step
+            .is_some_and(|maximum| self.calls.len() >= maximum.get())
+        {
             return Err(stock_boundary(
                 io,
                 Invalid,

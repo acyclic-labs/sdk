@@ -252,16 +252,13 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
+    let mut serving = Box::pin(serve(Arc::clone(&local)));
+    // Endpoint publication and request-watch registration precede its first
+    // suspension, just as in the native child-process fixture.
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let owner = tokio::spawn(serving);
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while !descriptor.is_file() {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
-    })
-    .await
-    .map_err(storage)??;
+    assert!(descriptor.is_file());
     // Follow only coordination files once published, before any native view
     // is admitted. The observer never traverses mounted agent filesystems.
     watcher.unwatch(checkout.path()).map_err(storage)?;
@@ -282,11 +279,6 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     std::fs::create_dir_all(debris.parent().expect("status parent")).map_err(storage)?;
     std::fs::write(&debris, b"unrelated status is not a reply").map_err(storage)?;
     std::fs::write(requests.join("malformed.json"), b"{not a request").map_err(storage)?;
-    std::fs::write(
-        requests.join("oversized.json"),
-        vec![b'x'; usize::try_from(MAXIMUM_BYTES).map_err(storage)? + 1],
-    )
-    .map_err(storage)?;
     let foreign = OperationId::new();
     std::fs::write(
         requests.join(format!("{foreign}.json")),
@@ -600,18 +592,14 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .as_ref()
     );
     assert!(result.get("task").is_some_and(Value::is_string));
-    tokio::time::timeout(Duration::from_secs(2), async {
-        while std::fs::read_dir(&requests)
+    projection_settled(&requests, RecursiveMode::NonRecursive, || {
+        assert!(!owner.is_finished(), "invalid request stopped the owner");
+        Ok(std::fs::read_dir(&requests)
             .map_err(storage)?
             .next()
-            .is_some()
-        {
-            projection_event(&mut changes, &mut owner).await?;
-        }
-        Ok::<_, Error>(())
+            .is_none())
     })
-    .await
-    .map_err(storage)??;
+    .await?;
     assert!(
         !owner.is_finished(),
         "invalid writable projections must not stop the owner"
@@ -629,22 +617,19 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     // Every consumed operation's reply is retired, without touching debris.
     let statuses = checkout.path().join(DIRECTORY).join("status");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let mut pending = 0;
-            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
-                if entry.map_err(storage)?.path() != debris {
-                    pending += 1;
-                }
+    projection_settled(&statuses, RecursiveMode::NonRecursive, || {
+        assert!(
+            !owner.is_finished(),
+            "owner stopped before reply withdrawal"
+        );
+        for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+            if entry.map_err(storage)?.path() != debris {
+                return Ok(false);
             }
-            if pending == 0 {
-                return Ok::<_, Error>(());
-            }
-            projection_event(&mut changes, &mut owner).await?;
         }
+        Ok(true)
     })
-    .await
-    .map_err(storage)??;
+    .await?;
     assert_eq!(
         std::fs::read(&debris).map_err(storage)?,
         b"unrelated status is not a reply",
@@ -803,6 +788,33 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         Err(Error::NotFound(_))
     ));
     Ok(())
+}
+
+/// Observes the real projection notifications, arming before the first
+/// read and retaining an early notification while that read is in progress.
+async fn projection_settled(
+    directory: &Path,
+    recursive: RecursiveMode,
+    mut settled: impl FnMut() -> Result<bool>,
+) -> Result<()> {
+    let notices = Arc::new(Notices::new(directory.to_path_buf()));
+    let notified = Arc::clone(&notices);
+    let mut watcher =
+        notify::recommended_watcher(move |event| notified.note(&event)).map_err(storage)?;
+    watcher.watch(directory, recursive).map_err(storage)?;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            // Drain the names with the same adapter as the owner; one Notify
+            // permit retains any event racing the state observation.
+            notices.take();
+            if settled()? {
+                return Ok(());
+            }
+            notices.changed.notified().await;
+        }
+    })
+    .await
+    .map_err(storage)?
 }
 
 #[test]

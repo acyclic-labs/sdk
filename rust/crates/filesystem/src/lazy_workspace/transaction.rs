@@ -84,8 +84,7 @@ impl<
         } else {
             PendingLazyRemoveKind::SourceOnly
         };
-        let mut prepared = false;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self.state(ctx).await?;
             let shadows = if let LazyLookup::Authored {
                 record, metadata, ..
@@ -122,12 +121,13 @@ impl<
                 .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
-                prepared = true;
                 break;
             }
-        }
-        if !prepared {
-            return Err(LazyWorkspaceError::Concurrent);
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
         if let PendingLazyRemoveKind::Authored { idempotency_key } = kind {
             let mut transaction = accounted!(ctx, |work, cancel| self
@@ -173,7 +173,7 @@ impl<
         operation: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id(), ctx)
@@ -236,8 +236,12 @@ impl<
             {
                 return Ok(());
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
     /// Reads the original mounted publication decision without updating the binding.
     #[cfg(feature = "native-mount")]

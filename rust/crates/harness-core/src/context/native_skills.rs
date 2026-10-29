@@ -588,7 +588,7 @@ impl SkillReader for ProjectCatalog<'_> {
         &'a mut self,
         relative: &'a str,
         cut: &'a Self::Revision,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let path = format!("/{relative}");
@@ -639,9 +639,9 @@ impl SkillReader for ProjectCatalog<'_> {
                     &path,
                     Some(acyclic_fs::ByteRange {
                         offset: 0,
-                        length: length.min(u64::from(maximum)),
+                        length: length.min(maximum),
                     }),
-                    u64::from(maximum),
+                    maximum,
                     &mut accounting,
                 )
                 .await?;
@@ -721,7 +721,7 @@ impl SkillReader for UserCatalogSource<'_> {
         &'a mut self,
         path: &'a str,
         reference: &'a SourceReference,
-        maximum: u32,
+        maximum: u64,
     ) -> BoxProviderFuture<'a, Result<(acyclic_stream::OwnedBytes, PinnedContextPath)>> {
         Box::pin(async move {
             let cancellation = self.work.cancellation();
@@ -757,7 +757,7 @@ impl SkillReader for UserCatalogSource<'_> {
                     &parsed,
                     node.version,
                     0,
-                    length.min(u64::from(maximum)),
+                    length.min(maximum),
                     self.work,
                     cancellation,
                 )
@@ -921,9 +921,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
 fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }

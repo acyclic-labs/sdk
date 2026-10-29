@@ -1,7 +1,7 @@
+import { captureCommand } from "./process-capture.mjs";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { validateArchive } from "./validate-npm-package.mjs";
@@ -63,7 +63,7 @@ if (Object.keys(expectedExports).length !== packageEntries.length) {
 }
 
 const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, {
+  const result = captureCommand(command, args, {
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.capture === false ? "inherit" : ["ignore", "pipe", "pipe"],
@@ -206,7 +206,7 @@ const main = async () => {
       if (assembledDirectory) {
         const entry = publishedPackageEntries[i];
         const archive = join(assembledDirectory, "acyclic-labs-" + entry.slug + "-" + manifest.version + ".tgz");
-        validateArchive(archive, manifest.name, manifest.version, "typescript/packages/" + entry.directory);
+        await validateArchive(archive, manifest.name, manifest.version, "typescript/packages/" + entry.directory);
         tarballs.set(manifest.name, archive);
         continue;
       }
@@ -223,7 +223,7 @@ const main = async () => {
       const packedPath = run("bun", ["pm", "pack", "--destination", packDirectory, "--ignore-scripts", "--quiet"], { cwd: packageDirectory }).trim();
       if (!packedPath) throw new Error(`${manifest.name} did not produce a tarball path`);
       if (publishedPackageEntries.some(entry => entry.name === manifest.name)) {
-        validateArchive(resolve(packedPath), manifest.name, manifest.version, `typescript/packages/${packageDirectories[i]}`);
+        await validateArchive(resolve(packedPath), manifest.name, manifest.version, `typescript/packages/${packageDirectories[i]}`);
       }
       tarballs.set(manifest.name, resolve(packedPath));
     }

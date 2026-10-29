@@ -97,22 +97,25 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             )
             .map_err(MaterializeError::from)?,
         );
-        loop {
-            work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
-                .map_err(MaterializeError::from)?;
-            match file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive) {
-                Ok(()) => {
-                    return Ok(RestoreLock {
-                        file,
-                        cleanup: Some(cleanup),
-                    });
-                }
-                Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) => return Err(error.into()),
-            }
+        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+            .map_err(MaterializeError::from)?;
+        if blocking {
+            // The admitted host worker retains this file and the original
+            // cleanup credit while the kernel waits for the conflicting lock.
+            // No original accounting leaf remains borrowed across the wait.
+            file.lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
+        } else {
+            file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
         }
+        let lock = RestoreLock {
+            file,
+            cleanup: Some(cleanup),
+        };
+        // A cancellation during the accepted native wait must release its newly
+        // acquired lock before starting any recovery or destination mutation.
+        work.admit(WorkCounters::UNCHARGED)
+            .map_err(MaterializeError::from)?;
+        Ok(lock)
     })
 }
 

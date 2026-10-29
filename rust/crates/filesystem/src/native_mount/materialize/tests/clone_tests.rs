@@ -39,7 +39,6 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             vec![LogicalName::new(
                 NameEncoding::Utf8,
                 name.as_bytes().to_vec(),
-                limits.maximum_component_bytes,
             )?],
             limits,
         )?;
@@ -63,7 +62,7 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             destination: destination.clone(),
             expected_root_identity: None,
             maximum_directory_entries: 16,
-            maximum_extent_spans: 16,
+            maximum_extent_spans: Some(16),
             transfer_bytes: 64 * 1024,
         },
         super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,

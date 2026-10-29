@@ -34,5 +34,11 @@
       "blob": "63cee631f536d03d772ceac517f45f33d83b7dbc"
     }
   ],
-  "capture": "Requests and assertions from the named Cloud handler test, replayed through the same FilesystemWireService to which the Cloud handler delegates unchanged. Protobuf JSON is a fixture encoding, not an HTTP endpoint. This capture does not run Cloud authentication, reconstructed-replica storage or Edge transport."
+  "capture": "Requests and assertions from the named Cloud handler test, replayed through the same FilesystemWireService to which the Cloud handler delegates unchanged. Protobuf JSON is a fixture encoding, not an HTTP endpoint. This capture does not run Cloud authentication, reconstructed-replica storage or Edge transport.",
+  "sdk_capture": {
+    "commit": "c15ee4282354b0d79fa9ec17356afc2f731f7fe9",
+    "descriptor_blob": "a4012741d8bfcb831535568797c296f220b1ac40",
+    "recorder": "rust/crates/filesystem/examples/record_cloud_contract.rs",
+    "description": "Current SDK canonical wire engine replay of the pinned Cloud handler inputs. Cloud provenance above remains the original source of those operations; it is not a live Cloud execution."
+  }
 }

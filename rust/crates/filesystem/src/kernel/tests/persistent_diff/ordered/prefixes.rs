@@ -1,5 +1,80 @@
 use super::*;
 
+// Independent recursive pointer-tree model. Production uses an integer arena
+// and parent walks; this model determines balance and physical write counts by
+// recursive subtree replacement. Neither production topology nor accounting
+// functions participate in the oracle.
+struct Shape {
+    key: u8,
+    height: usize,
+    child: [Option<Box<Shape>>; 2],
+}
+
+fn height(tree: &Option<Box<Shape>>) -> usize {
+    tree.as_ref().map_or(0, |node| node.height)
+}
+
+fn rotate(mut lower: Box<Shape>, side: usize, parent: bool, bytes: &mut u64) -> Box<Shape> {
+    let mut upper = lower.child[side].take().unwrap();
+    let middle = upper.child[1 - side].take();
+    // Lower/upper rewrites and their height refreshes, the middle's parent,
+    // and either the grandparent's child or the external root pointer.
+    *bytes += (4 + u64::from(middle.is_some()) + u64::from(parent)) * link_bytes()
+        + if parent {
+            0
+        } else {
+            std::mem::size_of::<Option<usize>>() as u64
+        };
+    lower.child[side] = middle;
+    lower.height = 1 + height(&lower.child[0]).max(height(&lower.child[1]));
+    upper.child[1 - side] = Some(lower);
+    upper.height = 1 + height(&upper.child[0]).max(height(&upper.child[1]));
+    upper
+}
+
+fn insert_shape(tree: Option<Box<Shape>>, key: u8, parent: bool, bytes: &mut u64) -> Box<Shape> {
+    let Some(mut node) = tree else {
+        *bytes += if parent {
+            link_bytes()
+        } else {
+            std::mem::size_of::<Option<usize>>() as u64
+        };
+        return Box::new(Shape {
+            key,
+            height: 1,
+            child: [None, None],
+        });
+    };
+    let side = usize::from(key > node.key);
+    node.child[side] = Some(insert_shape(node.child[side].take(), key, true, bytes));
+    node.height = 1 + height(&node.child[0]).max(height(&node.child[1]));
+    *bytes += link_bytes();
+    let a = height(&node.child[0]);
+    let b = height(&node.child[1]);
+    let heavy = if a > b + 1 {
+        Some(0)
+    } else if b > a + 1 {
+        Some(1)
+    } else {
+        None
+    };
+    if let Some(side) = heavy {
+        let child = node.child[side].as_ref().unwrap();
+        if height(&child.child[1 - side]) > height(&child.child[side]) {
+            let child = node.child[side].take().unwrap();
+            node.child[side] = Some(rotate(child, 1 - side, true, bytes));
+        }
+        rotate(node, side, parent, bytes)
+    } else {
+        node
+    }
+}
+
+fn link_bytes() -> u64 {
+    // Two child pointers, a parent pointer, height and subtree cardinality.
+    (3 * std::mem::size_of::<Option<usize>>() + 2 * std::mem::size_of::<usize>()) as u64
+}
+
 // The oracle uses plain keys/side bits and integer arithmetic, never production
 // search, allocation, admission, or receipt code. The linear position determines
 // the result independently of the frozen old binary-search comparison plan.
@@ -10,6 +85,7 @@ fn model(
 ) -> (Vec<(u8, bool, bool)>, bool, WorkCounters) {
     let mut values: Vec<(u8, bool, bool)> = Vec::new();
     let mut capacity = 0;
+    let mut shape = None;
     let mut work = WorkCounters::UNCHARGED;
     let slot_bytes = std::mem::size_of::<ValueChange<FileId, FileRecord>>() as u64;
     for (before, keys) in pages {
@@ -17,7 +93,7 @@ fn model(
         work.allocation_operations += u64::from(source_bytes != 0);
         work.peak_allocation_bytes = work
             .peak_allocation_bytes
-            .max(capacity * slot_bytes + source_bytes);
+            .max(capacity * (slot_bytes + link_bytes()) + source_bytes);
         let mut floor = 0;
         for key in keys {
             let (mut low, mut high) = (0, values.len());
@@ -42,13 +118,21 @@ fn model(
             if values.get(index).is_none_or(|entry| entry.0 != *key) {
                 if values.len() as u64 == capacity {
                     capacity = (capacity * 2).max(1);
-                    work.allocation_operations += 1;
+                    work.allocation_operations += 2;
                     work.peak_allocation_bytes = work
                         .peak_allocation_bytes
-                        .max(capacity * slot_bytes + source_bytes);
+                        .max(capacity * (slot_bytes + link_bytes()) + source_bytes);
                 }
+                work.bytes_copied += slot_bytes + link_bytes();
+                shape = Some(insert_shape(
+                    shape.take(),
+                    *key,
+                    false,
+                    &mut work.bytes_copied,
+                ));
                 values.insert(index, (*key, false, false));
             }
+            work.bytes_copied += std::mem::size_of::<Option<FileRecord>>() as u64;
             if *before {
                 values[index].1 = true;
             } else {

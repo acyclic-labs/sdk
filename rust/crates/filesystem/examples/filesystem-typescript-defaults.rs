@@ -21,8 +21,6 @@ struct FilesystemDefaults {
 struct ObjectCacheDefaults {
     maximum_entries: u32,
     maximum_bytes: u64,
-    maximum_in_flight: u32,
-    maximum_waiters_per_object: u32,
 }
 
 impl From<ObjectCacheOptions> for ObjectCacheDefaults {
@@ -30,8 +28,6 @@ impl From<ObjectCacheOptions> for ObjectCacheDefaults {
         Self {
             maximum_entries: value.maximum_entries,
             maximum_bytes: value.maximum_bytes,
-            maximum_in_flight: value.maximum_in_flight,
-            maximum_waiters_per_object: value.maximum_waiters_per_object,
         }
     }
 }

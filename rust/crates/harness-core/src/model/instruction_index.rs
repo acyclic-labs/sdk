@@ -307,7 +307,7 @@ pub(super) fn source_key_history(
         .unwrap_or(u64::MAX);
     #[cfg(not(feature = "filesystem"))]
     let maximum = u64::MAX;
-    crate::executor::json::canonical_json_digest(&(volume, path), maximum, work)
+    crate::executor::json::canonical_json_digest(&(volume, path), Some(maximum), work)
 }
 
 pub(super) fn history_step_traced(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {

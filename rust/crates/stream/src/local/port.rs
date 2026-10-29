@@ -186,7 +186,7 @@ impl CommandJournal for LocalPort {
             Ok(prepared) => prepared,
             Err(error) => return Ok(AppendIf::Refused(error)),
         };
-        // Reserve the entire proposal before its first physical action.
+        // Validate physical journal counter overflow before any proposal frame.
         {
             let journal = self
                 .stream
@@ -194,22 +194,17 @@ impl CommandJournal for LocalPort {
                 .journal
                 .lock()
                 .map_err(|_| self.stream.inner.poison())?;
-            let bytes = prepared
+            prepared
                 .as_slice()
                 .iter()
                 .try_fold(journal.bytes, |bytes, frame| {
                     bytes.checked_add(frame.encoded.len() as u64)
                 })
                 .ok_or(StreamError::Capacity)?;
-            let operations = journal
+            journal
                 .operations
                 .checked_add(prepared.as_slice().len() as u64)
                 .ok_or(StreamError::Capacity)?;
-            if bytes > journal.limits.journal_bytes
-                || operations > journal.limits.journal_operations
-            {
-                return Err(StreamError::Capacity);
-            }
         }
         let sequence = self.stream.persist_frames(prepared).await?;
         Ok(AppendIf::Accepted {

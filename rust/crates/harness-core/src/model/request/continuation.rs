@@ -52,7 +52,11 @@ impl RequestContinuation {
             .len()
             .checked_add(self.suffix.len())
             .ok_or_else(|| Error::Invalid("model context count overflows".into()))?;
-        if count == 0 || count > limits.context_messages {
+        if count == 0
+            || limits
+                .context_messages
+                .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
         if limits == self.limits {
@@ -79,8 +83,10 @@ impl RequestContinuation {
                 .messages
                 .capacity()
                 .saturating_mul(2)
-                .max(count)
-                .min(limits.context_messages);
+                .max(count);
+            let capacity = limits
+                .context_messages
+                .map_or(capacity, |maximum| capacity.min(maximum.get()));
             crate::executor::stock_vec_reserve(&mut self.request.messages, capacity, io)?;
         }
         for message in crate::executor::stock_into_iter(self.suffix, io)? {
