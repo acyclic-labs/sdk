@@ -5,6 +5,7 @@ import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
 export { serveActorFetch, serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
 /** Instantiate the harness module once from the platform-delivered bytes or module. */
 export { default as initializeHosting } from "../generated/wasm/acyclic_harness_wasm.js";
+export { WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
 import { decodeMetadata, type EventStorage } from "./event-storage.js";
 

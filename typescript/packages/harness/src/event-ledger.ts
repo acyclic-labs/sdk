@@ -68,26 +68,26 @@ export class EventStreamLedger implements StreamLedger {
     catch (error) { return failure(error); }
   }
 
-  open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>> {
-    return this.exclusive(async () => {
-      try {
-        const opened = await (await this.stream).open(operation, input, preceding);
-        if ("code" in opened) return opened;
-        const cursor = opened.value;
-        const close = () => cursor.close();
-        return { value: new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              const reply = await cursor.next();
-              if ("code" in reply) { controller.error(reply); close(); }
-              else if (reply.value === null) { controller.close(); close(); }
-              else controller.enqueue(reply.value);
-            } catch (error) { controller.error(error); close(); }
-          },
-          cancel: close,
-        }, { highWaterMark: 0 }) };
-      } catch (error) { return failure(error); }
-    });
+  async open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>> {
+    // Registration can await a minimum or missing path. The canonical provider
+    // owns its atomic observation cut; waiting must leave later writes runnable.
+    try {
+      const opened = await (await this.stream).open(operation, input, preceding);
+      if ("code" in opened) return opened;
+      const cursor = opened.value;
+      const close = () => cursor.close();
+      return { value: new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          try {
+            const reply = await cursor.next();
+            if ("code" in reply) { controller.error(reply); close(); }
+            else if (reply.value === null) { controller.close(); close(); }
+            else controller.enqueue(reply.value);
+          } catch (error) { controller.error(error); close(); }
+        },
+        cancel: close,
+      }, { highWaterMark: 0 }) };
+    } catch (error) { return failure(error); }
   }
 
   private schedule(): Promise<void> {

@@ -167,8 +167,7 @@ async fn successful_home_recovery_rebinds_discovery_but_moved_nodes_do_not() -> 
         pool.reset_home();
         pool.admissions.insert(5)?;
         let (records, _pending) = mpsc::channel(2);
-        let route = pool.routes.get_mut(&1).unwrap();
-        route.node.clear();
+        let route = pool.routes.rehome(&1, "").unwrap();
         route.records = records;
         route.opened = false;
         let mut recovered = pool.links.remove("bad").unwrap();

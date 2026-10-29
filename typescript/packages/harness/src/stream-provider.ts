@@ -22,13 +22,14 @@ export function providerFailure(error: unknown): { code: string } {
     && typeof error.code === "string" ? error.code : "unavailable" };
 }
 
-/** Transfer one canonical provider into an injected port. No records or requests
- * are decoded, copied or retained here; the original Rust provider owns them. */
+/** Transfer one canonical provider into an injected port. Rust owns canonical
+ * parsing and cursor state; this adapter makes no request byte snapshots. */
 export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort {
   let closed = false;
   const owners = new Set<() => void>();
   const dispose = (cursor: WasmFollow) => { cursor.close(); cursor.free(); };
-  const call = async (operation: string, input: Uint8Array, preceding = noPreceding) => {
+  const call = async (operation: string, input: Uint8Array, preceding: Uint8Array = noPreceding)
+    : Promise<ProviderReply<Uint8Array | WasmFollow>> => {
     if (closed) return { code: "unavailable" } as const;
     let request: ReturnType<WasmStream["openProviderRequest"]>;
     try { request = stream.openProviderRequest(operation, input, preceding); }
@@ -38,7 +39,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       if (ended) return;
       ended = true;
       owners.delete(close);
-      request.close(); request.free();
+      request.close();
     };
     owners.add(close);
     try {
@@ -49,7 +50,7 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       }
       return { value };
     } catch (error) { return providerFailure(error); }
-    finally { close(); }
+    finally { close(); request.free(); }
   };
   return {
     async dispatch(operation, input) {
@@ -67,23 +68,27 @@ export function streamProviderPort(stream: WasmStream): OwnedStreamProviderPort 
       if (!(opened.value instanceof WasmFollow)) return { code: "invalid_response" };
       const cursor = opened.value;
       let ended = false;
+      let pulls = 0;
       const close = () => {
         if (ended) return;
         ended = true;
         owners.delete(close);
-        dispose(cursor);
+        cursor.close();
+        if (pulls === 0) cursor.free();
       };
       if (closed) { close(); return { code: "unavailable" }; }
       owners.add(close);
       return { value: {
         async next() {
           if (ended) return { value: null };
+          ++pulls;
           try {
             const value = await cursor.next();
             if (closed) return { code: "unavailable" };
             if (value === null) close();
             return { value };
           } catch (error) { close(); return providerFailure(error); }
+          finally { if (--pulls === 0 && ended) cursor.free(); }
         },
         close,
       } };

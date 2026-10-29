@@ -119,7 +119,6 @@ impl InjectedStream {
         &self,
         operation: &str,
         input: impl Message,
-        at_least: &crate::RevisionCut,
         preceding: Option<CommitId>,
         from: u64,
     ) -> Result<FollowStream, StreamError> {
@@ -127,17 +126,8 @@ impl InjectedStream {
         if input.len() > MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        // Park on the minimum through its own port call first. A host serves
-        // a wait outside its write order, so writes keep flowing past it, and
-        // the open below finds its minimum applied instead of parking while it
-        // holds the host's queue. A host without revisions answers unsupported
-        // and enforces the forwarded cut itself.
-        if !at_least.is_empty() {
-            match self.wait_applied(at_least).await {
-                Ok(_) | Err(StreamError::Unsupported) => {}
-                Err(error) => return Err(error),
-            }
-        }
+        // The original request carries its minimum. Registration observes it
+        // atomically in the canonical provider, outside the host's write order.
         let anchor = preceding.map_or_else(Vec::new, |id| id.as_bytes().to_vec());
         let cursor = reply(self.port.open(operation, &input, &anchor)).await?;
         if !cursor.is_object() {
@@ -329,7 +319,6 @@ impl StreamProvider for InjectedStream {
                     limit: request.limit,
                     at_least: wire_codec::cut_to_wire(&request.at_least),
                 },
-                &request.at_least,
                 None,
                 from,
             )
@@ -361,7 +350,6 @@ impl StreamProvider for InjectedStream {
                 progress: request.progress,
                 at_least: wire_codec::cut_to_wire(&request.at_least),
             },
-            &request.at_least,
             request.preceding,
             request.from,
         )
