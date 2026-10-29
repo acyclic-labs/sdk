@@ -492,6 +492,12 @@ pub async fn run(
                 ..Screen::default()
             };
             let area = Rect::from((Position::ORIGIN, size));
+            let panel_scroll = if overlay.is_some() {
+                overlay_top = overlay_top.min(screen.tail_scroll(area, &input));
+                overlay_top
+            } else {
+                0
+            };
             let mut areas = screen.areas(area, &input);
             let page = usize::from(areas.transcript.height).max(1);
             let total = view.transcript.len();
@@ -503,7 +509,7 @@ pub async fn run(
             screen.hidden_tail = end < total;
             screen.transcript = view.transcript.window(scroll..end)?;
             terminal.draw(size, |frame| {
-                areas = screen.render(frame, &input, &mut viewport, 0, now);
+                areas = screen.render(frame, &input, &mut viewport, panel_scroll, now);
             })?;
             (areas, page)
         };

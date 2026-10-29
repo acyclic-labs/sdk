@@ -1616,3 +1616,5 @@ Actual main composition1806: rebased the complete lane ontoe812204f6d3431952b847
 Check31016fd00bc06 (job1793269918351-41335-5e555fb6) failed before compilation because --locked rejected a changed serialization feature graph. Later source enables serde directly at the same ratatui-core primitive, avoiding unrelated terminal backends; dependency-only local resolution adds two existing edges and no packages/version updates. Corrected the remaining transcript tuple call. New source compilation pending; no green composition claim.
 
 Check31133c4a4e220 (job1793270059450-41970-ca34a66f) failed on the missing shared Span import; the later import correction changes no policy or oracle. Composition qualification remains pending.
+
+Check31200bdafeb1b (job1793270156289-42695-2a6c0b36) fails at two integration sites: optional staged-input observation allowance and a shadowed typed error projection. Later source preserves the exact finite allowance, renames the reference, and retains panel scrolling alongside transcript paging. New composition compilation remains pending; no oracle changed.
