@@ -191,7 +191,7 @@ kernel_cases! { transfer: GenerationTransferError {
 }}
 kernel_cases! { manifest: GenerationExportManifestError {
     InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit)];
-    DataLoss => [E::Decode(CanonicalDecodeError::Truncated), E::WrongRootKind, E::GenerationMismatch, E::MissingRoot, E::NonCanonicalObjectOrder];
+    DataLoss => [E::Decode(CanonicalDecodeError::Truncated), E::WrongRootKind, E::GenerationMismatch, E::MissingRoot];
     ResourceExhausted => [E::TooManyObjects, E::TooManyFiles];
 }}
 kernel_cases! { decode: CanonicalDecodeError {

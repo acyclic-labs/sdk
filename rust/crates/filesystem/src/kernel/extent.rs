@@ -4,7 +4,7 @@ use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::codec::ReadAllocationStep;
 use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder};
 use super::file_read::{ReadOwned, reserve_decoded_items};
-use super::types::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, digest_object};
+use super::types::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
 const DOMAIN: &[u8; 8] = b"ACYFSEXT";
@@ -53,7 +53,7 @@ pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
                         object_offset,
                     } => {
                         encoder.u8(3);
-                        encoder.fixed(object.digest.as_bytes());
+                        encoder.object(object);
                         encoder.u64(object_offset);
                     }
                 }
@@ -65,7 +65,7 @@ pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
             for child in children {
                 encoder.u64(child.first_offset);
                 encoder.u64(child.end_offset);
-                encoder.fixed(child.page.digest.as_bytes());
+                encoder.object(child.page);
             }
         }
     }
@@ -90,7 +90,7 @@ pub(crate) fn extent_page_encoded_length(
             for extent in extents {
                 let item_bytes = match extent.kind {
                     ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
-                    ExtentKind::Content { .. } => 8 + 8 + 1 + 32 + 8,
+                    ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
                 };
                 bytes = bytes
                     .checked_add(item_bytes)
@@ -98,11 +98,11 @@ pub(crate) fn extent_page_encoded_length(
             }
         }
         ExtentPage::Internal(children) => {
-            bytes = children
-                .len()
-                .checked_mul(8 + 8 + 32)
-                .and_then(|items| bytes.checked_add(items))
-                .ok_or(CanonicalDecodeError::LengthOverflow)?;
+            for child in children {
+                bytes = bytes
+                    .checked_add(16 + child.page.encoded_len())
+                    .ok_or(CanonicalDecodeError::LengthOverflow)?;
+            }
         }
     }
     Ok(bytes)
@@ -164,7 +164,7 @@ pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
                     1 => ExtentKind::Hole,
                     2 => ExtentKind::AllocatedZero,
                     3 => ExtentKind::Content {
-                        object: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+                        object: decoder.object(ObjectKind::Blob, observe)?,
                         object_offset: decoder.u64(observe)?,
                     },
                     tag => {
@@ -192,7 +192,7 @@ pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
                 children.push(ExtentChild {
                     first_offset: decoder.u64(observe)?,
                     end_offset: decoder.u64(observe)?,
-                    page: digest_object(ObjectKind::ExtentPage, decoder.fixed::<32, E>(observe)?),
+                    page: decoder.object(ObjectKind::ExtentPage, observe)?,
                 });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -224,6 +224,7 @@ pub fn extent_page_id(
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::ExtentPage,
         digest: object_digest(&bytes),
     })

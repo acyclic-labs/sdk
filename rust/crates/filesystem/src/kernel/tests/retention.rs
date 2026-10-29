@@ -1,4 +1,5 @@
 use super::*;
+use crate::Digest;
 use crate::foundation::GenerationId;
 use crate::kernel::allocation::KernelAccounting;
 use crate::model::Lifecycle;
@@ -12,6 +13,7 @@ fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::
         kind: RetentionKind::Checkpoint,
         label: "release".to_owned(),
         generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([9; 32]),
         },
@@ -39,7 +41,7 @@ fn retention_round_trip_and_identity_are_canonical() -> Result<(), Box<dyn std::
         retention_authority_id(volume_id, RetentionKind::Pin, "release"),
         retention_authority_id(volume_id, RetentionKind::ForkBase, "release")
     );
-    let _ = GenerationId::new(value.generation_root.digest);
+    let _ = GenerationId::from_root(value.generation_root);
     Ok(())
 }
 
@@ -50,6 +52,7 @@ fn malformed_retention_fails_closed() {
         kind: RetentionKind::Checkpoint,
         label: "bad/name".to_owned(),
         generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([2; 32]),
         },
@@ -92,6 +95,7 @@ fn original_retention_refusal_never_produces_unclaimed_bytes()
         kind: RetentionKind::Pin,
         label: "native-refusal".to_owned(),
         generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([24; 32]),
         },

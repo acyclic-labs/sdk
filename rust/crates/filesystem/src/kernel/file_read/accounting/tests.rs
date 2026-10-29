@@ -141,7 +141,7 @@ proptest! {
         let root = GenerationRoot {
             volume_id: VolumeId::from_bytes([1; 16]),
             root_file_id: FileId::from_bytes([2; 16]),
-            file_table: ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([3; 32]) },
+            file_table: ObjectId { storage: None, kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([3; 32]) },
             parents: [first, second].into_iter().take(parent_count)
                 .map(|bytes| GenerationId::new(Digest::from_bytes(bytes))).collect(),
             required_features: 0,

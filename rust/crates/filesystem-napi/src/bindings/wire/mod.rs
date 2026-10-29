@@ -199,24 +199,13 @@ pub(in crate::bindings) fn fixed_16(bytes: &[u8]) -> Result<[u8; 16]> {
     })
 }
 
-pub(in crate::bindings) fn fixed_32(bytes: &[u8], label: &str) -> Result<[u8; 32]> {
-    bytes.try_into().map_err(|_| {
-        Error::new(
-            Status::InvalidArg,
-            format!("{label} must be exactly 32 bytes"),
-        )
-    })
-}
-
-pub(in crate::bindings) fn generation_id(bytes: &[u8]) -> Result<acyclic_fs::GenerationId> {
-    Ok(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-        bytes,
-        "generation identity",
-    )?)))
+pub(in crate::bindings) fn decode_generation_id(bytes: &[u8]) -> Result<acyclic_fs::GenerationId> {
+    acyclic_fs::GenerationId::from_bytes(bytes)
+        .ok_or_else(|| napi_wire_error("invalid generation reference"))
 }
 
 pub(in crate::bindings) fn native_generation_buffer(generation: GenerationId) -> Buffer {
-    Buffer::from(generation.digest().into_bytes().to_vec())
+    Buffer::from(generation.to_bytes().to_vec())
 }
 
 pub(in crate::bindings) fn encode_object_id(value: ObjectId) -> Buffer {
@@ -251,7 +240,7 @@ pub(in crate::bindings) fn encode_checkpoint_receipt(
     receipt: &acyclic_fs::OperationReceipt<acyclic_fs::GenerationId>,
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
-        generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),
+        generation_id: Buffer::from(receipt.value.to_bytes().to_vec()),
         work_json: work_json(&receipt.work)?,
     })
 }

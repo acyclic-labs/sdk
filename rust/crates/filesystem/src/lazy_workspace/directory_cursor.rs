@@ -70,7 +70,8 @@ fn encode_fields(
 ) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
     let size = DOMAIN.len()
         + 2
-        + 141
+        + 109
+        + cursor.cut.authored_generation.object_id().encoded_len()
         + directory.len()
         + match &cursor.phase {
             LazyDirectoryPhase::Source(Some(_)) => 32,
@@ -110,7 +111,7 @@ fn encode_fields(
         observe(EncodeWorkStep::Admit(body))?;
         let cut = cursor.cut;
         encoder.fixed(&cut.workspace_id.into_bytes());
-        encoder.fixed(cut.authored_generation.digest().as_bytes());
+        encoder.object(cut.authored_generation.object_id());
         encoder.fixed(&cut.source.identity);
         encoder.u64(cut.source.epoch);
         encoder.fixed(&cut.overlay.into_bytes());
@@ -143,27 +144,26 @@ fn decode_fields(
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
     let maximum = DOMAIN.len() as u64
-        + 175
+        + 256
         + u64::from(limits.maximum_path_bytes)
         + u64::from(limits.maximum_component_bytes);
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
-    let generation = crate::GenerationId::new(crate::Digest::from_bytes(
-        decoder.fixed::<32, crate::FsError>(observe)?,
-    ));
+    let generation =
+        crate::GenerationId::from_root(decoder.object(crate::ObjectKind::GenerationRoot, observe)?);
     let source = SourceReference {
         identity: decoder.fixed::<16, crate::FsError>(observe)?,
         epoch: decoder.u64(observe)?,
     };
     let overlay = LazyOverlayId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
     let shadows = LazyShadowId::from_bytes(decoder.fixed::<32, crate::FsError>(observe)?);
-    observe(ReadAllocationStep::BeforeHash(
-        LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
-    ))?;
+    observe(ReadAllocationStep::BeforeHash(LazySnapshotRef::hash_bytes(
+        generation,
+    )))?;
     let cut = LazySnapshotRef::new(workspace, generation, source, overlay, shadows);
-    observe(ReadAllocationStep::Hashed(
-        LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
-    ))?;
+    observe(ReadAllocationStep::Hashed(LazySnapshotRef::hash_bytes(
+        generation,
+    )))?;
     let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
         .map_err(|_| {
         CanonicalDecodeError::Invariant(CanonicalInvariant::Static("cursor directory is not UTF-8"))

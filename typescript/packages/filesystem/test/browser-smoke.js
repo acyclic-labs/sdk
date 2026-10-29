@@ -7,6 +7,7 @@ import {
   portableVolumeOptions,
 } from "../dist/browser.js";
 import { openMemoryFs } from "../dist/memory.js";
+import { isObjectReference } from "../dist/binding-values.js";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
 const result = document.querySelector("#result");
@@ -86,7 +87,7 @@ async function run() {
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
   const current = await indexedDbRequest(indexedDB.open(`acyclic-fs-smoke-source-${suffix}`));
-  assert(current.version === 1, "fresh IndexedDB schema was not v1");
+  assert(current.version === 2, "fresh IndexedDB schema was not v2");
   current.close();
   await rejectObsoleteDatabase(`acyclic-fs-smoke-obsolete-${suffix}`);
   const volume = await source.createVolume(portableVolumeOptions("durable"));
@@ -296,10 +297,10 @@ async function run() {
   }
   const snapshot = await mounted.checkpointSnapshot();
   assert(snapshot.mounts.length === 2, "mounted snapshot did not capture every volume");
-  assert(snapshot.mounts.every((mount) => mount.generationId.byteLength === 32), "mounted snapshot identity was malformed");
+  assert(snapshot.mounts.every((mount) => isObjectReference(mount.generationId, 6)), "mounted snapshot identity was malformed");
   assert(snapshot.mounts.every((mount) => mount.volumeId.byteLength === 16), "mounted volume identity was malformed");
   const checkpoint = await checkout.checkpoint();
-  assert(checkpoint.generationId.byteLength === 32, "browser checkpoint identity was malformed");
+  assert(isObjectReference(checkpoint.generationId, 6), "browser checkpoint identity was malformed");
   const windowsVolume = await source.createVolume({
     ...portableVolumeOptions("ephemeral"),
     profile: "windows",
@@ -393,7 +394,7 @@ async function run() {
   result.textContent = JSON.stringify({
     status: "passed",
     memoryWorkspace: "passed",
-    indexedDbSchema: "v1 durable reopen; obsolete v4 rejected without mutation",
+    indexedDbSchema: "v2 durable reopen; obsolete v4 rejected without mutation",
     sourceAuthority: reopened.capabilities.authority,
     sourceObjects: reopened.capabilities.immutableObjects,
     exportedObjects: manifest.objects.length,

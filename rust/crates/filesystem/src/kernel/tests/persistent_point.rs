@@ -15,6 +15,7 @@ fn record(byte: u8) -> FileRecord {
         kind: FileKind::Fifo,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([byte; 32]),
         },

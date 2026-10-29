@@ -96,6 +96,7 @@ async fn wrong_root_kind_fails_without_backend_work() -> Result<(), Box<dyn std:
         lookup_tree_entry(
             &store,
             ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: Digest::ZERO,
             },
@@ -119,6 +120,7 @@ async fn zero_height_limit_fails_without_backend_work() -> Result<(), Box<dyn st
     let failure = lookup_tree_entry(
         &store,
         ObjectId {
+            storage: None,
             kind: ObjectKind::TreePage,
             digest: Digest::ZERO,
         },

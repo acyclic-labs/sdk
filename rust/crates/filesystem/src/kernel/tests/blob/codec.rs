@@ -7,6 +7,7 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
             first_offset: 0,
             end_offset: 4,
             chunk: ObjectId {
+                storage: None,
                 kind: ObjectKind::BlobChunk,
                 digest: Digest::from_bytes([7; 32]),
             },
@@ -20,6 +21,7 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
         "01000000",
         "0000000000000000",
         "0400000000000000",
+        "02",
         "07070707070707070707070707070707",
         "07070707070707070707070707070707"
     ))?;
@@ -77,6 +79,7 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
 #[test]
 fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std::error::Error>> {
     let chunk = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([7; 32]),
     };
@@ -127,6 +130,7 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
                 first_offset: 0,
                 end_offset: 4,
                 chunk: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Blob,
                     digest: chunk.digest,
                 },
@@ -139,6 +143,7 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
                 first_offset: 0,
                 end_offset: 4,
                 page: ObjectId {
+                    storage: None,
                     kind: ObjectKind::BlobChunk,
                     digest: chunk.digest,
                 },
@@ -226,6 +231,7 @@ async fn blob_page_publication_rejects_the_exact_encoded_byte_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let chunk = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([91; 32]),
     };
@@ -275,6 +281,7 @@ async fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work
             first_offset: 0,
             end_offset: 1,
             chunk: ObjectId {
+                storage: None,
                 kind: ObjectKind::BlobChunk,
                 digest: Digest::from_bytes([77; 32]),
             },

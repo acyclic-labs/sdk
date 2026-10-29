@@ -4,7 +4,6 @@ use super::codec::{
     CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
     ReadAllocationStep,
 };
-use super::types::digest_object;
 use crate::foundation::usize_to_u64;
 use crate::kernel::Child;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
@@ -207,7 +206,7 @@ where
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
         copied = copied
             .checked_add(usize_to_u64(entry.name.as_bytes().len()))
-            .and_then(|bytes| bytes.checked_add(32))
+            .and_then(|bytes| bytes.checked_add(entry.value.encoded_len() as u64))
             .ok_or(WorkError::Overflow)?;
         prior = Some(&entry.name);
     }
@@ -237,13 +236,13 @@ where
         let encoded = WorkCounters {
             items_examined: 1,
             bytes_encoded: usize_to_u64(attribute_leaf_item_encoded_length(entry)?),
-            bytes_copied: usize_to_u64(entry.name.as_bytes().len()) + 32,
+            bytes_copied: usize_to_u64(entry.name.as_bytes().len() + entry.value.encoded_len()),
             ..WorkCounters::default()
         };
         observe(EncodeWorkStep::Admit(encoded))?;
         encode_name(&mut encoder, &entry.name)?;
         encoder.u64(entry.value_bytes);
-        encoder.fixed(entry.value.digest.as_bytes());
+        encoder.object(entry.value);
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
@@ -282,11 +281,11 @@ where
             return Err(invariant(AttributeError::InvalidPage).into());
         }
         length = length
-            .checked_add(attribute_internal_item_encoded_length(name)?)
+            .checked_add(attribute_internal_item_encoded_length(name, page)?)
             .ok_or(CanonicalDecodeError::LengthOverflow)?;
         copied = copied
             .checked_add(usize_to_u64(name.as_bytes().len()))
-            .and_then(|bytes| bytes.checked_add(32))
+            .and_then(|bytes| bytes.checked_add(page.encoded_len() as u64))
             .ok_or(WorkError::Overflow)?;
         prior = Some(name);
     }
@@ -315,13 +314,13 @@ where
         observe(EncodeWorkStep::Check)?;
         let encoded = WorkCounters {
             items_examined: 1,
-            bytes_encoded: usize_to_u64(attribute_internal_item_encoded_length(name)?),
-            bytes_copied: usize_to_u64(name.as_bytes().len()) + 32,
+            bytes_encoded: usize_to_u64(attribute_internal_item_encoded_length(name, page)?),
+            bytes_copied: usize_to_u64(name.as_bytes().len() + page.encoded_len()),
             ..WorkCounters::default()
         };
         observe(EncodeWorkStep::Admit(encoded))?;
         encode_name(&mut encoder, name)?;
-        encoder.fixed(page.digest.as_bytes());
+        encoder.object(page);
         observe(EncodeWorkStep::Completed(encoded))?;
     }
     Ok(encoder.finish())
@@ -353,9 +352,9 @@ where
     if count(children.len())? > maximum_items {
         return Err(CanonicalDecodeError::LengthOverflow);
     }
-    children.try_fold(DOMAIN.len() + 2 + 1 + 4, |bytes, (name, _)| {
+    children.try_fold(DOMAIN.len() + 2 + 1 + 4, |bytes, (name, page)| {
         bytes
-            .checked_add(attribute_internal_item_encoded_length(name)?)
+            .checked_add(attribute_internal_item_encoded_length(name, page)?)
             .ok_or(CanonicalDecodeError::LengthOverflow)
     })
 }
@@ -368,17 +367,18 @@ pub(crate) fn attribute_leaf_item_encoded_length(
         .name
         .as_bytes()
         .len()
-        .checked_add(1 + 4 + 8 + 32)
+        .checked_add(1 + 4 + 8 + entry.value.encoded_len())
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
 pub(crate) fn attribute_internal_item_encoded_length(
     name: &AttributeName,
+    page: ObjectId,
 ) -> Result<usize, CanonicalDecodeError> {
     count(name.as_bytes().len())?;
     name.as_bytes()
         .len()
-        .checked_add(1 + 4 + 32)
+        .checked_add(1 + 4 + page.encoded_len())
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
@@ -408,8 +408,7 @@ pub(crate) fn attribute_page_decode_shape(
                 if tag == 1 {
                     decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 }
-                let _: [u8; 32] =
-                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.any_object(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
             }
             if tag == 1 {
                 DecodedPageKind::Leaf
@@ -459,7 +458,7 @@ where
                 entries.push(AttributeEntry {
                     name: decode_name(&mut decoder, limits.maximum_name_bytes, observe)?,
                     value_bytes: decoder.u64(observe)?,
-                    value: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+                    value: decoder.object(ObjectKind::Blob, observe)?,
                 });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -475,8 +474,7 @@ where
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
-                let page =
-                    digest_object(ObjectKind::AttributePage, decoder.fixed::<32, E>(observe)?);
+                let page = decoder.object(ObjectKind::AttributePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -511,6 +509,7 @@ pub fn attribute_page_id(
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: object_digest(&bytes),
     })

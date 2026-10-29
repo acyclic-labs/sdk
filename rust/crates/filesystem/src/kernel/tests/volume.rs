@@ -1,4 +1,5 @@
 use super::*;
+use crate::Digest;
 
 fn config() -> VolumeConfig {
     VolumeConfig::portable(Lifecycle::Ephemeral)
@@ -11,6 +12,7 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
         volume_id: VolumeId::from_bytes([1; 16]),
         config: config(),
         initial_generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([2; 32]),
         },
@@ -65,6 +67,7 @@ fn invalid_config_and_object_kind_fail_closed() {
                 volume_id: VolumeId::from_bytes([3; 16]),
                 config: invalid,
                 initial_generation_root: ObjectId {
+                    storage: None,
                     kind: ObjectKind::GenerationRoot,
                     digest: Digest::from_bytes([4; 32]),
                 },
@@ -82,6 +85,7 @@ fn invalid_config_and_object_kind_fail_closed() {
                 volume_id: VolumeId::from_bytes([5; 16]),
                 config: config(),
                 initial_generation_root: ObjectId {
+                    storage: None,
                     kind: ObjectKind::TreePage,
                     digest: Digest::from_bytes([6; 32]),
                 },
@@ -112,6 +116,7 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
             limits: VolumeLimits::default(),
         },
         initial_generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([10; 32]),
         },

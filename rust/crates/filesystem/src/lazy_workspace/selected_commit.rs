@@ -78,7 +78,7 @@ impl<
                 return Err(LazyWorkspaceError::StaleIdentity);
             }
             ctx.charge(WorkCounters {
-                bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+                bytes_hashed: LazySnapshotRef::hash_bytes(generation),
                 ..WorkCounters::UNCHARGED
             })?;
             Ok((

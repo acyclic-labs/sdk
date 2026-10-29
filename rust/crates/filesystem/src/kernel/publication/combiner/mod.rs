@@ -644,6 +644,7 @@ mod tests {
 
     pub(super) fn anchor() -> Anchor {
         let root = ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([1; 32]),
         };

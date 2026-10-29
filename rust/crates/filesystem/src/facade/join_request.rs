@@ -3,6 +3,21 @@ use super::*;
 pub(super) const WORKSPACE_JOIN_OPERATION_DOMAIN: &[u8] =
     b"acyclic-fs-workspace-join-operation-v1\0";
 
+pub(super) fn workspace_join_context_bytes(
+    source: GenerationId,
+    target: GenerationId,
+    base: GenerationId,
+) -> u64 {
+    (WORKSPACE_JOIN_OPERATION_DOMAIN.len()
+        + 3 * 16
+        + source.object_id().encoded_len()
+        + target.object_id().encoded_len()
+        + base.object_id().encoded_len()
+        + 32
+        + 1
+        + 3 * 4) as u64
+}
+
 pub(crate) enum WorkspaceJoinOutcome {
     Applied(GenerationId),
     AlreadyApplied(GenerationId),
@@ -66,11 +81,11 @@ pub(super) fn workspace_join_context(
     let mut hasher = blake3::Hasher::new();
     hasher.update(WORKSPACE_JOIN_OPERATION_DOMAIN);
     hasher.update(&source_workspace.into_bytes());
-    hasher.update(source_generation.digest().as_bytes());
+    hasher.update(&source_generation.to_bytes());
     hasher.update(&target_workspace.into_bytes());
-    hasher.update(expected_target.digest().as_bytes());
+    hasher.update(&expected_target.to_bytes());
     hasher.update(&base.volume_id.into_bytes());
-    hasher.update(base.id.digest().as_bytes());
+    hasher.update(&base.id.to_bytes());
     hasher.update(&[match history {
         crate::workspace::JoinHistory::Merge => 1,
         crate::workspace::JoinHistory::Rebase => 2,
@@ -140,14 +155,14 @@ pub(super) fn hash_join_resolutions(
             MergeConflictResolution::File(Some(record)) => {
                 let payload_bytes = match record.payload {
                     FilePayload::InlineRegular(data) => 9 + data.as_bytes().len() as u64,
-                    FilePayload::Regular { .. }
-                    | FilePayload::SymbolicLink { .. }
-                    | FilePayload::ReparsePoint { .. } => 42,
-                    FilePayload::Directory { .. } => 34,
+                    FilePayload::Regular { extents, .. } => 9 + extents.encoded_len() as u64,
+                    FilePayload::SymbolicLink { target, .. } => 9 + target.encoded_len() as u64,
+                    FilePayload::ReparsePoint { payload, .. } => 9 + payload.encoded_len() as u64,
+                    FilePayload::Directory { entries } => 1 + entries.encoded_len() as u64,
                     FilePayload::Empty => 1,
                     FilePayload::Device { .. } => 9,
                 };
-                60 + payload_bytes
+                27 + record.metadata.encoded_len() as u64 + payload_bytes
             }
         };
         let hashing = WorkCounters {

@@ -90,7 +90,7 @@ pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFac
         DurableSourceState::Conflict => encoder.u8(4),
         DurableSourceState::Sealed => encoder.u8(5),
     }
-    encoder.fixed(value.generation_id.digest().as_bytes());
+    encoder.object(value.generation_id.object_id());
     Ok(encoder.finish())
 }
 
@@ -129,9 +129,11 @@ pub(crate) fn decode_source_fact(
             5 => DurableSourceState::Sealed,
             _ => return Err(invariant("unknown source state").into()),
         },
-        generation_id: GenerationId::new(Digest::from_bytes(
-            decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        )),
+        generation_id: GenerationId::from_root(
+            decoder.object(crate::ObjectKind::GenerationRoot, &mut |_| {
+                Ok::<_, crate::kernel::CanonicalDecodeError>(())
+            })?,
+        ),
     };
     decoder.finish()?;
     validate(value)?;

@@ -71,7 +71,9 @@ pub fn encode_generation_publication_evidence(
     if maximum == 0 || minimum > maximum {
         return Err(PublicationEvidenceError::TooLarge);
     }
-    let (root_id, generation_id) = generation_root_id(&proof.root)?;
+    let (plaintext_root, _) = generation_root_id(&proof.root)?;
+    let root_id = request.generation_root;
+    let generation_id = crate::GenerationId::from_root(root_id);
     let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -81,7 +83,8 @@ pub fn encode_generation_publication_evidence(
         || request.expected != append.expected
         || request.operation_id != append.commit.operation_id
         || request.volume_id != proof.root.volume_id
-        || request.generation_root != root_id
+        || root_id.kind != crate::ObjectKind::GenerationRoot
+        || root_id.digest != plaintext_root.digest
         || proof.generation_id != generation_id
         || published.volume_id != request.volume_id
         || published.generation_root != root_id
@@ -270,14 +273,17 @@ pub fn decode_generation_publication_evidence(
         },
         permit,
     };
-    let (root_id, generation_id) = generation_root_id(&root)?;
+    let (plaintext_root, _) = generation_root_id(&root)?;
+    let root_id = manifest.generation_root;
+    let generation_id = crate::GenerationId::from_root(root_id);
     let published = decode_published_generation(&append.commit.payload, maximum_bytes, |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
     if request.authority_id != super::volume_authority_id(volume_id)
         || root.volume_id != volume_id
         || manifest.volume_id != volume_id
-        || manifest.generation_root != root_id
+        || root_id.kind != crate::ObjectKind::GenerationRoot
+        || root_id.digest != plaintext_root.digest
         || manifest.generation_id != generation_id
         || published.volume_id != volume_id
         || published.generation_root != root_id

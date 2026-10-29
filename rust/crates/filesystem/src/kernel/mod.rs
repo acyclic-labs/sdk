@@ -39,6 +39,8 @@ mod live;
 mod mark;
 mod merge;
 mod metadata;
+mod references;
+pub(crate) use references::visit_object_references;
 mod mutation;
 mod namespace_path;
 mod path_access;
@@ -290,3 +292,5 @@ pub use volume::{VolumeCreated, VolumeCreatedError, decode_volume_created, volum
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod decoder_fuzz;
+
+pub(crate) use file_read::complete_standalone_backend;

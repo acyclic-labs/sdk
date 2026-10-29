@@ -73,8 +73,11 @@ pub(super) fn stream_path(
     AuthorityPlacement::default().stream_path(authority, suffix)
 }
 pub(super) fn decode_lineage_generation(bytes: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
-    record_bytes::<32>(bytes, LINEAGE_DOMAIN)
-        .map(|bytes| GenerationId::new(Digest::from_bytes(*bytes)))
+    bytes
+        .strip_prefix(LINEAGE_DOMAIN)
+        .and_then(|bytes| ObjectId::try_from(bytes).ok())
+        .filter(|id| id.kind == crate::ObjectKind::GenerationRoot)
+        .map(GenerationId::from_root)
         .ok_or(AuthorityStoreError::CorruptStatic(
             "invalid Stream generation-lineage record",
         ))
@@ -100,9 +103,7 @@ pub(super) fn generation_from_payload(
     meter.admit(examined)?;
     const CREATED: &[u8] = b"acyclic-fs-volume-created-v1\0";
     const PUBLISHED: &[u8] = b"acyclic-fs-publish-generation-v1\0";
-    let created = payload.len()
-        == CREATED.len() + 2 + 16 + crate::kernel::CONFIG_ENCODED_BYTES + 1 + 32
-        && payload.starts_with(CREATED);
+    let created = payload.starts_with(CREATED);
     meter.charge(examined)?;
     meter.check()?;
     let published = payload.starts_with(PUBLISHED);
@@ -114,12 +115,12 @@ pub(super) fn generation_from_payload(
             crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut |step| {
                 observe(step)
             })
-            .map(|created| (created.volume_id, created.initial_generation_root.digest))
+            .map(|created| (created.volume_id, created.initial_generation_root))
         } else {
             crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut |step| {
                 observe(step)
             })
-            .map(|published| (published.volume_id, published.generation_root.digest))
+            .map(|published| (published.volume_id, published.generation_root))
         }
     })
     .map(|(fact, _)| fact);
@@ -141,7 +142,7 @@ pub(super) fn generation_from_payload(
             meter,
         ));
     }
-    Ok(Some(GenerationId::new(digest)))
+    Ok(Some(GenerationId::from_root(digest)))
 }
 #[cfg(test)]
 pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(

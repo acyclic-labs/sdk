@@ -4,9 +4,7 @@ use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
 };
 use super::codec::{DecodedPageKind, DecodedPageShape};
-use super::types::{
-    FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError, digest_object,
-};
+use super::types::{FileKind, LogicalName, NameEncoding, TreeEntry, TreePage, TreePageError};
 use crate::foundation::{FileId, usize_to_u64};
 use crate::kernel::Child;
 use crate::storage::{ObjectId, ObjectKind, object_digest};
@@ -125,7 +123,7 @@ where
     encoder.u32(count(children.len())?);
     for (name, page) in children {
         encode_name(&mut encoder, name)?;
-        encoder.fixed(page.digest.as_bytes());
+        encoder.object(page);
     }
     observe(EncodeWorkStep::Completed(WorkCounters {
         bytes_encoded: (length - DOMAIN.len() - 2) as u64,
@@ -202,7 +200,7 @@ where
             }
             count(name.as_bytes().len())?;
             length
-                .checked_add(1 + 4 + 32)
+                .checked_add(1 + 4 + page.encoded_len())
                 .and_then(|value| value.checked_add(name.as_bytes().len()))
                 .ok_or(CanonicalDecodeError::LengthOverflow)
         })();
@@ -249,8 +247,9 @@ pub(crate) fn tree_page_decode_shape(
                 nested_bytes = nested_bytes
                     .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
-                let _: [u8; 32] =
-                    decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.object(ObjectKind::TreePage, &mut |_| {
+                    Ok::<_, CanonicalDecodeError>(())
+                })?;
             }
             DecodedPageKind::Internal
         }
@@ -315,7 +314,7 @@ where
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
-                let page = digest_object(ObjectKind::TreePage, decoder.fixed::<32, E>(observe)?);
+                let page = decoder.object(ObjectKind::TreePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -349,6 +348,7 @@ pub fn tree_page_id(page: &TreePage, maximum_items: u32) -> Result<ObjectId, Can
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::TreePage,
         digest: object_digest(&bytes),
     })

@@ -200,6 +200,7 @@ pub(super) fn original_borrowed_path_changes(
 
 pub(super) async fn assert_authority_volume_identity_fails_closed() -> TestResult {
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: Digest::from_bytes([221; 32]),
     };

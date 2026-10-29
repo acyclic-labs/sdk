@@ -6,6 +6,7 @@ type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn namespace_diff(count: usize, chain: bool) -> TestResult<crate::GenerationDiff> {
     let object = |kind| ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([1; 32]),
     };
@@ -149,6 +150,7 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
             .map(|index| Child {
                 first: index * 2,
                 page: ObjectId {
+                    storage: None,
                     kind: ObjectKind::FileTablePage,
                     digest: crate::storage::object_digest(&index.to_be_bytes()),
                 },

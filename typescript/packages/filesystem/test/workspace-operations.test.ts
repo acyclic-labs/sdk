@@ -4,23 +4,25 @@ import type { WasmRawWorkspace } from "../src/binding-types.js";
 import { adaptJoinPlan } from "../src/workspace-operations.js";
 import { createFilesystemAdapter } from "../src/filesystem-adapter.js";
 
+const generation = (byte: number): Buffer => Buffer.from([6, ...Buffer.alloc(32, byte)]);
+
 describe("shared workspace operations", () => {
   test("join plan copies binding heads and checks fenced apply inputs", async () => {
-    const targetHead = Buffer.alloc(32, 1);
-    const commonAncestor = Buffer.alloc(32, 2);
+    const targetHead = generation(1);
+    const commonAncestor = generation(2);
     const raw = {
       targetHead, commonAncestor,
-      async apply() { return { status: "applied", generationId: Buffer.alloc(32, 3), conflicts: [], truncated: false }; },
+      async apply() { return { status: "applied", generationId: generation(3), conflicts: [], truncated: false }; },
     };
     const plan = adaptJoinPlan(raw);
 
     plan.targetHead[0] = 9;
     plan.commonAncestor[0] = 9;
-    expect(targetHead[0]).toBe(1);
-    expect(commonAncestor[0]).toBe(2);
-    const applied = await plan.apply(new Uint8Array(32), new Uint8Array(16));
+    expect(targetHead[0]).toBe(6);
+    expect(commonAncestor[0]).toBe(6);
+    const applied = await plan.apply(generation(0), new Uint8Array(16));
     expect(applied.status).toBe("applied");
-    expect(applied.generationId?.[0]).toBe(3);
+    expect(applied.generationId?.[1]).toBe(3);
   });
 
   test("native conflict-side selections are copied before forwarding", async () => {
@@ -29,20 +31,20 @@ describe("shared workspace operations", () => {
     const name = Buffer.from([3]);
     let forwarded: readonly MergeConflictSelection[] = [];
     const raw = {
-      targetHead: Buffer.alloc(32), commonAncestor: Buffer.alloc(32),
+      targetHead: generation(0), commonAncestor: generation(0),
       async apply() { throw new Error("not used"); },
       async applySides(_target: Uint8Array, _key: Uint8Array | undefined, selections: readonly MergeConflictSelection[]) {
         forwarded = selections;
-        return { status: "applied", generationId: Buffer.alloc(32, 4), conflicts: [], truncated: false };
+        return { status: "applied", generationId: generation(4), conflicts: [], truncated: false };
       },
     };
     const plan = adaptJoinPlan(raw);
-    const result = await plan.applySides!(new Uint8Array(32), [
+    const result = await plan.applySides!(generation(0), [
       { kind: "file", fileId, side: "ours" },
       { kind: "binding", directoryId, name: { encoding: "posix-bytes", bytes: name }, side: "theirs" },
     ]);
 
-    expect(result.generationId?.[0]).toBe(4);
+    expect(result.generationId?.[1]).toBe(4);
     expect(forwarded).toHaveLength(2);
     const forwardedFile = forwarded[0];
     const forwardedBinding = forwarded[1];
@@ -54,8 +56,8 @@ describe("shared workspace operations", () => {
   });
 
   test("copies raw bytes and validates requests before forwarding", async () => {
-    const head = Buffer.alloc(32, 1);
-    const committed = Buffer.alloc(32, 2);
+    const head = generation(1);
+    const committed = generation(2);
     let reads = 0;
     const raw = {
       async head() { return head; },
@@ -70,9 +72,9 @@ describe("shared workspace operations", () => {
     const result = await operations.write("/item", new Uint8Array([1]));
     expect(result.status).toBe("committed");
     result.generationId![0] = 9;
-    expect(committed[0]).toBe(2);
+    expect(committed[0]).toBe(6);
     const observed = await operations.head();
     observed[0] = 9;
-    expect(head[0]).toBe(1);
+    expect(head[0]).toBe(6);
   });
 });

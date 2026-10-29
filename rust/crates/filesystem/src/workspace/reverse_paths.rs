@@ -101,10 +101,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                 cancellation,
             )
             .await?;
-        let generation_root = crate::ObjectId {
-            kind: crate::ObjectKind::GenerationRoot,
-            digest: self.id.digest(),
-        };
+        let generation_root = self.id.object_id();
         let result = namespace_records_to_file_root_with_accounting(
             &self.workspace.volume,
             checkout.value.root(),

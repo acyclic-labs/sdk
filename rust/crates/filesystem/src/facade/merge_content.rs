@@ -11,10 +11,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         let root = self
             .read_join_root_with_accounting(
-                ObjectId {
-                    kind: ObjectKind::GenerationRoot,
-                    digest: generation.digest(),
-                },
+                generation.object_id(),
                 workspace.config,
                 &mut accounting,
                 &cancellation,

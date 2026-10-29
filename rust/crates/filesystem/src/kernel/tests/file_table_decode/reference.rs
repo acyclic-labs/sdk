@@ -82,8 +82,7 @@ where
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
-                let page =
-                    digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(observe)?);
+                let page = decoder.object(ObjectKind::FileTablePage, observe)?;
                 children.push(Child { first, page });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -113,18 +112,18 @@ fn decode_record<E: From<CanonicalDecodeError>>(
     let file_id = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
     let kind = FileKind::from_tag(decoder.u8(observe)?).map_err(invariant_tree)?;
     let link_count = decoder.u64(observe)?;
-    let metadata = digest_object(ObjectKind::Metadata, decoder.fixed::<32, E>(observe)?);
+    let metadata = decoder.object(ObjectKind::Metadata, observe)?;
     let payload = match decoder.u8(observe)? {
         1 => FilePayload::Regular {
             logical_bytes: decoder.u64(observe)?,
-            extents: digest_object(ObjectKind::ExtentPage, decoder.fixed::<32, E>(observe)?),
+            extents: decoder.object(ObjectKind::ExtentPage, observe)?,
         },
         2 => FilePayload::Directory {
-            entries: digest_object(ObjectKind::TreePage, decoder.fixed::<32, E>(observe)?),
+            entries: decoder.object(ObjectKind::TreePage, observe)?,
         },
         3 => FilePayload::SymbolicLink {
             target_bytes: decoder.u64(observe)?,
-            target: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+            target: decoder.object(ObjectKind::Blob, observe)?,
         },
         4 => FilePayload::Empty,
         5 => FilePayload::Device {
@@ -133,7 +132,7 @@ fn decode_record<E: From<CanonicalDecodeError>>(
         },
         6 => FilePayload::ReparsePoint {
             payload_bytes: decoder.u64(observe)?,
-            payload: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+            payload: decoder.object(ObjectKind::Blob, observe)?,
         },
         7 => {
             let length = decoder.u8(observe)?;

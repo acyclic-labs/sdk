@@ -50,7 +50,7 @@ impl DisjointChanges {
         )
         .await?;
         let mut parents = Owned::<Vec<GenerationId>>::allocate(1, accounting)?;
-        parents.value.push(GenerationId::new(candidate.digest));
+        parents.value.push(GenerationId::from_root(candidate));
         let Owned {
             value: parents,
             allocation,

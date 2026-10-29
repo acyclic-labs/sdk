@@ -3,8 +3,9 @@
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, EncodeWorkStep, Encoder, ReadAllocationStep,
 };
-use super::types::digest_object;
-use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
+#[cfg(test)]
+use crate::Digest;
+use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use crate::{CancellationToken, WorkCounters};
 
@@ -12,7 +13,7 @@ const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;
 const MAXIMUM_PARENTS: u32 = 2;
 /// Largest canonical generation-root object in this format version.
-pub const MAXIMUM_GENERATION_ROOT_BYTES: u64 = 150;
+pub const MAXIMUM_GENERATION_ROOT_BYTES: u64 = 393;
 
 /// One immutable volume generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +24,8 @@ pub struct GenerationRoot {
     pub root_file_id: FileId,
     /// Authenticated file-table root containing every reachable file record.
     pub file_table: ObjectId,
-    /// Ordered zero-, one-, or two-parent lineage.
+    /// Ordered zero-, one-, or two-parent authenticated lineage. Ancestors are
+    /// retained independently; they are outside this generation's content closure.
     pub parents: Vec<GenerationId>,
     /// Required format semantics; unknown bits are rejected by this version.
     pub required_features: u64,
@@ -76,7 +78,13 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     let length = length?;
     let encoded = WorkCounters {
         bytes_encoded: length as u64,
-        bytes_copied: (64 + root.parents.len() * 32) as u64,
+        bytes_copied: (32
+            + root.file_table.encoded_len()
+            + root
+                .parents
+                .iter()
+                .map(|parent| parent.object_id().encoded_len())
+                .sum::<usize>()) as u64,
         ..WorkCounters::default()
     };
     observe(EncodeWorkStep::Admit(encoded))?;
@@ -90,11 +98,11 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     )?;
     encoder.fixed(&root.volume_id.into_bytes());
     encoder.fixed(&root.root_file_id.into_bytes());
-    encoder.fixed(root.file_table.digest.as_bytes());
+    encoder.object(root.file_table);
     encoder
         .u32(u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     for parent in &root.parents {
-        encoder.fixed(parent.digest().as_bytes());
+        encoder.object(parent.object_id());
     }
     encoder.u64(root.required_features);
     observe(EncodeWorkStep::Completed(WorkCounters {
@@ -111,12 +119,11 @@ pub(crate) fn generation_root_encoded_length(
     root.validate()?;
     DOMAIN
         .len()
-        .checked_add(2 + 16 + 16 + 32 + 4 + 8)
+        .checked_add(2 + 16 + 16 + root.file_table.encoded_len() + 4 + 8)
         .and_then(|length| {
-            root.parents
-                .len()
-                .checked_mul(32)
-                .and_then(|parents| length.checked_add(parents))
+            root.parents.iter().try_fold(length, |length, parent| {
+                length.checked_add(parent.object_id().encoded_len())
+            })
         })
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
@@ -139,10 +146,7 @@ where
     )?;
     let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
     let root_file_id = FileId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
-    let file_table = digest_object(
-        ObjectKind::FileTablePage,
-        decoder.fixed::<32, E>(&mut observe)?,
-    );
+    let file_table = decoder.object(ObjectKind::FileTablePage, &mut observe)?;
     let parent_count = decoder.u32(&mut observe)?;
     if parent_count > MAXIMUM_PARENTS {
         return Err(CanonicalDecodeError::FieldTooLarge {
@@ -160,9 +164,9 @@ where
     super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;
     for _ in 0..parent_count {
         observe(ReadAllocationStep::BeforeItem)?;
-        parents.push(GenerationId::new(Digest::from_bytes(
-            decoder.fixed(&mut observe)?,
-        )));
+        parents.push(GenerationId::from_root(
+            decoder.object(ObjectKind::GenerationRoot, &mut observe)?,
+        ));
         observe(ReadAllocationStep::Item)?;
     }
     let required_features = decoder.u64(&mut observe)?;
@@ -220,7 +224,17 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
     let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
     let root = decode_generation_root(&read, limits, |step| scope.observe(step));
     let root = match root {
-        Ok(root) => Ok((root, scope.into_allocation())),
+        Ok(root)
+            if generation_root
+                .storage
+                .is_none_or(|storage| storage.root_file_id == root.root_file_id) =>
+        {
+            Ok((root, scope.into_allocation()))
+        }
+        Ok(_) => {
+            scope.release_failed()?;
+            Err(invariant("generation seal has the wrong root directory identity").into())
+        }
         Err(error) => {
             let _retired = scope.release_failed();
             Err(error)
@@ -241,10 +255,11 @@ pub fn generation_root_id(
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     let object = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(&bytes),
     };
-    Ok((object, GenerationId::new(object.digest)))
+    Ok((object, GenerationId::from_root(object)))
 }
 
 fn invariant(message: &'static str) -> CanonicalDecodeError {

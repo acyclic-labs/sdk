@@ -278,7 +278,7 @@ where
         )
         .map_err(E::from)?;
         let root = decoded.publication.generation_root;
-        if root.digest != output.0.generation_id.digest() {
+        if root != output.0.generation_id.object_id() {
             authenticate::retire(output, accounting).map_err(E::from)?;
             let authenticated = authenticate::prove(
                 objects,

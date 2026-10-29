@@ -6,6 +6,7 @@ use crate::memory::MemoryObjectStore;
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind: ObjectKind::FileTablePage,
         digest: Digest::from_bytes([byte; 32]),
     }
@@ -83,7 +84,7 @@ async fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
     assert_eq!(root.file_table, table(7));
-    assert_eq!(root.parents, vec![GenerationId::new(base.digest)]);
+    assert_eq!(root.parents, vec![GenerationId::from_root(base)]);
     Ok(())
 }
 
@@ -148,6 +149,7 @@ async fn checkpoint_request_and_merge_identity_guards_are_total_before_publicati
     let store = MemoryObjectStore::default();
     let base = put_root(&store, 1, 2, 3).await?;
     let wrong_generation = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: base.digest,
     };
@@ -164,6 +166,7 @@ async fn checkpoint_request_and_merge_identity_guards_are_total_before_publicati
             CheckpointRequest {
                 base,
                 file_table: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Blob,
                     digest: Digest::ZERO,
                 },
@@ -265,8 +268,8 @@ async fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
     assert_eq!(
         root.parents,
         vec![
-            GenerationId::new(base.digest),
-            GenerationId::new(merge.digest)
+            GenerationId::from_root(base),
+            GenerationId::from_root(merge)
         ]
     );
     Ok(())

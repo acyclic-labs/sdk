@@ -110,6 +110,7 @@ fn effect_storage(work: &NativeMaterializationWork, pages: bool) -> EffectStorag
             first_offset: 0,
             end_offset: 1,
             chunk: crate::ObjectId {
+                storage: None,
                 kind: crate::ObjectKind::BlobChunk,
                 digest: crate::Digest::from_bytes([1; 32]),
             },

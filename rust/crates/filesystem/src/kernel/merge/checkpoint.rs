@@ -27,7 +27,7 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     };
     let (parent, parent_id) = match request.ours_generation {
         Some(object) if object.kind == ObjectKind::GenerationRoot => {
-            (object, GenerationId::new(object.digest))
+            (object, GenerationId::from_root(object))
         }
         Some(_) => return Err(FsError::InvalidDiff),
         None => {
@@ -43,7 +43,7 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 cancellation,
             )
             .await?;
-            (parent, GenerationId::new(parent.digest))
+            (parent, GenerationId::from_root(parent))
         }
     };
     let merged = build_checkpoint_with_accounting(
@@ -71,7 +71,7 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
         if request.retain_theirs_parent {
             parents
                 .value
-                .push(GenerationId::new(request.theirs_generation.digest));
+                .push(GenerationId::from_root(request.theirs_generation));
         }
         accounting.record_completed(delta)
     });
@@ -87,7 +87,7 @@ async fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
     Ok((
         MergeGenerationOutcome::Prepared {
             generation_root: merged,
-            generation_id: GenerationId::new(merged.digest),
+            generation_id: GenerationId::from_root(merged),
             root: GenerationRoot {
                 volume_id: request.ours.volume_id,
                 root_file_id: request.ours.root_file_id,

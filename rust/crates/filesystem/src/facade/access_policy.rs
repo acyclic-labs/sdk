@@ -288,7 +288,7 @@ macro_rules! policy_revision {
             record_authority_work($accounting, &authority)?;
             Ok(
                 crate::facade::policy_head_is_current(observed, current?).then_some((
-                    GenerationId::new(generation.digest),
+                    GenerationId::from_root(generation),
                     metadata.named_attributes,
                 )),
             )

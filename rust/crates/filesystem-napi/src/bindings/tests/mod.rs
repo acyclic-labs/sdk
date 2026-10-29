@@ -1,6 +1,29 @@
 use super::*;
 use acyclic_fs::WorkBudget;
 
+#[test]
+fn generation_reference_codec_preserves_sealed_association() -> Result<()> {
+    let plain = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([1; 32]));
+    let sealed = acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+        storage: Some(acyclic_fs::ObjectStorage {
+            locator: acyclic_fs::Digest::from_bytes([2; 32]),
+            root_file_id: acyclic_fs::FileId::from_bytes([3; 16]),
+            origin_generation: acyclic_fs::Digest::from_bytes([4; 32]),
+        }),
+        ..plain.object_id()
+    });
+    for generation in [plain, sealed] {
+        assert_eq!(decode_generation_id(&generation.to_bytes())?, generation);
+    }
+    for invalid in [&[1; 32][..], &sealed.to_bytes()[..33]] {
+        assert!(decode_generation_id(invalid).is_err());
+    }
+    let mut wrong_kind = sealed.to_bytes().to_vec();
+    wrong_kind[0] = 0x85;
+    assert!(decode_generation_id(&wrong_kind).is_err());
+    Ok(())
+}
+
 fn test_config() -> VolumeConfig {
     VolumeConfig {
         profile: FilesystemProfile::Portable,

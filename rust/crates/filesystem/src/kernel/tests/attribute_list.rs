@@ -19,6 +19,7 @@ fn entry(value: &str, byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Er
         name: name(value)?,
         value_bytes: 1,
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -387,6 +388,7 @@ async fn pagination_admission_height_and_alias_guards_are_fail_closed()
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let wrong_root = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: root.digest,
     };

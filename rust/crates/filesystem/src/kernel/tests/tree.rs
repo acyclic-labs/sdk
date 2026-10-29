@@ -128,6 +128,7 @@ fn internal_children_require_tree_page_ids() -> Result<(), Box<dyn std::error::E
     let invalid = TreePage::Internal(vec![Child {
         first: name(b"a")?,
         page: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: crate::foundation::Digest::ZERO,
         },
@@ -176,6 +177,7 @@ fn tree_encoder_rejects_every_item_order_and_bound_violation()
         Ok::<_, TreePageError>(Child {
             first: name(value)?,
             page: ObjectId {
+                storage: None,
                 kind: ObjectKind::TreePage,
                 digest: crate::foundation::Digest::from_bytes([byte; 32]),
             },

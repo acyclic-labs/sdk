@@ -10,6 +10,7 @@ fn generation(byte: u8) -> GenerationId {
 fn object(byte: u8) -> ObjectId {
     let bytes = [byte; 16];
     ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(&bytes),
     }

@@ -3,7 +3,7 @@ import type { WasmRawWorkspace } from "./binding-types.js";
 import { parseWorkspaceRebaseResult } from "./workspace-results.js";
 import type { OperationWindowCoordinator, OperationWindowLease, OperationWindowPhase, OperationWindowClose } from "./compat.js";
 import type { BrowserOperationWindowCoordinator, BrowserOperationWindowLease, BrowserOperationWindowPhase, BrowserOperationWindowClose } from "../generated/wasm/acyclic_fs_wasm.js";
-import { copyOptionalBytes, requireIdentity } from "./binding-values.js";
+import { requireObjectReference, copyOptionalBytes, requireIdentity } from "./binding-values.js";
 
 function copyOperationWindowLease(
   lease: BrowserOperationWindowLease,
@@ -21,7 +21,7 @@ function validateOperationWindowLease(
 ): BrowserOperationWindowLease {
   requireIdentity(lease.workspaceId, 16, "workspace identity");
   requireIdentity(lease.leaseId, 16, "lease identity");
-  requireIdentity(lease.pinnedParent, 32, "pinned parent");
+  requireObjectReference(lease.pinnedParent, "pinned parent", 6);
   return lease;
 }
 
@@ -79,7 +79,7 @@ export function adaptOperationWindowCoordinator(
   return {
     async begin(workspaceId, parent, owner, nowMillis, expiresAtMillis, leaseId) {
       requireIdentity(workspaceId, 16, "workspace identity");
-      requireIdentity(parent, 32, "parent");
+      requireObjectReference(parent, "parent", 6);
       if (leaseId !== undefined) requireIdentity(leaseId, 16, "lease identity");
       if (owner.length === 0) throw new RangeError("operation owner must be non-empty");
       return copyOperationWindowLease(
@@ -91,7 +91,7 @@ export function adaptOperationWindowCoordinator(
     },
     async observeParent(workspaceId, parent) {
       requireIdentity(workspaceId, 16, "workspace identity");
-      requireIdentity(parent, 32, "parent");
+      requireObjectReference(parent, "parent", 6);
       return raw.observeParent(workspaceId, parent);
     },
     async finish(lease, nowMillis) {

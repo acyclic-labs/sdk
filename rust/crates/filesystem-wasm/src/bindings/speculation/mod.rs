@@ -169,10 +169,7 @@ impl BrowserSpeculation {
             .observe_hint(
                 OperationId::from_bytes(fixed_16(&observation.operation_id)?),
                 VolumeId::from_bytes(fixed_16(&observation.volume_id)?),
-                acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                    &observation.generation_id,
-                    "generation identity",
-                )?)),
+                decode_generation_id(&observation.generation_id)?,
                 observation.foreground_bytes,
                 ResidencyHint {
                     request: ObjectReadRequest {
@@ -304,10 +301,7 @@ impl BrowserSpeculation {
             .controller
             .try_borrow_mut()
             .map_err(|_| speculation_busy())?
-            .replace_generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                generation_id,
-                "generation identity",
-            )?)))
+            .replace_generation(decode_generation_id(generation_id)?)
             .map_err(js_error)?;
         ts(browser_speculation_preemption(value))
     }

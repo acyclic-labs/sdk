@@ -183,6 +183,7 @@ async fn payload_bytes(
                 kind: FileKind::Regular,
                 link_count: 1,
                 metadata: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Metadata,
                     digest: Digest::from_bytes([248; 32]),
                 },

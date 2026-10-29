@@ -1,8 +1,7 @@
 import { type WorkspaceRef as WireWorkspaceRef, type SourceResponse as WireSourceResponse, SourceInvalidationReason as WireSourceInvalidationReason, type FileRecordSnapshot as WireFileRecordSnapshot, type TreeEntrySnapshot as WireTreeEntrySnapshot, type Conflict as WireConflict, type MutationStatus, type GenerationRef as WireGenerationRef, type RebaseStatus, type JoinStatus as WireJoinStatus, type Metadata as WireMetadata, type LogicalName as WireLogicalName, NameEncoding, type FileKind, type ExtentKind, type WorkCounters as WireWorkCounters, type FilesystemProfile, type JoinHistory } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { type SourceResult, type FileRecordSnapshot, type TreeEntrySnapshot, type TransactionConflict, type WorkspaceName, type MergeConflict, type WorkspaceCommit, type WorkspaceRebaseResult, type JoinResult, type WorkspaceMetadata, type WorkspaceFileKind, type WorkCounters, type WorkspaceDeleteStatus, type FsProfile, type JoinOptions } from "./contracts.js";
 import { SOURCE_STATE_TO_STATUS, SOURCE_INVALIDATION_REASON_TO_REASON, isFilePayloadKind, SPARSE_TARGET_TO_TARGET, MUTATION_STATUS_TO_COMMIT, REBASE_STATUS_TO_STATUS, JOIN_STATUS_TO_STATUS, NAME_ENCODING_TO_PUBLIC, FILE_KIND_TO_KIND, EXTENT_KIND_TO_KIND, WORK_COUNTER_KEYS, MUTATION_STATUS_TO_DELETE, FILESYSTEM_PROFILE_TO_PROFILE, JOIN_HISTORY_FROM_PUBLIC, CONFLICT_USE_TO_USAGE } from "../generated/hosted-contract.js";
-import { HostedFsError, required, requireBytes, equalBytes, exactBytes } from "./hosted-rpc.js";
-import { copyOptionalBytes } from "./binding-values.js";
+import { HostedFsError, required, optionalReferenceBytes, referenceBytes, equalBytes, exactBytes } from "./hosted-rpc.js";
 
 export function sourceResult(
   workspace: WireWorkspaceRef,
@@ -25,12 +24,11 @@ export function sourceResult(
   }
   if (selected !== undefined) {
     const owner = required(selected.workspace, "source generation workspace");
-    requireBytes(selected.generationId, 32, "source generation identity");
     if (!equalBytes(owner.workspaceId, workspace.workspaceId) || owner.name !== workspace.name) {
       throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
     }
   }
-  return { status, reason, generationId: copyOptionalBytes(selected?.generationId) };
+  return { status, reason, generationId: optionalReferenceBytes(selected?.generationId, "source generation identity", 6) };
 }
 
 export function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot {
@@ -40,10 +38,10 @@ export function fileSnapshot(value: WireFileRecordSnapshot): FileRecordSnapshot 
     fileId: exactBytes(value.fileId, 16, "file identity"),
     fileKind: fileKind(value.fileKind),
     linkCount: value.linkCount,
-    metadataObject: exactBytes(value.metadataObject, 33, "metadata object"),
+    metadataObject: referenceBytes(value.metadataObject, "metadata object"),
     payloadKind,
     logicalBytes: (value.logicalBytes?.value.case === "present" ? value.logicalBytes.value.value : undefined),
-    payloadObject: value.payloadObject.length === 0 ? undefined : exactBytes(value.payloadObject, 33, "payload object"),
+    payloadObject: value.payloadObject.length === 0 ? undefined : referenceBytes(value.payloadObject, "payload object"),
     inlineBytes: payloadKind === "inline-regular" ? Uint8Array.from(value.inlineBytes) : undefined,
     deviceMajor: (value.deviceMajor?.value.case === "present" ? value.deviceMajor.value.value : undefined),
     deviceMinor: (value.deviceMinor?.value.case === "present" ? value.deviceMinor.value.value : undefined),
@@ -133,7 +131,7 @@ function mergeConflict(value: WireConflict): MergeConflict {
 export function commit(status: MutationStatus, generationRef: WireGenerationRef | undefined): WorkspaceCommit {
   const translated = MUTATION_STATUS_TO_COMMIT[status];
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid mutation status");
-  return { status: translated, generationId: copyOptionalBytes(generationRef?.generationId) };
+  return { status: translated, generationId: optionalReferenceBytes(generationRef?.generationId, "generation identity", 6) };
 }
 
 export function workspaceRebase(
@@ -146,7 +144,7 @@ export function workspaceRebase(
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid rebase status");
   return {
     status: translated,
-    generationId: copyOptionalBytes(generationRef?.generationId),
+    generationId: optionalReferenceBytes(generationRef?.generationId, "generation identity", 6),
     conflicts: conflicts.map(mergeConflict),
     truncated,
   };
@@ -162,7 +160,7 @@ export function joinResult(
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid join status");
   return {
     status: translated,
-    generationId: copyOptionalBytes(generationRef?.generationId),
+    generationId: optionalReferenceBytes(generationRef?.generationId, "generation identity", 6),
     conflicts: conflicts.map(mergeConflict),
     truncated,
   };

@@ -128,7 +128,7 @@ impl<A, O> PinnedReader<A, O> {
     /// Exact immutable generation identity this reader is pinned to.
     #[must_use]
     pub const fn generation_id(&self) -> GenerationId {
-        GenerationId::new(self.generation_root.digest)
+        GenerationId::from_root(self.generation_root)
     }
 
     /// Immutable volume limits authenticated by the reader's constructor.

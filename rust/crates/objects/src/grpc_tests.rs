@@ -106,6 +106,13 @@ impl Blobs for Replica {
 fn client(replica: &Arc<Replica>) -> GrpcObjects {
     let replica = Arc::clone(replica);
     let resolve: AccountResolver = Arc::new(move |_| Ok(Arc::clone(&replica) as Arc<dyn Blobs>));
+    client_over(
+        resolve,
+        CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
+    )
+}
+
+fn client_over(resolve: AccountResolver, credential: CredentialProvider) -> GrpcObjects {
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
             let resolve = Arc::clone(&resolve);
@@ -122,10 +129,45 @@ fn client(replica: &Arc<Replica>) -> GrpcObjects {
             }
         }),
     );
-    GrpcObjects::from_channel(
-        channel,
-        CredentialProvider::new(|| std::future::ready(Ok("fixture".into()))),
-    )
+    GrpcObjects::over(channel, credential)
+}
+
+#[tokio::test]
+async fn caller_supplied_channel_refreshes_credentials_for_each_rpc() -> TestResult {
+    let provider = Arc::new(MemoryObjects::memory());
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let seen = observed.clone();
+    let resolve: AccountResolver = Arc::new(move |metadata| {
+        seen.lock().expect("credentials").push(
+            metadata
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+        );
+        Ok(provider.clone())
+    });
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let refreshed = calls.clone();
+    let credential = CredentialProvider::new(move || {
+        let index = refreshed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        async move { Ok(format!("credential-{index}")) }
+    });
+    let client = client_over(resolve, credential);
+    client
+        .put(OwnedBytes::from_static(b"first"), Vec::new())
+        .await?;
+    client
+        .put(OwnedBytes::from_static(b"second"), Vec::new())
+        .await?;
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert_eq!(
+        *observed.lock().expect("credentials"),
+        vec![
+            Some("Bearer credential-0".to_owned()),
+            Some("Bearer credential-1".to_owned()),
+        ]
+    );
+    Ok(())
 }
 
 async fn written(writer: &GrpcObjects, body: &'static [u8]) -> Result<(Digest, Revision), Error> {
@@ -296,24 +338,22 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
         let entered = Arc::new(Mutex::new(Some(entered)));
         let dropped = Arc::new(AtomicUsize::new(0));
         let refreshed = Arc::clone(&dropped);
-        objects.credential = Some(
-            CredentialCache::new(
-                move |_| {
-                    let entered = Arc::clone(&entered);
-                    let refreshed = Arc::clone(&refreshed);
-                    async move {
-                        let _refresh = Refresh(refreshed);
-                        entered.lock().unwrap().take().unwrap().send(()).unwrap();
-                        std::future::pending::<Result<CredentialSnapshot, _>>().await
-                    }
-                },
-                || CredentialValidity {
-                    now_unix_seconds: 1,
-                    revision: Some(CredentialRevision::from([1; 32])),
-                },
-            )
-            .into(),
-        );
+        objects.credential = CredentialCache::new(
+            move |_| {
+                let entered = Arc::clone(&entered);
+                let refreshed = Arc::clone(&refreshed);
+                async move {
+                    let _refresh = Refresh(refreshed);
+                    entered.lock().unwrap().take().unwrap().send(()).unwrap();
+                    std::future::pending::<Result<CredentialSnapshot, _>>().await
+                }
+            },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some(CredentialRevision::from([1; 32])),
+            },
+        )
+        .into();
         let beginning = tokio::time::Instant::now();
         let mut request = Box::pin(objects.put(b"held".as_slice().into(), Vec::new()));
         tokio::select! {
@@ -337,7 +377,7 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
         );
 
         // Both refusals leave a new, valid source usable on the same channel.
-        objects.credential = Some(CredentialProvider::new(|| async { Ok("fixture".into()) }));
+        objects.credential = CredentialProvider::new(|| async { Ok("fixture".into()) });
         objects.put(b"ready".as_slice().into(), Vec::new()).await?;
         assert_eq!(replica.pending.lock().unwrap().len(), 1);
     }

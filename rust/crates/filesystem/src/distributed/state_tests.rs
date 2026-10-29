@@ -12,6 +12,7 @@ fn state(payload: &'static [u8]) -> StateRecord {
         root: PortableRoot {
             root_file_id: crate::FileId::from_bytes([7; 16]),
             file_table: ObjectId {
+                storage: None,
                 kind: crate::ObjectKind::FileTablePage,
                 digest: Digest::from_bytes([8; 32]),
             },

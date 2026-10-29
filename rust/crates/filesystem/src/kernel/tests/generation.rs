@@ -5,6 +5,11 @@ fn root() -> GenerationRoot {
         volume_id: VolumeId::from_bytes([1; 16]),
         root_file_id: FileId::from_bytes([2; 16]),
         file_table: ObjectId {
+            storage: Some(crate::ObjectStorage {
+                locator: Digest::from_bytes([5; 32]),
+                root_file_id: FileId::from_bytes([2; 16]),
+                origin_generation: Digest::from_bytes([6; 32]),
+            }),
             kind: ObjectKind::FileTablePage,
             digest: Digest::from_bytes([3; 32]),
         },
@@ -18,6 +23,12 @@ fn filtered_fork_feature_round_trips_and_requires_one_parent()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut value = root();
     value.required_features = GenerationRoot::FILTERED_FORK;
+    let parent = ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: Digest::from_bytes([4; 32]),
+        storage: value.file_table.storage,
+    };
+    value.parents[0] = GenerationId::from_root(parent);
     let encoded = encode_generation_root(
         &value,
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
@@ -82,7 +93,7 @@ fn generation_root_round_trip_and_identity_are_locked() -> Result<(), Box<dyn st
     );
     assert_eq!(
         hex::encode(encoded),
-        "414359465347454e0100010101010101010101010101010101010202020202020202020202020202020203030303030303030303030303030303030303030303030303030303030303030100000004040404040404040404040404040404040404040404040404040404040404040000000000000000"
+        "414359465347454e010001010101010101010101010101010101020202020202020202020202020202028503030303030303030303030303030303030303030303030303030303030303030505050505050505050505050505050505050505050505050505050505050505020202020202020202020202020202020606060606060606060606060606060606060606060606060606060606060606010000000604040404040404040404040404040404040404040404040404040404040404040000000000000000"
     );
     Ok(())
 }
@@ -103,7 +114,7 @@ fn duplicate_merge_parents_and_unknown_features_fail_closed()
             )?
             .len()
         )?,
-        MAXIMUM_GENERATION_ROOT_BYTES
+        54 + root().file_table.encoded_len() as u64 + 66
     );
     value.parents[1] = value.parents[0];
     assert!(
@@ -161,7 +172,7 @@ fn every_generation_invariant_fails_closed_on_encode_and_decode()
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
-    let parent_count_offset = 8 + 2 + 16 + 16 + 32;
+    let parent_count_offset = 8 + 2 + 16 + 16 + root().file_table.encoded_len();
     encoded[parent_count_offset..parent_count_offset + 4].copy_from_slice(&3_u32.to_le_bytes());
     assert!(matches!(
         decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
@@ -198,9 +209,9 @@ fn generation_decoder_revalidates_duplicate_parents_and_features()
         |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
-    let parents_offset = 8 + 2 + 16 + 16 + 32 + 4;
-    let first_parent = encoded[parents_offset..parents_offset + 32].to_vec();
-    encoded[parents_offset + 32..parents_offset + 64].copy_from_slice(&first_parent);
+    let parents_offset = 8 + 2 + 16 + 16 + two_parents.file_table.encoded_len() + 4;
+    let first_parent = encoded[parents_offset..parents_offset + 33].to_vec();
+    encoded[parents_offset + 33..parents_offset + 66].copy_from_slice(&first_parent);
     assert!(matches!(
         decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<
             _,

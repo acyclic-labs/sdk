@@ -1,5 +1,5 @@
 import { type FsWorkspace, type FsGeneration, type FsChangeSet, type HostedFsWorkspace, type S3Access, type WorkspaceStat, type WorkspaceName, type WorkspaceDirectoryPage, type WorkspaceExtentPlan, type FsTransaction, type TransactionRebaseResult, type FsJoinPlan, type GenerationDiff, type FileRecordChange, type DirectoryBindingChange } from "./contracts.js";
-import { type HostedClient, required, requireBytes, requireName, exactBytes, call, operation, HostedFsError, validateMergeLimits, requirePageBound, positiveU32, assertOpen, positiveU64, nonnegativeU64, requireResponseBound, equalBytes } from "./hosted-rpc.js";
+import { type HostedClient, required, requireReference, referenceBytes, requireBytes, requireName, exactBytes, call, operation, HostedFsError, validateMergeLimits, requirePageBound, positiveU32, assertOpen, positiveU64, nonnegativeU64, requireResponseBound, equalBytes } from "./hosted-rpc.js";
 import { type WorkspaceRef as WireWorkspaceRef, type GenerationRef as WireGenerationRef, type Workspace as WireWorkspace, GenerationRefSchema, type Mutation as WireMutation, MutationSchema, type JoinPlan as WireJoinPlan, type DiffResponse } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 import { create } from "@bufbuild/protobuf";
 import { deleteStatus, sourceResult, commit, workspaceRebase, joinHistory, fileKind, metadata, wireName, logicalName, extentKind, transactionConflict, joinResult, fileSnapshot, treeEntry, workCounters } from "./hosted-values.js";
@@ -27,7 +27,7 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
     async head() { return Uint8Array.from((await currentGeneration(client, reference)).generationId); },
     async generation(id) {
       const selected = create(GenerationRefSchema, {
-        workspace: reference, generationId: exactBytes(id, 32, "generation identity"),
+        workspace: reference, generationId: referenceBytes(id, "generation identity", 6),
       });
       await stat(client, selected, "/");
       return generation(client, selected);
@@ -154,6 +154,8 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
       requirePageBound(client, options.maximumChanges, "maximum changes");
       requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
+      if (options.sourceGeneration !== undefined) requireReference(options.sourceGeneration, "source generation", 6);
+      if (options.targetGeneration !== undefined) requireReference(options.targetGeneration, "target generation", 6);
       const plan = await call(client.rpc.planJoin({
         source: options.sourceGeneration === undefined ? await currentGeneration(client, reference) : { workspace: reference, generationId: options.sourceGeneration },
         target: options.targetGeneration === undefined ? await currentGeneration(client, destination.reference) : { workspace: destination.reference, generationId: options.targetGeneration },
@@ -220,7 +222,7 @@ async function s3Access(
 
 export function generation(client: HostedClient, reference: WireGenerationRef): FsGeneration {
   const owner = required(reference.workspace, "generation workspace");
-  requireBytes(reference.generationId, 32, "generation identity");
+  requireReference(reference.generationId, "generation identity", 6);
   const result: FsGeneration = {
     id: Uint8Array.from(reference.generationId),
     workspaceId: Uint8Array.from(owner.workspaceId),
@@ -248,7 +250,9 @@ export function generation(client: HostedClient, reference: WireGenerationRef): 
 async function currentGeneration(client: HostedClient, workspaceRef: WireWorkspaceRef): Promise<WireGenerationRef> {
   assertOpen(client);
   const response = await call(client.rpc.getHead({ workspace: workspaceRef }));
-  return required(response.generation, "workspace head");
+  const selected = required(response.generation, "workspace head");
+  requireReference(selected.generationId, "generation identity", 6);
+  return selected;
 }
 
 async function fork(
@@ -499,10 +503,10 @@ function joinPlan(client: HostedClient, plan: WireJoinPlan): FsJoinPlan {
   const target = required(plan.expectedTarget, "join target");
   const common = required(plan.commonAncestor, "join common ancestor");
   return {
-    targetHead: exactBytes(target.generationId, 32, "target generation"),
-    commonAncestor: exactBytes(common.generationId, 32, "common ancestor"),
+    targetHead: referenceBytes(target.generationId, "target generation", 6),
+    commonAncestor: referenceBytes(common.generationId, "common ancestor", 6),
     async apply(ifTarget, idempotencyKey) {
-      requireBytes(ifTarget, 32, "target generation");
+      requireReference(ifTarget, "target generation", 6);
       if (!equalBytes(ifTarget, target.generationId)) {
         return { status: "stale-target", generationId: Uint8Array.from(target.generationId), conflicts: [], truncated: false };
       }

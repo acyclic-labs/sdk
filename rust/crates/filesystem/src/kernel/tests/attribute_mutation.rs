@@ -25,6 +25,7 @@ fn entry(
         name: name(byte, name_length)?,
         value_bytes: u64::from(value_byte),
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([value_byte; 32]),
         },
@@ -298,6 +299,7 @@ fn mutation_validation_and_current_state_matrix_is_total() -> Result<(), Box<dyn
 {
     let invalid = AttributeEntry {
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::TreePage,
             digest: Digest::from_bytes([1; 32]),
         },

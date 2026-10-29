@@ -96,7 +96,7 @@ fn generated_typescript_variant_fields_match_rust_serde_fixtures() {
     let branch = json!({"name": "main", "workspace_id": workspace(), "head": commit.id, "tracked_paths": ["path"]});
     let bisect = json!({"active": true, "good": commit.id, "bad": null, "current": commit.id, "remaining": 1, "first_bad": null});
     let lazy = json!({
-        "kind": "lazy", "id": vec![1; 32], "workspace_id": vec![2; 16], "authored_generation": vec![3; 32],
+        "kind": "lazy", "id": vec![1; 32], "workspace_id": vec![2; 16], "authored_generation": generation(3),
         "source": {"identity": vec![4; 16], "epoch": 7}, "overlay": vec![5; 32], "shadows": vec![6; 32],
     });
     let lazy: GitTreeRef = serde_json::from_value(lazy).expect("lazy tree");
@@ -303,10 +303,40 @@ fn git_wire_identity_contract_matches_native_bytes() {
             "fork_parent": {
                 "kind": "exact",
                 "workspace_id": (0u8..16).collect::<Vec<_>>(),
-                "generation": (0u8..32).collect::<Vec<_>>()
+                "generation": std::iter::once(6).chain(0u8..32).collect::<Vec<_>>()
             },
-            "initial_generation": (0u8..32).collect::<Vec<_>>(),
+            "initial_generation": std::iter::once(6).chain(0u8..32).collect::<Vec<_>>(),
             "operation_id": "00010203-0405-0607-0809-0a0b0c0d0e0f"
         })
     );
+}
+
+#[test]
+fn generation_json_uses_only_the_canonical_reference_codec() {
+    let plain = generation(1);
+    let sealed = GenerationId::from_root(crate::ObjectId {
+        storage: Some(crate::ObjectStorage {
+            locator: Digest::from_bytes([2; 32]),
+            root_file_id: crate::FileId::from_bytes([3; 16]),
+            origin_generation: Digest::from_bytes([4; 32]),
+        }),
+        ..plain.object_id()
+    });
+    for reference in [plain, sealed] {
+        let encoded = serde_json::to_value(reference).expect("generation JSON");
+        assert_eq!(encoded, json!(reference.to_bytes().as_slice()));
+        assert_eq!(
+            serde_json::from_value::<GenerationId>(encoded).expect("canonical reference"),
+            reference
+        );
+    }
+    for invalid in [
+        json!(vec![1; 32]),
+        json!(vec![0x86; 33]),
+        json!(vec![6; 114]),
+        json!(vec![5; 33]),
+        json!({"digest": vec![1; 32], "storage": null}),
+    ] {
+        assert!(serde_json::from_value::<GenerationId>(invalid).is_err());
+    }
 }

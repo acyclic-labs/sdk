@@ -1,9 +1,7 @@
 //! Resumable bounded generation transfer over the asynchronous object boundary.
 
-use super::{
-    ClosureError, ClosureLimits, GenerationExportManifest, GenerationExportManifestError,
-    prove_generation_closure, validate_generation_export_manifest,
-};
+use super::export::validate_transfer_manifest as validate_generation_export_manifest;
+use super::{ClosureError, ClosureLimits, GenerationExportManifest, GenerationExportManifestError};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
 use crate::foundation::{VolumeId, usize_to_u64};
@@ -44,7 +42,7 @@ pub struct GenerationTransferBatch {
     pub first_object: TransferCursor,
     /// Cursor for the next request, absent at the canonical end.
     pub next: Option<TransferCursor>,
-    /// Ordered immutable bodies with explicit retention evidence.
+    /// Ordered exact CAS bodies with explicit retention evidence.
     pub objects: Vec<ObjectRead>,
 }
 
@@ -103,10 +101,16 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
         .validate()
         .map_err(GenerationExportManifestError::from)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let proof =
-        prove_generation_closure(store, generation_root, closure_limits, budget, cancellation)
-            .await
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+    let proof = super::closure::generation_closure(
+        store,
+        generation_root,
+        closure_limits,
+        budget,
+        cancellation,
+        true,
+    )
+    .await
+    .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
     let manifest = GenerationExportManifest {
         volume_id,
         config,
@@ -145,12 +149,13 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
         manifest.config.limits.maximum_objects_per_generation,
     )
     .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let proof = prove_generation_closure(
+    let proof = super::closure::generation_closure(
         store,
         manifest.generation_root,
         closure_limits,
         budget,
         cancellation,
+        true,
     )
     .await
     .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
@@ -261,7 +266,7 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
             cancellation,
         );
         let result = store
-            .read_many(&requests, &mut object_work)
+            .read_many_stored(&requests, &mut object_work)
             .await
             .map(|(values, _allocation)| values);
         object_work.receipt(result)
@@ -360,7 +365,7 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
                 })?,
                 cancellation,
             );
-            let result = store.put(object_id, body, &mut object_work).await;
+            let result = store.put_stored(object_id, body, &mut object_work).await;
             object_work.receipt(result)
         }
         .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;

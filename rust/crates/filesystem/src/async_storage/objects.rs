@@ -1,5 +1,24 @@
 use super::*;
 
+pub(crate) async fn prepare_object<S: AsyncObjectStore>(
+    store: &S,
+    object: crate::HashedObject,
+    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    cancellation: &crate::CancellationToken,
+) -> Result<crate::HashedObject, crate::FsError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(original) = accounting.native_work() {
+        return store
+            .prepare_hashed(object, &mut AuthorityWork::native(original, cancellation))
+            .await
+            .map_err(Into::into);
+    }
+    let mut work = AuthorityWork::new(accounting.remaining()?, cancellation);
+    let result = store.prepare_hashed(object, &mut work).await;
+    crate::kernel::complete_standalone_backend(accounting, work.spent(), 0)?;
+    result.map_err(Into::into)
+}
+
 /// The objects one authority record makes reachable, which must be durable before the record is appended.
 #[derive(Clone, Copy, Debug)]
 pub enum PublicationScope<'a> {
@@ -19,6 +38,19 @@ pub enum PublicationScope<'a> {
 contract! {
 /// Nonblocking immutable-object contract suitable for `IndexedDB` and remote I/O.
 pub trait AsyncObjectStore: ProviderPlatform {
+    /// Whether publication requires every referenced child to be stored first.
+    fn requires_child_first_publication(&self) -> bool { false }
+    /// Largest reference emitted by preparation, used to pack bounded pages.
+    fn maximum_reference_bytes(&self) -> usize { 33 }
+    /// Prepares the physical association before a parent encodes this reference.
+    /// Returned bytes retain their original native work custody through batching.
+    fn prepare_hashed(
+        &self,
+        object: crate::HashedObject,
+        _context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<crate::HashedObject, crate::ObjectStoreError>> + ProviderTask {
+        async move { Ok(object) }
+    }
     /// Whether decoded-cache hooks may retain or reject a decoded page.
     ///
     /// Return false only when both hooks have their default no-cache behavior.
@@ -51,6 +83,22 @@ pub trait AsyncObjectStore: ProviderPlatform {
         bytes: OwnedBytes,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask;
+    /// Imports the exact immutable representation named by the full reference.
+    /// Plain stores use their ordinary write boundary. Sealed stores must
+    /// authenticate the association and preserve the original CAS bytes.
+    fn put_stored(
+        &self,
+        object_id: ObjectId,
+        bytes: OwnedBytes,
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
+        async move {
+            if object_id.storage.is_some() {
+                return Err(crate::ObjectStoreError::DigestMismatch);
+            }
+            self.put(object_id, bytes, context).await
+        }
+    }
     /// Writes an object whose digest is already authenticated.
     fn put_hashed(
         &self,
@@ -84,6 +132,12 @@ pub trait AsyncObjectStore: ProviderPlatform {
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<(), crate::ObjectStoreError>> + ProviderTask {
         async move {
+            #[cfg(not(target_arch = "wasm32"))]
+            if context.is_native() {
+                if objects.is_empty() { return Err(crate::ObjectStoreError::EmptyWriteBatch); }
+                for object in objects { self.put_hashed(object.clone(), context).await?; }
+                return Ok(());
+            }
             context.object_fallback()?;
             let writes = objects
                 .iter()
@@ -138,6 +192,18 @@ pub trait AsyncObjectStore: ProviderPlatform {
         maximum_bytes: u64,
         context: &mut AuthorityWork<'_>,
     ) -> impl Future<Output = Result<crate::ObjectRead, crate::ObjectStoreError>> + ProviderTask;
+    /// Reads the exact CAS representation named by the full reference.
+    fn read_stored(
+        &self,
+        object_id: ObjectId,
+        maximum_bytes: u64,
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<crate::ObjectRead, crate::ObjectStoreError>> + ProviderTask {
+        async move {
+            if object_id.storage.is_some() { return Err(crate::ObjectStoreError::DigestMismatch); }
+            self.read(object_id, maximum_bytes, context).await
+        }
+    }
     /// Reads a batch and retains its native vector allocation.
     fn read_many(
         &self,
@@ -149,6 +215,20 @@ pub trait AsyncObjectStore: ProviderPlatform {
             crate::ObjectStoreError,
         >,
     > + ProviderTask;
+    /// Exports exact stored bytes in request order, retaining the batch custody.
+    /// Limits refer to plaintext; sealed providers admit their seal overhead.
+    fn read_many_stored(
+        &self,
+        requests: &[ObjectReadRequest],
+        context: &mut AuthorityWork<'_>,
+    ) -> impl Future<Output = Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>> + ProviderTask {
+        async move {
+            if requests.iter().any(|request| request.object_id.storage.is_some()) {
+                return Err(crate::ObjectStoreError::DigestMismatch);
+            }
+            self.read_many(requests, context).await
+        }
+    }
     /// Tests whether an object exists.
     fn contains(
         &self,

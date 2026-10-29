@@ -239,6 +239,7 @@ mod properties {
             Just(ExtentKind::AllocatedZero),
             (any::<u8>(), 0_u64..1_000).prop_map(|(byte, object_offset)| ExtentKind::Content {
                 object: ObjectId {
+                    storage: association(byte),
                     kind: ObjectKind::Blob,
                     digest: Digest::from_bytes([byte; 32]),
                 },
@@ -271,9 +272,18 @@ mod properties {
 
     fn object_of(kind: ObjectKind) -> impl Strategy<Value = MetadataField<ObjectId>> {
         field_of(any::<u8>().prop_map(move |byte| ObjectId {
+            storage: association(byte),
             kind,
             digest: Digest::from_bytes([byte; 32]),
         }))
+    }
+
+    fn association(byte: u8) -> Option<crate::ObjectStorage> {
+        (byte & 1 != 0).then_some(crate::ObjectStorage {
+            locator: Digest::from_bytes([byte.wrapping_add(1); 32]),
+            root_file_id: crate::FileId::from_bytes([byte; 16]),
+            origin_generation: Digest::from_bytes([byte; 32]),
+        })
     }
 
     fn metadata() -> impl Strategy<Value = FileMetadata> {

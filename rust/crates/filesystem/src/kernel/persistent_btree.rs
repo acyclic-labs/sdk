@@ -17,10 +17,9 @@ use std::ops::Range;
 
 mod support;
 pub use support::Child;
-pub(crate) use support::{
-    Error, Format, Mutation, Page, PageRef, TARGET_PAGE_BYTES, children_within, leaf_within,
-    within_bounds,
-};
+#[cfg(test)]
+pub(crate) use support::TARGET_PAGE_BYTES;
+pub(crate) use support::{Error, Format, Mutation, Page, PageRef, children_within, leaf_within};
 use support::{
     PAGE_WRITE, PageChunks, append_owned, push_summary, push_value, sort_indexed, storage_error,
     validate,
@@ -569,7 +568,8 @@ where
         &mut self,
         children: &[Child<F::Key>],
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let child_length = |child: &Child<F::Key>| F::internal_item_encoded_length(&child.first);
+        let child_length =
+            |child: &Child<F::Key>| F::internal_item_encoded_length(&child.first, child.page);
         let (mut counted, examined) =
             PageChunks::new(children, self.limits, child_length).map_err(Self::error)?;
         self.charge_items(examined)?;
@@ -704,6 +704,13 @@ where
                 self.cancellation,
             )
             .map_err(storage_error)?;
+            let hashed = crate::async_storage::prepare_object(
+                self.store,
+                hashed,
+                self.accounting,
+                self.cancellation,
+            )
+            .await?;
             let object = hashed.object_id();
             self.accounting.charge(PAGE_WRITE)?;
             {
@@ -720,6 +727,13 @@ where
         };
         self.accounting.admit(hashing)?;
         let hashed = HashedObject::new(F::kind(), std::mem::take(&mut encoded.value).into());
+        let hashed = crate::async_storage::prepare_object(
+            self.store,
+            hashed,
+            self.accounting,
+            self.cancellation,
+        )
+        .await?;
         let object = hashed.object_id();
         self.accounting.charge(hashing)?;
         self.accounting.charge(PAGE_WRITE)?;

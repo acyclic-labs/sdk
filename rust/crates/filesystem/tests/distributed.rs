@@ -468,6 +468,7 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
     let store = LogicalObjectStore::new(provider);
     let bytes = OwnedBytes::from_static(b"authenticated");
     let object_id = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(&bytes),
     };
@@ -494,6 +495,7 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
         .value
     );
     let wrong = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: Digest::from_bytes([11; 32]),
     };

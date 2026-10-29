@@ -20,8 +20,6 @@ enum GenerationObservation {
     Committed(LastCommit),
 }
 
-const _: () = assert!(size_of::<ObservedGeneration>() == size_of::<Option<LastCommit>>());
-
 impl ObservedGeneration {
     pub(super) const UNKNOWN: Self = Self {
         state: GenerationObservation::Unknown,
@@ -147,7 +145,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 authority_head,
                 observed_generation: match (selector, authority_head) {
                     (GenerationSelector::Head, Some(head)) => ObservedGeneration::head(
-                        GenerationId::new(generation_root.digest),
+                        GenerationId::from_root(generation_root),
                         head.sequence,
                     ),
                     _ => ObservedGeneration::UNKNOWN,
@@ -369,7 +367,7 @@ impl<A, O> Checkout<A, O> {
     /// Exact immutable generation identity.
     #[must_use]
     pub const fn generation_id(&self) -> GenerationId {
-        GenerationId::new(self.generation_root.digest)
+        GenerationId::from_root(self.generation_root)
     }
 
     /// Authenticated decoded generation root.
@@ -395,7 +393,7 @@ impl<A, O> Checkout<A, O> {
     pub(super) fn base_authority_head(&self) -> Option<Head> {
         self.authority_head.filter(|head| {
             self.observed_generation
-                .position(GenerationId::new(self.root.base.digest))
+                .position(GenerationId::from_root(self.root.base))
                 == Some(head.sequence)
         })
     }

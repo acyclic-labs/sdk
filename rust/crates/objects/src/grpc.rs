@@ -11,7 +11,7 @@ use prost::Message;
 use std::sync::Arc;
 use tonic::{
     Request,
-    metadata::{Ascii, Binary, MetadataMap, MetadataValue},
+    metadata::{Binary, MetadataMap, MetadataValue},
     transport::{Channel, Endpoint, Identity},
 };
 
@@ -24,16 +24,6 @@ pub const REVISION: &str = "acyclic-revision-bin";
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The largest deadline `grpc-timeout` can carry: eight digits of hours.
 const MAX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(99_999_999 * 3600);
-
-fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
-    if !acyclic_auth::credential::valid_credential(token) {
-        return Err(ConnectError::InvalidConfiguration);
-    }
-    let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
-        .map_err(|_| ConnectError::InvalidConfiguration)?;
-    value.set_sensitive(true);
-    Ok(value)
-}
 
 /// Client configuration or connection failure.
 #[derive(Debug, thiserror::Error)]
@@ -54,8 +44,7 @@ pub enum ConnectError {
 #[derive(Clone)]
 pub struct GrpcObjects {
     channel: Channel,
-    authorization: Option<MetadataValue<Ascii>>,
-    credential: Option<CredentialProvider>,
+    credential: CredentialProvider,
     transfer_timeout: std::time::Duration,
     revisions: Arc<RevisionTracker>,
 }
@@ -69,13 +58,6 @@ impl GrpcObjects {
         let mut client = self.clone();
         client.revisions = RevisionTracker::scoped(&self.revisions, scope);
         client
-    }
-
-    /// Adopt a caller-authenticated channel, including member/SVID or mutual TLS.
-    /// Peer trust stays with the channel owner; every RPC resolves and retains
-    /// its exact request credential through the existing admission path.
-    pub fn from_channel(channel: Channel, credential: CredentialProvider) -> Self {
-        Self::over(channel, None, Some(credential))
     }
 
     /// The last revision observed per authority, shared by every clone and
@@ -106,7 +88,20 @@ impl GrpcObjects {
         ca: Option<&[u8]>,
         identity: Option<(&[u8], &[u8])>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_inner(endpoint, Some(token), None, ca, identity).await
+        if !acyclic_auth::credential::valid_credential(token) {
+            return Err(ConnectError::InvalidConfiguration);
+        }
+        let token = token.to_owned();
+        Self::connect_with_credential(
+            endpoint,
+            CredentialProvider::new(move || {
+                let token = token.clone();
+                async move { Ok(token) }
+            }),
+            ca,
+            identity,
+        )
+        .await
     }
 
     /// Connects without a fixed bearer, resolving the callback before each RPC.
@@ -116,13 +111,12 @@ impl GrpcObjects {
         ca: Option<&[u8]>,
         identity: Option<(&[u8], &[u8])>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_inner(endpoint, None, Some(credential), ca, identity).await
+        Self::connect_inner(endpoint, credential, ca, identity).await
     }
 
     async fn connect_inner(
         endpoint: &str,
-        token: Option<&str>,
-        credential: Option<CredentialProvider>,
+        credential: CredentialProvider,
         ca: Option<&[u8]>,
         identity: Option<(&[u8], &[u8])>,
     ) -> Result<Self, ConnectError> {
@@ -149,7 +143,6 @@ impl GrpcObjects {
         {
             return Err(ConnectError::InvalidConfiguration);
         }
-        let authorization = token.map(credential_header).transpose()?;
         let peer = if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
                 return Err(ConnectError::InvalidConfiguration);
@@ -171,40 +164,21 @@ impl GrpcObjects {
                     ConnectError::Transport(error)
                 }
             })?;
-        Ok(Self::over(channel, authorization, credential))
+        Ok(Self::over(channel, credential))
     }
 
-    fn over(
-        channel: Channel,
-        authorization: Option<MetadataValue<Ascii>>,
-        credential: Option<CredentialProvider>,
-    ) -> Self {
+    /// Uses a caller-admitted channel, resolving credentials before every RPC.
+    ///
+    /// The caller owns channel security and transport identity renewal, including
+    /// SPIFFE. A failed credential resolution refuses the request before transport.
+    #[must_use]
+    pub fn over(channel: Channel, credential: CredentialProvider) -> Self {
         Self {
             channel,
-            authorization,
             credential,
             transfer_timeout: REQUEST_TIMEOUT,
             revisions: Arc::default(),
         }
-    }
-
-    fn request<T>(
-        &self,
-        value: T,
-        timeout: std::time::Duration,
-        floor: Option<&RevisionCut>,
-    ) -> Result<Request<T>, Error> {
-        let authorization = self
-            .authorization
-            .clone()
-            .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?;
-        let mut request = Request::new(value);
-        request.set_timeout(timeout);
-        request
-            .metadata_mut()
-            .insert("authorization", authorization);
-        minimum(&mut request, floor);
-        Ok(request)
     }
 
     /// Observes the revision a reply carries. A read served below the minimum
@@ -349,31 +323,17 @@ macro_rules! call {
         let floor: Option<&RevisionCut> = $floor;
         let timeout = $timeout;
         let deadline = tokio::time::Instant::now() + timeout;
-        let response = if let Some(credential) = &$self.credential {
-            acyclic_auth::channel::call(
-                $self.channel.clone(),
-                credential,
-                deadline,
-                $value,
-                |channel, mut request| async move {
-                    minimum(&mut request, floor);
-                    Self::client(channel).$rpc(request).await
-                },
-            )
-            .await
-        } else {
-            let request = $self.request($value, timeout, floor)?;
-            tokio::time::timeout_at(
-                deadline,
-                Self::client(acyclic_auth::channel::guard($self.channel.clone())).$rpc(request),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(tonic::Status::deadline_exceeded(
-                    "operation deadline expired",
-                ))
-            })
-        };
+        let response = acyclic_auth::channel::call(
+            $self.channel.clone(),
+            &$self.credential,
+            deadline,
+            $value,
+            |channel, mut request| async move {
+                minimum(&mut request, floor);
+                Self::client(channel).$rpc(request).await
+            },
+        )
+        .await;
         if tokio::time::Instant::now() >= deadline && response.is_err() {
             Err(wire::ErrorCode::DeadlineElapsed.into())
         } else {

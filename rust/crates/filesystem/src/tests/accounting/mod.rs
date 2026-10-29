@@ -34,10 +34,7 @@ fn fixture() -> (
 }
 
 fn root(id: crate::GenerationId) -> ObjectId {
-    ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: id.digest(),
-    }
+    id.object_id()
 }
 
 async fn records(

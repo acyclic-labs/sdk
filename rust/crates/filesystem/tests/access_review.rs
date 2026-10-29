@@ -701,7 +701,7 @@ proptest! {
         let mut cap = capability();
         for grant in cap.layers.iter_mut().flatten() { grant.resource.generations = Generations::All; }
         let generation = |byte| acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([byte; 32]));
-        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId {
+        let revision = |byte| acyclic_fs::kernel::MetadataField::Value(acyclic_fs::ObjectId { storage: None,
             kind: acyclic_fs::ObjectKind::TreePage, digest: acyclic_fs::Digest::from_bytes(byte),
         });
         let compile = || PathTrie::compile(&policy, &caller, Resource { head: 1, ..resource(&caller.lineage, "", 1) }, Context { now: 100, approvals: 0 }, &cap)

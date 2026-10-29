@@ -81,6 +81,16 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 index.drained_at = sweeps;
             }
         }
+        let ordered = if self.inner.requires_child_first_publication()
+            && targets
+                .iter()
+                .any(|id| id.kind != crate::ObjectKind::BlobChunk)
+        {
+            Some(self.child_first(spill, targets, work).await?)
+        } else {
+            None
+        };
+        let targets = ordered.as_ref().map_or(targets, |(_, ids)| ids.as_slice());
         let mut position = 0;
         loop {
             work.accounting()
@@ -114,7 +124,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let (_write_allocation, mut writes) =
                 staged_vector::<ObjectWrite>(count, work.original)?;
             let (_spill_allocation, mut spilled) =
-                staged_vector::<(ObjectId, u64, u64)>(count, work.original)?;
+                staged_vector::<(ObjectId, u64, u64, usize)>(count, work.original)?;
             {
                 let mut index = self.index_mut();
                 for &id in &targets[position..end] {
@@ -135,7 +145,11 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                             bytes: bytes.clone(),
                         }),
                         Some(&Staged::Spilled { offset, length }) => {
-                            spilled.push((id, offset, length));
+                            spilled.push((id, offset, length, writes.len()));
+                            writes.push(ObjectWrite {
+                                object_id: id,
+                                bytes: OwnedBytes::new(),
+                            });
                         }
                         None => {}
                     }
@@ -146,7 +160,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 break;
             }
             if let Some(native) = work.original {
-                for (id, offset, length) in spilled {
+                for (id, offset, length, position) in spilled {
                     work.cancellation
                         .check()
                         .map_err(|_| ObjectStoreError::Cancelled)?;
@@ -178,15 +192,15 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     if crate::storage::object_digest(&bytes) != id.digest {
                         return Err(ObjectStoreError::Corrupt);
                     }
-                    writes.push(ObjectWrite {
+                    writes[position] = ObjectWrite {
                         object_id: id,
                         bytes,
-                    });
+                    };
                 }
             } else if !spilled.is_empty() {
                 let bytes = spilled
                     .iter()
-                    .fold(0_u64, |sum, &(_, _, length)| sum.saturating_add(length));
+                    .fold(0_u64, |sum, &(_, _, length, _)| sum.saturating_add(length));
                 work.accounting()
                     .charge(WorkCounters {
                         backend_read_operations: 1,
@@ -195,15 +209,21 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         ..WorkCounters::UNCHARGED
                     })
                     .map_err(crate::async_storage::object_error)?;
-                writes.extend(
-                    read_spilled(spill.as_ref().ok_or(ObjectStoreError::Corrupt)?, &spilled)
+                let (_read_allocation, mut reads) = staged_vector(spilled.len(), work.original)?;
+                reads.extend(
+                    spilled
+                        .iter()
+                        .map(|&(id, offset, length, _)| (id, offset, length)),
+                );
+                for (object, &(_, _, _, position)) in
+                    read_spilled(spill.as_ref().ok_or(ObjectStoreError::Corrupt)?, &reads)
                         .await?
                         .into_iter()
-                        .map(|object| {
-                            let (object_id, bytes) = object.into_parts();
-                            ObjectWrite { object_id, bytes }
-                        }),
-                );
+                        .zip(&spilled)
+                {
+                    let (object_id, bytes) = object.into_parts();
+                    writes[position] = ObjectWrite { object_id, bytes };
+                }
             }
             self.collection
                 .writing(unswept, writes.iter().map(|write| write.object_id));

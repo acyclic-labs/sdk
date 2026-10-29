@@ -227,6 +227,7 @@ async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix
     }
 
     let typed = |kind| ObjectId {
+        storage: None,
         kind,
         digest: Digest::from_bytes([91; 32]),
     };

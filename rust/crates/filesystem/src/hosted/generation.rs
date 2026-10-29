@@ -6,7 +6,7 @@ pub struct HostedGeneration {
 }
 
 impl HostedGeneration {
-    /// Exact 32-byte generation identity.
+    /// Canonical generation-root reference, including its storage association.
     #[must_use]
     pub fn id(&self) -> &[u8] {
         &self.reference.generation_id

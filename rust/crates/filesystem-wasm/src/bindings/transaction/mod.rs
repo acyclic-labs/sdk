@@ -228,7 +228,7 @@ pub(in crate::bindings) fn browser_workspace_commit<A, O>(
     };
     BrowserWorkspaceCommit {
         status,
-        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        generation_id: generation.map(|value| value.id().to_bytes().to_vec().into()),
     }
 }
 
@@ -238,7 +238,7 @@ pub(in crate::bindings) fn browser_transaction_rebase<A, O>(
     match outcome {
         TransactionRebase::Rebased(generation) => BrowserTransactionRebase {
             status: BrowserTransactionRebaseStatus::Rebased,
-            generation_id: Some(generation.id().digest().into_bytes().to_vec().into()),
+            generation_id: Some(generation.id().to_bytes().to_vec().into()),
             conflicts: Vec::new(),
             truncated: false,
         },

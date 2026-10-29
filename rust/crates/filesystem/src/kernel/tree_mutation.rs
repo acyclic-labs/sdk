@@ -84,10 +84,13 @@ impl Format for TreeFormat {
             .ok_or(CanonicalDecodeError::LengthOverflow)
     }
 
-    fn internal_item_encoded_length(key: &Self::Key) -> Result<usize, CanonicalDecodeError> {
+    fn internal_item_encoded_length(
+        key: &Self::Key,
+        page: ObjectId,
+    ) -> Result<usize, CanonicalDecodeError> {
         key.as_bytes()
             .len()
-            .checked_add(1 + 4 + 32)
+            .checked_add(1 + 4 + page.encoded_len())
             .ok_or(CanonicalDecodeError::LengthOverflow)
     }
 

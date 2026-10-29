@@ -5,7 +5,7 @@ import type {
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
-import { copyFixedBytes, copyName, copyOptionalBytes } from "./binding-values.js";
+import { copyObjectReference, copyFixedBytes, copyName, copyOptionalBytes } from "./binding-values.js";
 import { commitStatuses } from "./workspace-results.js";
 
 export const workCounterKeys: Exclude<keyof WorkCounters, typeof WORK_COUNTER_KEYS[number]> extends never
@@ -92,7 +92,7 @@ export function copyFileExtentPlan(value: {
         sourceEnd: extentInteger(span.sourceEnd, "file extent span"),
       };
       if (span.kind === "content") {
-        const objectId = copyFixedBytes(span.objectId, 33, "content object identity");
+        const objectId = copyObjectReference(span.objectId, "content object identity");
         if (objectId === undefined || span.objectOffset === undefined) {
           throw new TypeError("filesystem binding returned a malformed content extent");
         }
@@ -135,7 +135,7 @@ export function copyRebaseResult(value: {
   if (!Number.isSafeInteger(value.conflictCount) || value.conflictCount < 0 || typeof value.truncated !== "boolean") {
     throw new TypeError("checkout rebase has malformed conflict counts");
   }
-  return { status: value.status, generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
+  return { status: value.status, generationId: copyObjectReference(value.generationId, "generation identity", 6),
     conflictCount: value.conflictCount, truncated: value.truncated, work };
 }
 
@@ -153,7 +153,7 @@ function copyCommitFields<Status extends string>(value: RawCommitFields, work: W
   if (!statuses.has(value.status as Status)) throw new TypeError("checkout result has an invalid status");
   return {
     status: value.status as Status,
-    generationId: copyFixedBytes(value.generationId, 32, "generation identity"),
+    generationId: copyObjectReference(value.generationId, "generation identity", 6),
     epoch: value.epoch === undefined ? undefined : BigInt(value.epoch),
     sequence: value.sequence === undefined ? undefined : BigInt(value.sequence),
     committedFingerprint: copyFixedBytes(value.committedFingerprint, 32, "committed fingerprint"),
@@ -195,7 +195,7 @@ export function copyTransactionRebase(value: TransactionRebaseResult): Transacti
   }
   return {
     status: value.status,
-    generationId: copyOptionalBytes(value.generationId),
+    generationId: copyObjectReference(value.generationId, "generation identity", 6),
     conflicts: value.conflicts.map(copyTransactionConflict),
     truncated: value.truncated,
   };

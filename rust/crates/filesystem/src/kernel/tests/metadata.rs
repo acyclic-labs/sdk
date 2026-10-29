@@ -71,6 +71,7 @@ fn metadata() -> FileMetadata {
         changed_ns: MetadataField::Unavailable,
         named_attributes: MetadataField::Unavailable,
         acl: MetadataField::Value(ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([3; 32]),
         }),
@@ -104,6 +105,7 @@ fn unavailable_zero_and_negative_remain_distinct() -> Result<(), Box<dyn std::er
 fn wrong_reference_kind_fails_before_identity() {
     let mut value = metadata();
     value.named_attributes = MetadataField::Value(ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::ZERO,
     });
@@ -114,6 +116,7 @@ fn wrong_reference_kind_fails_before_identity() {
 fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dyn std::error::Error>>
 {
     let blob = |byte| ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([byte; 32]),
     };
@@ -128,6 +131,7 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
         accessed_ns: MetadataField::Value(0),
         changed_ns: MetadataField::Value(i64::MAX),
         named_attributes: MetadataField::Value(ObjectId {
+            storage: None,
             kind: ObjectKind::AttributePage,
             digest: Digest::from_bytes([4; 32]),
         }),
@@ -149,6 +153,7 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
     assert_eq!(
         file_metadata_id(value)?,
         ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: object_digest(&encoded),
         }
@@ -171,14 +176,17 @@ fn every_metadata_presence_tag_fails_closed_when_noncanonical()
             accessed_ns: MetadataField::Value(1),
             changed_ns: MetadataField::Value(1),
             named_attributes: MetadataField::Value(ObjectId {
+                storage: None,
                 kind: ObjectKind::AttributePage,
                 digest: Digest::ZERO,
             }),
             acl: MetadataField::Value(ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: Digest::ZERO,
             }),
             security_descriptor: MetadataField::Value(ObjectId {
+                storage: None,
                 kind: ObjectKind::Blob,
                 digest: Digest::ZERO,
             }),

@@ -36,6 +36,10 @@ pub struct LazySnapshotRef {
 }
 
 impl LazySnapshotRef {
+    pub(crate) fn hash_bytes(generation: crate::GenerationId) -> u64 {
+        (LAZY_SNAPSHOT_DOMAIN.len() + 104 + generation.object_id().encoded_len()) as u64
+    }
+
     /// Constructs the identity of a complete immutable lazy cut.
     pub fn new(
         workspace_id: WorkspaceId,
@@ -47,7 +51,7 @@ impl LazySnapshotRef {
         let mut hasher = blake3::Hasher::new();
         hasher.update(LAZY_SNAPSHOT_DOMAIN);
         hasher.update(&workspace_id.into_bytes());
-        hasher.update(authored_generation.digest().as_bytes());
+        hasher.update(&authored_generation.to_bytes());
         hasher.update(&source.identity);
         hasher.update(&source.epoch.to_le_bytes());
         hasher.update(&overlay.into_bytes());

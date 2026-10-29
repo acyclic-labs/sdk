@@ -113,9 +113,9 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
             1 + usize::from(request.merge_parent.is_some()),
             accounting,
         )?;
-        parents.value.push(GenerationId::new(request.base.digest));
+        parents.value.push(GenerationId::from_root(request.base));
         if let Some(parent) = request.merge_parent {
-            parents.value.push(GenerationId::new(parent.digest));
+            parents.value.push(GenerationId::from_root(parent));
         }
         let Owned {
             value: parents,
@@ -154,6 +154,9 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                     cancellation,
                 )
                 .map_err(checkpoint_storage_error)?;
+                let hashed =
+                    crate::async_storage::prepare_object(store, hashed, accounting, cancellation)
+                        .await?;
                 let object = hashed.object_id();
                 {
                     let mut work = crate::AuthorityWork::native(original, cancellation);
@@ -172,6 +175,9 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 std::mem::take(&mut encoded.value).into(),
             );
             accounting.record_completed(hashing)?;
+            let hashed =
+                crate::async_storage::prepare_object(store, hashed, accounting, cancellation)
+                    .await?;
             let object = hashed.object_id();
             let receipt = {
                 let mut object_work =

@@ -17,7 +17,9 @@ use js_sys::Uint8Array;
 use std::mem::size_of;
 use wasm_bindgen::JsCast;
 type BrowserAuthority = acyclic_fs::StreamAuthorityStore<dyn acyclic_stream::StreamProvider>;
-async fn open_authority(name: &str) -> Result<BrowserAuthority, acyclic_stream::StreamError> {
+async fn open_authority(
+    name: &str,
+) -> Result<BrowserAuthority, acyclic_fs::browser::BrowserAuthorityOpenError> {
     acyclic_fs::browser::open_authority(name, acyclic_stream::BrowserStreamLimits::default()).await
 }
 use wasm_bindgen::JsValue;
@@ -101,6 +103,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     let input = b"browser-object-vector".to_vec();
     let bytes = OwnedBytes::from(input);
     let object_id = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(&bytes),
     };
@@ -136,6 +139,19 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         .map_err(js_error)?;
     let read_peak = work.spent().peak_allocation_bytes;
     assert_eq!(read.bytes, bytes);
+    let associated = ObjectId {
+        storage: Some(acyclic_fs::ObjectStorage {
+            locator: Digest::from_bytes([31; 32]),
+            root_file_id: acyclic_fs::FileId::from_bytes([32; 16]),
+            origin_generation: Digest::from_bytes([33; 32]),
+        }),
+        ..object_id
+    };
+    let mut associated_work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        store.read(associated, 1_024, &mut associated_work).await,
+        Err(ObjectStoreError::Missing)
+    ));
     assert_eq!(
         read.retention,
         ObjectReadRetention::Owned {
@@ -162,6 +178,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         }))
     ));
     let forged = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([9; 32]),
     };
@@ -179,6 +196,7 @@ fn blob_write(bytes: &'static [u8]) -> ObjectWrite {
     let bytes = OwnedBytes::from_static(bytes);
     ObjectWrite {
         object_id: ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(&bytes),
         },

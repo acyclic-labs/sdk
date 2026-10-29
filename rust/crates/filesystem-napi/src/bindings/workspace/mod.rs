@@ -107,15 +107,12 @@ impl NativeWorkspace {
     #[napi]
     pub async fn head(&self) -> Result<Buffer> {
         sdk_value!(unbounded_future!(self.inner, head()))
-            .map(|value| Buffer::from(value.id().digest().into_bytes().to_vec()))
+            .map(|value| Buffer::from(value.id().to_bytes().to_vec()))
     }
 
     #[napi]
     pub async fn generation(&self, id: Buffer) -> Result<NativeGeneration> {
-        let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            id.as_ref(),
-            "generation identity",
-        )?));
+        let id = decode_generation_id(id.as_ref())?;
         sdk_value!(unbounded_future!(self.inner, generation(id)))
             .map(|inner| NativeGeneration { inner })
     }
@@ -409,10 +406,7 @@ impl NativeWorkspace {
                     Some(id) => self
                         .inner
                         .generation(
-                            acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                                &id,
-                                "source generation",
-                            )?)),
+                            decode_generation_id(&id)?,
                             acyclic_fs::WorkBudget::UNBOUNDED,
                             &acyclic_fs::CancellationToken::new(),
                         )
@@ -424,10 +418,7 @@ impl NativeWorkspace {
                 &match options.target_generation {
                     Some(id) => sdk_value!(unbounded_future!(
                         target.inner,
-                        generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-                            &id,
-                            "target generation",
-                        )?)))
+                        generation(decode_generation_id(&id)?)
                     ))?,
                     None => sdk_value!(unbounded_future!(target.inner, head()))?,
                 },

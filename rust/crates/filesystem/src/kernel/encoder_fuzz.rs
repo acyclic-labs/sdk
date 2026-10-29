@@ -4,13 +4,30 @@ use super::codec::{EncodeAccounting, EncodeAllocationStep, EncodeWorkStep};
 use super::*;
 use crate::{CancellationToken, FsError, WorkBudget, WorkCounters};
 
+// Independent wire-schema oracle; do not call the writer's length helpers.
+fn reference_copies(object: crate::ObjectId) -> u64 {
+    1 + 32
+        + if object.storage.is_some() {
+            32 + 16 + 32
+        } else {
+            0
+        }
+}
+
 fn record_copies(record: &FileRecord) -> u64 {
-    48 + match record.payload {
-        FilePayload::Empty | FilePayload::Device { .. } => 0,
-        FilePayload::InlineRegular(bytes) => bytes.as_bytes().len() as u64,
-        FilePayload::Regular { .. } | FilePayload::Directory { .. } => 32,
-        FilePayload::SymbolicLink { .. } | FilePayload::ReparsePoint { .. } => 32,
-    }
+    16 + reference_copies(record.metadata)
+        + match record.payload {
+            FilePayload::Empty | FilePayload::Device { .. } => 0,
+            FilePayload::InlineRegular(bytes) => bytes.as_bytes().len() as u64,
+            FilePayload::Regular {
+                extents: object, ..
+            }
+            | FilePayload::Directory { entries: object }
+            | FilePayload::SymbolicLink { target: object, .. }
+            | FilePayload::ReparsePoint {
+                payload: object, ..
+            } => reference_copies(object),
+        }
 }
 
 fn produce(
@@ -33,21 +50,32 @@ fn produce(
             let value = decode_file_metadata(wire, limits, &mut nothing)?;
             *copies = [value.named_attributes, value.acl, value.security_descriptor]
                 .into_iter()
-                .filter(|field| matches!(field, MetadataField::Value(_)))
-                .count() as u64
-                * 32;
+                .map(|field| match field {
+                    MetadataField::Value(object) => reference_copies(object),
+                    MetadataField::Unavailable => 0,
+                })
+                .sum();
             encode_file_metadata(value, observe, allocation)
         }
         1 => {
             let value = decode_generation_root(wire, limits, &mut nothing)?;
-            *copies = 64 + value.parents.len() as u64 * 32;
+            *copies = 32
+                + reference_copies(value.file_table)
+                + value
+                    .parents
+                    .iter()
+                    .map(|parent| reference_copies(parent.object_id()))
+                    .sum::<u64>();
             encode_generation_root(&value, observe, allocation)
         }
         2 => {
             let value = decode_file_table_page(wire, limits, &mut nothing)?;
             *copies = match &value {
                 FileTablePage::Leaf(records) => records.iter().map(record_copies).sum(),
-                FileTablePage::Internal(children) => children.len() as u64 * 48,
+                FileTablePage::Internal(children) => children
+                    .iter()
+                    .map(|child| 16 + reference_copies(child.page))
+                    .sum(),
             };
             encode_file_table_page(&value, 32, observe, allocation)
         }
@@ -60,7 +88,7 @@ fn produce(
                     .sum(),
                 TreePage::Internal(children) => children
                     .iter()
-                    .map(|child| child.first.as_bytes().len() as u64 + 32)
+                    .map(|child| child.first.as_bytes().len() as u64 + reference_copies(child.page))
                     .sum(),
             };
             encode_tree_page(&value, 32, observe, allocation)
@@ -74,11 +102,11 @@ fn produce(
             *copies = match &value {
                 AttributePage::Leaf(entries) => entries
                     .iter()
-                    .map(|entry| entry.name.as_bytes().len() as u64 + 32)
+                    .map(|entry| entry.name.as_bytes().len() as u64 + reference_copies(entry.value))
                     .sum(),
                 AttributePage::Internal(children) => children
                     .iter()
-                    .map(|child| child.first.as_bytes().len() as u64 + 32)
+                    .map(|child| child.first.as_bytes().len() as u64 + reference_copies(child.page))
                     .sum(),
             };
             encode_attribute_page(&value, 32, observe, allocation)
@@ -94,12 +122,12 @@ fn produce(
         }
         7 => {
             let value = super::volume::decode_volume_created(wire, 4096, &mut nothing)?;
-            *copies = 48;
+            *copies = 16 + reference_copies(value.initial_generation_root);
             super::volume::encode_volume_created(value, observe, allocation)
         }
         8 => {
             let value = decode_retention_created(wire, 4096)?;
-            *copies = 48 + value.label.len() as u64;
+            *copies = 16 + reference_copies(value.generation_root) + value.label.len() as u64;
             super::retention::encode_retention_created(&value, observe, allocation)
         }
         9 => {

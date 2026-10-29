@@ -106,7 +106,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting.check()?;
         let resolutions_digest = hash_join_resolutions(&request.resolutions, accounting)?;
         let hashing = WorkCounters {
-            bytes_hashed: WORKSPACE_JOIN_OPERATION_DOMAIN.len() as u64 + 189,
+            bytes_hashed: super::join_request::workspace_join_context_bytes(
+                request.source.id,
+                request.expected_target,
+                request.base.id,
+            ),
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(hashing)?;
@@ -138,18 +142,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .workspace_head_state(target, accounting, cancellation)
             .await?
             .0;
-        let target_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: expected_target.digest(),
-        };
-        let base_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: base.id.digest(),
-        };
-        let source_object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: source.id.digest(),
-        };
+        let target_object = expected_target.object_id();
+        let base_object = base.id.object_id();
+        let source_object = source.id.object_id();
         let mut base_root = self
             .read_join_root_with_accounting(base_object, target.config, accounting, cancellation)
             .await?;
@@ -400,10 +395,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(OperationFailure::before_work(FsError::MergeChangeLimit));
         }
-        let theirs_id = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: theirs.digest(),
-        };
+        let theirs_id = theirs.object_id();
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self
             .volume

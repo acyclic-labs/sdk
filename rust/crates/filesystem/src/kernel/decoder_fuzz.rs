@@ -256,6 +256,7 @@ mod tests {
                     volume_id: VolumeId::from_bytes([1; 16]),
                     root_file_id: FileId::from_bytes([2; 16]),
                     file_table: ObjectId {
+                        storage: None,
                         kind: ObjectKind::FileTablePage,
                         digest: Digest::from_bytes([3; 32]),
                     },
@@ -274,6 +275,7 @@ mod tests {
                     kind: FileKind::Regular,
                     link_count: 1,
                     metadata: ObjectId {
+                        storage: None,
                         kind: ObjectKind::Metadata,
                         digest: Digest::from_bytes([3; 32]),
                     },

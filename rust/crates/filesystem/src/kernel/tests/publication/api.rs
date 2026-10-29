@@ -99,6 +99,7 @@ async fn invalid_and_foreign_closures_never_mutate_authority() -> TestResult {
         let generation_root = match root_volume {
             Some(actual) => fixture(&objects, VolumeId::from_bytes([actual; 16])).await?,
             None => ObjectId {
+                storage: None,
                 kind: ObjectKind::GenerationRoot,
                 digest: Digest::from_bytes([8; 32]),
             },
@@ -164,6 +165,7 @@ async fn mismatched_authority_and_precancellation_are_inert() -> TestResult {
             fixture(&objects, volume_id).await?
         } else {
             ObjectId {
+                storage: None,
                 kind: ObjectKind::GenerationRoot,
                 digest: Digest::from_bytes([44; 32]),
             }

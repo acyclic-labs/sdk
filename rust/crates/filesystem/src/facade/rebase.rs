@@ -50,8 +50,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .rebase_lineage(target, maximum_generations, &cancellation)
             .await?;
         if source_object == base_object {
-            return Ok(WorkspaceJoinOutcome::NoChanges(GenerationId::new(
-                target_object.digest,
+            return Ok(WorkspaceJoinOutcome::NoChanges(GenerationId::from_root(
+                target_object,
             )));
         }
         let (source_root, _) = read_generation_root(
@@ -130,7 +130,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             MergeGenerationOutcome::Prepared { root, .. } => root,
         };
         let parent_buffer = root_parent_buffer(
-            &[GenerationId::new(source_object.digest)],
+            &[GenerationId::from_root(source_object)],
             root_parent_bytes(&merged_root).map_err(WorkspaceError::engine)?,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -186,7 +186,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     )
                     .await
                     .map_err(WorkspaceError::engine)?;
-                WorkspaceJoinOutcome::Stale(GenerationId::new(actual.digest))
+                WorkspaceJoinOutcome::Stale(GenerationId::from_root(actual))
             }
             AppendOutcome::Fenced { .. } => WorkspaceJoinOutcome::Fenced,
             AppendOutcome::IdempotencyConflict { .. } => WorkspaceJoinOutcome::IdempotencyConflict,
@@ -262,7 +262,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         let (decision, allocation, settled) = if disjoint {
             (
                 RebaseDecision::Safe {
-                    generation: GenerationId::new(candidate_object.digest),
+                    generation: GenerationId::from_root(candidate_object),
                 },
                 accounting.claim_owned(0, 0)?,
                 None,
@@ -286,7 +286,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             cancellation.check()?;
             self.authority_head = Some(candidate_head);
             self.observed_generation.refresh(
-                GenerationId::new(candidate_object.digest),
+                GenerationId::from_root(candidate_object),
                 candidate_head.sequence,
             );
             return Ok(classified);
@@ -425,7 +425,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         self.generation_root = object;
         self.authority_head = Some(head);
         self.observed_generation
-            .refresh(GenerationId::new(object.digest), head.sequence);
+            .refresh(GenerationId::from_root(object), head.sequence);
         Ok(classified)
     }
 
@@ -625,8 +625,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         };
         let classified = crate::kernel::classify_rebase_settling_with_accounting(
             &working,
-            GenerationId::new(self.root.base.digest),
-            GenerationId::new(candidate_object.digest),
+            GenerationId::from_root(self.root.base),
+            GenerationId::from_root(candidate_object),
             dependencies,
             maximum_conflicts,
             accounting,

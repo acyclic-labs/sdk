@@ -6,7 +6,7 @@ use super::file_table_mutation::FileTableFormat;
 use super::persistent_batch;
 use super::persistent_point;
 use super::rebase::ProofDataCustody;
-use super::types::{FileKind, digest_object};
+use super::types::FileKind;
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{FileId, usize_to_u64};
@@ -585,3 +585,6 @@ mod tests;
 #[cfg(all(not(loom), not(target_arch = "wasm32")))]
 #[path = "tests/file_table_decode/performance.rs"]
 mod decode_probe;
+
+#[cfg(test)]
+use super::types::digest_object;

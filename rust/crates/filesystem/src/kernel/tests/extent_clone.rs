@@ -37,6 +37,7 @@ async fn clone_reuses_content_and_preserves_sparse_kinds_without_blob_reads()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let blob = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([4; 32]),
     };
@@ -282,6 +283,7 @@ async fn pre_cancelled_clone_performs_zero_work() -> Result<(), Box<dyn std::err
 #[test]
 fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let extent = ObjectId {
+        storage: None,
         kind: ObjectKind::ExtentPage,
         digest: Digest::ZERO,
     };
@@ -302,6 +304,7 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         (
             ExtentCloneRequest {
                 source_root: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Blob,
                     digest: Digest::ZERO,
                 },
@@ -312,6 +315,7 @@ fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn st
         (
             ExtentCloneRequest {
                 destination_root: ObjectId {
+                    storage: None,
                     kind: ObjectKind::Blob,
                     digest: Digest::ZERO,
                 },

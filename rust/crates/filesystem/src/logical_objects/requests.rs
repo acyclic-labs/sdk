@@ -2,6 +2,28 @@ use super::*;
 pub(super) type GetRequest = (acyclic_objects::Digest, ByteRange, u64);
 pub(super) type PutRequest = (acyclic_stream::SealedBytes, Vec<acyclic_objects::Digest>);
 
+pub(super) fn children(
+    id: ObjectId,
+    plaintext: &[u8],
+    work: &mut KernelAccounting<'_>,
+) -> Result<(Vec<acyclic_objects::Digest>, KernelOwnedAllocation), crate::FsError> {
+    if id.kind == crate::ObjectKind::BlobChunk {
+        return Ok((Vec::new(), guard(work)?));
+    }
+    let (mut references, custody) = vector(plaintext.len() / 33, work)?;
+    crate::kernel::visit_object_references(id, plaintext, work, |child| {
+        if id.storage.is_some() && child.storage.is_none() {
+            return Err(ObjectStoreError::Corrupt.into());
+        }
+        if references.len() == references.capacity() {
+            return Err(ObjectStoreError::Corrupt.into());
+        }
+        references.push(blob(child));
+        Ok(())
+    })?;
+    Ok((references, custody))
+}
+
 /// Original custody for a request whose data owns no heap storage.
 pub(super) fn guard(
     work: &mut KernelAccounting<'_>,

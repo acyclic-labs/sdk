@@ -109,12 +109,12 @@ mod tests {
                 IdempotencyKey::from_bytes([1; 16]),
             )
             .await?;
-        let head_bytes: [u8; 32] = workspace.head.generation_id.as_slice().try_into()?;
+        let head = GenerationId::from_bytes(&workspace.head.generation_id)
+            .ok_or("invalid generation-root reference")?;
         *source_provider
             .generation
             .lock()
-            .map_err(|_| "source provider lock poisoned")? =
-            Some(GenerationId::new(Digest::from_bytes(head_bytes)));
+            .map_err(|_| "source provider lock poisoned")? = Some(head);
         assert_eq!(
             workspace.source_state().await?.state,
             HostedSourceState::NeedsRescan(HostedSourceInvalidation::QueueOverflow)

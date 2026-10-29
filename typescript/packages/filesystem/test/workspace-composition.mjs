@@ -43,7 +43,7 @@ export async function exerciseWorkspace(engine) {
     throw new Error(`Node memory workspace did not commit: ${commit.status}`);
   }
   const generation = await workspace.head();
-  if (!(generation instanceof Uint8Array) || generation.byteLength !== 32) {
+  if (!(generation instanceof Uint8Array) || generation.byteLength !== 33 || generation[0] !== 6) {
     throw new Error("Node memory loader did not expose one canonical generation identity");
   }
   const observed = await workspace.read("/binary", BigInt(payload.byteLength));
@@ -51,7 +51,7 @@ export async function exerciseWorkspace(engine) {
     throw new Error("Node memory workspace did not preserve binary bytes");
   }
   const exact = await workspace.sync();
-  if (exact.id.byteLength !== 32 || exact.workspaceId.byteLength !== 16) {
+  if (exact.id.byteLength !== 33 || exact.id[0] !== 6 || exact.workspaceId.byteLength !== 16) {
     throw new Error("immutable generation identities have an invalid shape");
   }
   await workspace.checkpoint("before-output");
@@ -88,7 +88,7 @@ export async function exerciseWorkspace(engine) {
   }
   const foreignWorkspace = await engine.createWorkspace("generation-foreign");
   const foreignGeneration = await foreignWorkspace.sync();
-  for (const id of [new Uint8Array(31), new Uint8Array(32), foreignGeneration.id]) {
+  for (const id of [new Uint8Array(31), new Uint8Array(32), Uint8Array.of(6, ...new Uint8Array(32)), foreignGeneration.id]) {
     let rejected = false;
     try { await reopened.generation(id); } catch { rejected = true; }
     if (!rejected) throw new Error("exact generation lookup accepted malformed, absent, or foreign state");
@@ -142,15 +142,14 @@ export async function exerciseWorkspace(engine) {
   if ((await firstRacer.commit()).status !== "committed") {
     throw new Error("first transaction race did not publish");
   }
-  if ((await disjointRacer.commit()).status !== "conflict") {
-    throw new Error("stale disjoint transaction did not retain its candidate");
-  }
-  const safeRebase = await disjointRacer.rebase(16);
-  if (safeRebase.status !== "rebased" || !(safeRebase.generationId instanceof Uint8Array)) {
-    throw new Error("disjoint transaction did not rebase safely");
-  }
   if ((await disjointRacer.commit()).status !== "committed") {
-    throw new Error("rebased transaction did not publish with its original identity");
+    throw new Error("disjoint transaction did not publish with its original identity");
+  }
+  for (const [path, expected] of [["/race-a", 1], ["/race-b", 2]]) {
+    const bytes = await workspace.read(path, 1n);
+    if (bytes.length !== 1 || bytes[0] !== expected) {
+      throw new Error(`disjoint transaction lost published content at ${path}`);
+    }
   }
   const overlapWinner = await workspace.beginTransaction(new Uint8Array(16).fill(23));
   const overlapLoser = await workspace.beginTransaction(new Uint8Array(16).fill(24));

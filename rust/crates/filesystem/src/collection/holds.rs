@@ -145,10 +145,7 @@ impl Collection {
         let admitted = self.admit(&proof.objects, |_| false, proven_at).await?;
         let hold = self.register_with_accounting(
             Held::Generation {
-                root: ObjectId {
-                    kind: crate::ObjectKind::GenerationRoot,
-                    digest: proof.generation_id.digest(),
-                },
+                root: proof.generation_id.object_id(),
                 config,
             },
             accounting,

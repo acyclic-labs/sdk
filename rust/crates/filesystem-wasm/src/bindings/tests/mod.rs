@@ -98,7 +98,12 @@ fn result_dtos_preserve_bytes_bigints_and_work_counters() -> Result<(), JsValue>
 
     let commit = js(BrowserCommitResult {
         status: "committed",
-        generation_id: Some(vec![5; 32].into()),
+        generation_id: Some(
+            acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes([5; 32]))
+                .to_bytes()
+                .to_vec()
+                .into(),
+        ),
         epoch: Some(9_007_199_254_740_993),
         sequence: None,
         committed_fingerprint: None,
@@ -163,7 +168,7 @@ async fn transaction_results_preserve_commits_and_conflicting_rebases() -> Resul
     assert_eq!(text(&committed, "status")?.as_deref(), Some("committed"));
     assert_eq!(
         field::<Uint8Array>(&committed, "generationId")?.length(),
-        32
+        33
     );
     let conflict: JsValue = loser.commit(None).await?.into();
     assert_eq!(text(&conflict, "status")?.as_deref(), Some("conflict"));

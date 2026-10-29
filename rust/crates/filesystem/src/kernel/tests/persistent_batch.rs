@@ -14,6 +14,7 @@ fn entry(byte: u8) -> Result<AttributeEntry, crate::kernel::AttributeError> {
         name: name(byte)?,
         value_bytes: u64::from(byte),
         value: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -24,6 +25,7 @@ fn child(byte: u8) -> Result<Child<AttributeName>, crate::kernel::AttributeError
     Ok(Child {
         first: name(byte)?,
         page: ObjectId {
+            storage: None,
             kind: ObjectKind::AttributePage,
             digest: Digest::from_bytes([byte; 32]),
         },
@@ -66,10 +68,12 @@ fn machine_admission_cycles_and_cleanup_are_fail_closed() -> Result<(), Box<dyn 
 {
     let keys = [name(1)?];
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
     };
     let wrong = ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: Digest::from_bytes([2; 32]),
     };
@@ -119,6 +123,7 @@ fn native_batch_denial_keeps_its_actual_constructor_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
     let keys = [name(1)?, name(2)?];
     let root = ObjectId {
+        storage: None,
         kind: ObjectKind::AttributePage,
         digest: Digest::from_bytes([1; 32]),
     };

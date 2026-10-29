@@ -183,7 +183,7 @@ pub(in crate::bindings) fn native_transaction_rebase(
     match outcome {
         TransactionRebase::Rebased(generation) => NativeTransactionRebaseResult {
             status: "rebased".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
+            generation_id: Some(Buffer::from(generation.id().to_bytes().to_vec())),
             conflicts: Vec::new(),
             truncated: false,
         },

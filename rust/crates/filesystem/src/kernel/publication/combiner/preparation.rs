@@ -195,7 +195,7 @@ impl<P: PublicationOwner> Job<P> {
         };
         let previous_authentication = match previous_authentication {
             Some(authentication)
-                if authentication.value.proof.generation_id.digest() == root.digest =>
+                if authentication.value.proof.generation_id.object_id() == root =>
             {
                 return Ok(Generation {
                     root,

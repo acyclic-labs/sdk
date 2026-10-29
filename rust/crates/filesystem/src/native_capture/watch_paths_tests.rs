@@ -18,6 +18,7 @@ fn record() -> FileRecord {
         kind: FileKind::Fifo,
         link_count: 1,
         metadata: crate::ObjectId {
+            storage: None,
             kind: crate::ObjectKind::Metadata,
             digest: crate::Digest::from_bytes([2; 32]),
         },

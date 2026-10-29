@@ -43,7 +43,7 @@ const workspaceRef = create(WorkspaceRefSchema, {
 });
 const generationRef = create(GenerationRefSchema, {
   workspace: workspaceRef,
-  generationId: new Uint8Array(32).fill(2),
+  generationId: Uint8Array.of(6, ...new Uint8Array(32).fill(2)),
 });
 
 function grpcWebResponse(schema, value) {
@@ -102,6 +102,7 @@ function fixtureFetch(
   sourceResponse,
   observed,
   transactionResponse,
+  selectedGeneration = generationRef,
 ) {
   return async (input, init) => {
     const request = input instanceof Request ? input : new Request(input, init);
@@ -119,13 +120,13 @@ function fixtureFetch(
         workspace: create(WorkspaceSchema, {
           workspace: workspaceRef,
           name: workspaceRef.name,
-          head: generationRef,
+          head: selectedGeneration,
         }),
       }));
     }
     if (method === "GetHead") {
       return grpcWebResponse(GenerationResponseSchema, create(GenerationResponseSchema, {
-        generation: generationRef,
+        generation: selectedGeneration,
       }));
     }
     if (method === "ApplyTransaction") {
@@ -133,7 +134,7 @@ function fixtureFetch(
       requests.push(fromBinary(ApplyTransactionRequestSchema, framed.subarray(5)));
       return grpcWebResponse(MutationResponseSchema, create(MutationResponseSchema, {
         status: MutationStatus.COMMITTED,
-        generation: generationRef,
+        generation: selectedGeneration,
       }));
     }
     if (method === "RebaseTransaction") {
@@ -148,7 +149,7 @@ function fixtureFetch(
       return grpcWebResponse(SourceResponseSchema, create(SourceResponseSchema, {
         state: sealed ? SourceState.SEALED : pending ? SourceState.NEEDS_RESCAN : SourceState.CLEAN,
         reason: pending ? SourceInvalidationReason.QUEUE_OVERFLOW : SourceInvalidationReason.UNSPECIFIED,
-        ...(pending ? {} : { generation: generationRef }),
+        ...(pending ? {} : { generation: selectedGeneration }),
       }));
     }
     if (method === "IssueS3Credential") {
@@ -475,4 +476,39 @@ test("hosted requests fail locally when negotiated byte or page limits are excee
   await expect(workspace.diff({}, {}, 65)).rejects.toThrow();
   expect(pageLimitedMethods).toEqual(before);
   pageLimited.close();
+});
+
+test("hosted generations preserve full sealed references and reject digest-only aliases", async () => {
+  const sealed = Uint8Array.of(0x86, ...new Uint8Array(112).fill(7));
+  for (const id of [generationRef.generationId, sealed]) {
+    const requests = [];
+    const selected = create(GenerationRefSchema, { workspace: workspaceRef, generationId: id });
+    const fs = await openHostedFs({
+      endpoint: "https://filesystem.example.test", bearerToken: "token",
+      fetch: fixtureFetch(requests, "s3", undefined, validHandshake(true), [], undefined, undefined, undefined, selected),
+    });
+    const workspace = await fs.createWorkspace("hosted-s3");
+    expect(await workspace.head()).toEqual(id);
+    expect((await workspace.sync()).id).toEqual(id);
+    expect((await workspace.seal(new Uint8Array(16).fill(9))).id).toEqual(id);
+    await workspace.s3Access(false, 60n);
+    expect(requests.at(-1).generation.generationId).toEqual(id);
+    for (const invalid of [new Uint8Array(32), Uint8Array.of(5, ...new Uint8Array(32)), sealed.subarray(0, 33)]) {
+      await expect(workspace.generation(invalid)).rejects.toMatchObject({ code: "invalid_response" });
+    }
+    fs.close();
+  }
+});
+
+test("hosted head rejects malformed generation references before exposure", async () => {
+  for (const generationId of [new Uint8Array(32), Uint8Array.of(5, ...new Uint8Array(32)), Uint8Array.of(0x86, ...new Uint8Array(32))]) {
+    const selected = create(GenerationRefSchema, { workspace: workspaceRef, generationId });
+    const fs = await openHostedFs({
+      endpoint: "https://filesystem.example.test", bearerToken: "token",
+      fetch: fixtureFetch([], "s3", undefined, validHandshake(), [], undefined, undefined, undefined, selected),
+    });
+    const workspace = await fs.createWorkspace("hosted-s3");
+    await expect(workspace.head()).rejects.toMatchObject({ code: "invalid_response" });
+    fs.close();
+  }
 });

@@ -143,6 +143,7 @@ async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([0; 32]),
         },

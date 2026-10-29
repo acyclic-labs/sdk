@@ -19,6 +19,7 @@ fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>>
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([9; 32]),
         },
@@ -131,6 +132,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
         metadata,
         payload: FilePayload::Directory {
             entries: ObjectId {
+                storage: None,
                 kind: ObjectKind::TreePage,
                 digest: Digest::from_bytes([10; 32]),
             },
@@ -160,6 +162,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
     mismatched.payload = FilePayload::SymbolicLink {
         target_bytes: 0,
         target: ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([11; 32]),
         },
@@ -322,6 +325,7 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::from_bytes([13; 32]),
         },

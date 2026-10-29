@@ -105,6 +105,7 @@ pub(crate) async fn put_object<S: AsyncObjectStore>(
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let bytes = bytes.into();
     let id = ObjectId {
+        storage: None,
         kind,
         digest: object_digest(&bytes),
     };

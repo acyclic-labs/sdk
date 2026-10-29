@@ -35,7 +35,7 @@ pub fn encode_blob_page<E: From<CanonicalDecodeError>>(
             for item in items {
                 encoder.u64(item.first_offset);
                 encoder.u64(item.end_offset);
-                encoder.fixed(item.chunk.digest.as_bytes());
+                encoder.object(item.chunk);
             }
         }
         BlobNode::Internal(items) => {
@@ -44,7 +44,7 @@ pub fn encode_blob_page<E: From<CanonicalDecodeError>>(
             for item in items {
                 encoder.u64(item.first_offset);
                 encoder.u64(item.end_offset);
-                encoder.fixed(item.page.digest.as_bytes());
+                encoder.object(item.page);
             }
         }
     }
@@ -60,15 +60,23 @@ pub(crate) fn blob_page_encoded_length(
     maximum_items: u32,
 ) -> Result<usize, CanonicalDecodeError> {
     page.validate(maximum_items)?;
-    let items = match &page.node {
-        BlobNode::Leaf(items) => items.len(),
-        BlobNode::Internal(items) => items.len(),
+    let add = |bytes: usize, length| {
+        bytes
+            .checked_add(length)
+            .ok_or(CanonicalDecodeError::LengthOverflow)
     };
-    count(items)?;
-    items
-        .checked_mul(BLOB_PAGE_ITEM_BYTES)
-        .and_then(|bytes| BLOB_PAGE_HEADER_BYTES.checked_add(bytes))
-        .ok_or(CanonicalDecodeError::LengthOverflow)
+    match &page.node {
+        BlobNode::Leaf(items) => items
+            .iter()
+            .try_fold(BLOB_PAGE_HEADER_BYTES, |bytes, item| {
+                add(bytes, 16 + item.chunk.encoded_len())
+            }),
+        BlobNode::Internal(items) => items
+            .iter()
+            .try_fold(BLOB_PAGE_HEADER_BYTES, |bytes, item| {
+                add(bytes, 16 + item.page.encoded_len())
+            }),
+    }
 }
 
 pub(crate) fn decode_blob_page_with_accounting(
@@ -117,12 +125,7 @@ pub fn decode_blob_page<E: From<CanonicalDecodeError>>(
                 leaf.push(BlobChunkRef {
                     first_offset: decoder.u64(observe)?,
                     end_offset: decoder.u64(observe)?,
-                    chunk: ObjectId {
-                        kind: ObjectKind::BlobChunk,
-                        digest: crate::foundation::Digest::from_bytes(
-                            decoder.fixed::<32, E>(observe)?,
-                        ),
-                    },
+                    chunk: decoder.object(ObjectKind::BlobChunk, observe)?,
                 });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -134,12 +137,7 @@ pub fn decode_blob_page<E: From<CanonicalDecodeError>>(
                 internal.push(BlobChild {
                     first_offset: decoder.u64(observe)?,
                     end_offset: decoder.u64(observe)?,
-                    page: ObjectId {
-                        kind: ObjectKind::Blob,
-                        digest: crate::foundation::Digest::from_bytes(
-                            decoder.fixed::<32, E>(observe)?,
-                        ),
-                    },
+                    page: decoder.object(ObjectKind::Blob, observe)?,
                 });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -175,6 +173,7 @@ pub fn blob_page_id(page: &BlobPage, maximum_items: u32) -> Result<ObjectId, Can
         |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
     )?;
     Ok(ObjectId {
+        storage: None,
         kind: ObjectKind::Blob,
         digest: object_digest(&bytes),
     })

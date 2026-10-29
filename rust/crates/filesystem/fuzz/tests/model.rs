@@ -10,6 +10,7 @@ mod sync;
 
 fn key(byte: u8) -> ObjectId {
     ObjectId {
+        storage: None,
         kind: ObjectKind::TreePage,
         digest: Digest::from_bytes([byte; 32]),
     }

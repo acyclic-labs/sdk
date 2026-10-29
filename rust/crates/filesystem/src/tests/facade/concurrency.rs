@@ -177,7 +177,7 @@ async fn disjoint_rebase_adoption_fences_reads_added_during_preparation() -> Tes
     let before = checkout_state(&local);
     let classified = (
         RebaseDecision::Safe {
-            generation: GenerationId::new(object.digest),
+            generation: GenerationId::from_root(object),
         },
         accounting.claim_owned(0, 0)?,
     );

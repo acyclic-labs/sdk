@@ -4,7 +4,9 @@ use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::codec::{CanonicalDecodeError, ReadAllocationStep};
 use super::file_read::OriginalReadAccounting;
 use super::namespace_path::{NamespacePathError, finish_owned};
-use crate::foundation::{Digest, FileId};
+#[cfg(test)]
+use crate::foundation::Digest;
+use crate::foundation::FileId;
 use crate::kernel::Child;
 use crate::model::FilesystemProfile;
 use crate::storage::{ObjectId, ObjectKind};
@@ -17,6 +19,7 @@ pub use name::{LogicalName, NameEncoding};
 mod case_fold;
 pub(crate) use case_fold::case_fold_unicode;
 mod tree;
+#[cfg(test)]
 pub(crate) use tree::digest_object;
 pub use tree::{FileKind, TreeEntry, TreePage, TreePageError};
 mod extent;

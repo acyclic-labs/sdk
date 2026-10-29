@@ -10,7 +10,7 @@ import type {
 } from "../src/compat.js";
 
 const id = new Uint8Array(16);
-const generation = new Uint8Array(32);
+const generation = Uint8Array.from([6, ...new Uint8Array(32)]);
 
 const conflictKeys = [
   { kind: "file", fileId: id },

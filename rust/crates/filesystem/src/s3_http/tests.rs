@@ -859,3 +859,48 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
     assert!(S3::upload_part(&adapter, upload).await.is_err());
     Ok(())
 }
+
+#[test]
+fn multipart_records_preserve_sealed_parts_and_completed_generations() -> S3Result {
+    let storage = crate::ObjectStorage {
+        locator: crate::Digest::from_bytes([1; 32]),
+        root_file_id: crate::FileId::from_bytes([2; 16]),
+        origin_generation: crate::Digest::from_bytes([3; 32]),
+    };
+    let part = ObjectId {
+        kind: crate::ObjectKind::Blob,
+        digest: crate::Digest::from_bytes([4; 32]),
+        storage: Some(storage),
+    };
+    let generation = crate::GenerationId::from_root(ObjectId {
+        kind: crate::ObjectKind::GenerationRoot,
+        ..part
+    });
+    let etag = format!("\"{}\"", hex::encode([5; 32]));
+    let records = vec![
+        encode_multipart_created("key", 2, 8, 0)?.into(),
+        encode_multipart_part(
+            1,
+            StagedContent::from_canonical_parts(part, 4),
+            IdempotencyKey::from_bytes([6; 16]),
+            &etag,
+        )
+        .into(),
+        encode_multipart_completing(&[(1, etag)])?.into(),
+        encode_multipart_completed(generation).into(),
+    ];
+    let snapshot = decode_multipart(records, 4, FilesystemS3Limits::default())?;
+    assert_eq!(
+        snapshot
+            .parts
+            .get(&1)
+            .expect("the stored part")
+            .staged
+            .root(),
+        part
+    );
+    assert!(
+        matches!(snapshot.terminal, Some(MultipartTerminal::Completed(value)) if value == generation)
+    );
+    Ok(())
+}

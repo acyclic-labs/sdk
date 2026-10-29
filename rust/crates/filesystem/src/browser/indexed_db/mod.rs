@@ -22,7 +22,9 @@ use web_sys::Blob;
 
 const DATABASE_VERSION: u32 = 2;
 const OBJECTS: &str = "objects";
-const OBJECT_KEY_BYTES: u64 = 66;
+fn object_key_bytes(id: ObjectId) -> u64 {
+    (id.encoded_len() * 2) as u64
+}
 
 /// Browser database initialization failures.
 #[derive(Debug, Error)]
@@ -139,10 +141,8 @@ impl IndexedDbObjectStore {
         })
     }
     pub(crate) fn key(id: ObjectId) -> String {
-        let mut key = String::with_capacity(2 + id.digest.as_bytes().len() * 2);
-        key.push(char::from(b'0' + id.kind.canonical_tag()));
-        key.push(':');
-        for byte in id.digest.as_bytes() {
+        let mut key = String::with_capacity(id.encoded_len() * 2);
+        for byte in id.to_bytes().as_slice() {
             for nibble in [byte >> 4, byte & 15] {
                 key.push(char::from(match nibble {
                     0..=9 => b'0' + nibble,

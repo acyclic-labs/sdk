@@ -283,6 +283,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     let wrong = list_tree_entries(
         &store,
         ObjectId {
+            storage: None,
             kind: ObjectKind::Blob,
             digest: Digest::from_bytes([8; 32]),
         },

@@ -10,10 +10,10 @@ use crate::kernel::{
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
-    DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
-    GenerationId, IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId,
-    RebaseConflict, Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget,
-    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceRebase,
+    DependencyRegion, DependencyState, DurableCommit, ForkOptions, Fs, Generation, GenerationId,
+    IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId, RebaseConflict, Sequence,
+    Transaction, TransactionCommit, TransactionRebase, WorkBudget, Workspace, WorkspaceDelete,
+    WorkspaceError, WorkspaceRebase,
 };
 use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use bytes::Bytes;

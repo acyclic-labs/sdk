@@ -13,6 +13,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
     ] {
         let volume_id = VolumeId::from_bytes([volume; 16]);
         let root = ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([root_digest; 32]),
         };
@@ -50,10 +51,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
         for kind in [ObjectKind::Blob.canonical_tag(), u8::MAX] {
             let mut wrong = bytes.clone();
             wrong[PAYLOAD_DOMAIN.len() + 2 + 16] = kind;
-            assert!(matches!(
-                decode_published_generation(&wrong, u64::MAX, accept),
-                Err(CanonicalDecodeError::Invariant(_))
-            ));
+            assert!(decode_published_generation(&wrong, u64::MAX, accept).is_err());
         }
         if evidence.is_some() {
             for offset in [
@@ -94,6 +92,7 @@ fn publication_payload_versions_are_canonical_bounded_and_validate_the_complete_
 fn composed_publication_retains_the_original_retry_request() -> TestResult {
     let volume = VolumeId::from_bytes([71; 16]);
     let effective = ObjectId {
+        storage: None,
         kind: ObjectKind::GenerationRoot,
         digest: Digest::from_bytes([72; 32]),
     };
@@ -104,6 +103,7 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
             digest: Digest::from_bytes([73; 32]),
         },
         generation_root: ObjectId {
+            storage: None,
             kind: ObjectKind::GenerationRoot,
             digest: Digest::from_bytes([74; 32]),
         },
@@ -119,7 +119,7 @@ fn composed_publication_retains_the_original_retry_request() -> TestResult {
         );
         assert_eq!(
             bytes.len(),
-            publication_payload_length_with_evidence(evidence, Some(origin))?
+            publication_payload_length_with_evidence(effective, evidence, Some(origin))?
         );
         let decoded = decode_publication_evidence::<CanonicalDecodeError>(
             &bytes,

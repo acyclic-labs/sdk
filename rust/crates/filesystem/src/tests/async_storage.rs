@@ -73,6 +73,7 @@ impl AsyncObjectStore for ScriptedRead {
 async fn sequential_batch_preserves_cancellation_and_nested_overflow_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let object_id = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(b"owned"),
     };
@@ -124,6 +125,7 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
     let mut ids = Vec::new();
     for bytes in [b"first".as_slice(), b"second".as_slice()] {
         let id = ObjectId {
+            storage: None,
             kind: ObjectKind::BlobChunk,
             digest: object_digest(bytes),
         };
@@ -274,6 +276,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
     assert_eq!(work.spent(), WorkCounters::default());
     let objects = MemoryObjectStore::default();
     let object_id = ObjectId {
+        storage: None,
         kind: ObjectKind::BlobChunk,
         digest: object_digest(b"cancelled"),
     };

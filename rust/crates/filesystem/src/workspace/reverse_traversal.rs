@@ -174,7 +174,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
         return Ok(matches);
     }
     let limits = volume.config.limits;
-    let generation = GenerationId::new(generation_root.digest);
+    let generation = GenerationId::from_root(generation_root);
     let cache_key = crate::path_index::cache_key(
         generation,
         root.root_file_id,

@@ -38,12 +38,13 @@ describe("workspace binding result copies", () => {
     const extent = copyWorkspaceExtentPlan({
       spans: [{ offset: "1", length: "2", sourceEnd: "3", kind: "content" }],
     } as unknown as Parameters<typeof copyWorkspaceExtentPlan>[0]);
-    const generationId = Buffer.alloc(16, 1);
+    const generationId = Buffer.from([0x86, ...Buffer.alloc(112, 1)]);
+    const fileId = Buffer.alloc(16, 1);
     const expected = Buffer.from([2]);
     const rebase = copyTransactionRebase({
       status: "conflicted", generationId, truncated: false,
       conflicts: [{
-        region: "file-record", fileId: generationId, directoryId: undefined,
+        region: "file-record", fileId, directoryId: undefined,
         offset: "4", length: "5", sparseTarget: undefined, name: undefined,
         maximumEntries: undefined, usage: "observation", expected, actual: undefined,
       }],
@@ -54,7 +55,9 @@ describe("workspace binding result copies", () => {
     rebase.generationId![0] = 9;
     rebase.conflicts[0]!.fileId![0] = 9;
     rebase.conflicts[0]!.expected![0] = 9;
-    expect(generationId[0]).toBe(1);
+    expect(generationId[0]).toBe(0x86);
+    expect(rebase.generationId?.subarray(1)).toEqual(new Uint8Array(generationId.subarray(1)));
+    expect(fileId[0]).toBe(1);
     expect(expected[0]).toBe(2);
   });
 
@@ -100,7 +103,7 @@ describe("workspace binding result copies", () => {
   });
 
   test("normalizes checkout commit and live results without retaining binding buffers", () => {
-    const generationId = Buffer.alloc(32, 1);
+    const generationId = Buffer.from([6, ...Buffer.alloc(32, 1)]);
     const fingerprint = Buffer.alloc(32, 2);
     const fileId = Buffer.alloc(16, 3);
     const work = {} as WorkCounters;
@@ -116,7 +119,7 @@ describe("workspace binding result copies", () => {
       result.committedFingerprint![0] = 9;
     }
     transaction.createdFileIds[0]![0] = 9;
-    expect([generationId[0], fingerprint[0], fileId[0]]).toEqual([1, 2, 3]);
+    expect([generationId[0], fingerprint[0], fileId[0]]).toEqual([6, 2, 3]);
     expect(() => copyCheckoutCommit({ ...fields, status: "unknown" } as unknown as Parameters<typeof copyCheckoutCommit>[0], work))
       .toThrow();
     const invalidLive = { ...fields, status: "unknown", conflictCount: 0, truncated: false } as unknown as Parameters<typeof copyLiveMutation>[0];
@@ -135,12 +138,13 @@ describe("workspace binding result copies", () => {
   });
 
   test("validates and copies checkout rebase identities", () => {
-    const generationId = Buffer.alloc(32, 4);
+    const generationId = Buffer.from([0x86, ...Buffer.alloc(112, 4)]);
     const work = {} as WorkCounters;
     const rebase = copyRebaseResult({ status: "safe", generationId, conflictCount: 0,
       truncated: false }, work);
     rebase.generationId![0] = 9;
-    expect(generationId[0]).toBe(4);
+    expect(generationId[0]).toBe(0x86);
+    expect(rebase.generationId?.subarray(1)).toEqual(new Uint8Array(generationId.subarray(1)));
     expect(() => copyRebaseResult({ status: "safe", generationId: Buffer.alloc(31),
       conflictCount: 0, truncated: false }, work)).toThrow();
     expect(() => copyRebaseResult({ status: "invalid", generationId: undefined,

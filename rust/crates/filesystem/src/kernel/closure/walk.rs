@@ -1,5 +1,15 @@
 use super::*;
-type PendingPage<N> = (ObjectId, Option<(N, ProofGuard)>, Option<(N, ProofGuard)>);
+type PendingPage<N> = (
+    ObjectId,
+    Option<(N, ProofGuard)>,
+    Option<(N, ProofGuard)>,
+    bool,
+);
+type DirectoryProofs<'a> = ProofVec<'a, (FileId, ProofVec<'a, (TreePage, ProofGuard)>)>;
+type FileTableProof<'a> = (
+    ProofVec<'a, (FileId, FileRecord)>,
+    Option<DirectoryProofs<'a>>,
+);
 mod incremental;
 
 #[derive(Default)]
@@ -13,11 +23,18 @@ pub(crate) struct ProofContext<'a, S> {
     store: &'a S,
     limits: ClosureLimits,
     objects: ProofVec<'a, ObjectId>,
+    publication: Option<PublicationOrder<'a>>,
     // ObjectId includes its kind: complete blob and extent proofs can share
     // one invocation-owned length table without a second allocation domain.
     proven_lengths: ProofVec<'a, (ObjectId, u64)>,
     pub(super) meter: ProofMeter<'a>,
     object_bytes: u64,
+}
+
+struct PublicationOrder<'a> {
+    seen: u64,
+    objects: ProofVec<'a, ObjectId>,
+    completed: crate::kernel::allocation::fixed_index::FixedIndex<bool, { ObjectId::ENCODED_LEN }>,
 }
 
 impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
@@ -26,10 +43,35 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             store,
             limits,
             objects: ProofVec::new(&meter),
+            publication: None,
             proven_lengths: ProofVec::new(&meter),
             object_bytes: 0,
             meter,
         }
+    }
+
+    pub(crate) fn publication_order(mut self) -> Self {
+        self.publication = Some(PublicationOrder {
+            seen: 0,
+            objects: ProofVec::new(&self.meter),
+            completed: Default::default(),
+        });
+        self
+    }
+
+    fn complete(&mut self, object: ObjectId) -> Result<(), crate::FsError> {
+        if let Some(order) = &mut self.publication {
+            let completed = self.meter.with_accounting(|accounting| {
+                order
+                    .completed
+                    .get_or_try_insert_with(object.index_key(), accounting, |_| Ok(false))
+            })?;
+            if !*completed {
+                *completed = true;
+                order.objects.push(object)?;
+            }
+        }
+        Ok(())
     }
 
     pub(crate) async fn prove_record_closure(
@@ -51,6 +93,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     pub(super) fn take_objects(&mut self) -> Result<(Vec<ObjectId>, ProofGuard), crate::FsError> {
+        if let Some(order) = &mut self.publication {
+            return std::mem::replace(&mut order.objects, ProofVec::new(&self.meter)).into_parts();
+        }
         let objects = std::mem::replace(&mut self.objects, ProofVec::new(&self.meter));
         objects.into_parts()
     }
@@ -96,7 +141,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             )
         })?;
         drop(root_bytes);
-        let generation_id = GenerationId::new(generation_root.digest);
+        let generation_id = GenerationId::from_root(generation_root);
         let root_object_bytes = self.object_bytes;
         let slot = self.proof_slot(cache, root.0.volume_id)?;
         let previous = slot
@@ -134,7 +179,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             self.proven_lengths = ProofVec::new(&self.meter);
             self.object_bytes = root_object_bytes;
         }
-        let records = self.prove_file_table(root.0.file_table).await?;
+        let (records, directories) = self.prove_file_table(root.0.file_table).await?;
         let file_count = usize_to_u64(records.values.len());
         if file_count > self.limits.maximum_files {
             return Err(ClosureError::TooManyFiles {
@@ -155,9 +200,19 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 .checked_add(bytes)
                 .ok_or(ClosureError::LogicalBytesOverflow)?;
         }
-        self.prove_records_and_namespace(root.0.root_file_id, &records)
-            .await?;
+        if let Some(directories) = directories {
+            let record =
+                map_get(&records, &root.0.root_file_id).ok_or(ClosureError::MissingRootFile)?;
+            if !matches!(record.payload, FilePayload::Directory { .. }) {
+                return Err(ClosureError::RootIsNotDirectory.into());
+            }
+            self.validate_namespace(root.0.root_file_id, &records, &directories)?;
+        } else {
+            self.prove_records_and_namespace(root.0.root_file_id, &records)
+                .await?;
+        }
         drop(records);
+        self.complete(generation_root)?;
         let objects = self.take_objects()?;
         let mut root = root;
         let mut output = (
@@ -198,19 +253,40 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         object: ObjectId,
         page: bool,
     ) -> Result<(crate::storage::ObjectRead, ProofGuard), crate::FsError> {
-        let count = usize_to_u64(self.objects.values.len())
-            .checked_add(u64::from(
-                self.objects.values.binary_search(&object).is_err(),
-            ))
-            .ok_or(WorkError::Overflow)?;
-        if count > self.limits.maximum_objects {
-            return Err(ClosureError::TooManyObjects {
-                observed: count,
-                maximum: self.limits.maximum_objects,
+        if let Some(order) = &mut self.publication {
+            let seen = &mut order.seen;
+            self.meter.with_accounting(|accounting| {
+                order
+                    .completed
+                    .get_or_try_insert_with(object.index_key(), accounting, |_| {
+                        let observed = seen.checked_add(1).ok_or(WorkError::Overflow)?;
+                        if observed > self.limits.maximum_objects {
+                            return Err(ClosureError::TooManyObjects {
+                                observed,
+                                maximum: self.limits.maximum_objects,
+                            }
+                            .into());
+                        }
+                        *seen = observed;
+                        Ok(false)
+                    })
+                    .map(|_| ())
+            })?;
+        } else {
+            let count = usize_to_u64(self.objects.values.len())
+                .checked_add(u64::from(
+                    self.objects.values.binary_search(&object).is_err(),
+                ))
+                .ok_or(WorkError::Overflow)?;
+            if count > self.limits.maximum_objects {
+                return Err(ClosureError::TooManyObjects {
+                    observed: count,
+                    maximum: self.limits.maximum_objects,
+                }
+                .into());
             }
-            .into());
+            set_insert(&mut self.objects, object)?;
         }
-        set_insert(&mut self.objects, object)?;
         self.meter.charge(WorkCounters {
             page_reads: u64::from(page),
             ..WorkCounters::default()
@@ -237,13 +313,21 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_file_table(
         &mut self,
         root: ObjectId,
-    ) -> Result<ProofVec<'a, (FileId, FileRecord)>, crate::FsError> {
+    ) -> Result<FileTableProof<'a>, crate::FsError> {
         Self::require_kind(root, ObjectKind::FileTablePage)?;
         let mut records = ProofVec::new(&self.meter);
+        let mut directories = self
+            .publication
+            .as_ref()
+            .map(|_| ProofVec::new(&self.meter));
         let mut pending = ProofVec::new(&self.meter);
-        pending.push((root, None, None))?;
+        pending.push((root, None, None, false))?;
         let mut pages = ProofVec::new(&self.meter);
-        while let Some((page_id, lower, upper)) = pending.values.pop() {
+        while let Some((page_id, lower, upper, exiting)) = pending.values.pop() {
+            if exiting {
+                self.complete(page_id)?;
+                continue;
+            }
             self.examine(1)?;
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
@@ -257,6 +341,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 )
             })?;
             drop(bytes);
+            if self.publication.is_some() {
+                pending.push((page_id, None, None, true))?;
+            }
             match &page.0 {
                 FileTablePage::Leaf(entries) => {
                     validate_ordered_bounds(
@@ -269,6 +356,11 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         if map_insert(&mut records, record.file_id, *record)?.is_some() {
                             return Err(ClosureError::DuplicateFileRecord(record.file_id).into());
                         }
+                        if let Some(directories) = &mut directories {
+                            if let Some(entries) = self.prove_record(record).await? {
+                                map_insert(directories, record.file_id, entries)?;
+                            }
+                        }
                     }
                 }
                 FileTablePage::Internal(children) => {
@@ -280,12 +372,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     for (index, child) in children.iter().enumerate().rev() {
                         self.examine(1)?;
                         let child_upper = children.get(index + 1).map(|next| next.first).or(upper);
-                        pending.push((child.page, Some(child.first), child_upper))?;
+                        pending.push((child.page, Some(child.first), child_upper, false))?;
                     }
                 }
             }
         }
-        Ok(records)
+        Ok((records, directories))
     }
 
     async fn prove_records_and_namespace(
@@ -346,7 +438,17 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_metadata(&mut self, metadata_id: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(metadata_id, ObjectKind::Metadata)?;
         // Immutable metadata is authenticated once even when many records share it.
-        if self.objects.values.binary_search(&metadata_id).is_ok() {
+        let seen = if let Some(order) = &self.publication {
+            self.meter.with_accounting(|accounting| {
+                order
+                    .completed
+                    .get(metadata_id.index_key(), accounting)
+                    .map(|value| value.is_some())
+            })?
+        } else {
+            self.objects.values.binary_search(&metadata_id).is_ok()
+        };
+        if seen {
             return Ok(());
         }
         let bytes = self.read_object(metadata_id, false).await?;
@@ -363,6 +465,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 self.prove_blob(blob).await?;
             }
         }
+        self.complete(metadata_id)?;
         Ok(())
     }
 
@@ -399,7 +502,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                                 .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
                         })
                         .transpose()?;
-                    pending.push((child.page, Some(child_lower), child_upper))?;
+                    pending.push((child.page, Some(child_lower), child_upper, false))?;
                 }
             }
         }
@@ -413,12 +516,19 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         Self::require_kind(root, ObjectKind::TreePage)?;
         let mut leaves = ProofVec::new(&self.meter);
         let mut pending: ProofVec<'a, PendingPage<LogicalName>> = ProofVec::new(&self.meter);
-        pending.push((root, None, None))?;
+        pending.push((root, None, None, false))?;
         let mut pages = ProofVec::new(&self.meter);
-        while let Some((page_id, lower, upper)) = pending.values.pop() {
+        while let Some((page_id, lower, upper, exiting)) = pending.values.pop() {
+            if exiting {
+                self.complete(page_id)?;
+                continue;
+            }
             self.examine(1)?;
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
+            }
+            if self.publication.is_some() {
+                pending.push((page_id, None, None, true))?;
             }
             let page = self
                 .read_ordered_page::<crate::kernel::tree_mutation::TreeFormat>(
@@ -447,9 +557,13 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             };
         }
         let mut pending = ProofVec::new(&self.meter);
-        pending.push((root, 0_u64, size))?;
+        pending.push((root, 0_u64, size, false))?;
         let mut pages = ProofVec::new(&self.meter);
-        while let Some((page_id, first, end)) = pending.values.pop() {
+        while let Some((page_id, first, end, exiting)) = pending.values.pop() {
+            if exiting {
+                self.complete(page_id)?;
+                continue;
+            }
             self.examine(1)?;
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
@@ -463,6 +577,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 )
             })?;
             drop(bytes);
+            if self.publication.is_some() {
+                pending.push((page_id, 0, 0, true))?;
+            }
             match &page.0 {
                 ExtentPage::Leaf(extents) => {
                     validate_extent_bounds(extents, first, end)?;
@@ -495,7 +612,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                     }
                     for child in children.iter().rev() {
                         self.examine(1)?;
-                        pending.push((child.page, child.first_offset, child.end_offset))?;
+                        pending.push((child.page, child.first_offset, child.end_offset, false))?;
                     }
                 }
             }
@@ -510,10 +627,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             return Ok(*length);
         }
         let mut pending = ProofVec::new(&self.meter);
-        pending.push((root, 0_u64, None))?;
+        pending.push((root, 0_u64, None, false))?;
         let mut pages = ProofVec::new(&self.meter);
         let mut root_length = None;
-        while let Some((page_id, first, end)) = pending.values.pop() {
+        while let Some((page_id, first, end, exiting)) = pending.values.pop() {
+            if exiting {
+                self.complete(page_id)?;
+                continue;
+            }
             self.examine(1)?;
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
@@ -527,6 +648,9 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 )
             })?;
             drop(bytes);
+            if self.publication.is_some() {
+                pending.push((page_id, 0, None, true))?;
+            }
             if page.0.first_offset != first || end.is_some_and(|value| page.0.end_offset != value) {
                 return Err(ClosureError::RoutingBoundsMismatch.into());
             }
@@ -537,7 +661,12 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 BlobNode::Internal(children) => {
                     for child in children.iter().rev() {
                         self.examine(1)?;
-                        pending.push((child.page, child.first_offset, Some(child.end_offset)))?;
+                        pending.push((
+                            child.page,
+                            child.first_offset,
+                            Some(child.end_offset),
+                            false,
+                        ))?;
                     }
                 }
                 BlobNode::Leaf(chunks) => {
@@ -549,6 +678,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                         if usize_to_u64(value.0.bytes.len()) != expected {
                             return Err(ClosureError::BlobLengthMismatch.into());
                         }
+                        self.complete(chunk.chunk)?;
                     }
                 }
             }
@@ -561,12 +691,19 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     async fn prove_attributes(&mut self, root: ObjectId) -> Result<(), crate::FsError> {
         Self::require_kind(root, ObjectKind::AttributePage)?;
         let mut pending: ProofVec<'a, PendingPage<AttributeName>> = ProofVec::new(&self.meter);
-        pending.push((root, None, None))?;
+        pending.push((root, None, None, false))?;
         let mut pages = ProofVec::new(&self.meter);
-        while let Some((page_id, lower, upper)) = pending.values.pop() {
+        while let Some((page_id, lower, upper, exiting)) = pending.values.pop() {
+            if exiting {
+                self.complete(page_id)?;
+                continue;
+            }
             self.examine(1)?;
             if !set_insert(&mut pages, page_id)? {
                 return Err(ClosureError::RoutingAlias.into());
+            }
+            if self.publication.is_some() {
+                pending.push((page_id, None, None, true))?;
             }
             let page = self
                 .read_ordered_page::<crate::kernel::attribute_mutation::AttributeFormat>(
@@ -767,8 +904,5 @@ fn reusable(
         && root.root_file_id == cached.root.root_file_id
         && root.required_features == cached.root.required_features
         && (root.parents.as_slice() == [cached.generation_id]
-            || authority_root.is_some_and(|root| {
-                root.kind == ObjectKind::GenerationRoot
-                    && root.digest == cached.generation_id.digest()
-            }))
+            || authority_root.is_some_and(|root| root == cached.generation_id.object_id()))
 }

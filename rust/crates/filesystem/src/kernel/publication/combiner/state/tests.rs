@@ -68,6 +68,7 @@ fn delta(key: u8) -> GenerationDiff {
         kind: FileKind::Regular,
         link_count: 1,
         metadata: ObjectId {
+            storage: None,
             kind: ObjectKind::Metadata,
             digest: Digest::ZERO,
         },

@@ -30,14 +30,8 @@ impl NativeVolume {
     ) -> Result<NativeGenerationDiff> {
         let maximum_changes = maximum_changes.into_inner();
 
-        let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &before,
-            "before generation identity",
-        )?));
-        let after = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &after,
-            "after generation identity",
-        )?));
+        let before = decode_generation_id(&before)?;
+        let after = decode_generation_id(&after)?;
         let receipt = self
             .inner
             .diff_generations(

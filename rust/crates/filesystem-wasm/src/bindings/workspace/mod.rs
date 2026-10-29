@@ -119,15 +119,12 @@ impl BrowserWorkspace {
     #[wasm_bindgen]
     pub async fn head(&self) -> Result<Vec<u8>, JsValue> {
         let id = sdk_value!(unbounded_future!(self.engine, head()))?.id();
-        Ok(id.digest().into_bytes().to_vec())
+        Ok(id.to_bytes().to_vec())
     }
 
     #[wasm_bindgen]
     pub async fn generation(&self, id: Vec<u8>) -> Result<BrowserGeneration, JsValue> {
-        let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
-            &id,
-            "generation identity",
-        )?));
+        let id = decode_generation_id(&id)?;
         let engine = sdk_value!(Box::pin(unbounded_future!(self.engine, generation(id))))?;
         Ok(BrowserGeneration { engine })
     }
@@ -397,18 +394,8 @@ impl BrowserWorkspace {
                     options.maximum_conflicts,
                 )
                 .plan_at(
-                    &browser_join_generation(
-                        source,
-                        options.source_generation.as_deref(),
-                        "source generation",
-                    )
-                    .await?,
-                    &browser_join_generation(
-                        target,
-                        options.target_generation.as_deref(),
-                        "target generation",
-                    )
-                    .await?,
+                    &browser_join_generation(source, options.source_generation.as_deref()).await?,
+                    &browser_join_generation(target, options.target_generation.as_deref()).await?,
                     acyclic_fs::WorkBudget::UNBOUNDED,
                     &acyclic_fs::CancellationToken::new(),
                 )
@@ -537,7 +524,7 @@ pub(in crate::bindings) fn browser_workspace_rebase_result<A, O>(
     };
     BrowserWorkspaceRebaseResult {
         status,
-        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
+        generation_id: generation.map(|value| value.id().to_bytes().to_vec().into()),
         conflicts: Vec::new(),
         truncated: false,
     }

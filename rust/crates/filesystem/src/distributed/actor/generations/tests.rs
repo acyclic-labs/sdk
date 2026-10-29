@@ -30,6 +30,32 @@ async fn generation_catalog_separates_cold_unknown_from_verified_fork_absence() 
     assert!(
         matches!(projection.generation(inherited, &mut work)?, GenerationKnowledge::Present(value) if value == committed)
     );
+    let sealed = GenerationId::from_root(ObjectId {
+        storage: Some(crate::storage::ObjectStorage {
+            locator: Digest::from_bytes([31; 32]),
+            root_file_id: crate::FileId::from_bytes([32; 16]),
+            origin_generation: inherited.digest(),
+        }),
+        ..inherited.object_id()
+    });
+    assert!(matches!(
+        projection.generation(sealed, &mut work)?,
+        GenerationKnowledge::Absent
+    ));
+    let separate = GenerationIdentity::new(&mut work)?;
+    projection
+        .generations
+        .as_ref()
+        .unwrap()
+        .stage(sealed, 17, &separate, &mut work)?;
+    let sealed_commit = acyclic_stream::CommitId::from_bytes([43; 32]);
+    separate.seal(sealed_commit);
+    assert!(
+        matches!(projection.generation(sealed, &mut work)?, GenerationKnowledge::Present(value) if value == sealed_commit)
+    );
+    assert!(
+        matches!(projection.generation(inherited, &mut work)?, GenerationKnowledge::Present(value) if value == committed)
+    );
     assert!(
         matches!(
             projection.generation(earlier_ancestor, &mut work)?,
@@ -123,7 +149,7 @@ fn generation_catalog_failed_node_admission_preserves_coverage_and_original_fund
             .facts
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(*generation.digest().as_bytes(), &mut denied.accounting())?
+            .get(generation.object_id().index_key(), &mut denied.accounting())?
             .is_none()
     );
     assert_eq!(original.live_allocation_bytes(), funded);

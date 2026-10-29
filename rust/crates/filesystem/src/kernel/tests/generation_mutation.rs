@@ -175,6 +175,7 @@ async fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::erro
 fn missing_file_table_generation(fixture: &Fixture) -> GenerationRoot {
     GenerationRoot {
         file_table: ObjectId {
+            storage: None,
             kind: ObjectKind::FileTablePage,
             digest: Digest::from_bytes([0xff; 32]),
         },

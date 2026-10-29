@@ -11,7 +11,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{Digest, FileId, GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
+use crate::storage::{ByteRange, ObjectId, ObjectStoreError};
 use std::mem::size_of;
 use std::sync::Mutex;
 use thiserror::Error;
@@ -641,10 +641,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         {
             return Ok(root);
         }
-        let object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
+        let object = generation.object_id();
         let (root, allocation) =
             super::generation::read_generation_root_with_limits_and_accounting(
                 self.store,

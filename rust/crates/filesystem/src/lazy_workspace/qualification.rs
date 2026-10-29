@@ -75,7 +75,7 @@ impl NativePublicationSnapshot {
             NativeSnapshotContext::Lazy(cut) | NativeSnapshotContext::Selected { cut, .. } => cut,
         };
         ctx.charge(WorkCounters {
-            bytes_hashed: LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+            bytes_hashed: LazySnapshotRef::hash_bytes(self.generation),
             bytes_copied: std::mem::size_of::<LazySnapshotRef>() as u64,
             ..WorkCounters::UNCHARGED
         })?;
