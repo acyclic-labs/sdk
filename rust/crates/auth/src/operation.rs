@@ -4,7 +4,23 @@
 //! response reading and any explicitly classified retry share that same stop.
 //! Stopping a wait does not establish whether a remote mutation committed.
 
-use futures::{Future, FutureExt, future::BoxFuture, future::Shared};
+use futures::{Future, FutureExt, future::Shared};
+
+#[cfg(not(target_arch = "wasm32"))]
+type StopFuture = futures::future::BoxFuture<'static, Stopped>;
+#[cfg(target_arch = "wasm32")]
+type StopFuture = futures::future::LocalBoxFuture<'static, Stopped>;
+
+/// A host event accepted by the platform executor.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait OperationEvent: Future + Send + 'static {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<F: Future + Send + 'static> OperationEvent for F {}
+/// A browser event retains its owning event loop.
+#[cfg(target_arch = "wasm32")]
+pub trait OperationEvent: Future + 'static {}
+#[cfg(target_arch = "wasm32")]
+impl<F: Future + 'static> OperationEvent for F {}
 
 /// Why the caller stopped waiting. Neither variant proves remote cancellation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -21,7 +37,7 @@ pub enum Stopped {
 #[derive(Clone)]
 pub struct Context {
     deadline_unix_millis: u64,
-    stopped: Shared<BoxFuture<'static, Stopped>>,
+    stopped: Shared<StopFuture>,
 }
 
 impl Context {
@@ -31,8 +47,8 @@ impl Context {
     /// should be mapped according to that host's cancellation contract.
     pub fn new(
         deadline_unix_millis: u64,
-        expires: impl Future<Output = ()> + Send + 'static,
-        cancelled: impl Future<Output = ()> + Send + 'static,
+        expires: impl OperationEvent<Output = ()>,
+        cancelled: impl OperationEvent<Output = ()>,
     ) -> Self {
         let stopped = async move {
             futures::pin_mut!(expires, cancelled);
@@ -40,12 +56,20 @@ impl Context {
                 futures::future::Either::Left(_) => Stopped::Cancelled,
                 futures::future::Either::Right(_) => Stopped::Deadline,
             }
-        }
-        .boxed()
-        .shared();
+        };
+        Self::from_stopped(deadline_unix_millis, stopped)
+    }
+
+    /// Bind one original host stop event. Adapters preserve its typed reason;
+    /// losing the event's producer must resolve it as cancellation.
+    pub fn from_stopped(
+        deadline_unix_millis: u64,
+        stopped: impl OperationEvent<Output = Stopped>,
+    ) -> Self {
+        let stopped: StopFuture = Box::pin(stopped);
         Self {
             deadline_unix_millis,
-            stopped,
+            stopped: stopped.shared(),
         }
     }
 

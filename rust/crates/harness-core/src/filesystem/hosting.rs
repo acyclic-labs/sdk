@@ -21,8 +21,8 @@ use crate::{
         IntentId, Sender, Spawn, VolumeBinding,
     },
     approvals::ApprovalResponder,
-    conversation::{ContentAccess, ContentGrant, ContentPublisher, FileRef, VolumeOperation},
-    core::{Authority, AuthorityRoot, Scope},
+    conversation::{ContentAccess, ContentPublisher, FileRef},
+    core::{Authority, AuthorityRoot, RuntimeAuthority, Scope},
     interaction::{ApprovalBinding, Interaction},
     resources::ProviderRef,
 };
@@ -148,7 +148,7 @@ pub struct Turns {
 /// A host's custody, a caller's admission and the one placement they act on,
 /// bound once. Every root, turn and spawn of this binding uses this placement.
 pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
-    issuer: AuthorityRoot,
+    issuer: RuntimeAuthority,
     admission: TurnAdmission,
     within: ActorReference,
     maximum_bytes: u64,
@@ -203,7 +203,7 @@ where
         turns: Turns,
     ) -> Result<Self, Error> {
         Self::new(
-            issuer,
+            issuer.into(),
             TurnAdmission::Admitted {
                 audience: caller.audience,
                 scope: caller.scope,
@@ -211,6 +211,27 @@ where
             placement,
             turns,
         )
+    }
+
+    /// Bind the platform's opaque admitted invocation once. The turn host and
+    /// selected-volume factory retain this same owner; no request supplies a
+    /// replacement caller, audience or signing root.
+    pub fn platform_admitted(
+        authority: RuntimeAuthority,
+        placement: Placement<P, O>,
+        turns: Turns,
+    ) -> Result<Self, Error> {
+        authority.verifier(&mut None).map_err(turn)?;
+        let (audience, scope) = authority.caller().ok_or_else(|| {
+            turn(crate::Error::Unauthorized(
+                "platform admission is required".into(),
+            ))
+        })?;
+        let admission = TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: scope.clone(),
+        };
+        Self::new(authority, admission, placement, turns)
     }
 
     /// [`Self::admitted`] over the host's own composed `volumes`, as
@@ -230,7 +251,7 @@ where
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
-            issuer,
+            issuer.into(),
             TurnAdmission::Admitted {
                 audience: caller.audience,
                 scope: caller.scope,
@@ -252,7 +273,7 @@ where
         placement: Placement<P, O>,
         turns: Turns,
     ) -> Result<Self, Error> {
-        Self::new(issuer, TurnAdmission::LocalRoot, placement, turns)
+        Self::new(issuer.into(), TurnAdmission::LocalRoot, placement, turns)
     }
 
     /// The self-host enrollment over the host's own composed `volumes`, as
@@ -271,7 +292,7 @@ where
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
-            issuer,
+            issuer.into(),
             TurnAdmission::LocalRoot,
             volumes,
             within,
@@ -281,7 +302,7 @@ where
     }
 
     fn new(
-        issuer: AuthorityRoot,
+        issuer: RuntimeAuthority,
         admission: TurnAdmission,
         placement: Placement<P, O>,
         turns: Turns,
@@ -303,7 +324,7 @@ where
     }
 
     fn on(
-        issuer: AuthorityRoot,
+        issuer: RuntimeAuthority,
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
         within: ActorReference,
@@ -399,7 +420,7 @@ where
     /// The signing root every agent credential of this binding's tree is
     /// issued under.
     #[must_use]
-    pub const fn issuer(&self) -> &AuthorityRoot {
+    pub const fn issuer(&self) -> &RuntimeAuthority {
         &self.issuer
     }
 
@@ -438,6 +459,7 @@ where
             &state.volumes,
             &[],
         )
+        .await
         .map_err(turn)?;
         self.volumes
             .agent_observation(
@@ -511,6 +533,7 @@ where
             &state.volumes,
             &[],
         )
+        .await
         .map_err(turn)?;
         let reader = super::FilesystemContentVerifier::new(
             Arc::clone(&self.volumes),
@@ -560,6 +583,7 @@ where
             &state.volumes,
             &[],
         )
+        .await
         .map_err(turn)?;
         let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
@@ -711,6 +735,7 @@ where
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
         let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
+            .await
             .map_err(turn)?;
         let mut hasher = blake3::Hasher::new_derive_key("acyclic.harness.hosting.input.v1");
         // Like the inbox's intent key, the staged input is the sender's own:
@@ -765,50 +790,38 @@ where
     /// Verifies original scope identity, audience, lifetime and attenuation
     /// before observing an agent's committed bindings. Performs no IO.
     pub fn admit_path(&self, agent: &AgentPath) -> Result<(), Error> {
-        self.admission.derive(&self.issuer, agent).map_err(turn)?;
+        self.admission.verify(&self.issuer, agent).map_err(turn)?;
         Ok(())
     }
 
     /// Revalidates an existing agent's admission against its committed volume
     /// bindings, before restoring a platform-owned route. Performs no IO.
     pub fn admit_agent(&self, agent: &AgentPath, volumes: &[VolumeBinding]) -> Result<(), Error> {
-        agent_authority(&self.issuer, &self.admission, agent, volumes, &[]).map_err(turn)?;
+        super::agent_turns::AdmittedAgent::verify(&self.issuer, &self.admission, agent, volumes)
+            .map_err(turn)?;
         Ok(())
     }
 
     /// Validates a proposed root before placement or storage IO.
     pub fn admit_root(&self, request: &RootRequest) -> Result<(), Error> {
         let path = AgentPath::root(&request.agent);
-        let owner = crate::AgentId::from_bytes(request.agent.to_bytes());
-        let volumes: Vec<VolumeBinding> = request
+        let private = request
             .fresh
             .iter()
             .chain(&request.retained)
-            .cloned()
-            .collect();
-        {
-            let authority = agent_authority(&self.issuer, &self.admission, &path, &volumes, &[])
-                .map_err(turn)?;
-            for binding in &request.fresh {
-                ContentGrant::verify(
-                    &authority.verifier,
-                    &authority.scope,
-                    &binding.volume,
-                    VolumeOperation::Write,
-                    u64::MAX,
-                    &mut None,
-                )
-                .map_err(turn)?;
-                // A structured `filesystem:` grant passes that check by its
-                // label alone, so the filesystem's own decision over its
-                // ceiling must admit writing each fresh volume too.
-                super::agent_turns::require_structured_write(
-                    &authority.scope,
-                    owner,
-                    &binding.volume,
-                )
-                .map_err(turn)?;
-            }
+            .find(|binding| binding.name == super::PRIVATE_VOLUME)
+            .ok_or_else(|| turn(crate::Error::Invalid("agent has no private volume".into())))?;
+        // Admission needs the original private binding, not a copy of every
+        // proposed volume. Authority issuance remains on the execution path.
+        let authority = super::agent_turns::AdmittedAgent::verify(
+            &self.issuer,
+            &self.admission,
+            &path,
+            std::slice::from_ref(private),
+        )
+        .map_err(turn)?;
+        for binding in &request.fresh {
+            authority.authorize_volume(&binding.volume).map_err(turn)?;
         }
         Ok(())
     }

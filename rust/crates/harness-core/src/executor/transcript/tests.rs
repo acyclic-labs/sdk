@@ -166,6 +166,7 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
         verifier.audience().clone(),
         issuer.public_workload_trust()?,
         verifier.public_checkpoint_key(),
+        issuer.trust_changes(),
     )?;
     drop(issuer);
     let authenticated = manifest.authenticates(&public, Limits::default(), digest, None);
@@ -174,7 +175,12 @@ async fn request_proofs_bind_authority_limits_and_every_manifest_component() -> 
         "public-only manifest verification attempted to sign: {authenticated:?}"
     );
     assert_component_proofs(&manifest, &reference, &public)?;
-    assert!(public.model_request_proof([1; 32], &mut None).is_err());
+    assert!(
+        public
+            .model_request_proof([1; 32], &mut None)
+            .await
+            .is_err()
+    );
     Ok(())
 }
 

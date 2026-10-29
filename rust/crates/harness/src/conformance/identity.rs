@@ -252,12 +252,13 @@ async fn check(
                 return Err("OIDC scope exceeded the token/host deadline".into());
             }
             agent_authority(
-                &root,
+                &root.clone().into(),
                 &admission,
                 &fixture.path,
                 std::slice::from_ref(&fixture.binding),
                 &[],
-            )?;
+            )
+            .await?;
             fixture
                 .check(backend, root, admission, true, "OIDC valid token")
                 .await

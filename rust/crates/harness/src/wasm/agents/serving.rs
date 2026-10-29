@@ -1,7 +1,7 @@
 //! Event hosting is the portable public server, not a browser turn composition.
 use super::*;
 use crate::filesystem::TurnLimits;
-use crate::hosting::{self, Bound, Placement, RootRequest, Server, Serving, Turns, VerifiedCaller};
+use crate::hosting::{self, Bound, Placement, RootRequest, Server, Serving, Turns};
 use acyclic_actors::{domain::ActorLimits, wire};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
 use acyclic_harness_client::{AgentBinding, AgentCommand, PreparedCommand, decode_agent_reply};
@@ -12,16 +12,6 @@ use std::cell::RefCell;
 
 type Binding = Bound<dyn StreamProvider, Objects>;
 type Hosted = Server<dyn StreamProvider, Objects>;
-
-/// Platform-verified admission and placement, supplied only by the opener.
-#[derive(Deserialize, Tsify)]
-#[serde(deny_unknown_fields)]
-struct WasmHostingAdmission {
-    audience: Authority,
-    scope: crate::core::Scope,
-    account: Vec<u8>,
-    namespace: String,
-}
 
 struct Policy {
     policy: Function,
@@ -35,7 +25,8 @@ impl hosting::Platform for Policy {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         Box::pin(async move {
-            let cancel = host::Cancel::new().map_err(|_| StreamError::Unavailable)?;
+            let cancel =
+                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::Unavailable)?;
             let principal =
                 acyclic_auth::contract::PrincipalProto::from(principal.clone()).encode_to_vec();
             let command = to_js(command).map_err(|_| StreamError::InvalidArgument)?;
@@ -60,7 +51,8 @@ impl hosting::Platform for Policy {
     }
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
-            let cancel = host::Cancel::new().map_err(|_| StreamError::Unavailable)?;
+            let cancel =
+                crate::wasm::cancel::Cancel::new().map_err(|_| StreamError::Unavailable)?;
             let result = self
                 .admitted
                 .call1(&JsValue::UNDEFINED, &cancel.signal)
@@ -95,37 +87,32 @@ impl WasmAgentServer {
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
-        #[wasm_bindgen(unchecked_param_type = "WasmHostingAdmission")] admission: JsValue,
         authority: &acyclic_stream::WasmSessionAuthority,
         #[wasm_bindgen(unchecked_param_type = "WasmHostingPlatform")] platform: JsValue,
     ) -> std::result::Result<WasmAgentServer, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let limits = options.preset.execution_limits(options.limits);
-        let admission: WasmHostingAdmission = from_js(admission)?;
         let field = |name: &str| js_sys::Reflect::get(&platform, &JsValue::from_str(name));
         let manifest = field("manifest")?.dyn_into::<js_sys::Uint8Array>()?;
         let manifest = snapshot(&manifest)?;
         let on_record = field("onRecord")?.dyn_into::<Function>()?;
         let policy = field("policy")?.dyn_into::<Function>()?;
         let admitted = field("admitted")?.dyn_into::<Function>()?;
-        let within =
-            ActorReference::new(&admission.account, admission.namespace.as_bytes(), b"host")
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?;
+        let recipient = &owner.caller.audience;
+        let namespace = String::from_utf8(recipient.ns.clone())
+            .map_err(|_| js_error(Error::Invalid("recipient namespace must be UTF-8".into())))?;
+        let within = owner.within()?;
         let binding = wire::InvokeActorRequest {
             actor_id: "root".into(),
             method: "POST".into(),
             url: "https://agents.invalid/command".into(),
-            namespace: Some(admission.namespace),
-            account_id: admission.account,
+            namespace: Some(namespace),
+            account_id: recipient.account.clone(),
             ..Default::default()
         }
         .encode_to_vec();
-        let bound = Bound::admitted(
+        let bound = Bound::platform_admitted(
             owner.issuer.clone(),
-            VerifiedCaller {
-                audience: admission.audience,
-                scope: admission.scope,
-            },
             Placement {
                 filesystem: providers.providers.placement.clone(),
                 provider: options.filesystem_provider.clone(),
@@ -164,6 +151,7 @@ impl WasmAgentServer {
             filesystem: bound.volumes().clone(),
             provider: options.filesystem_provider,
             issuer: owner.issuer.clone(),
+            admission: owner.admission()?,
             sender: Sender::User {
                 principal: options.principal,
             },
@@ -377,7 +365,8 @@ impl WasmAgentServer {
         #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
         let (operation, handle) = futures::future::abortable(self.owned(async {
-            let cancel = host::Cancel::new().map_err(|_| stream_error(StreamError::Unavailable))?;
+            let cancel = crate::wasm::cancel::Cancel::new()
+                .map_err(|_| stream_error(StreamError::Unavailable))?;
             let result = operation.call1(&JsValue::UNDEFINED, &cancel.signal)?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result)).await
         }));

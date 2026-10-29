@@ -3,8 +3,9 @@
 <meta charset="utf-8">
 <title>Harness agents on IndexedDB</title>
 <pre id="result" data-status="pending">initializing</pre>
+<script type="importmap">{"imports":{"@bufbuild/protobuf":"/node_modules/@bufbuild/protobuf/dist/esm/index.js","@bufbuild/protobuf/codegenv2":"/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js","@bufbuild/protobuf/wkt":"/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"}}</script>
 <script type="module">
-import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
+import { agentsFixture, untilRecords, turnText } from "./browser-agents-fixture.mjs";
 const result = document.querySelector("#result");
 const phase = text => { result.dataset.waiting = text; };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
@@ -21,7 +22,7 @@ try {
   phase("create an agent whose brief is its first turn");
   const a = await agents.create("agent-a", "hello");
   assert(await agents.create("agent-a", "hello") === a, "exact create retry named another agent");
-  let entries = await until(conversation(a), entries => entries.length === 1);
+  let entries = await untilRecords(fixture, agents, a, "conversation", entries => entries.length === 1);
   assert(await turnText(agents, a, entries[0]) === "echo:hello", "brief turn output differs");
 
   phase("prompt the agent; its turn sees the settled history");
@@ -29,11 +30,12 @@ try {
   assert(sent.kind === "committed", describe(sent));
   const replay = await agents.send(a, "m1", "again");
   assert(replay.kind === "committed" && replay.inbox === sent.inbox, "exact send retry appended twice");
-  entries = await until(conversation(a), entries => entries.length === 2);
+  entries = await untilRecords(fixture, agents, a, "conversation", entries => entries.length === 2);
   assert(await turnText(agents, a, entries[1]) === "echo:again", "prompt turn output differs");
   assert(fixture.requests.length === 2 && fixture.requests[1].request.messages.length === 3,
     `second turn lacks its history: ${describe(fixture.requests.at(-1)?.request.messages)}`);
-  const status = await until(() => agents.read(a, "status", 0n, 64), records => records.at(-1)?.value.phase === "idle");
+  const status = await untilRecords(fixture, agents, a, "status", records =>
+    records.at(-1)?.value.phase === "idle" && records.at(-1).value.cursor > sent.inbox);
   assert(status.at(-1).value.cursor > sent.inbox, "status cursor does not cover the consumed prompt");
 
   phase("list root agents in bounded pages");
@@ -49,20 +51,19 @@ try {
   phase("a paused agent consumes nothing, across reopen");
   await agents.pause(a, true);
   assert((await agents.send(a, "m2", "later")).kind === "committed", "send to a paused agent failed");
-  await new Promise(resolve => setTimeout(resolve, 200));
   assert((await conversation(a)()).length === 2, "paused agent ran a turn");
   agents.free();
   agents = await fixture.open();
   assert((await conversation(a)()).length === 2, "reopened paused agent ran a turn");
   await agents.pause(a, false);
-  entries = await until(conversation(a), entries => entries.length === 3);
+  entries = await untilRecords(fixture, agents, a, "conversation", entries => entries.length === 3);
   assert(await turnText(agents, a, entries[2]) === "echo:later", "resumed turn output differs");
 
   phase("cancel keeps the agent open; archive closes it");
   assert((await agents.cancel(a, "c1")).kind === "committed", "cancel was refused");
   assert((await agents.archive(a, "x1")).kind === "committed", "archive was refused");
   assert((await agents.send(a, "m3", "late")).kind === "closed", "archived agent accepted a message");
-  await until(() => agents.read(a, "status", 0n, 64),
+  await untilRecords(fixture, agents, a, "status",
     records => records.at(-1)?.value.phase?.done?.outcome === "archived");
   assert(fixture.failures.length === 0, describe(fixture.failures));
   result.dataset.status = "passed";

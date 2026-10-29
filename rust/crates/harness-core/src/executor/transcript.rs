@@ -51,13 +51,16 @@ impl RequestManifest {
         )
     }
 
-    fn attestation(
+    async fn attestation(
         &self,
         verifier: &crate::core::AuthorityVerifier,
         io: Option<&PreparationIo>,
     ) -> Result<([u8; 32], [u8; 32])> {
         let digest = self.payload_digest(io)?;
-        let signature = with_history_io(io, |work| verifier.model_request_proof(digest, work))?;
+        let signature = with_history_io(io, |work| {
+            Ok::<_, Error>(verifier.model_request_proof(digest, work))
+        })?
+        .await?;
         let mut first = [0; 32];
         let mut second = [0; 32];
         first.copy_from_slice(&signature[..32]);
@@ -355,7 +358,7 @@ async fn stage_request_inner(
     };
     #[cfg(feature = "filesystem")]
     let manifest = if let Some(verifier) = verifier {
-        let proof = Some(manifest.attestation(verifier, io)?);
+        let proof = Some(manifest.attestation(verifier, io).await?);
         RequestManifest { proof, ..manifest }
     } else {
         manifest

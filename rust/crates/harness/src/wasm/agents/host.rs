@@ -2,6 +2,7 @@
 //! provider and tool contracts.
 
 use super::{Error, Result, from_js, to_js};
+use crate::wasm::cancel::Cancel;
 use crate::{
     context::{ModelContextCapacity, ModelTokenCount},
     conversation::{ContentResidencyVerifier, verified_content_bytes},
@@ -91,50 +92,13 @@ pub(super) struct HostModel {
     pub(super) content: Option<(Arc<dyn ContentResidencyVerifier>, u64)>,
 }
 
-/// An `AbortController` whose signal a host callback receives, aborted when
-/// the Rust side drops the call: the one cancellation of a JS host call.
-pub(super) struct Cancel {
-    controller: JsValue,
-    abort: Function,
-    pub(super) signal: JsValue,
-}
-
-impl Cancel {
-    pub(super) fn new() -> std::result::Result<Self, &'static str> {
-        let constructor =
-            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortController"))
-                .ok()
-                .and_then(|value| value.dyn_into::<Function>().ok())
-                .ok_or("cancellation provider is unavailable")?;
-        let controller = js_sys::Reflect::construct(&constructor, &js_sys::Array::new())
-            .map_err(|_| "cancellation provider failed")?;
-        let abort = js_sys::Reflect::get(&controller, &JsValue::from_str("abort"))
-            .ok()
-            .and_then(|value| value.dyn_into::<Function>().ok())
-            .ok_or("cancellation provider is invalid")?;
-        let signal = js_sys::Reflect::get(&controller, &JsValue::from_str("signal"))
-            .map_err(|_| "cancellation signal is unavailable")?;
-        Ok(Self {
-            controller,
-            abort,
-            signal,
-        })
-    }
-}
-
-impl Drop for Cancel {
-    fn drop(&mut self) {
-        let _ = self.abort.call0(&self.controller);
-    }
-}
-
 struct HostModelIterator {
     iterator: JsValue,
     cancel: Cancel,
 }
 impl Drop for HostModelIterator {
     fn drop(&mut self) {
-        let _ = self.cancel.abort.call0(&self.cancel.controller);
+        self.cancel.abort();
         if let Ok(value) = js_sys::Reflect::get(&self.iterator, &JsValue::from_str("return"))
             && let Ok(close) = value.dyn_into::<Function>()
         {

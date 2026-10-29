@@ -16,12 +16,7 @@ step() {
 }
 crate=rust/crates/conformance/cloudflare
 step journal-feature cargo check -p acyclic-stream --target wasm32-unknown-unknown --no-default-features --features wasm-journal --locked
-step wasm-compile cargo build -p acyclic-cloudflare-conformance --target wasm32-unknown-unknown --locked
-bindgen=$(bash scripts/ensure-wasm-bindgen.sh) || {
-  printf 'STEP bindgen-install failed; recovery: bash scripts/ensure-wasm-bindgen.sh\n' >&2
-  exit 1
-}
-step wasm-facade "$bindgen" --target web --out-dir "$crate/generated" "${CARGO_TARGET_DIR:-target}/wasm32-unknown-unknown/debug/acyclic_cloudflare_conformance.wasm"
+step host-fixture bash scripts/build-host-fixture.sh
 step typescript-dependencies bun install --frozen-lockfile --ignore-scripts
 step cargo-dependencies cargo fetch --locked
 step guest-facade bun scripts/build-wasm.mjs harness

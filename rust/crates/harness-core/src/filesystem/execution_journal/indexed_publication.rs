@@ -118,7 +118,7 @@ where
             model_dispatched: summary.model_dispatched,
         };
         let checkpoint_hold;
-        let checkpoint = self.encode_index_checkpoint(state, io)?;
+        let checkpoint = self.encode_index_checkpoint(state, io).await?;
         checkpoint_hold = io
             .map(|io| io.guard_bytes(&checkpoint))
             .transpose()?

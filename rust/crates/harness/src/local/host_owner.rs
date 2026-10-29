@@ -442,7 +442,7 @@ impl HostWorkspaceOwner {
                 .open_child(
                     agent,
                     &state.volumes,
-                    self.native.view_scope(&state)?,
+                    self.native.view_scope(&state).await?,
                     reference,
                 )
                 .await?

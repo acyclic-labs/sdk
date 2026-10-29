@@ -7,6 +7,137 @@ use acyclic_auth::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn guest_evidence_has_no_append_authority_but_retains_current_revocation() -> TestResult {
+    for sealed in [false, true] {
+        let parent = fixture(sealed)?;
+        let mut encoded = None;
+        let allocations = acyclic_test_support::measure(|| {
+            encoded = Some(parent.encode_sealed());
+        });
+        let encoded = encoded.ok_or("export did not run")??;
+        // Only the output buffer allocates; signing has a fixed stack transcript.
+        assert_eq!(allocations.count_total, 1);
+        let evidence = verify::verify(&encoded, &signed::Snapshot::default(), signed::NOW)?;
+        assert!(evidence.is_sealed());
+        assert_eq!(evidence.block_ids(), parent.block_ids());
+        assert!(parent.preserved_by(&evidence)?);
+        assert!(matches!(
+            evidence.attenuate(Vec::new(), &[7; 32]),
+            Err(verify::VerifyError::Sealed)
+        ));
+        // The host's original append authority is not consumed by the export.
+        if !sealed {
+            assert!(parent.attenuate(Vec::new(), &[7; 32]).is_ok());
+        }
+        for id in parent.revocation_ids() {
+            let mut trust = signed::Snapshot::default();
+            trust.revoked_blocks.push(id.try_into()?);
+            assert!(matches!(
+                evidence.check(&trust, signed::NOW),
+                Err(verify::VerifyError::Revoked)
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn same_key_descendants_preserve_every_admission_dependency_without_allocating() -> TestResult {
+    let parent = fixture(false)?;
+    let evidence = parent.trust_evidence()?;
+    let envelope = acyclic_auth::authority::decode_capability(&parent.encode())?;
+    let root = acyclic_auth::authority::decode_block(
+        &envelope.blocks.first().ok_or("missing root")?.payload,
+    )?;
+    let certificates = root.certificates.ok_or("missing certificates")?;
+    let ids = parent
+        .revocation_ids()
+        .map(<[u8]>::to_vec)
+        .collect::<Vec<_>>();
+    let caller = parent.caller_authority(b"customers")?;
+    assert_eq!(caller.principal.account, parent.account_id()?.as_bytes());
+    assert_eq!(caller.principal.ns, b"customers");
+    let principal = parent.effective().principal();
+    assert_eq!(
+        caller.principal.id,
+        principal.lineage.last().unwrap_or(&principal.id).as_bytes()
+    );
+    assert_eq!(
+        caller.expires_at_unix_seconds,
+        parent.effective().expires_at_unix_seconds()
+    );
+    assert_eq!(caller.revocation.blocks, ids);
+    assert_eq!(
+        caller.revocation.keys,
+        certificates
+            .keys
+            .iter()
+            .map(|certificate| CallerKeyRevocation {
+                key_id: certificate.key.key_id.clone(),
+                key_epoch: certificate.key.key_epoch,
+            })
+            .collect::<Vec<_>>()
+    );
+    assert!(parent.caller_authority(b"").is_err());
+    for changed in 0..6 {
+        let mut certificates = certificates.clone();
+        for certificate in &mut certificates.keys {
+            certificate.key.parent_revocation_ids.clear();
+        }
+        let leaf = &mut certificates.keys.last_mut().ok_or("missing leaf")?.key;
+        leaf.parent_revocation_ids = ids.clone();
+        match changed {
+            1 => leaf.key_id = "different-leaf".into(),
+            2 => leaf.key_epoch += 1,
+            3 => {
+                leaf.parent_revocation_ids.remove(1);
+            }
+            _ => {}
+        }
+        let wire = signed::root(|block| {
+            block.certificates = Some(certificates.clone());
+            block.caveats.extend([
+                Caveat {
+                    kind: CaveatKind::NotBeforeUnixSeconds(if changed == 5 { 0 } else { 50 }),
+                },
+                Caveat {
+                    kind: CaveatKind::ExpiresAtUnixSeconds(if changed == 4 { 300 } else { 200 }),
+                },
+            ]);
+        });
+        // Every candidate is genuinely signed and valid now, including each
+        // negative control. Current validity alone cannot establish inheritance.
+        let descendant = verify::verify(&wire, &signed::Snapshot::default(), signed::NOW)?;
+        let mut result = None;
+        let allocations = acyclic_test_support::measure(|| {
+            result = Some((
+                parent.preserved_by(&descendant),
+                evidence.preserved_by(&descendant),
+            ));
+        });
+        let (full, compact) = result.ok_or("comparison did not run")?;
+        assert_eq!(full?, changed == 0, "full dependency projection: {changed}");
+        assert_eq!(
+            compact?,
+            changed == 0,
+            "compact dependency projection: {changed}"
+        );
+        assert_eq!(allocations.count_total, 0);
+    }
+    let narrowed = parent
+        .attenuate(
+            vec![Caveat {
+                kind: CaveatKind::ExpiresAtUnixSeconds(150),
+            }],
+            &[7; 32],
+        )?
+        .seal()?;
+    assert!(parent.preserved_by(&narrowed)?);
+    assert!(evidence.preserved_by(&narrowed)?);
+    Ok(())
+}
+
 fn fixture(sealed: bool) -> Result<VerifiedCapability, verify::VerifyError> {
     let mut prepared = false;
     let wire = signed::root(|block| {

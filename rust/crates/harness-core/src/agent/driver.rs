@@ -32,7 +32,7 @@ pub struct OpenTurn {
     pub max_steps: u32,
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.
-    pub custody: Option<crate::core::AuthorityRoot>,
+    pub custody: Option<crate::core::RuntimeAuthority>,
     /// The agent's prior conversation and this input, as the one selection the
     /// journal admits; `None` for a turn without history.
     pub selected: Option<crate::projection::SelectedModelContext>,

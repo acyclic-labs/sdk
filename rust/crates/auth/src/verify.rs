@@ -372,14 +372,37 @@ impl VerifiedCapability {
 
     /// Consume append authority and replace it with a final tip signature.
     pub fn seal(mut self) -> Result<Self, VerifyError> {
-        let Proof::Append(signer) = std::mem::replace(&mut self.proof, Proof::Sealed([0; 64]))
-        else {
+        if self.is_sealed() {
             return Err(VerifyError::Sealed);
-        };
-        let mut message = SEAL_DOMAIN.to_vec();
-        message.extend_from_slice(self.ids.last().ok_or(VerifyError::Malformed)?);
-        self.proof = Proof::Sealed(signer.sign(&message).to_bytes());
+        }
+        self.proof = Proof::Sealed(self.seal_signature()?);
         Ok(self)
+    }
+
+    fn seal_signature(&self) -> Result<[u8; 64], VerifyError> {
+        match &self.proof {
+            Proof::Sealed(signature) => Ok(*signature),
+            Proof::Append(signer) => {
+                let mut message = [0; SEAL_DOMAIN.len() + 32];
+                message[..SEAL_DOMAIN.len()].copy_from_slice(SEAL_DOMAIN);
+                message[SEAL_DOMAIN.len()..]
+                    .copy_from_slice(self.ids.last().ok_or(VerifyError::Malformed)?);
+                Ok(signer.sign(&message).to_bytes())
+            }
+        }
+    }
+
+    /// Export public verification evidence without exporting append authority.
+    /// The custodian retains its original immutable capability; the recipient
+    /// receives the same authenticated blocks with only a final tip signature.
+    /// This does not attest a new admission or authorize a different request.
+    pub fn encode_sealed(&self) -> Result<Zeroizing<Vec<u8>>, VerifyError> {
+        Ok(wire::encode(
+            &self.signed,
+            26,
+            &self.seal_signature()?,
+            VERSION,
+        ))
     }
 
     /// Exact encoded length, without allocating or exposing the append secret.

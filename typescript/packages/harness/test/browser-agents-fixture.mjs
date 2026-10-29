@@ -1,10 +1,15 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeReadResponse } from "../generated/wasm/acyclic_harness_wasm.js";
+import { fromBinary } from "@bufbuild/protobuf";
+import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
 // The model is a scripted host callback; scheduling and recovery stay in Rust.
 export async function agentsFixture(id, reply, initialize = init) {
   await initialize();
-  const owner = new WasmAgentAuthority({ kind: "task", id }, "browser-agents", new Uint8Array(32).fill(23));
+  await initializeFixtureAuthority();
+  const authority = fixtureAuthority(id);
+  const owner = new WasmAgentAuthority(authority.capability);
   const registry = new WasmAgentRegistry();
   const requests = [];
   registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1", options: {} },
@@ -27,16 +32,20 @@ export async function agentsFixture(id, reply, initialize = init) {
     preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
+  let rejectFailure;
+  const failed = new Promise((_, reject) => { rejectFailure = reject; });
+  failed.catch(() => {});
+  const report = (actor, error) => { failures.push({ actor, error }); rejectFailure(new Error(`agent ${actor} failed: ${error}`)); };
   return { owner, registry, requests, failures, options,
-    open: () => WasmAgents.open(options, owner, registry, (actor, error) => failures.push({ actor, error })),
+    failed,
+    open: () => WasmAgents.open(options, owner, registry, report),
     // Host-injected storage, the guest artifact's entry over it, and a host
     // over the same storage whose turns run only through the guest.
     providers: kind => kind === "memory" ? WasmAgentProviders.memory(options) : WasmAgentProviders.indexedDb(options),
-    // The fixture holds `owner`'s custody: its guest is the tree's root.
-    guest: providers => AgentGuest.open(providers, options, owner, registry, { kind: "root" }),
+    guest: providers => AgentGuest.open(providers, options, owner, registry),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
-      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), (actor, error) => failures.push({ actor, error })),
-    free: () => { registry.free(); owner.free(); } };
+      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), report),
+    free: () => { rejectFailure(new Error("fixture owner closed")); authority.close(); registry.free(); owner.free(); authority.free(); } };
 }
 
 // Synthetic provider units are canonical request bytes, counted once as fixed
@@ -47,14 +56,21 @@ export const modelTokenCount = (bytes, request_digest) => ({
   message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0),
 });
 
-// Waits on durable state the page observes; the page deadline bounds it.
-export async function until(read, test, phase) {
-  for (;;) {
-    const value = await read();
-    if (test(value)) return value;
-    phase?.();
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
+// The canonical replay-to-live cursor owns registration and cancellation.
+// These fixed fixture histories are retained only for their parallel assertions.
+export async function untilRecords(fixture, agents, agent, stream, test) {
+  const cursor = await agents.follow(agent, stream, 0n);
+  const records = [];
+  try {
+    for (;;) {
+      const bytes = await Promise.race([cursor.next(), fixture.failed]);
+      if (bytes === null) throw new Error("agent stream closed before its required record");
+      const frame = fromBinary(ReadResponseSchema, bytes);
+      const batch = fromBinary(RecordBatchSchema, decodeReadResponse(frame.codec, frame.data, frame.decodedLength));
+      for (const record of batch.records) records.push({ sequence: record.sequence, value: JSON.parse(new TextDecoder().decode(record.value)) });
+      if (test(records)) return records;
+    }
+  } finally { cursor.close(); cursor.free(); }
 }
 
 // The staged output text of `agent`'s settled turn `entry`.

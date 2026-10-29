@@ -207,7 +207,9 @@ pub async fn serve<C: Composition>(
     let server = &host.server;
     let bound = server.bound();
     let authority = config.verifier.session(&Custody {
-        issuer: bound.issuer(),
+        issuer: bound.issuer().native().ok_or_else(|| {
+            Error::Invalid("local server enrollment requires native custody".into())
+        })?,
         clock: &host.clock,
     })?;
     let (lifetime, ended) = tokio::sync::watch::channel(());

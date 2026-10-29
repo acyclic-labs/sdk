@@ -1,6 +1,6 @@
 import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
   type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority, type WasmFileRefWire,
-  type WasmHostingAdmission, type WasmSessionAuthority, type AgentCommand,
+  type WasmSessionAuthority, type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
@@ -17,7 +17,6 @@ interface Identity {
 
 /** Verified by the owning platform before it opens the host, never by a guest. */
 export interface EventHostAccess {
-  admission: WasmHostingAdmission;
   authority: WasmSessionAuthority;
   credential: Uint8Array;
   policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
@@ -49,10 +48,9 @@ export class EventAgentHost {
     };
     const providers = WasmAgentProviders.injected(stream, objects, true, options);
     try {
-      const { audience, scope } = access.admission;
-      const guest = AgentGuest.open(providers, options, owner, registry, { kind: "admitted", audience, scope });
+      const guest = AgentGuest.open(providers, options, owner, registry);
       const events = this.events;
-      this.host = WasmAgentServer.open(providers, options, owner, registry, access.admission, access.authority, {
+      this.host = WasmAgentServer.open(providers, options, owner, registry, access.authority, {
         manifest: guest.manifest(),
         onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
         policy: (principal: Uint8Array, command: AgentCommand, signal: AbortSignal) => access.policy(principal, command, signal),

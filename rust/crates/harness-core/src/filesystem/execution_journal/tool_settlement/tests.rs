@@ -249,7 +249,7 @@ async fn raw_terminal_observation_cannot_authorize_request_retirement() -> Resul
         .stream
         .append(acyclic_stream::AppendRequest {
             path: (*head).clone(),
-            records: vec![journal.encode_index_checkpoint(state, None)?.into()],
+            records: vec![journal.encode_index_checkpoint(state, None).await?.into()],
             if_tail: Some(1),
             idempotency_key: StreamKey::unique(),
         })

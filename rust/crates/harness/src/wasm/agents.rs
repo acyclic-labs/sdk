@@ -5,7 +5,7 @@
 
 use super::{WasmAgentAuthority, from_js, js_error};
 use crate::{
-    Capabilities, Error, OperationId, Result,
+    Error, OperationId, Result,
     agent::{
         AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Control, Delivered, ExecutorDriver,
         ForkAdopted, InboxRecord, IntentId, Message, Sender, VolumeBinding,
@@ -13,12 +13,12 @@ use crate::{
     context::CompactionPolicy,
     conversation::{
         ContentAccess, ContentPublisher as _, ContentResidencyVerifier as _, FileRef, Limits,
-        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        VolumeClass, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityRoot},
+    core::RuntimeAuthority,
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME, TurnAdmission,
+        PRIVATE_VOLUME, TurnAdmission, agent_authority,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -75,6 +75,17 @@ fn agent_error(error: crate::agent::Error) -> JsValue {
 
 fn stream_error(error: StreamError) -> JsValue {
     acyclic_stream::wasm_error(error)
+}
+
+fn record_path(agent: String, stream: &str) -> std::result::Result<StreamPath, JsValue> {
+    let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+    match stream {
+        "inbox" => agent.inbox(),
+        "conversation" => agent.conversation(),
+        "status" => agent.status(),
+        _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
+    }
+    .map_err(agent_error)
 }
 
 fn digest16(domain: &str, parts: &[&[u8]]) -> [u8; 16] {
@@ -305,7 +316,8 @@ pub struct WasmAgents {
     agents: Arc<BrowserAgents>,
     filesystem: Arc<FilesystemHost<Authorities, Objects>>,
     provider: ProviderRef,
-    issuer: AuthorityRoot,
+    issuer: RuntimeAuthority,
+    admission: TurnAdmission,
     sender: Sender,
     maximum_bytes: u64,
     run: Option<AbortHandle>,
@@ -317,12 +329,6 @@ impl Drop for WasmAgents {
             run.abort();
         }
     }
-}
-
-/// The account and namespace of every browser agent.
-fn within() -> std::result::Result<ActorReference, JsValue> {
-    ActorReference::new(b"browser", b"agents", b"host")
-        .map_err(|error| js_error(Error::Invalid(error.to_string())))
 }
 
 #[wasm_bindgen]
@@ -371,8 +377,7 @@ impl WasmAgents {
     ) -> std::result::Result<WasmAgents, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         let providers = Providers::indexed_db(&options).await?;
-        // This profile's own host: its owner custody is the tree's root.
-        let handler = providers.handler(&options, owner, registry, &TurnAdmission::LocalRoot)?;
+        let handler = providers.handler(&options, owner, registry, &owner.admission()?)?;
         Self::host(options, owner, providers, Arc::new(handler), report, true)
     }
 
@@ -453,16 +458,14 @@ impl WasmAgents {
         background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
         options.limits.validate(&mut None).map_err(js_error)?;
-        // The host of this profile's own tree spawns as its root; its turns
-        // run in the guest under the admission the guest was opened with.
-        let composer = providers.spawn_volumes(&options, owner, &TurnAdmission::LocalRoot);
+        let composer = providers.spawn_volumes(&options, owner, &owner.admission()?);
         let Providers {
             stream, filesystem, ..
         } = providers;
         let agents = Arc::new(
             AgentHost::hosting(
                 stream,
-                within()?,
+                owner.within()?,
                 handler,
                 Arc::new(SystemClock),
                 Some(composer),
@@ -496,6 +499,7 @@ impl WasmAgents {
             filesystem,
             provider: options.filesystem_provider,
             issuer: owner.issuer.clone(),
+            admission: owner.admission()?,
             sender: Sender::User {
                 principal: options.principal,
             },
@@ -695,14 +699,7 @@ impl WasmAgents {
         from: u64,
         limit: u32,
     ) -> std::result::Result<JsValue, JsValue> {
-        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
-        let path = match stream.as_str() {
-            "inbox" => agent.inbox(),
-            "conversation" => agent.conversation(),
-            "status" => agent.status(),
-            _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
-        }
-        .map_err(agent_error)?;
+        let path = record_path(agent, &stream)?;
         let records = match self
             .agents
             .provider()
@@ -736,6 +733,28 @@ impl WasmAgents {
         to_js(&records)
     }
 
+    /// Atomically replays and follows the same agent stream as `read`.
+    /// The canonical Stream cursor returns encoded ReadResponse frames; close
+    /// it to release the subscription and wake a pending next call.
+    pub async fn follow(
+        &self,
+        agent: String,
+        #[wasm_bindgen(unchecked_param_type = "\"inbox\" | \"conversation\" | \"status\"")]
+        stream: String,
+        from: u64,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        use prost::Message as _;
+        let request = acyclic_stream::wire::FollowRequest {
+            path: record_path(agent, &stream)?.to_string(),
+            from,
+            when_absent: acyclic_stream::wire::WhenAbsent::Wait as i32,
+            ..Default::default()
+        };
+        acyclic_stream::WasmStream::from_provider(Arc::clone(self.agents.provider()))
+            .open_follow(&request.encode_to_vec())
+            .await
+    }
+
     /// The verified bytes of `file` on one of `agent`'s volumes, such as a
     /// turn's staged output.
     #[wasm_bindgen(js_name = readFile)]
@@ -747,7 +766,7 @@ impl WasmAgents {
         let path = AgentPath::try_from(agent).map_err(agent_error)?;
         let file: FileRef = from_js(file)?;
         let volumes = self.agents.state(&path).await.map_err(agent_error)?.volumes;
-        let (issuer, scope) = self.authority(&path, volumes.iter().map(|b| &b.volume))?;
+        let (issuer, scope) = self.authority(&path, &volumes).await?;
         let reader = FilesystemContentVerifier::new(
             Arc::clone(&self.filesystem),
             &issuer.verifier(&mut None).map_err(js_error)?,
@@ -790,26 +809,15 @@ impl WasmAgents {
     }
 
     /// The agent's conversation authority over `volumes`, as its turns hold it.
-    fn authority<'a>(
+    async fn authority(
         &self,
         agent: &AgentPath,
-        volumes: impl Iterator<Item = &'a VolumeRef>,
-    ) -> std::result::Result<(AuthorityRoot, crate::core::Scope), JsValue> {
-        let issuer = self.issuer.with_audience(Authority {
-            kind: AggregateKind::Conversation,
-            id: agent.id().as_str().to_owned(),
-        });
-        let mut grants = Vec::new();
-        for volume in volumes {
-            for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                grants.push(volume.capability(operation, &mut None).map_err(js_error)?);
-            }
-        }
-        let owner = crate::AgentId::from_bytes(agent.id().to_bytes());
-        let scope = issuer
-            .bootstrap_scope("agent", &Capabilities::new(grants), Some(owner), &mut None)
+        volumes: &[VolumeBinding],
+    ) -> std::result::Result<(RuntimeAuthority, crate::core::Scope), JsValue> {
+        let authority = agent_authority(&self.issuer, &self.admission, agent, volumes, &[])
+            .await
             .map_err(js_error)?;
-        Ok((issuer, scope))
+        Ok((authority.issuer, authority.scope))
     }
 
     /// Stages `text` once on `volume` under the agent's authority, keyed by
@@ -830,7 +838,13 @@ impl WasmAgents {
                 intent.as_bytes(),
             ],
         ));
-        let (issuer, scope) = self.authority(agent, std::iter::once(volume))?;
+        let binding = VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume: volume.clone(),
+        };
+        let (issuer, scope) = self
+            .authority(agent, std::slice::from_ref(&binding))
+            .await?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.filesystem),
             volume,

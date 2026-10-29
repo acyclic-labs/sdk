@@ -24,7 +24,7 @@ pub struct AgentObservation {
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemHost<A, O> {
-    /// Derives an [`AgentObservation`] of `agent`, whose private volume is
+    /// Native enrollment derives an [`AgentObservation`] of `agent`, whose private volume is
     /// `volume`, from `authority`'s scope at `clock`'s time. With `calls`, the
     /// credential also invokes that actor resource: the hosting server of
     /// `agent`'s tree, so one credential drives and observes it.
@@ -41,6 +41,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         clock: Arc<dyn UnixMillisClock>,
         calls: Option<&str>,
     ) -> Result<AgentObservation> {
+        let issuer = authority.issuer.native().ok_or_else(|| {
+            Error::Invalid("client credential enrollment requires native custody".into())
+        })?;
         if authority.scope.agent() != Some(crate::AgentId::from_bytes(agent.id().to_bytes())) {
             return Err(Error::Unauthorized(
                 "an observation derives from the agent's own scope".into(),
@@ -108,15 +111,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(calls) = calls {
             grants.push((calls, false, invoke));
         }
-        let (credential, principal) = authority.issuer.resource_credential(
-            &authority.scope,
-            &grants,
-            seconds(clock.as_ref()),
-        )?;
+        let (credential, principal) =
+            issuer.resource_credential(&authority.scope, &grants, seconds(clock.as_ref()))?;
         Ok(AgentObservation {
             resource,
             credential,
-            authority: Arc::new(session_authority(&authority.issuer, clock)?),
+            authority: Arc::new(session_authority(issuer, clock)?),
             principal,
         })
     }

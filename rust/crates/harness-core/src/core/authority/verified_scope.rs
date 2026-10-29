@@ -5,12 +5,20 @@ mod tests;
 
 #[derive(Clone, Debug)]
 pub(crate) struct VerifiedScope {
-    scope: Scope,
-    verifier: AuthorityVerifier,
-    evidence: acyclic_auth::verify::TrustEvidence,
+    pub(super) scope: Scope,
+    pub(super) verifier: AuthorityVerifier,
+    pub(super) evidence: acyclic_auth::verify::TrustEvidence,
 }
 
 impl AuthorityVerifier {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn bind_checkpoint_stop(&mut self, stop: &acyclic_actors::guest::CancellationToken) {
+        if let runtime_signing::AdmissionPort::Platform(_, _, checkpoint_stop) = &mut self.admission
+        {
+            *checkpoint_stop = Some(stop.clone());
+        }
+    }
+
     pub(crate) fn authenticate_scope(
         &self,
         scope: &Scope,
@@ -91,6 +99,7 @@ impl VerifiedScope {
         if let Some(io) = work.as_deref() {
             io.check_cancellation()?;
         }
+        self.verifier.admission.check(&self.scope)?;
         self.evidence
             .check(
                 self.verifier
@@ -101,18 +110,23 @@ impl VerifiedScope {
                     .as_ref(),
                 timestamp,
             )
-            .map_err(workload::unauthorized)
+            .map_err(workload::unauthorized)?;
+        self.verifier.admission.check(&self.scope)
     }
 }
 
 impl AuthorityVerifier {
     /// Builds a verification-only owner from independently authenticated public configuration.
     /// This value cannot admit events, issue workloads or sign checkpoints.
+    /// `changes` must follow the same authenticated owner's trust publications,
+    /// never a new local channel. The snapshot remains public historical evidence;
+    /// live admission also rechecks its original owner's exact validity guard.
     pub fn from_public(
         id: String,
         audience: Authority,
         trust: acyclic_auth::trust::Snapshot,
         checkpoint_key: [u8; 32],
+        changes: std::sync::Arc<dyn acyclic_auth::trust::ChangeSource>,
     ) -> Result<Self> {
         audience.validate_with_work(&mut None)?;
         if id != trust.account {
@@ -129,7 +143,7 @@ impl AuthorityVerifier {
                 trust: std::sync::RwLock::new(std::sync::Arc::new(trust)),
                 metadata_key: checkpoint_key,
                 workload: Default::default(),
-                revision: tokio::sync::watch::channel(0).0,
+                changes,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
@@ -275,17 +289,49 @@ impl AuthorityVerifier {
         })
     }
 
+    fn checkpoint_proof(
+        &self,
+        kind: CheckpointKind,
+        digest: [u8; 32],
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> impl std::future::Future<Output = Result<[u8; 64]>> + use<> {
+        let prepared = match &self.admission {
+            runtime_signing::AdmissionPort::Native(_) => futures::future::Either::Left(
+                self.canonical_proof(kind.domain(), &(&self.id, &self.audience, digest), work),
+            ),
+            runtime_signing::AdmissionPort::Platform(owner, operation, stop) => {
+                let owner: Result<_> = (|| {
+                    if let Some(work) = work.as_deref() {
+                        work.check_cancellation()?;
+                    }
+                    let owner = owner.upgrade().ok_or_else(|| {
+                        Error::Unauthorized("platform authority owner is closed".into())
+                    })?;
+                    owner.check()?;
+                    Ok((owner, *operation, stop.clone()))
+                })();
+                futures::future::Either::Right(owner)
+            }
+        };
+        async move {
+            match prepared {
+                futures::future::Either::Left(result) => result,
+                futures::future::Either::Right(owner) => {
+                    let (owner, operation, stop) = owner?;
+                    let proof = owner.checkpoint(&owner.context, operation, kind, digest);
+                    until_turn_stopped(stop, proof).await
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "filesystem")]
     pub(crate) fn execution_checkpoint_proof(
         &self,
         digest: [u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<[u8; 64]> {
-        self.canonical_proof(
-            b"harness/v2/execution-index-checkpoint\0",
-            &(&self.id, &self.audience, digest),
-            work,
-        )
+    ) -> impl std::future::Future<Output = Result<[u8; 64]>> + use<> {
+        self.checkpoint_proof(CheckpointKind::Execution, digest, work)
     }
 
     #[cfg(feature = "filesystem")]
@@ -307,12 +353,8 @@ impl AuthorityVerifier {
         &self,
         digest: [u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<[u8; 64]> {
-        self.canonical_proof(
-            b"harness/v2/working-context-checkpoint\0",
-            &(&self.id, &self.audience, digest),
-            work,
-        )
+    ) -> impl std::future::Future<Output = Result<[u8; 64]>> + use<> {
+        self.checkpoint_proof(CheckpointKind::Working, digest, work)
     }
 
     pub(crate) fn verify_working_checkpoint(
@@ -334,12 +376,8 @@ impl AuthorityVerifier {
         &self,
         digest: [u8; 32],
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<[u8; 64]> {
-        self.canonical_proof(
-            b"harness/v2/model-request-checkpoint\0",
-            &(&self.id, &self.audience, digest),
-            work,
-        )
+    ) -> impl std::future::Future<Output = Result<[u8; 64]>> + use<> {
+        self.checkpoint_proof(CheckpointKind::ModelRequest, digest, work)
     }
 
     #[cfg(feature = "filesystem")]

@@ -27,7 +27,7 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
         let entered = Arc::new(Mutex::new(Some(entered)));
         let (release, released) = oneshot::channel::<()>();
         let released = Arc::new(Mutex::new(Some(released)));
-        objects.credential = Some(CredentialProvider::new(move || {
+        objects.credential = CredentialProvider::new(move || {
             let entered = entered.lock().unwrap().take().unwrap();
             let released = released.lock().unwrap().take().unwrap();
             async move {
@@ -35,7 +35,7 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
                 let _ = released.await;
                 Ok("fixture".into())
             }
-        }));
+        });
         let (expire, expired) = oneshot::channel();
         let (cancel, cancelled) = oneshot::channel();
         let bound = objects.clone().with_context(Context::new(
@@ -83,7 +83,7 @@ async fn original_context_stops_refresh_and_remains_stopped_across_clones() -> T
             "zero RPCs before refresh"
         );
         // A new operation on the same channel retains ordinary progress.
-        objects.credential = Some(CredentialProvider::new(|| ready(Ok("fixture".into()))));
+        objects.credential = CredentialProvider::new(|| ready(Ok("fixture".into())));
         objects.put(b"ready".as_slice().into(), Vec::new()).await?;
         assert_eq!(replica.pending.lock().unwrap().len(), 1);
     }
@@ -166,10 +166,10 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
     let mut objects = client(&replica);
     let callbacks = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&callbacks);
-    objects.credential = Some(CredentialProvider::new(move || {
+    objects.credential = CredentialProvider::new(move || {
         counted.fetch_add(1, Ordering::SeqCst);
         ready(Ok("fixture".into()))
-    }));
+    });
     let stopped = objects
         .clone()
         .with_context(Context::new(1, ready(()), pending()));
@@ -180,6 +180,33 @@ async fn stopped_context_admits_zero_callbacks_for_any_concurrent_cohort() -> Te
                 .iter()
                 .all(|result| result.as_ref().unwrap_err().stopped == Some(Stopped::Deadline))
         );
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+    }
+    #[cfg(feature = "test-support")]
+    {
+        let body: OwnedBytes = b"stopped-before-sealing".as_slice().into();
+        let before = acyclic_stream::hashed_on_this_thread();
+        assert_eq!(
+            stopped
+                .put(body.clone(), Vec::new())
+                .await
+                .unwrap_err()
+                .stopped,
+            Some(Stopped::Deadline)
+        );
+        assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
+        let sealed = crate::Sealed::new(body);
+        assert!(acyclic_stream::hashed_on_this_thread() > before);
+        let before = acyclic_stream::hashed_on_this_thread();
+        assert_eq!(
+            stopped
+                .put_sealed(sealed, Vec::new())
+                .await
+                .unwrap_err()
+                .stopped,
+            Some(Stopped::Deadline)
+        );
+        assert_eq!(acyclic_stream::hashed_on_this_thread(), before);
         assert_eq!(callbacks.load(Ordering::SeqCst), 0);
     }
     // A deadline beyond the wire's eight-digit-hours range refuses before

@@ -1,3 +1,4 @@
+mod platform;
 use super::*;
 
 fn optional_agent(agent: Option<String>) -> Result<Option<AgentId>, JsValue> {
@@ -8,6 +9,27 @@ fn optional_agent(agent: Option<String>) -> Result<Option<AgentId>, JsValue> {
 }
 
 impl WasmAgentAuthority {
+    pub(super) fn within(&self) -> Result<acyclic_actors::addressing::ActorReference, JsValue> {
+        let recipient = &self.caller.audience;
+        acyclic_actors::addressing::ActorReference::new(
+            &recipient.account,
+            &recipient.ns,
+            &recipient.id,
+        )
+        .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))
+    }
+
+    pub(super) fn admission(&self) -> Result<crate::filesystem::TurnAdmission, JsValue> {
+        let (audience, scope) = self
+            .issuer
+            .caller()
+            .ok_or_else(|| JsValue::from_str("platform admission is required"))?;
+        Ok(crate::filesystem::TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: scope.clone(),
+        })
+    }
+
     fn verifier(&self) -> Result<crate::core::AuthorityVerifier, JsValue> {
         self.issuer.verifier(&mut None).map_err(js_error)
     }
@@ -15,17 +37,19 @@ impl WasmAgentAuthority {
 
 #[wasm_bindgen]
 impl WasmAgentAuthority {
-    /// Owns the host-managed signing authority used by the agent runtime.
+    /// Retains an opaque capability supplied by the authenticated platform.
+    /// Signing and append secrets remain outside guest memory.
     #[wasm_bindgen(constructor)]
     pub fn new(
-        authority: JsValue,
-        issuer_id: String,
-        issuer_key: Vec<u8>,
+        #[wasm_bindgen(unchecked_param_type = "WasmAuthorityCapability")] platform: JsValue,
     ) -> Result<Self, JsValue> {
-        let authority: Authority = from_js(authority)?;
-        let issuer = AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority);
-        issuer.verifier(&mut None).map_err(js_error)?;
-        Ok(Self { issuer })
+        platform::open(platform)
+    }
+
+    /// Original customer, delegation, recipient and invocation-scoped handle.
+    #[wasm_bindgen(js_name = callerContext)]
+    pub fn caller_context(&self) -> Vec<u8> {
+        acyclic_auth::contract::CallerContextProto::from(self.caller.clone()).encode_to_vec()
     }
 
     #[wasm_bindgen(js_name = protocolIdentity)]
@@ -39,7 +63,7 @@ impl WasmAgentAuthority {
 
     /// Issues a host grant, optionally bound to an acting agent.
     #[wasm_bindgen(js_name = issueScope)]
-    pub fn issue_scope(
+    pub async fn issue_scope(
         &self,
         id: String,
         capabilities: JsValue,
@@ -48,14 +72,15 @@ impl WasmAgentAuthority {
         let capabilities = Capabilities::new(from_js::<Vec<String>>(capabilities)?);
         let scope = self
             .issuer
-            .bootstrap_scope(&id, &capabilities, optional_agent(agent)?, &mut None)
+            .issue(None, &id, &capabilities, optional_agent(agent)?)
+            .await
             .map_err(js_error)?;
         to_js(&scope)
     }
 
     /// Resolves policy layers and issues their effective grant.
     #[wasm_bindgen(js_name = issueScopeWithPolicies)]
-    pub fn issue_scope_with_policies(
+    pub async fn issue_scope_with_policies(
         &self,
         id: String,
         layers: JsValue,
@@ -65,13 +90,14 @@ impl WasmAgentAuthority {
         let capabilities = crate::resolve_policy_layers(&layers).map_err(js_error)?;
         let scope = self
             .issuer
-            .bootstrap_scope(&id, &capabilities, optional_agent(agent)?, &mut None)
+            .issue(None, &id, &capabilities, optional_agent(agent)?)
+            .await
             .map_err(js_error)?;
         to_js(&scope)
     }
 
     /// Attenuates a scope without permitting capability expansion.
-    pub fn attenuate(
+    pub async fn attenuate(
         &self,
         parent: JsValue,
         id: String,
@@ -82,13 +108,14 @@ impl WasmAgentAuthority {
         to_js(
             &self
                 .issuer
-                .attenuate(&parent, id, &capabilities)
+                .issue(Some(&parent), &id, &capabilities, parent.agent())
+                .await
                 .map_err(js_error)?,
         )
     }
 
     #[wasm_bindgen(js_name = delegatePrivateFileRead)]
-    pub fn delegate_private_file_read(
+    pub async fn delegate_private_file_read(
         &self,
         owner_scope: JsValue,
         reader: String,
@@ -100,13 +127,21 @@ impl WasmAgentAuthority {
         let file: FileRef = from_js(file)?;
         let scope = self
             .issuer
-            .delegate_private_file_read(&owner_scope, reader, id, &file)
+            .delegate(
+                &owner_scope,
+                &id,
+                crate::core::ScopeDerivation::PrivateFileRead {
+                    file: &file,
+                    reader,
+                },
+            )
+            .await
             .map_err(js_error)?;
         to_js(&scope)
     }
 
     #[wasm_bindgen(js_name = delegatePrivateDirectoryRead)]
-    pub fn delegate_private_directory_read(
+    pub async fn delegate_private_directory_read(
         &self,
         owner_scope: JsValue,
         reader: String,
@@ -119,7 +154,16 @@ impl WasmAgentAuthority {
         let volume: VolumeRef = from_js(volume)?;
         let scope = self
             .issuer
-            .delegate_private_directory_read(&owner_scope, reader, id, &volume, &prefix)
+            .delegate(
+                &owner_scope,
+                &id,
+                crate::core::ScopeDerivation::PrivateDirectoryRead {
+                    volume: &volume,
+                    prefix: &prefix,
+                    reader,
+                },
+            )
+            .await
             .map_err(js_error)?;
         to_js(&scope)
     }

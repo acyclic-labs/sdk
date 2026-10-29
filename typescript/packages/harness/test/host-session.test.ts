@@ -19,18 +19,13 @@ function envelope(frame: MessageInitShape<typeof SessionFrameSchema>) {
 
 async function fixture() {
   const id = "00112233-4455-6677-8899-aabbccddeeff";
-  const model = await agentsFixture(id, async function* () {}, initializeClientQueries);
+  const model = await agentsFixture(id, async function* () {
+    yield { kind: "content", delta: "hosted reply" };
+  }, initializeClientQueries);
   const { authority, credential } = await localSessionAuthority([{ name: "actors:/agents", prefix: false, actions: ["actors/invoke"] }]);
   const providers = WasmAgentProviders.memory(model.options);
-  const audience = { kind: "task", id };
-  const grants = ["interaction:route", `filesystem:${JSON.stringify({ layers: [[{
-    actions: ["list", "read", "create", "write", "append", "delete", "rename", "fork", "merge-into", "read-history", "lock", "admin"],
-    resource: { lineage_root: null, volume: null, generations: "all", path: "**" },
-  }]], expires_at: null })}`];
-  const scope = model.owner.issueScope("session-host", grants, undefined);
-  const guest = AgentGuest.open(providers, model.options, model.owner, model.registry, { kind: "admitted", audience, scope });
-  const host = WasmAgentServer.open(providers, model.options, model.owner, model.registry,
-    { audience, scope, account: [...encoder.encode("test")], namespace: "agents" }, authority,
+  const guest = AgentGuest.open(providers, model.options, model.owner, model.registry);
+  const host = WasmAgentServer.open(providers, model.options, model.owner, model.registry, authority,
     { manifest: guest.manifest(), onRecord: (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt),
       policy: () => true, admitted: async () => {} });
   const root = await host.create("session-root");
@@ -43,6 +38,19 @@ function request(input: ReadableStream<Uint8Array>, signal?: AbortSignal) {
     duplex: "half",
   } as RequestInit);
 }
+
+test("one admitted owner signs a guest turn and authorizes its committed output", async () => {
+  const f = await fixture();
+  try {
+    const reply = await f.host.command({ kind: "prompt", agent: f.root, id: "owned-prompt", body: "hello" }, f.credential);
+    expect(reply.kind).toBe("delivered");
+    await f.host.drain(f.root);
+    const entries = await f.host.read(f.root, "conversation", 0n, 16);
+    expect(entries).toHaveLength(1);
+    const bytes = await f.host.readFile(f.root, entries[0].value.output);
+    expect(JSON.parse(new TextDecoder().decode(bytes)).text).toBe("hosted reply");
+  } finally { f.free(); }
+});
 
 test("guest gRPC body serves canonical ActorCall while upload remains open and closes every wait", async () => {
   const f = await fixture();

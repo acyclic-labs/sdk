@@ -15,8 +15,8 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        AggregateKind, Authority, AuthorityRoot, ExtensionAdmission, ExtensionConfiguration,
-        ExtensionDependency, ExtensionRecord, ExtensionStateMigration, Scope,
+        AggregateKind, Authority, ExtensionAdmission, ExtensionConfiguration, ExtensionDependency,
+        ExtensionRecord, ExtensionStateMigration, RuntimeAuthority, Scope,
     },
     executor::ModelEventAdmission,
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket},
@@ -33,6 +33,7 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 mod bytes;
+mod cancel;
 mod content;
 use content::*;
 mod reader;
@@ -44,7 +45,6 @@ use context::*;
 mod contract;
 mod declarations;
 mod identity;
-use identity::*;
 mod json;
 use json::*;
 mod model;
@@ -73,5 +73,6 @@ mod mcp;
 /// Host-managed signing authority for browser and guest agent admission.
 #[wasm_bindgen]
 pub struct WasmAgentAuthority {
-    issuer: AuthorityRoot,
+    issuer: RuntimeAuthority,
+    caller: acyclic_auth::contract::CallerContext,
 }

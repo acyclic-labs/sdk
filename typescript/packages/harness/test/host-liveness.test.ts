@@ -13,18 +13,11 @@ async function setup() {
   const authority = new WasmSessionAuthority(JSON.stringify({ environment: "test", environment_keys: [key],
     account: "account", issuer_keys: [key], minimum_key_epoch: 1, revoked_key_ids: [], revoked_block_ids: [] }),
     "workers:/test", "account");
-  const audience = { kind: "task", id };
-  const filesystem = `filesystem:${JSON.stringify({ layers: [[{
-    actions: ["list", "read", "create", "write", "append", "delete", "rename", "fork", "merge-into", "read-history", "lock", "admin"],
-    resource: { lineage_root: null, volume: null, generations: "all", path: "**" },
-  }]], expires_at: null })}`;
-  const admission = { audience, scope: fixture.owner.issueScope("host", [filesystem], undefined),
-    account: [...new TextEncoder().encode("test")], namespace: "agents" };
-  return { agent, fixture, authority, admission };
+  return { agent, fixture, authority };
 }
 
 test("portable host disposal ends pending storage controls and refuses new work", async () => {
-  const { agent, fixture, authority, admission } = await setup();
+  const { agent, fixture, authority } = await setup();
   const operations = {
     validateAdopt: (host: WasmAgentServer) => host.validateAdopt(agent),
     read: (host: WasmAgentServer) => host.read(agent, "status", 0n, 1),
@@ -41,10 +34,9 @@ test("portable host disposal ends pending storage controls and refuses new work"
       const stream = WasmStream.connectProvider({ dispatch: wait, open: wait });
       const objects = { length: wait, read: wait, put: wait };
       const providers = WasmAgentProviders.injected(stream, objects, false, fixture.options);
-      const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry,
-        { kind: "admitted", audience: admission.audience, scope: admission.scope });
+      const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
       const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
-        admission, authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
+        authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
           policy: () => true, admitted: async () => {} });
       try {
         if (name !== "create") await host.adopt(agent);
@@ -69,7 +61,7 @@ test("portable host disposal ends pending storage controls and refuses new work"
 }, 10_000);
 
 test("event owner loss releases metadata, placement and queued waits", async () => {
-  const { fixture, authority, admission } = await setup();
+  const { fixture, authority } = await setup();
   try {
     for (const phase of ["alarm", "flush", "placement"]) {
       const entered = Promise.withResolvers<void>();
@@ -95,7 +87,7 @@ test("event owner loss releases metadata, placement and queued waits", async () 
         objectLength: unexpected, objectRead: unexpected, objectPut: unexpected,
       };
       const host = new EventAgentHost(storage, ledger, phase, fixture.options, fixture.owner, fixture.registry,
-        { admission, authority, credential: new Uint8Array(), policy: () => true });
+        { authority, credential: new Uint8Array(), policy: () => true });
       const result = (operation: Promise<unknown>) => operation.then(
         () => new Error(`${phase} unexpectedly completed`), error => error);
       try {
@@ -121,16 +113,15 @@ test("event owner loss releases metadata, placement and queued waits", async () 
 }, 10_000);
 
 test("failed delivery ends current waiters and preserves recovery without reviving disposal", async () => {
-  const { agent, fixture, authority, admission } = await setup();
+  const { agent, fixture, authority } = await setup();
   let entered = Promise.withResolvers<void>();
   let calls = 0;
   const wait = () => { ++calls; entered.resolve(); return new Promise<never>(() => {}); };
   const stream = WasmStream.connectProvider({ dispatch: wait, open: wait });
   const providers = WasmAgentProviders.injected(stream, { length: wait, read: wait, put: wait }, false, fixture.options);
-  const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry,
-    { kind: "admitted", audience: admission.audience, scope: admission.scope });
+  const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry);
   const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
-    admission, authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
+    authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
       policy: () => true, admitted: async () => {} });
   const outcome = (pending: Promise<unknown>) => pending.then(
     () => new Error("pending storage unexpectedly completed"), error => error);
@@ -156,7 +147,7 @@ test("failed delivery ends current waiters and preserves recovery without revivi
 }, 10_000);
 
 test("cancelled queued Session open retains its predecessor's admission fence", async () => {
-  const { fixture, authority, admission } = await setup();
+  const { fixture, authority } = await setup();
   const entered = Promise.withResolvers<void>();
   const producer = Promise.withResolvers<void>();
   const values = new Map<string, string>();
@@ -174,7 +165,7 @@ test("cancelled queued Session open retains its predecessor's admission fence", 
   const ledger: StreamLedger = { register: unexpected, dispatch: unexpected, open: unexpected,
     objectLength: unexpected, objectRead: unexpected, objectPut: unexpected };
   const host = new EventAgentHost(storage, ledger, "ordered", fixture.options, fixture.owner, fixture.registry,
-    { admission, authority, credential: new Uint8Array(), policy: () => true });
+    { authority, credential: new Uint8Array(), policy: () => true });
   const outcome = (promise: Promise<unknown>) => promise.then(() => undefined, error => error);
   try {
     const first = outcome(host.create("ordered"));

@@ -34,7 +34,8 @@ pub mod capability {
     #[doc(hidden)]
     pub const CONTEXT_BUILD: &str = "context:build";
 
-    pub(crate) fn tool_call(tool: impl Display) -> String {
+    /// Exact scope label granting a named tool invocation.
+    pub fn tool_call(tool: impl Display) -> String {
         format!("tool:call:{tool}")
     }
 

@@ -360,13 +360,15 @@ macro_rules! call {
 #[async_trait::async_trait]
 impl Blobs for GrpcObjects {
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+        if let Some(context) = &self.context {
+            context.check()?;
+        }
         self.put_sealed(crate::Sealed::new(body), references).await
     }
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         crate::operation::admit(self.context.as_ref(), async {
             let digest = Digest::sealed(&body);
-
             let body = body.into_bytes();
             let reply = call!(
                 self,
