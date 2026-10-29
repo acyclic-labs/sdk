@@ -60,7 +60,6 @@ fuzz_target!(|input: &[u8]| {
     }
     let hello = wire::SessionFrame {
         body: Some(wire::session_frame::Body::Hello(wire::SessionHello {
-            credentials: vec![session::testing::credential()],
             version: 1,
             client_id: Bytes::from_static(b"fuzz"),
             destination_node: "node".into(),
@@ -70,7 +69,16 @@ fuzz_target!(|input: &[u8]| {
         ..Default::default()
     };
     // Finite input guarantees termination even for a valid live subscription.
-    let incoming = stream::iter([Ok(hello), Ok(frame)]).boxed();
+    let credential = wire::SessionFrame {
+        body: Some(wire::session_frame::Body::Credential(
+            wire::SessionCredential {
+                slot: 0,
+                credential: session::testing::credential(),
+            },
+        )),
+        ..Default::default()
+    };
+    let incoming = stream::iter([Ok(hello), Ok(credential), Ok(frame)]).boxed();
     if let Ok(output) = session::serve(
         Arc::new(MemoryStream::default()),
         session::testing::authority(),

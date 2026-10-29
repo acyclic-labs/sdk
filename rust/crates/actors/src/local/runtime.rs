@@ -732,10 +732,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation);
-                futures::pin_mut!(interrupted);
+                let timeout = async {
+                    match limits.handler_timeout_millis() {
+                        Some(timeout) => sleep(timeout).await,
+                        None => futures::future::pending::<()>().await,
+                    }
+                };
+                futures::pin_mut!(interrupted, timeout);
                 match futures::future::select(
                     handled,
-                    futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),
+                    futures::future::select(timeout, interrupted),
                 )
                 .await
                 {
@@ -754,8 +760,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // Release any pending provider I/O before checkpoint publication.
             inner.follows.clear();
             let transition = result?;
-            if u64::try_from(transition.checkpoint.bytes.len()).unwrap_or(u64::MAX)
-                > limits.checkpoint_bytes()
+            if limits
+                .checkpoint_bytes()
+                .is_some_and(|limit| transition.checkpoint.bytes.len() as u128 > u128::from(limit))
             {
                 return Err(Error::Invalid("checkpoint exceeds the manifest limit"));
             }

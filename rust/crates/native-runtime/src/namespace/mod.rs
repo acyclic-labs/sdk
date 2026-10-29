@@ -96,6 +96,74 @@ pub(crate) fn namespace_path(
     Ok((buffer, allocation))
 }
 
+/// Opens a recorded native path using original-funded encoding storage.
+/// Claim liveness and other readers share the same path preparation as writes.
+pub(crate) fn open_read_encoded(
+    bytes: &[u8],
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+) -> io::Result<io::Result<File>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path = Path::new(std::ffi::OsStr::from_bytes(bytes));
+        let prepared = namespace_path(path, meter)?;
+        let path = std::ffi::CStr::from_bytes_with_nul(&prepared.0)
+            .map_err(|_| io::ErrorKind::InvalidInput)?;
+        crate::meter::read_operation(meter, || {
+            rustix::fs::open(
+                path,
+                rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map(File::from)
+            .map_err(io::Error::from)
+        })
+    }
+    #[cfg(windows)]
+    {
+        let (units, []) = bytes.as_chunks::<2>() else {
+            return Err(io::ErrorKind::InvalidInput.into());
+        };
+        let count = units
+            .len()
+            .checked_add(1)
+            .ok_or(io::ErrorKind::InvalidInput)?;
+        let mut allocation = meter
+            .map(|meter| {
+                ReadAllocation::new(
+                    meter,
+                    count.checked_mul(2).ok_or(io::ErrorKind::InvalidInput)?,
+                )
+            })
+            .transpose()?;
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(count)
+            .map_err(|error| match meter {
+                Some(meter) => meter.allocation_failed(error),
+                None => io::ErrorKind::OutOfMemory.into(),
+            })?;
+        if let Some(allocation) = &mut allocation {
+            allocation.reconcile_capacity(buffer.capacity() * 2)?;
+        }
+        for unit in units {
+            let unit = u16::from_le_bytes(*unit);
+            if unit == 0 {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            buffer.push(unit);
+        }
+        buffer.push(0);
+        let prepared = windows::extended_path((buffer, allocation), meter)?;
+        crate::meter::read_operation(meter, || crate::windows::open_read_terminated(&prepared.0))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (bytes, meter);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 /// Publishes a new entry without replacing an existing one.
 #[allow(
     unsafe_code,

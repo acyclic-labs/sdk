@@ -14,8 +14,10 @@ fn deployment() -> Result<DeploymentRequest, DomainError> {
 #[test]
 fn secret_selections_round_trip_and_replace_without_inheritance()
 -> Result<(), Box<dyn std::error::Error>> {
-    let secret =
-        SecretSelection::new("MODEL_KEY".to_owned(), "secrets:/models/primary".to_owned())?;
+    let secret = SecretSelection::new(
+        format!("MODEL_{}", "KEY".repeat(128)),
+        format!("secrets:/models/{}primary", "provider/".repeat(128)),
+    )?;
     let request = deployment()?.with_secrets(vec![secret.clone()])?;
     let wire: wire::DeploymentRequest = request.clone().into();
     let decoded = wire::DeploymentRequest::decode(wire.encode_to_vec().as_slice())?;

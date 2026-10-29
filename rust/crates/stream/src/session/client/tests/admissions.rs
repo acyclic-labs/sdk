@@ -8,9 +8,10 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     route_a.node = "good".into();
     route_a.records = records;
     let client = Client {
+        registration_timeout: None,
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-        commands: mpsc::channel(2).0,
+        commands: commands::channel(2).0,
         removed: Arc::clone(&pool.removed),
         next_id: Arc::new(AtomicU64::new(5)),
         active: Arc::clone(&pool.active),

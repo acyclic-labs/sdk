@@ -1,5 +1,13 @@
 use super::*;
 
+struct DeliveryFinished<'a>(&'a dyn HostChangeSink);
+
+impl Drop for DeliveryFinished<'_> {
+    fn drop(&mut self) {
+        self.0.delivery_finished();
+    }
+}
+
 impl Delivery {
     pub(super) fn new<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>,
@@ -124,6 +132,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
+        let _finished = DeliveryFinished(&*self.sink);
         if let Some(mut native) = work.native_source_work() {
             return self.callback(|| {
                 self.sink
@@ -141,6 +150,7 @@ impl Delivery {
     ) -> Result<(), DemandError> {
         #[cfg(target_os = "linux")]
         if let Some(sink) = &self.events {
+            let _finished = DeliveryFinished(&*self.sink);
             if let Some(mut native) = work.native_source_work() {
                 return self.callback(|| sink.invalidate_with_native_work(&mut native));
             }
@@ -159,6 +169,7 @@ impl Delivery {
         cookie: usize,
         work: &mut W,
     ) -> Result<(), DemandError> {
+        let _finished = DeliveryFinished(&*self.sink);
         let sink = self
             .events
             .as_ref()
@@ -182,6 +193,7 @@ impl Delivery {
         if changes.is_empty() {
             return Ok(());
         }
+        let _finished = DeliveryFinished(&*self.sink);
         if let Some(mut native) = work.native_source_work() {
             return self.callback(|| {
                 self.sink

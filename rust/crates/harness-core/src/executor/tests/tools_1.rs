@@ -58,7 +58,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         operation_id: operation,
         input: ModelContent::Text("input".into()),
         selected_context: None,
-        max_steps: 2,
+        max_steps: Some(2),
     };
     let journal = Journal::default();
     let previous = Journal::default();
@@ -188,7 +188,7 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             operation_id: OperationId::from_bytes([28; 16]),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
-            max_steps: 4,
+            max_steps: Some(4),
         };
         let invocation = ToolInvocation::for_model_call(
             input.operation_id,
@@ -315,7 +315,7 @@ async fn whole_tool_batch_prefix_requires_every_ordered_retained_exchange() -> R
         operation_id: OperationId::new(),
         input: ModelContent::Text("ordered batch".into()),
         selected_context: None,
-        max_steps: 3,
+        max_steps: Some(3),
     };
     let journal = Journal::default();
     executor.execute(input.clone(), &journal).await?;
@@ -499,7 +499,7 @@ async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         operation_id: OperationId::from_bytes([1; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
     assert!(
         executor
@@ -705,7 +705,7 @@ async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
         operation_id: OperationId::from_bytes([1; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
     executor.execute(input.clone(), &journal).await?;
     executor.execute(input, &journal).await?;
@@ -753,7 +753,7 @@ async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> 
         operation_id: OperationId::from_bytes([77; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
     let (left, right) = tokio::join!(
         executor.execute(input.clone(), &journal),
@@ -818,7 +818,7 @@ async fn malformed_tool_arguments_return_to_the_model_without_dispatch() -> Resu
         operation_id: OperationId::from_bytes([79; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
 
     let output = executor.execute(input.clone(), &journal).await?;
@@ -873,7 +873,7 @@ async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Resul
         operation_id: OperationId::from_bytes([80; 16]),
         input: ModelContent::Text("hello".into()),
         selected_context: None,
-        max_steps: 4,
+        max_steps: Some(4),
     };
     assert_eq!(executor.execute(input, &journal).await?.text, "done");
     let requests = model.requests();
@@ -1059,7 +1059,7 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
             operation_id: OperationId::from_bytes([78; 16]),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
-            max_steps: 4,
+            max_steps: Some(4),
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
@@ -1120,7 +1120,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
                 operation_id: operation,
                 input: ModelContent::Text("input".into()),
                 selected_context: None,
-                max_steps: 2,
+                max_steps: Some(2),
             };
             let journal = Journal::default();
             let first = executor.execute(input.clone(), &journal).await;

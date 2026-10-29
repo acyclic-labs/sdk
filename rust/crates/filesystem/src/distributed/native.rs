@@ -266,18 +266,23 @@ impl<'a> AuthorityWork<'a> {
             .checked_add(32)
             .and_then(|n| n.checked_add(suffix.len()))
             .and_then(|n| n.checked_add(identity.map_or(0, |bytes| bytes.len() * 2)))
-            .filter(|n| *n <= acyclic_stream::MAX_PATH_BYTES)
-            .ok_or(AuthorityStoreError::RejectedStatic("fork path is too long"))?;
+            .ok_or(crate::WorkError::Overflow)?;
         let writes = codec_work(length as u64, (prefix.len() + suffix.len()) as u64, 0);
         self.admit(writes)?;
-        // Every SDK authority suffix fits here. Keep the full Stream bound
-        // available in a separate frame for longer provider-internal suffixes.
+        // Inline scratch preserves the common path's original allocation.
+        // Longer values spill into caller-funded storage without a width refusal.
         if length <= 128 {
             self.path_buffer::<128>(prefix, authority, suffix, identity, length, writes)
+        } else if length <= 65_535 {
+            self.path_buffer::<65_535>(prefix, authority, suffix, identity, length, writes)
         } else {
-            self.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
-                prefix, authority, suffix, identity, length, writes,
-            )
+            let mut text = self.vec_owned::<u8>(length)?;
+            text.value
+                .extend(identity_path_bytes(prefix, authority, suffix, identity));
+            self.charge(writes)?;
+            let path = std::str::from_utf8(&text.value)
+                .map_err(|_| AuthorityStoreError::RejectedStatic("fork path is not UTF-8"))?;
+            self.own_path(path)
         }
     }
 
@@ -292,26 +297,12 @@ impl<'a> AuthorityWork<'a> {
         writes: WorkCounters,
     ) -> Result<StreamPath, AuthorityStoreError> {
         let mut text = [0_u8; N];
-        text.get_mut(..prefix.len())
-            .ok_or(crate::WorkError::Overflow)?
-            .copy_from_slice(prefix);
-        let cursor = prefix.len() + 32;
-        hex::encode_to_slice(
-            authority.into_bytes(),
-            text.get_mut(prefix.len()..cursor)
-                .ok_or(crate::WorkError::Overflow)?,
-        )
-        .map_err(|_| crate::WorkError::Overflow)?;
-        text.get_mut(cursor..cursor + suffix.len())
-            .ok_or(crate::WorkError::Overflow)?
-            .copy_from_slice(suffix.as_bytes());
-        if let Some(identity) = identity {
-            hex::encode_to_slice(
-                identity,
-                text.get_mut(cursor + suffix.len()..length)
-                    .ok_or(crate::WorkError::Overflow)?,
-            )
-            .map_err(|_| crate::WorkError::Overflow)?;
+        let output = text.get_mut(..length).ok_or(crate::WorkError::Overflow)?;
+        for (slot, byte) in output
+            .iter_mut()
+            .zip(identity_path_bytes(prefix, authority, suffix, identity))
+        {
+            *slot = byte;
         }
         self.charge(writes)?;
         let text = std::str::from_utf8(text.get(..length).ok_or(crate::WorkError::Overflow)?)
@@ -635,3 +626,20 @@ mod tests;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "native_lease_path_tests.rs"]
 mod lease_path_tests;
+
+/// Exact canonical encoding into either inline scratch or funded spill storage.
+fn identity_path_bytes<'a>(
+    prefix: &'a [u8],
+    authority: AuthorityId,
+    suffix: &'a str,
+    identity: Option<&'a [u8]>,
+) -> impl Iterator<Item = u8> + 'a {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let hex = |byte: u8| [HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 15)]];
+    prefix
+        .iter()
+        .copied()
+        .chain(authority.into_bytes().into_iter().flat_map(hex))
+        .chain(suffix.bytes())
+        .chain(identity.into_iter().flatten().copied().flat_map(hex))
+}
