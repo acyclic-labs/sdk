@@ -250,7 +250,7 @@ def main():
     root = spawn(command, terminal)
     master = None if terminal is None else terminal[0]
 
-    # SIGTERM requests a report; SIGUSR1 kills the executable, not this owner.
+    # SIGTERM cancels the root after its report; SIGUSR1 kills the executable.
     # Both leave the tree owner and its physical drain intact. EOF on control
     # stdin remains the force-retirement operation.
     def forward(number):

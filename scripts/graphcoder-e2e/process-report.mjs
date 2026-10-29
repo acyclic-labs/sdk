@@ -19,6 +19,7 @@ export class ProcessReport {
   #completion = new Promise(resolve => { this.#resolve = resolve; });
   #channel;
   #ended = false;
+  #ownerExited = false;
   #write;
   #sent = false;
   attach(child) {
@@ -38,8 +39,8 @@ export class ProcessReport {
       this.#ended = true;
     });
     child.once("exit", () => {
+      this.#ownerExited = true;
       if (this.#request) this.#finish("owner-exited");
-      else this.#ended = true;
     });
     this.#write = () => {
       if (!this.#request || !this.#ready || this.#terminal || this.#sent) return;
@@ -75,7 +76,8 @@ export class ProcessReport {
   request(deadline) {
     if (!this.#request) {
       this.#request = { request_id: randomBytes(16).toString("hex"), generation: this.generation, deadline_unix_ms: deadline };
-      if (this.#ended && !this.#terminal) this.#finish("owner-exited");
+      if (this.#ownerExited) this.#finish("owner-exited");
+      else if (this.#ended) this.#finish("sink-failed", "control-eof-before-request");
       this.#write?.();
     }
     return this.#completion;

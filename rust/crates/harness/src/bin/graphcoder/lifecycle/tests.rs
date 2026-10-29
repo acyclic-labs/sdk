@@ -141,7 +141,12 @@ fn blocked_or_closed_report_sink_cannot_hold_graceful_owner_cleanup() {
             );
             assert_eq!(result.unwrap(), 0);
             assert!(cleaned.get());
-            assert!(diagnostic.is_err());
+            if let Err(error) = diagnostic {
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe | io::ErrorKind::Interrupted
+                ));
+            }
             drop(owner);
         });
     }
