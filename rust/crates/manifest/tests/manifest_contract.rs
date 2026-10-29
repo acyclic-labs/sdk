@@ -185,12 +185,13 @@ proptest! {
 
     /// Shared grants are indexed once even when both action and cron counts grow.
     #[test]
-    fn shared_grant_work_is_linear(count in 1usize..=16) {
+    fn shared_grant_work_is_linear(count in 1usize..=16, terms in 128usize..=256) {
         let make = |size: usize| -> Result<DeploymentManifest, ManifestError> {
             let mut manifest = fixture()?;
             let env = manifest.environments.first_mut().ok_or_else(missing)?;
             env.grants.first_mut().ok_or_else(missing)?.grant.0.actions = vec!["streams/append".into(); size];
-            let cron = env.crons.first_mut().ok_or_else(missing)?.clone();
+            let mut cron = env.crons.first_mut().ok_or_else(missing)?.clone();
+            cron.schedule = format!("{}0 * * * *", "0,".repeat(terms));
             env.crons = (0..size).map(|i| CronSpec { name:format!("cron{i}"), ..cron.clone() }).collect();
             Ok(manifest)
         };
