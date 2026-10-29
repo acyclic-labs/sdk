@@ -697,3 +697,145 @@ async fn concurrent_admissions_reads_and_publication_agree()
     assert!(reopen_contains(directory.path(), &closure).await?);
     Ok(())
 }
+
+/// Holds its first flush until the test releases `gate`, counting the
+/// objects that reach it.
+struct PausedFlush {
+    inner: crate::MemoryObjectStore,
+    gate: Arc<tokio::sync::Mutex<()>>,
+    first: std::sync::atomic::AtomicBool,
+    paused: tokio::sync::Notify,
+    stored: std::sync::atomic::AtomicUsize,
+}
+
+impl AsyncObjectStore for PausedFlush {
+    async fn put(
+        &self,
+        id: ObjectId,
+        bytes: OwnedBytes,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.stored.fetch_add(1, Ordering::Relaxed);
+        self.inner.put(id, bytes, work).await
+    }
+    async fn put_many(
+        &self,
+        writes: &[ObjectWrite],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), ObjectStoreError> {
+        self.stored.fetch_add(writes.len(), Ordering::Relaxed);
+        self.inner.put_many(writes, work).await
+    }
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, ObjectStoreError> {
+        if self.first.swap(false, Ordering::Relaxed) {
+            self.paused.notify_one();
+            drop(self.gate.lock().await);
+        }
+        self.inner.flush_before_publish(scope, work).await
+    }
+    async fn read(
+        &self,
+        id: ObjectId,
+        maximum: u64,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<ObjectRead, ObjectStoreError> {
+        self.inner.read(id, maximum, work).await
+    }
+    async fn read_many(
+        &self,
+        requests: &[ObjectReadRequest],
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
+        self.inner.read_many(requests, work).await
+    }
+    async fn contains(
+        &self,
+        id: ObjectId,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<bool, ObjectStoreError> {
+        self.inner.contains(id, work).await
+    }
+}
+
+#[tokio::test]
+async fn a_paused_inner_flush_does_not_hold_another_publications_drain()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::future::Future;
+    use std::task::{Context, Poll, Waker};
+    let directory = tempfile::tempdir()?;
+    let gate = Arc::new(tokio::sync::Mutex::new(()));
+    let held = Arc::clone(&gate).lock_owned().await;
+    let store = StagedObjects::open(
+        PausedFlush {
+            inner: crate::MemoryObjectStore::default(),
+            gate,
+            first: std::sync::atomic::AtomicBool::new(true),
+            paused: tokio::sync::Notify::new(),
+            stored: std::sync::atomic::AtomicUsize::new(0),
+        },
+        directory.path().to_owned(),
+    );
+    let token = CancellationToken::new();
+    let (first, first_bytes) = blob(OwnedBytes::from_static(b"first publication"));
+    let (second, second_bytes) = blob(OwnedBytes::from_static(b"second publication"));
+    for (id, bytes) in [(first, first_bytes), (second, second_bytes)] {
+        store
+            .put(
+                id,
+                bytes,
+                &mut AuthorityWork::new(WorkBudget::UNBOUNDED, &token),
+            )
+            .await?;
+    }
+    let flush = |id: ObjectId| {
+        let store = &store;
+        let token = &token;
+        async move {
+            let objects = [id];
+            let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, token);
+            store
+                .flush_before_publish(
+                    PublicationScope::Closure {
+                        objects: &objects,
+                        proven_at: store.collection.sweeps(),
+                    },
+                    &mut work,
+                )
+                .await
+                .map(drop)
+        }
+    };
+    let paused = flush(first);
+    let during = async {
+        // The first publication drained and waits on its inner flush.
+        store.inner().paused.notified().await;
+        assert_eq!(store.inner().stored.load(Ordering::Relaxed), 1);
+        let mut second = std::pin::pin!(flush(second));
+        let finished = match Future::poll(second.as_mut(), &mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(flushed) => {
+                flushed?;
+                assert_eq!(store.inner().stored.load(Ordering::Relaxed), 2);
+                true
+            }
+            Poll::Pending => false,
+        };
+        drop(held);
+        if !finished {
+            second.await?;
+        }
+        Ok::<_, ObjectStoreError>(finished)
+    };
+    let (paused, finished) = tokio::join!(paused, during);
+    paused?;
+    assert!(
+        finished?,
+        "the second publication's drain waited on the first one's inner flush"
+    );
+    assert_eq!(store.inner().stored.load(Ordering::Relaxed), 2);
+    Ok(())
+}
