@@ -298,16 +298,7 @@ impl StreamProvider for MemoryStream {
         }
         let cursor = FiniteRead::new(path, request);
         drop(state);
-        Ok(stream::try_unfold(cursor, |mut cursor| async move {
-            if cursor
-                .peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable)?
-                .is_none()
-            {
-                return Ok(None);
-            }
-            Ok(cursor.take().map(|record| (record, cursor)))
-        })
-        .boxed())
+        Ok(cursor.boxed())
     }
 
     async fn follow(
