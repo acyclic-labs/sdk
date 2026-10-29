@@ -4,6 +4,7 @@ use super::*;
 use acyclic_native_runtime::{CaptureHandler, ProcessCaptureStream};
 
 struct Output<H: CaptureHandler> {
+    machine: MachineId,
     capture: Option<ProcessCaptureStream<H>>,
     stderr: Option<Vec<u8>>,
 }
@@ -13,9 +14,13 @@ struct Output<H: CaptureHandler> {
 /// Pulling advances only one native batch; dropping closes its original credit
 /// and wakes cleanup even when the process is silent or the reader is stalled.
 /// A terminal frame follows pipe EOF and the original physical cleanup join.
-pub fn output<H: CaptureHandler>(capture: ProcessCaptureStream<H>) -> ExecStream {
+pub fn output<H: CaptureHandler>(
+    machine: MachineId,
+    capture: ProcessCaptureStream<H>,
+) -> ExecStream {
     Box::pin(stream::unfold(
         Output {
+            machine,
             capture: Some(capture),
             stderr: None,
         },
@@ -57,11 +62,9 @@ pub fn output<H: CaptureHandler>(capture: ProcessCaptureStream<H>) -> ExecStream
                         cleanup_completed: failure.cleanup_completed,
                     }),
                 },
-                Err(error) => {
+                Err(_) => {
                     return Some((
-                        Err(ProviderError::Rejected(format!(
-                            "native capture owner failed: {error}; recovery: reconcile the original process custody without redispatching"
-                        ))),
+                        Err(ProviderError::CommandIndeterminate(state.machine)),
                         state,
                     ));
                 }

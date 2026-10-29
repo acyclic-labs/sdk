@@ -27,6 +27,7 @@ type Buffers = Arc<Mutex<VecDeque<(bool, usize, usize)>>>;
 struct Handler {
     buffers: Buffers,
     wake: ProcessWake,
+    lose_owner: bool,
 }
 
 impl CaptureHandler for Handler {
@@ -34,6 +35,7 @@ impl CaptureHandler for Handler {
         Ok(Some(self.wake.clone()).into())
     }
     fn check(&mut self) -> io::Result<()> {
+        assert!(!self.lose_owner, "injected native capture owner loss");
         if self.wake.is_stopped() {
             return Err(io::ErrorKind::Interrupted.into());
         }
@@ -54,7 +56,9 @@ impl CaptureHandler for Handler {
 
 #[tokio::test]
 async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> io::Result<()> {
-    for stop in [false, true] {
+    for mode in ["exit", "stop", "owner_lost"] {
+        let stop = mode == "stop";
+        let lose_owner = mode == "owner_lost";
         let mut command = Command::new(std::env::current_exe()?);
         command
             .args(["--exact", "local::tests::child", "--nocapture"])
@@ -77,15 +81,26 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
             Handler {
                 buffers: buffers.clone(),
                 wake: wake.clone(),
+                lose_owner,
             },
         );
-        let mut output = output(capture);
+        let machine = MachineId::new();
+        let mut output = output(machine, capture);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut released = false;
         let mut terminal = false;
         while let Some(frame) = output.next().await {
-            let frame = frame.map_err(io::Error::other)?;
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    assert!(lose_owner);
+                    assert_eq!(error, ProviderError::CommandIndeterminate(machine));
+                    assert!(!terminal);
+                    terminal = true;
+                    continue;
+                }
+            };
             let (is_stderr, bytes, destination) = match frame {
                 ExecOutput::Data(bytes) => (false, bytes, &mut stdout),
                 ExecOutput::Stderr(bytes) => (true, bytes, &mut stderr),
@@ -121,8 +136,9 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
                 released = true;
             }
         }
-        assert!(released && terminal);
-        if !stop {
+        assert!(terminal);
+        assert_eq!(released, !lose_owner);
+        if !stop && !lose_owner {
             assert!(stdout.ends_with(&[0, 255, 3]));
             assert_eq!(stderr, [0, 254, 4]);
         }
