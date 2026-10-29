@@ -332,7 +332,7 @@ impl ContentResidencyVerifier for Reader<'_> {
 
         let index = self.reads.fetch_add(1, Ordering::SeqCst);
         if let Some(limits) = self.expected_limits {
-            assert_eq!(limits.get(index), Some(&maximum_bytes));
+            assert_eq!(limits.get(index).copied(), maximum_bytes);
         }
         let read = self.inner.read_private_path(
             volume,
