@@ -3,6 +3,7 @@ use super::*;
 struct DigestWriter {
     buffer: arrayvec::ArrayVec<u8, 4096>,
     hasher: Option<blake3::Hasher>,
+    remaining: Option<u64>,
 }
 
 impl std::io::Write for DigestWriter {
@@ -14,6 +15,11 @@ impl std::io::Write for DigestWriter {
 
     #[inline]
     fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining
+                .checked_sub(bytes.len() as u64)
+                .ok_or_else(|| std::io::Error::other("JSON exceeds selected byte policy"))?;
+        }
         if self.buffer.try_extend_from_slice(bytes).is_err() {
             self.spill(bytes)?;
         }
@@ -45,9 +51,17 @@ impl DigestWriter {
 #[inline(never)]
 #[doc(hidden)]
 pub fn serialized_json_digest<T: Serialize + ?Sized>(value: &T) -> Result<[u8; 32]> {
+    serialized_json_digest_with_policy(value, None)
+}
+
+fn serialized_json_digest_with_policy<T: Serialize + ?Sized>(
+    value: &T,
+    maximum: Option<u64>,
+) -> Result<[u8; 32]> {
     let mut writer = DigestWriter {
         buffer: arrayvec::ArrayVec::new(),
         hasher: None,
+        remaining: maximum,
     };
     serde_json::to_writer(&mut writer, value).map_err(|error| Error::Invalid(error.to_string()))?;
     Ok(*match writer.hasher {
@@ -79,8 +93,8 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
             return count_json_bytes_trusted(
                 value,
                 JsonBounds {
-                    maximum_bytes: maximum,
-                    maximum_items: u64::MAX,
+                    maximum_bytes: Some(maximum),
+                    maximum_items: None,
                     maximum_depth,
                 },
                 None,
@@ -133,8 +147,8 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
     let result = count_json_bytes_trusted(
         value,
         JsonBounds {
-            maximum_bytes: maximum,
-            maximum_items: u64::MAX,
+            maximum_bytes: Some(maximum),
+            maximum_items: None,
             maximum_depth: maximum_depth.min(if native_code.is_some() { 256 } else { u32::MAX }),
         },
         native_code,
@@ -163,21 +177,14 @@ pub fn json_byte_length_at_depth<T: Serialize + ?Sized>(
 #[doc(hidden)]
 pub fn canonical_json_digest<T: Serialize + ?Sized>(
     value: &T,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     if work.is_none() {
         let mut value =
             serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
         value.sort_all_objects();
-        return serialized_json_digest(&value);
-    }
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(crate::store::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "canonical encoder allowance must be finite and positive",
-        ));
+        return serialized_json_digest_with_policy(&value, maximum_bytes);
     }
     let observer = work.as_deref_mut().expect("observed canonical digest");
     let code = crate::store::operations::original_native_decode_mode(observer)
@@ -186,7 +193,7 @@ pub fn canonical_json_digest<T: Serialize + ?Sized>(
         value,
         JsonBounds {
             maximum_bytes,
-            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_items: maximum_bytes.map(|maximum| maximum.saturating_add(1)),
             maximum_depth: 256,
         },
         code,
@@ -197,18 +204,11 @@ pub fn canonical_json_digest<T: Serialize + ?Sized>(
 /// Hash a serializer that already emits every object in canonical key order.
 pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
     value: &T,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     if work.is_none() {
-        return serialized_json_digest(value);
-    }
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-        return Err(crate::store::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "canonical encoder allowance must be finite and positive",
-        ));
+        return serialized_json_digest_with_policy(value, maximum_bytes);
     }
     let observer = work.as_deref_mut().expect("observed borrowed digest");
     let code = crate::store::operations::original_native_decode_mode(observer)
@@ -217,7 +217,7 @@ pub(crate) fn borrowed_json_digest<T: Serialize + ?Sized>(
         value,
         JsonBounds {
             maximum_bytes,
-            maximum_items: maximum_bytes.saturating_add(1),
+            maximum_items: maximum_bytes.map(|maximum| maximum.saturating_add(1)),
             maximum_depth: 256,
         },
         code,

@@ -17,27 +17,30 @@ where
     } else {
         format!("/{directory}/.gitignore")
     };
-    let policy = match generation
-        .read(
-            &path,
-            1024 * 1024,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-    {
-        Ok(contents) => {
-            let contents =
-                std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
-            GitIgnorePolicy::parse(contents)
-        }
-        Err(error) if error.is_absent() => GitIgnorePolicy::default(),
-        Err(error) => return Err(error.into()),
+    let policy = match read_git_ignore_policy(generation, &path).await {
+        Ok(policy) => policy,
+        Err(GitCaptureError::Workspace(error)) if error.is_absent() => GitIgnorePolicy::default(),
+        Err(error) => return Err(error),
     };
     policies.insert(directory.to_owned(), policy);
     Ok(())
+}
+
+async fn read_git_ignore_policy<A, O>(
+    generation: &Generation<A, O>,
+    path: &str,
+) -> Result<GitIgnorePolicy, GitCaptureError>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    let contents = generation
+        .read(path, None, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
+    let contents = std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
+    Ok(GitIgnorePolicy::parse(contents))
 }
 
 pub(crate) async fn scan_git_capture_entries<A, O>(
@@ -84,22 +87,8 @@ where
                 if is_directory {
                     pending.push(format!("/{path}"));
                 } else if name == ".gitignore" && directory != "/" {
-                    let contents = live
-                        .read(
-                            &format!("/{path}"),
-                            1024 * 1024,
-                            WorkBudget::UNBOUNDED,
-                            &CancellationToken::new(),
-                        )
-                        .await
-                        .map(|receipt| receipt.value)
-                        .map_err(|failure| failure.error)?;
-                    let contents = std::str::from_utf8(&contents)
-                        .map_err(|_| GitCaptureError::NonPortableName)?;
-                    nested_policies.insert(
-                        directory.trim_start_matches('/').to_owned(),
-                        GitIgnorePolicy::parse(contents),
-                    );
+                    let policy = read_git_ignore_policy(live, &format!("/{path}")).await?;
+                    nested_policies.insert(directory.trim_start_matches('/').to_owned(), policy);
                 }
             }
             if !page.has_more {

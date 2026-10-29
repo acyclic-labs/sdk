@@ -921,7 +921,7 @@ async fn publication_identity_change_after_guard_preserves_conflict_code() -> Re
         destination: publication.directory().join("target"),
         expected_root_identity: None,
         maximum_directory_entries: 32,
-        maximum_extent_spans: 32,
+        maximum_extent_spans: Some(32),
         transfer_bytes: 4096,
     };
     let paths = ["guard-probe".to_owned()];

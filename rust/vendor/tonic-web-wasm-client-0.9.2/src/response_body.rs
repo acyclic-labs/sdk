@@ -37,7 +37,7 @@ impl EncodedBytes {
     }
 
     #[cfg(test)]
-    fn response_limit(&self, limits: UnaryResponseLimits) -> usize {
+    fn response_limit(&self, limits: UnaryResponseLimits) -> Option<usize> {
         match self.encoding {
             Encoding::None => limits.binary_body_bytes(),
             Encoding::Base64 => limits.text_body_bytes(),
@@ -149,13 +149,23 @@ impl ResponseBody {
     ) -> Result<Self, Error> {
         let body_stream =
             wasm_streams::ReadableStream::from_raw(body_stream.unchecked_into()).into_stream();
+        Self::configure(content_type, limits, streaming, |maximum| {
+            BodyStream::new(body_stream, abort, maximum)
+        })
+    }
 
+    fn configure(
+        content_type: &str,
+        limits: Option<UnaryResponseLimits>,
+        streaming: bool,
+        body_stream: impl FnOnce(Option<usize>) -> BodyStream,
+    ) -> Result<Self, Error> {
         let buf = EncodedBytes::new(content_type)?;
         let maximum = limits.and_then(|limits| {
             limits.body_bytes(streaming, matches!(buf.encoding, Encoding::Base64))
         });
         Ok(Self {
-            body_stream: BodyStream::new(body_stream, abort, maximum),
+            body_stream: body_stream(maximum),
             buf,
             incomplete_data: BytesMut::new(),
             data: None,
@@ -164,8 +174,10 @@ impl ResponseBody {
             finished_stream: false,
             maximum,
             maximum_message: limits.map(|limits| limits.message_bytes()),
-            maximum_trailer: limits.map(|limits| limits.trailer_bytes()),
-            maximum_headers: limits.map(|limits| limits.header_list_bytes() as usize),
+            maximum_trailer: limits.and_then(|limits| limits.trailer_bytes()),
+            maximum_headers: limits
+                .and_then(|limits| limits.header_list_bytes())
+                .map(|maximum| maximum as usize),
         })
     }
 
@@ -173,20 +185,9 @@ impl ResponseBody {
     pub(crate) fn from_body_stream(
         body_stream: BodyStream,
         content_type: &str,
+        limits: Option<UnaryResponseLimits>,
     ) -> Result<Self, Error> {
-        Ok(Self {
-            body_stream,
-            buf: EncodedBytes::new(content_type)?,
-            incomplete_data: BytesMut::new(),
-            data: None,
-            trailer: None,
-            state: ReadState::CompressionFlag,
-            finished_stream: false,
-            maximum: None,
-            maximum_message: None,
-            maximum_trailer: None,
-            maximum_headers: None,
-        })
+        Self::configure(content_type, limits, false, |_| body_stream)
     }
 
     fn read_stream(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
@@ -524,16 +525,68 @@ mod tests {
 #[cfg(test)]
 mod budget_regressions {
     use super::*;
+    use crate::test_support::{GRPC_WEB, body_from_chunks_with_limits, drain, frame};
+
+    #[test]
+    fn payload_policy_preserves_large_metadata_and_explicit_policies_still_refuse() {
+        let value = "v".repeat(32 * 1024);
+        let trailer = format!("grpc-status:0\r\nx-large:{value}\r\n");
+        let payload = frame(0, b"\x08\x01");
+        let mut wire = payload.to_vec();
+        wire.extend_from_slice(&frame(TRAILER_BIT, trailer.as_bytes()));
+
+        for content_type in [GRPC_WEB, "application/grpc-web-text+proto"] {
+            let encoded = if content_type == GRPC_WEB {
+                wire.clone()
+            } else {
+                BASE64_STANDARD.encode(&wire).into_bytes()
+            };
+            for chunk_size in [1, 7, 4096] {
+                let chunks = || {
+                    encoded
+                        .chunks(chunk_size)
+                        .map(Bytes::copy_from_slice)
+                        .collect()
+                };
+                let body = body_from_chunks_with_limits(
+                    content_type,
+                    chunks(),
+                    Some(UnaryResponseLimits::new(2)),
+                );
+                let (data, trailers) = drain(body).unwrap();
+                assert_eq!(data.as_ref(), payload.as_ref());
+                let trailers = trailers.unwrap();
+                assert_eq!(trailers.get("grpc-status").unwrap(), "0");
+                assert_eq!(trailers.get("x-large").unwrap(), value.as_str());
+
+                for policy in [
+                    UnaryResponseLimits::new(1),
+                    UnaryResponseLimits::new(2)
+                        .with_metadata_limits(64 * 1024, 16 * 1024)
+                        .unwrap(),
+                    UnaryResponseLimits::new(2)
+                        .with_metadata_limits(16 * 1024, 64 * 1024)
+                        .unwrap(),
+                ] {
+                    let body = body_from_chunks_with_limits(content_type, chunks(), Some(policy));
+                    assert!(matches!(drain(body), Err(Error::ResponseTooLarge)));
+                }
+            }
+        }
+    }
+
     #[test]
     fn encoding_selects_the_checked_binary_or_text_budget() {
-        let limits = UnaryResponseLimits::new(8).unwrap();
+        let limits = UnaryResponseLimits::new(8)
+            .with_metadata_limits(128, 32)
+            .unwrap();
         let binary = EncodedBytes::new("application/grpc-web+proto").unwrap();
         let text = EncodedBytes::new("application/grpc-web-text+proto").unwrap();
         assert_eq!(binary.response_limit(limits), limits.binary_body_bytes());
         assert_eq!(text.response_limit(limits), limits.text_body_bytes());
         assert_eq!(
             text.response_limit(limits),
-            binary.response_limit(limits) * 4
+            binary.response_limit(limits).map(|maximum| maximum * 4)
         );
     }
 

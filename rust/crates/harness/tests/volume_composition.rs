@@ -174,7 +174,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &setup,
         &root,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     host.put_content(
@@ -195,7 +194,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &setup,
         &builtins,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let builtin = host
@@ -219,7 +217,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &scope,
         &root,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let skills_writer = ContentGrant::verify(
@@ -227,7 +224,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &scope,
         &skills,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     host.fork_volume(
@@ -246,7 +242,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             &scope,
             &builtins,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -257,7 +252,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             &scope,
             &root,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -276,7 +270,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
             &foreign,
             &skills,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None
         )
         .is_err()
@@ -286,7 +279,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &scope,
         &builtins,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     assert_eq!(
@@ -321,7 +313,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &scope,
         &skills,
         VolumeOperation::Read,
-        u64::MAX,
         &mut None,
     )?;
     let approved = issuer
@@ -337,7 +328,6 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         &approved,
         &root,
         VolumeOperation::Write,
-        u64::MAX,
         &mut None,
     )?;
     let plan = host

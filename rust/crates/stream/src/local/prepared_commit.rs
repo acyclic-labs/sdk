@@ -2,7 +2,7 @@ impl LocalStream {
     fn prepare_commit(
         &self,
         request: CommitRequest,
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         #[cfg(feature = "test-support")]
@@ -41,21 +41,22 @@ impl LocalStream {
                             let command = WriteRequest::Commit(request.clone());
                             work.record(work.meter.record_codec(0, copied as u64, 0))?;
                             drop(input);
-                            let (plan, recovery) = provider.prepare(request, maximum).await?;
+                            let (plan, recovery) = provider.prepare(request, capacity).await?;
                             let WriteRequest::Commit(request) = &command else {
                                 unreachable!()
                             };
                             let size = crate::wire_codec::requests::prepared_commit_command_len(
-                                request, maximum,
+                                request, capacity,
                             );
                             if size > MAX_COMMAND_BYTES {
                                 return Err(StreamError::Capacity);
                             }
-                            let capacity = size
+                            let frame_capacity = size
                                 .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
                                 .ok_or(StreamError::Capacity)?;
-                            let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
-                                .map_err(|error| stream.frame_error(error))?;
+                            let frame =
+                                PreparedFrame::reserve(frame_capacity, Some(Arc::clone(&work)))
+                                    .map_err(|error| stream.frame_error(error))?;
                             work.reserve_durability(4)?;
                             let slot = work
                                 .record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
@@ -99,7 +100,7 @@ impl LocalStream {
                                 }
                             };
                             Ok((
-                                crate::PreparedNativeCommit::new(future, recovery, slot, maximum),
+                                crate::PreparedNativeCommit::new(future, recovery, slot, capacity),
                                 None,
                             ))
                         }

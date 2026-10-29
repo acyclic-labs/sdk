@@ -6,8 +6,8 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentAuthority,
-    WasmAgentRegistry, WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
+    Authorities, BrowserHandler, Error, WasmAgentAuthority, WasmAgentRegistry,
+    WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
@@ -198,12 +198,12 @@ impl Providers {
     fn memory_limits(options: &WasmBrowserAgentOptions) -> MemoryLimits {
         let limits = &options.stream_limits;
         MemoryLimits {
-            paths: limits.paths as usize,
-            path_bytes: limits.path_bytes as usize,
-            records: limits.records as usize,
-            payload_bytes: limits.payload_bytes as usize,
-            commits: limits.commits as usize,
-            idempotency_results: limits.idempotency_results as usize,
+            paths: limits.paths.map(|value| value as usize),
+            path_bytes: limits.path_bytes.map(|value| value as usize),
+            records: limits.records.map(|value| value as usize),
+            payload_bytes: limits.payload_bytes.map(|value| value as usize),
+            commits: limits.commits.map(|value| value as usize),
+            idempotency_results: limits.idempotency_results.map(|value| value as usize),
         }
     }
 
@@ -262,7 +262,7 @@ impl Providers {
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let objects = LogicalObjectStore::new(objects)
             .with_publication_root(root)
-            .with_object_limit(options.maximum_object_bytes)
+            .with_object_limit(Some(options.maximum_object_bytes))
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
             Arc::clone(&stream),
@@ -289,9 +289,12 @@ impl Providers {
         limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
             maximum_bytes: limits.file_bytes,
-            max_steps: u32::try_from(limits.model_steps)
+            max_steps: limits
+                .model_steps
+                .map(|value| u32::try_from(value.get()))
+                .transpose()
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
-            history_turns: HISTORY_TURNS,
+            history_turns: None,
         };
         let turns = Arc::new(
             FilesystemTurnHost::new(
@@ -308,12 +311,8 @@ impl Providers {
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
-            ActorLimits::new(
-                options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
-                1 << 20,
-                1 << 16,
-            )
-            .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+            ActorLimits::new(options.handler_timeout_ms, None, None)
+                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
         )
         .map(|handler| handler.with_spawn_volumes(self.spawn_volumes()))
         .map_err(|error| js_error(Error::Invalid(error.to_string())))

@@ -189,8 +189,8 @@ fn binding_with(
             executors,
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
-                history_turns: 8,
+                max_steps: Some(4),
+                history_turns: Some(8),
             },
             actors: ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             clock: Arc::new(SystemClock),
@@ -583,8 +583,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Ok(AgentReply::Children { items, next: None }) if items.is_empty()
     ));
     owner.childless.store(false, Ordering::SeqCst);
-    // A spawn is the parent's own step: the reply names the child, and the
-    // running host's next step for the parent creates it.
+    // The reply waits for the parent's committed spawn step.
     let runner = {
         let server = server.clone();
         tokio::spawn(async move { server.run(|_, _| {}).await })

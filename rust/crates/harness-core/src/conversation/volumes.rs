@@ -89,7 +89,7 @@ pub struct VolumeRef {
 impl VolumeRef {
     pub(crate) fn identity_digest(
         &self,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
         crate::executor::json::borrowed_json_digest(
@@ -102,7 +102,7 @@ impl VolumeRef {
     fn directory_digest(
         &self,
         prefix: &str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<[u8; 32]> {
         crate::executor::json::borrowed_json_digest(
@@ -215,10 +215,7 @@ impl VolumeRef {
     ) -> Result<String> {
         content_label(
             operation.capability_prefix(),
-            self.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
+            self.identity_digest(None, work)?,
             work,
         )
     }
@@ -282,11 +279,7 @@ impl VolumeRef {
         }
         content_label(
             acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            self.directory_digest(
-                prefix,
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
+            self.directory_digest(prefix, None, work)?,
             work,
         )
     }
@@ -296,14 +289,7 @@ impl VolumeRef {
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<String> {
-        content_label(
-            "harness-",
-            self.identity_digest(
-                crate::store::default_projection_read_limits().maximum_bytes,
-                work,
-            )?,
-            work,
-        )
+        content_label("harness-", self.identity_digest(None, work)?, work)
     }
 }
 
@@ -493,11 +479,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         crate::wire_codec::CodecQuota::produce(work, |quota| {
-            Self::verify_in_quota(verifier, scope, volume, operation, maximum_bytes, quota)
+            Self::verify_in_quota(verifier, scope, volume, operation, quota)
         })
         .map(|(grant, _)| grant)
     }
@@ -507,11 +492,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<Self> {
         Self::build_in_quota(verifier, scope, quota, |scope, quota| {
-            Self::check_volume(scope, volume, operation, maximum_bytes, quota.work())?;
+            Self::check_volume(scope, volume, operation, quota.work())?;
             Ok(Boundary {
                 volume: volume.clone_in_quota(quota)?,
                 operation,
@@ -551,11 +535,10 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         verifier.verify(scope, work)?;
-        Self::check_volume(scope, volume, operation, maximum_bytes, work)
+        Self::check_volume(scope, volume, operation, work)
     }
 
     /// Validate a proposed acting agent against its committed volume owner,
@@ -584,7 +567,6 @@ impl ContentGrant {
         scope: &Scope,
         volume: &VolumeRef,
         operation: VolumeOperation,
-        maximum_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         Self::check_agent_volume(scope, scope.agent(), volume, operation, maximum_bytes, work)
@@ -608,10 +590,7 @@ impl ContentGrant {
             volume.require_writer(agent, work)?;
         }
         volume.validate(work)?;
-        let digest = volume.identity_digest(
-            maximum_bytes.min(crate::store::default_projection_read_limits().maximum_bytes),
-            work,
-        )?;
+        let digest = volume.identity_digest(None, work)?;
         if !contains_content_label(scope.capabilities(), operation.capability_prefix(), digest) {
             return Err(conversation_error(
                 work,

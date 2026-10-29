@@ -467,7 +467,7 @@ message ExecStart {
   // caller authority's expiry remains an independent upper bound, even while no
   // output is produced. A deadline the server cannot represent is rejected,
   // never shortened.
-  uint64 timeout_ms = 4;
+  optional uint64 timeout_ms = 4;
   optional uint64 expiry_unix_ms = 5;
   // Combined stdout/stderr allowance; absent is unbounded, zero allows no bytes.
   optional uint64 maximum_output_bytes = 6;

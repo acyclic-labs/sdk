@@ -142,7 +142,7 @@ proptest! {
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
         prop_assert_eq!(ContextManifest::decode(&bytes, limits)?, manifest.clone());
-        let limits = Limits { path_bytes: bound, ..limits };
+        let limits = Limits { path_bytes: std::num::NonZeroUsize::new(bound), ..limits };
         prop_assert_eq!(manifest.validate(limits).is_ok(), reference.path().len() <= bound);
         prop_assert_eq!(ContextManifest::decode(&bytes, limits).is_ok(), reference.path().len() <= bound);
     }
@@ -170,7 +170,7 @@ proptest! {
         let limits = Limits { render_bytes: 32_768, ..Default::default() };
         let bytes = manifest.encode(limits)?;
         for path_bytes in [bound, length - 1, length, length + 1] {
-            let limits = Limits { path_bytes, ..limits };
+            let limits = Limits { path_bytes: std::num::NonZeroUsize::new(path_bytes), ..limits };
             let admitted = length <= path_bytes;
             prop_assert_eq!(manifest.validate(limits).is_ok(), admitted);
             prop_assert_eq!(manifest.encode(limits).is_ok(), admitted);
@@ -286,7 +286,7 @@ async fn optional_environment_joins_after_all_required_stages_on_public_pipeline
     };
     for (message_limit, current_input_index) in [(2, 1), (3, 2)] {
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             ..Limits::default()
         };
         let run = pipeline.run(&input, limits, None).await?;

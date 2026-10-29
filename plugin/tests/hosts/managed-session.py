@@ -6,7 +6,7 @@ the real-host e2e suite; this regression never reads native authentication.
 """
 import json, os, pathlib, signal, subprocess, sys, tempfile, time, traceback
 from native_events import native_event_fixture
-from native_fixture import fixture_environment
+from native_fixture import fixture_environment, wait_for_file
 from native_mcp import McpClient
 if len(sys.argv) != 5:
  raise SystemExit(__doc__)
@@ -93,10 +93,8 @@ if prompt=='resumed':
   global owner
   log=(root/'owner.log').open('w+')
   owner=subprocess.Popen([graphcoder,'--host-workspace','--host-state-directory',str(state),'--workspace',str(workspace)],cwd=workspace,env=env,stdout=log,stderr=log)
-  deadline=time.monotonic()+2
-  while not (workspace/'.acyclic-sdk/host-files/owner.json').exists():
-   assert owner.poll() is None,(root/'owner.log').read_text()[-1000:]
-   assert time.monotonic()<deadline,'owner readiness';time.sleep(.01)
+  wait_for_file(workspace/'.acyclic-sdk/host-files/owner.json',timeout=2)
+  assert owner.poll() is None,(root/'owner.log').read_text()[-1000:]
  def client(action):
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True,timeout=2)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
@@ -140,9 +138,9 @@ if prompt=='resumed':
    assert not (workspace/'failed.txt').exists(),'failed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/failed'});assert (workspace/'failed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS failed-capture-merge',flush=True)
-   cancelled=tool('spawn','cancelled','cancelled');view=pathlib.Path(cancelled['cwd']);deadline=time.monotonic()+2
+   cancelled=tool('spawn','cancelled','cancelled');view=pathlib.Path(cancelled['cwd'])
    print('NATIVE_FIXTURE_PASS cancelled-spawn',time.monotonic()-started,flush=True)
-   while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
+   wait_for_file(view/'ready',timeout=2)
    print('NATIVE_FIXTURE_PASS cancelled-native-ready',time.monotonic()-started,flush=True)
    # Cancellation retires this view. Retain the observed process identity
    # while its ready marker still proves the original native session is live.
@@ -154,8 +152,8 @@ if prompt=='resumed':
    assert not (workspace/'cancelled.txt').exists(),'cancelled child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/cancelled'});assert (workspace/'cancelled.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS cancelled-capture-merge',flush=True)
-   blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd']);deadline=time.monotonic()+2
-   while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)
+   blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd'])
+   wait_for_file(view/'ready',timeout=2)
    stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':

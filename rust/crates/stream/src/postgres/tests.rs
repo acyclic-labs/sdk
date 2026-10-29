@@ -374,8 +374,8 @@ impl ReplayObserver for CompetingPublication<'_> {
                 .journal
                 .client
                 .query_one(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1937006962))",
-                    &[&writer.journal.namespace],
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'),1937006962))",
+                    &[&writer.journal.namespace.as_slice()],
                 )
                 .await
                 .map_err(unavailable)?;
@@ -432,7 +432,7 @@ async fn stale_publication_replans_without_retaining_the_losing_identity()
         .client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
-            &[&namespace],
+            &[&replica.journal.namespace.as_slice()],
         )
         .await?;
     assert_eq!(count.get::<_, i64>(0), 1);
@@ -462,7 +462,7 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
     let peer = PostgresStream::connect(&database, &namespace).await?;
     let (listener, mut notifications) = tokio_postgres::connect(&database, NoTls).await?;
     let (sent, received) = tokio::sync::oneshot::channel();
-    let observed = namespace.clone();
+    let observed = blake3::hash(namespace.as_bytes()).to_hex().to_string();
     let notification = tokio::spawn(async move {
         while let Some(message) =
             futures::future::poll_fn(|cx| notifications.poll_message(cx)).await
@@ -497,16 +497,13 @@ async fn cancelled_acknowledgement_replays_the_committed_identity()
     notification.await?;
     let receipt = peer.append(request.clone()).await?;
     assert_eq!(provider.append(request).await?, receipt);
-    let rows = peer
-        .inner
-        .session
-        .lock()
-        .await
+    let replica = peer.inner.session.lock().await;
+    let rows = replica
         .journal
         .client
         .query_one(
             "SELECT count(*) FROM acyclic_stream_journal WHERE namespace=$1",
-            &[&namespace],
+            &[&replica.journal.namespace.as_slice()],
         )
         .await?;
     assert_eq!(rows.get::<_, i64>(0), 1);
