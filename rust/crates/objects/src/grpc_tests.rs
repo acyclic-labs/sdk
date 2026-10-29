@@ -3,8 +3,8 @@
 use super::*;
 use crate::MemoryObjects;
 use acyclic_stream::AppliedRevisions;
-use std::sync::Mutex;
 use std::time::Duration;
+use std::{future::Future, pin::Pin, sync::Mutex};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -18,6 +18,7 @@ struct Replica {
     view: MemoryObjects,
     applied: AppliedRevisions,
     pending: Mutex<Vec<OwnedBytes>>,
+    revision_requested: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl Replica {
@@ -35,7 +36,34 @@ impl Replica {
             view: MemoryObjects::memory(),
             applied,
             pending: Mutex::default(),
+            revision_requested: Mutex::default(),
         }))
+    }
+
+    async fn wait_for_read<T>(
+        &self,
+        mut read: Pin<&mut impl Future<Output = Result<T, Error>>>,
+    ) -> TestResult {
+        let (requested, entered) = tokio::sync::oneshot::channel();
+        assert!(
+            self.revision_requested
+                .lock()
+                .expect("revision request")
+                .replace(requested)
+                .is_none()
+        );
+        tokio::select! {
+            result = read.as_mut() => {
+                result?;
+                panic!("a read below its floor completed before replica admission");
+            }
+            result = tokio::time::timeout(Duration::from_secs(5), entered) => result??,
+        }
+        assert!(
+            read.now_or_never().is_none(),
+            "a read below its floor must wait"
+        );
+        Ok(())
     }
 
     async fn catch_up(&self) -> Result<(), Error> {
@@ -104,6 +132,14 @@ impl Blobs for Replica {
         self.primary.usage().await
     }
     async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
+        if let Some(requested) = self
+            .revision_requested
+            .lock()
+            .expect("revision request")
+            .take()
+        {
+            let _ = requested.send(());
+        }
         Ok(Some(&self.applied))
     }
 }
@@ -283,11 +319,6 @@ async fn written(writer: &GrpcObjects, body: &'static [u8]) -> Result<(Digest, R
     ))
 }
 
-/// Settles everything ready on the current-thread runtime without the read.
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(50)).await;
-}
-
 #[tokio::test]
 async fn a_read_after_a_write_waits_for_the_lagging_replica() -> TestResult {
     let replica = Replica::new().await?;
@@ -302,11 +333,10 @@ async fn a_read_after_a_write_waits_for_the_lagging_replica() -> TestResult {
     );
 
     let reader = writer.clone();
-    let read = tokio::spawn(async move { reader.head(digest).await });
-    settle().await;
-    assert!(!read.is_finished(), "a read below its floor must wait");
+    let mut read = std::pin::pin!(reader.head(digest));
+    replica.wait_for_read(read.as_mut()).await?;
     replica.catch_up().await?;
-    let head = read.await??;
+    let head = read.await?;
     assert_eq!(head.digest, digest);
     assert!(
         head.revision
@@ -330,14 +360,10 @@ async fn an_explicit_minimum_carries_a_write_across_clients() -> TestResult {
     );
     other.revisions().observe(&committed);
     let reader = other.clone();
-    let read = tokio::spawn(async move { reader.get(digest, ByteRange::FULL, 64).await });
-    settle().await;
-    assert!(
-        !read.is_finished(),
-        "an explicit minimum must hold the read"
-    );
+    let mut read = std::pin::pin!(reader.get(digest, ByteRange::FULL, 64));
+    replica.wait_for_read(read.as_mut()).await?;
     replica.catch_up().await?;
-    assert_eq!(read.await??.body().as_ref(), b"shared");
+    assert_eq!(read.await?.body().as_ref(), b"shared");
     Ok(())
 }
 
@@ -409,10 +435,10 @@ async fn the_call_deadline_bounds_the_wait() -> TestResult {
     assert!(started.elapsed() < Duration::from_secs(5));
     // Negative control: the same deadline admits a read whose floor applies in time.
     let reader = writer.clone();
-    let read = tokio::spawn(async move { reader.get(digest, ByteRange::FULL, 64).await });
-    settle().await;
+    let mut read = std::pin::pin!(reader.get(digest, ByteRange::FULL, 64));
+    replica.wait_for_read(read.as_mut()).await?;
     replica.catch_up().await?;
-    assert_eq!(read.await??.body().as_ref(), b"late");
+    assert_eq!(read.await?.body().as_ref(), b"late");
     Ok(())
 }
 
