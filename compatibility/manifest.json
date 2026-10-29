@@ -43,8 +43,8 @@
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:b9f77aab863c6c93f5fbf152187a27f184b2b8da2dad81154f930c2f479a42b2",
-      "descriptorDigest": "sha256:a76516c65f2f7e73e63579957823d3b535f349cba1f72fe07447149f2b5628f1",
+      "schemaDigest": "sha256:d24efae78a5d143bf829b864d43b605ed903c942f2a9525fcc2c5a114ccc852d",
+      "descriptorDigest": "sha256:e736a451b33098858b0a9ee41992ebfd79dd1b13102792fe65e4ded34abc7b05",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {
