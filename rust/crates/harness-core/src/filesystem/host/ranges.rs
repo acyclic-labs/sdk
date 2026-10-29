@@ -111,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             original
         } else {
-            super::authentication::authenticate(selected, reference, &path, io).await?;
+            super::authentication::authenticate(selected, reference, &path, io, None).await?;
             selected.clone()
         };
         let chunk = io.sdk(
