@@ -54,16 +54,22 @@ impl<'a> InstructionSource<'a> {
             .ok_or_else(|| Error::Invalid("project instruction size overflows".into()))
     }
 
-    /// Reserves the entire frame before any body read or allocation.
-    pub fn reserve(self, remaining: &mut u64, io: Option<&ContentIo>) -> Result<u64> {
-        *remaining = remaining.checked_sub(self.framed_bytes()?).ok_or_else(|| {
-            crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "project instructions exceed render bound",
-            )
-        })?;
+    /// Reserves the entire frame before any body read or allocation, returning its body length.
+    /// None admits the complete frame without a byte-policy ceiling.
+    pub fn reserve(self, remaining: &mut Option<u64>, io: Option<&ContentIo>) -> Result<u64> {
+        self.reserve_frame(remaining, io)?;
         Ok(self.file.descriptor().byte_length())
+    }
+
+    fn reserve_frame(self, remaining: &mut Option<u64>, io: Option<&ContentIo>) -> Result<u64> {
+        let bytes = self.framed_bytes()?;
+        reserve_bytes(
+            remaining,
+            bytes,
+            io,
+            "project instructions exceed render bound",
+        )?;
+        Ok(bytes)
     }
 
     /// Frames already authenticated UTF-8 bytes, preserving them verbatim.
@@ -122,20 +128,43 @@ impl<'a> InstructionSource<'a> {
     }
 }
 
+fn reserve_bytes(
+    remaining: &mut Option<u64>,
+    bytes: u64,
+    io: Option<&ContentIo>,
+    reason: &'static str,
+) -> Result<()> {
+    if let Some(remaining) = remaining {
+        *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
+            crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid, reason)
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) fn reserve_instruction_bodies(
     messages: &[ModelMessage],
-    remaining: &mut u64,
+    remaining: &mut Option<u64>,
     io: Option<&PreparationIo>,
-) -> Result<()> {
+) -> Result<u64> {
+    let mut total = 0u64;
     for (file, policy) in messages
         .iter()
         .flat_map(|message| message.content.file_parts())
     {
         if let FileProjectionPolicy::ProjectInstructions(source) = policy {
-            InstructionSource::with_identity(file, source).reserve(remaining, io)?;
+            let bytes =
+                InstructionSource::with_identity(file, source).reserve_frame(remaining, io)?;
+            total = total.checked_add(bytes).ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "project instruction total overflows",
+                )
+            })?;
         }
     }
-    Ok(())
+    Ok(total)
 }
 
 pub(crate) fn project_instruction(
@@ -169,12 +198,17 @@ pub(crate) fn project_instruction(
 
 // Both discovery entrypoints call this preflight before cloning any instruction.
 impl super::instruction_sources::InstructionSources<'_> {
-    pub(crate) fn reservation(&self, maximum: u64, io: Option<&PreparationIo>) -> Result<u64> {
+    pub(crate) fn reservation(
+        &self,
+        maximum: Option<u64>,
+        io: Option<&PreparationIo>,
+    ) -> Result<u64> {
         let mut remaining = maximum;
+        let mut total = 0u64;
         for file in self.iter(io) {
             let file = file?;
             let metadata = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&**file, Some(remaining), work)
+                crate::executor::json::json_byte_length(&**file, remaining, work)
             })?;
             let overhead =
             r#"{"role":"user","content":{"kind":"file","file":,"policy":{"project_instructions":}}}"#
@@ -192,24 +226,27 @@ impl super::instruction_sources::InstructionSources<'_> {
                         volume: source.volume,
                         path: source.path,
                     },
-                    Some(remaining),
+                    remaining,
                     work,
                 )
             })?;
-            remaining = remaining
-                .checked_sub(identity_bytes)
-                .and_then(|size| size.checked_sub(metadata))
-                .and_then(|size| size.checked_sub(overhead))
-                .ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "instruction metadata exceeds render bound",
-                    )
-                })?;
-            file.source().reserve(&mut remaining, io)?;
+            let metadata = identity_bytes
+                .checked_add(metadata)
+                .and_then(|size| size.checked_add(overhead))
+                .ok_or_else(super::inventory::overflow)?;
+            reserve_bytes(
+                &mut remaining,
+                metadata,
+                io,
+                "instruction metadata exceeds render bound",
+            )?;
+            let frame = file.source().reserve_frame(&mut remaining, io)?;
+            total = total
+                .checked_add(metadata)
+                .and_then(|size| size.checked_add(frame))
+                .ok_or_else(super::inventory::overflow)?;
         }
-        Ok(maximum - remaining)
+        Ok(total)
     }
 }
 
@@ -272,7 +309,7 @@ mod tests {
         (messages, total)
     }
     // Deliberately restore the reviewed top-level-only traversal.
-    fn top_level_only(messages: &[ModelMessage], remaining: &mut u64) -> Result<()> {
+    fn top_level_only(messages: &[ModelMessage], remaining: &mut Option<u64>) -> Result<()> {
         for part in messages.iter().flat_map(|message| message.content.parts()) {
             if let ModelContentPart::File {
                 file,
@@ -290,14 +327,14 @@ mod tests {
         fn aggregate_budget_covers_direct_and_nested_instruction_files(left in 1usize..7000,right in 1usize..7000) {
             for nested in [[false,false],[true,true],[false,true],[true,false]] {
                 let (messages,total)=fixture([left,right],nested);
-                for budget in [0,total-1,total,total+1] {
+                for budget in [None,Some(0),Some(total-1),Some(total),Some(total+1)] {
                     let mut remaining=budget;
                     let result=reserve_instruction_bodies(&messages,&mut remaining,None);
-                    prop_assert_eq!(result.is_ok(),budget>=total);
-                    if result.is_ok() {prop_assert_eq!(remaining,budget-total);}
+                    prop_assert_eq!(result.is_ok(),budget.is_none_or(|budget| budget>=total));
+                    if let Ok(bytes)=result {prop_assert_eq!(remaining,budget.map(|budget|budget-total));prop_assert_eq!(bytes,total);}
                 }
                 if nested.iter().any(|nested|*nested) {
-                    let mut remaining=total-1;
+                    let mut remaining=Some(total-1);
                     prop_assert!(top_level_only(&messages,&mut remaining).is_ok(),"top-level-only negative must miss the nested aggregate");
                 }
             }
@@ -320,7 +357,7 @@ mod tests {
             }],
             max_output_tokens: Some(32),
         };
-        assert!(top_level_only(&request.messages, &mut 10_000).is_ok());
+        assert!(top_level_only(&request.messages, &mut Some(10_000)).is_ok());
         PreparedModelRequest::prepare(request.clone(), Limits::default(), None).unwrap();
         let Err(error) = PreparedModelRequest::prepare(
             request,
