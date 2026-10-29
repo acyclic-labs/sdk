@@ -110,7 +110,10 @@ async fn collect_review(
         }
         match event? {
             ModelEvent::Content { delta } if !authoritative => {
-                if text.len().saturating_add(delta.len()) as u64 > limits.render_bytes {
+                if limits
+                    .render_bytes
+                    .is_some_and(|maximum| text.len().saturating_add(delta.len()) as u64 > maximum)
+                {
                     return Err(Error::Invalid(
                         "approver response exceeds render bound".into(),
                     ));
@@ -118,7 +121,10 @@ async fn collect_review(
                 text.push_str(&delta);
             }
             ModelEvent::MessageCompleted { text: final_text } => {
-                if final_text.len() as u64 > limits.render_bytes {
+                if limits
+                    .render_bytes
+                    .is_some_and(|maximum| final_text.len() as u64 > maximum)
+                {
                     return Err(Error::Invalid(
                         "approver response exceeds render bound".into(),
                     ));
@@ -186,7 +192,7 @@ mod tests {
             run(
                 Some(final_text),
                 Limits {
-                    render_bytes: streamed.len() as u64,
+                    render_bytes: Some(streamed.len() as u64),
                     ..Limits::default()
                 }
             )

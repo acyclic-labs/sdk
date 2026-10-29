@@ -288,7 +288,7 @@ impl DurableContextProvider {
         }
         let revision: StoredContextRevision = decode_context_json(
             bytes,
-            MAX_RECORD_BYTES as u64,
+            Some(MAX_RECORD_BYTES as u64),
             io,
             "durable context identity, revision or canonical bytes are invalid",
         )?;
@@ -308,7 +308,9 @@ impl DurableContextProvider {
         }
         crate::executor::with_history_io(io, |work| limits.validate_file(&revision.context, work))?;
         if revision.context.descriptor().media_type() != "application/json"
-            || revision.context.descriptor().byte_length() > limits.render_bytes
+            || limits
+                .render_bytes
+                .is_some_and(|maximum| revision.context.descriptor().byte_length() > maximum)
         {
             return Err(invalid("context payload descriptor is invalid"));
         }
@@ -574,7 +576,7 @@ fn context_stream_error(
 
 fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(
     bytes: &[u8],
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&crate::executor::PreparationIo>,
     reason: &'static str,
 ) -> Result<T> {
@@ -591,7 +593,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
     let canonical = match io {
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let encoded = io.encode(&value, Some(maximum), true)?;
+            let encoded = io.encode(&value, maximum, true)?;
             let _hold = io.guard_bytes(&encoded)?;
             encoded.as_ref() == bytes
         }
