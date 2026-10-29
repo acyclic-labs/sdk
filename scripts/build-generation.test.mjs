@@ -96,10 +96,8 @@ test("native source roots cover the generators' transitive script imports", () =
   // Node's module parser enumerates static imports without executing generators.
   execFileSync("node", ["--experimental-vm-modules", "--input-type=module", "-e", String.raw`
     import assert from "node:assert/strict";
-    import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-    import { join, posix, relative, resolve, isAbsolute } from "node:path";
-import { packageClosure } from "./package-closure.mjs";
+    import { readFileSync } from "node:fs";
+    import { posix } from "node:path";
     import { SourceTextModule, runInNewContext } from "node:vm";
     import { packageClosure } from "./scripts/package-closure.mjs";
 

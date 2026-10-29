@@ -1875,3 +1875,8 @@ Native and Windows all-target checks stop at the same four wired agent-model fix
 Machines WASM generation stopped before compiling because package discovery assumed every workspace directory had a manifest. Shared discovery now follows actual manifests; generated residue does not become a package. Explicitly selected/referenced missing packages and malformed manifests still refuse. A real filesystem dependency closure exercises all three cases, alongside the existing graph generators. No retired package or alternate producer is restored. Current-source qualification remains pending.
 
 The release traversal review's P2 remains a follow-up: incremental DFS retains a directory handle per depth and can exhaust actual descriptor capacity. Complete arbitrary-depth traversal with bounded handles remains open; the earlier first-yield/control measurements do not establish that guarantee.
+
+
+## Script qualification340
+
+The complete package-generation/grouping test files run23 controls:21 pass,2 fail, none skipped/cancelled/todo. The new real-filesystem manifest/dependency/refusal control and graph generators pass. One failure comes from an accidental import edit inside an embedded test program; the other is a stale expected WASM closure omitting the newly required Auth dependency. Both fixture errors are corrected while retaining exact dependency ordering, exclusive grouped targets and all generation-failure/child-join negatives. The command stops before any native/WASM/Windows compiler or filesystem runtime; none is claimed.
