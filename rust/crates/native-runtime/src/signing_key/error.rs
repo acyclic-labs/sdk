@@ -15,6 +15,8 @@ pub enum CustodyCause {
     AccessDenied(Option<i64>),
     /// The OS cryptographic provider is unavailable.
     CryptoUnavailable(i64),
+    /// The OS reports insufficient resources for the selected store operation.
+    ResourceExhausted(i64),
     /// An exact OS status outside the named categories.
     NativeStatus(i64),
     /// Non-secret backend detail when no numeric status is exposed.
@@ -77,6 +79,7 @@ fn native(source: &(dyn Error + Send + Sync + 'static)) -> CustodyCause {
     if let Some(error) = source.downcast_ref::<keyring::windows::Error>() {
         return match error.0 {
             5 => CustodyCause::AccessDenied(Some(error.0.into())),
+            8 | 14 => CustodyCause::ResourceExhausted(error.0.into()),
             1312 => CustodyCause::NoUserSession(error.0.into()),
             50 | 120 | 0x8009_000b | 0x8009_0016 | 0x8009_0020 | 0x8009_0030 => {
                 CustodyCause::CryptoUnavailable(error.0.into())
