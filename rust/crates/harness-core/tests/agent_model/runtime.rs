@@ -150,6 +150,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
 async fn conversation_follow_waits_on_actual_status_publication_and_preserves_refusals() -> Result {
     use acyclic_stream::{
         CommitMutation, CommitOutcome, CommitRequest, FollowRequest, StreamError, StreamProvider,
+        StreamProviderExt,
     };
     use futures::TryStreamExt;
 
@@ -195,6 +196,7 @@ async fn conversation_follow_waits_on_actual_status_publication_and_preserves_re
             from: user(),
             id: intent("message"),
             body: Box::new(super::driver::file("input")?),
+            attachments: None,
         },
         output: super::driver::file("output")?,
     }
