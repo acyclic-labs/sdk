@@ -5,7 +5,7 @@ pub struct FilesystemContentVerifier<A: 'static, O: 'static> {
     pub(in crate::filesystem) host: Arc<FilesystemHost<A, O>>,
     pub(in crate::filesystem) authority: Arc<crate::core::VerifiedScope>,
     pub(in crate::filesystem) exact_file: Option<FileRef>,
-    pub(in crate::filesystem) maximum_bytes: u64,
+    pub(in crate::filesystem) maximum_bytes: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_metadata: Option<Arc<acyclic_fs::NativeAllocation>>,
 }
@@ -35,10 +35,11 @@ impl<A, O> FilesystemContentVerifier<A, O> {
         host: Arc<FilesystemHost<A, O>>,
         verifier: &AuthorityVerifier,
         scope: &Scope,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
-        if maximum_bytes == 0 {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes == Some(0) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
@@ -131,7 +132,9 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(Some(reference), io)?;
-            if reference.descriptor().byte_length() > self.maximum_bytes
+            if self
+                .maximum_bytes
+                .is_some_and(|maximum| reference.descriptor().byte_length() > maximum)
                 || range
                     .offset
                     .checked_add(range.length)
@@ -157,7 +160,7 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    self.maximum_bytes,
+                    reference.descriptor().byte_length(),
                     self.exact_file.is_some(),
                     ceiling,
                     authority_io,
@@ -209,7 +212,8 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    maximum_bytes.min(self.maximum_bytes),
+                    self.maximum_bytes
+                        .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
                     self.exact_file.is_some(),
                     None,
                     io,
@@ -236,7 +240,11 @@ where
 
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(None, io)?;
-            if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+            if maximum_bytes == 0
+                || self
+                    .maximum_bytes
+                    .is_some_and(|maximum| maximum_bytes > maximum)
+            {
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
@@ -390,7 +398,8 @@ where
                     &grant,
                     path,
                     expected_generation,
-                    maximum_bytes.min(self.maximum_bytes),
+                    self.maximum_bytes
+                        .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
                     crate::conversation::ContentAccess { ceiling, io },
                 )
                 .await?;
@@ -451,7 +460,8 @@ where
             .read_file_with_access(
                 self.authority.scope(),
                 reference,
-                maximum_bytes.min(self.maximum_bytes),
+                self.maximum_bytes
+                    .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum)),
                 self.exact_file.is_some(),
                 ceiling,
                 authority_io,
