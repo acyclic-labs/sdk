@@ -147,10 +147,18 @@ async fn shell_preparation_keeps_explicit_environment_and_excludes_ambient_value
         );
         let executable =
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
+        let tools = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let tool = tools.path().join("acyclic-approved-tool");
+        std::fs::write(&tool, b"#!/bin/sh\nprintf 'custom-tool\\n'\n")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700))
+            .map_err(|error| Error::Storage(error.to_string()))?;
         let output = std::process::Command::new(executable)
             .args([name.as_str(), "--exact", "--nocapture"])
             .env(CHILD, "child")
             .env(SENTINEL, "harmless-fixture")
+            .env("PATH", tools.path())
             .env_remove(APPROVED)
             .env_remove("BASH_ENV")
             .output()
@@ -175,13 +183,14 @@ async fn shell_preparation_keeps_explicit_environment_and_excludes_ambient_value
         // Report presence only; even this harmless sentinel's value is never
         // returned. The ordinary value is selected explicitly for this launch.
         command: format!(
-            "if test \"${{{SENTINEL}+x}}\" = x; then printf 'ambient-present\n'; else printf 'ambient-absent\n'; fi; printf '%s\n' \"${APPROVED}\"; test \"$ACYCLIC_VOLUME_DATA_MODE\" = rw"
+            "if test \"${{{SENTINEL}+x}}\" = x; then printf 'ambient-present\n'; else printf 'ambient-absent\n'; fi; printf '%s\n' \"${APPROVED}\"; acyclic-approved-tool; test \"$ACYCLIC_VOLUME_DATA_MODE\" = rw"
         ),
         cwd: None,
         timeout: Some(5),
     };
     let explicit = || {
         let mut value = invocation(&mounts.root);
+        value.environment = crate::native_environment::tool_environment().unwrap();
         value.environment.insert(APPROVED.into(), "selected".into());
         value
     };
@@ -192,7 +201,7 @@ async fn shell_preparation_keeps_explicit_environment_and_excludes_ambient_value
             .await?
             .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
         assert!(output.success);
-        assert_eq!(output.stdout, b"ambient-absent\nselected\n");
+        assert_eq!(output.stdout, b"ambient-absent\nselected\ncustom-tool\n");
     }
 
     // Selective former-order negative: discard explicit values and reopen
@@ -204,7 +213,17 @@ async fn shell_preparation_keeps_explicit_environment_and_excludes_ambient_value
         .await?
         .0
         .ok_or_else(|| Error::Storage("negative capture was indeterminate".into()))?;
-    assert_eq!(output.stdout, b"ambient-present\n\n");
+    assert_eq!(output.stdout, b"ambient-present\n\ncustom-tool\n");
+
+    // Removing the approved PATH reproduces the broken production caller:
+    // the shell's default search cannot locate this real owner-installed tool.
+    let mut missing_path = prepare(input.clone(), &mounts, explicit(), 1)?;
+    missing_path.environment.remove("PATH");
+    let output = capture::capture_with_custody(missing_path, |(), _| Ok(()), || Ok(()), (), None)
+        .await?
+        .0
+        .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
+    assert_eq!(output.stdout, b"ambient-absent\nselected\n");
 
     let mut collision = explicit();
     collision
