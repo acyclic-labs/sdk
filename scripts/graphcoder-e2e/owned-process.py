@@ -136,6 +136,15 @@ def main():
         except BaseException as error:
             print(f"acceptance command could not start: {error}", file=sys.stderr, flush=True)
             os._exit(127)
+    # A report request leaves the original tree owner and its physical drain
+    # intact. EOF on control stdin remains the force-retirement operation.
+    def report_request(_signal, _frame):
+        try:
+            os.kill(root, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+    signal.signal(signal.SIGTERM, report_request)
     cancelled = True
     try:
         try:

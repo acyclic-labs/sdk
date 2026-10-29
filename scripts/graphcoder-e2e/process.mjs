@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
+import { stripVTControlCharacters } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import assert from "node:assert/strict";
 import { isAbsolute } from "node:path";
@@ -129,6 +130,6 @@ export class Events {
 }
 
 export function waitDetails(stderr) {
-  return Array.from(stderr.matchAll(/^waiting: (\S+) (\S+) since (\d+) \(.*\)$/gm),
+  return Array.from(stripVTControlCharacters(stderr).matchAll(/^waiting: (\S+) (\S+) since (\d+(?:\.\d+)?) \(.*\)\r?$/gm),
     match => ({ primitive: match[1], key: match[2], since: Number(match[3]) }));
 }
