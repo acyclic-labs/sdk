@@ -217,6 +217,9 @@ fn validate_environment<'a>(
             p,
             "binding-name",
         )?;
+        if binding.is_actor_state() {
+            continue;
+        }
         let grant = grants
             .get(binding.capability())
             .ok_or_else(|| ManifestError::invalid(p, "unknown-binding-grant"))?;

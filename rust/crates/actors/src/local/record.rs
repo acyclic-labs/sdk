@@ -9,9 +9,14 @@ use std::collections::BTreeMap;
 
 /// Framing bytes one record adds beyond its variable fields, at most: tags,
 /// lengths and the fixed integers and flags.
-pub const STATE_RECORD_OVERHEAD: usize = 96;
+pub const STATE_RECORD_OVERHEAD: usize = 96 + STATE_FORMAT_V1.len();
+// The first byte has forbidden protobuf wire type 7: an older unversioned
+// decoder MUST fail rather than discard metadata and subsequently rewrite it.
+const STATE_FORMAT_V1: &[u8] = b"\xffAST\x01";
 /// Framing bytes each subscription adds beyond its id and path, at most.
 pub const SUBSCRIPTION_OVERHEAD: usize = 32;
+/// Framing bytes each metadata entry adds beyond its key and value, at most.
+pub const METADATA_OVERHEAD: usize = 32;
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Record {
@@ -29,6 +34,10 @@ struct Record {
     alarm_delivered_generation: Option<u64>,
     #[prost(bool, tag = "7")]
     paused: bool,
+    #[prost(btree_map = "string, bytes", tag = "8")]
+    metadata: BTreeMap<String, Vec<u8>>,
+    #[prost(uint64, tag = "9")]
+    journal_tail: u64,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -53,7 +62,7 @@ impl State {
     /// This state as its durable record.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        Record {
+        let payload = Record {
             epoch: self.epoch,
             checkpoint: self.checkpoint.as_ref().map(|checkpoint| CheckpointRecord {
                 codec: checkpoint.codec.name.clone(),
@@ -77,12 +86,24 @@ impl State {
             alarm_deadline_unix_ms: self.alarm.deadline_unix_ms,
             alarm_delivered_generation: self.alarm.delivered_generation,
             paused: self.paused,
-        }
-        .encode_to_vec()
+            metadata: self
+                .metadata
+                .iter()
+                .map(|(key, value)| (key.clone(), value.to_vec()))
+                .collect(),
+            journal_tail: self.journal_tail,
+        };
+        let mut record = Vec::with_capacity(STATE_FORMAT_V1.len() + payload.encoded_len());
+        record.extend_from_slice(STATE_FORMAT_V1);
+        payload.encode_raw(&mut record);
+        record
     }
 
     /// The state a durable record holds.
     pub fn decode(record: &[u8]) -> Result<Self, Error> {
+        let record = record
+            .strip_prefix(STATE_FORMAT_V1)
+            .ok_or(Error::Invalid("unsupported actor state format"))?;
         let record =
             Record::decode(record).map_err(|_| Error::Invalid("malformed actor state record"))?;
         let mut subscriptions = BTreeMap::new();
@@ -113,15 +134,26 @@ impl State {
                 delivered_generation: record.alarm_delivered_generation,
             },
             paused: record.paused,
+            metadata: record
+                .metadata
+                .into_iter()
+                .map(|(key, value)| (key, value.into()))
+                .collect(),
+            journal_tail: record.journal_tail,
         })
     }
 
     /// The largest record a state with these variable parts encodes to:
     /// `checkpoint` codec, version and artifact bytes, and each subscription's
-    /// id and path. Every state record is at most this.
+    /// id and path, and metadata key/value bytes including METADATA_OVERHEAD
+    /// for each entry. Every state record is at most this.
     #[must_use]
-    pub const fn record_bound(checkpoint_bytes: usize, subscription_bytes: usize) -> usize {
-        STATE_RECORD_OVERHEAD + checkpoint_bytes + subscription_bytes
+    pub const fn record_bound(
+        checkpoint_bytes: usize,
+        subscription_bytes: usize,
+        metadata_bytes: usize,
+    ) -> usize {
+        STATE_RECORD_OVERHEAD + checkpoint_bytes + subscription_bytes + metadata_bytes
     }
 }
 
@@ -134,6 +166,8 @@ mod tests {
         let path = StreamPath::new("harness/agents/a/inbox").expect("path");
         let bytes = bytes::Bytes::from(vec![0xff; 10_000]);
         let state = State {
+            metadata: BTreeMap::from([("durable".into(), bytes::Bytes::from_static(b"value"))]),
+            journal_tail: u64::MAX,
             epoch: u64::MAX,
             checkpoint: Some(Checkpoint {
                 codec: CodecIdentity {
@@ -158,9 +192,20 @@ mod tests {
         };
         let record = state.encode();
         assert_eq!(State::decode(&record).expect("decodes"), state);
+        // Neither an old writer ignoring new fields nor an unversioned input
+        // can silently replace this actor's committed metadata and journal cut.
+        assert!(Record::decode(record.as_slice()).is_err());
+        assert!(State::decode(&record[STATE_FORMAT_V1.len()..]).is_err());
         let variable = "acyclic.harness.agent".len() + "1".len() + bytes.len();
         let subscription = "inbox".len() + path.as_str().len() + SUBSCRIPTION_OVERHEAD;
-        assert!(record.len() <= State::record_bound(variable, subscription));
+        assert!(
+            record.len()
+                <= State::record_bound(
+                    variable,
+                    subscription,
+                    "durable".len() + "value".len() + METADATA_OVERHEAD
+                )
+        );
         // Raw: the record is the artifact bytes plus framing, not ~3.8x them.
         assert!(record.len() < bytes.len() + 200);
     }

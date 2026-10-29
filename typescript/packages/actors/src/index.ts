@@ -11,3 +11,4 @@ export * from "./namespace.js";
 export * from "./durable.js";
 
 export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody, type Fetch } from "./binding-fetch.js";
+export { materializeActorState, type ActorStateHost, type ActorStateBinding, type ActorStateTransaction } from "./state-binding.js";
