@@ -1,5 +1,5 @@
 /** One race: fork N ways, run a worker per fork, probe, let Jev judge, keep the winner. */
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./generated/process-capture.mjs";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Fork, Change } from "./acyclic.js";
@@ -40,7 +40,7 @@ const LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const SAME = "no meaningful difference";
 
 function unifiedDiff(base: string, fork: string, rel: string, maxChars?: number): string {
-  const p = spawnSync("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
+  const p = captureCommand("diff", ["-u", "--label", `a/${rel}`, "--label", `b/${rel}`, join(base, rel), join(fork, rel)], { encoding: "utf8" });
   let out = p.stdout || "";
   if (!out && p.status !== 0 && p.stderr) {
     try { out = "+++ b/" + rel + "\n" + readFileSync(join(fork, rel), "utf8").split("\n").map((l) => "+" + l).join("\n"); } catch { out = ""; }
@@ -111,7 +111,7 @@ export async function race(forker: Forker, jev: Jev, log: Log, opts: RaceOptions
         probe = "(no changes in this fork; tests not run)";
         say(`probe ${f.label}: skipped, no changes`);
       } else if (opts.testCommand) {
-        const p = spawnSync("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: opts.testTimeoutMs });
+        const p = captureCommand("sh", ["-c", opts.testCommand], { cwd: f.path, encoding: "utf8", timeout: opts.testTimeoutMs });
         probeOk = p.status === 0;
         probe = ((p.stdout || "") + (p.stderr || "")).trim();
         say(`probe ${f.label}: ${probeOk ? "pass" : "fail"}`);

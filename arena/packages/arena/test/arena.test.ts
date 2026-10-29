@@ -54,7 +54,7 @@ test("router maps Jev answers to tiers and fan-out", async () => {
 test("rendered state keeps every changed file and complete diff unless excerpts are selected", () => {
   const base = mkdtempSync(join(tmpdir(), "base-")); const fork = mkdtempSync(join(tmpdir(), "fork-"));
   try {
-    const tail = "x".repeat(2001) + "complete-diff-tail";
+    const tail = "x".repeat(2 * 1024 * 1024) + "complete-diff-tail";
     writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n");
     writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n# " + tail + "\n");
     const changes = [{ status: "M", path: "a.py" }];
@@ -105,20 +105,21 @@ test("git worktree forker: fork, diff, promote, drop, without acyclic", () => {
   execSync("git init -q -b main && git -c user.email=a@b -c user.name=t commit -q --allow-empty -m init", { cwd: repo });
   writeFileSync(join(repo, "a.txt"), "one\n");
   execSync("git add a.txt && git -c user.email=a@b -c user.name=t commit -q -m a", { cwd: repo });
-  writeFileSync(join(repo, "a.txt"), "one\ntwo\n");           // uncommitted change must reach the fork
+  const dirty = "one\ntwo\n" + "x".repeat(2 * 1024 * 1024) + "\n";
+  writeFileSync(join(repo, "a.txt"), dirty);                  // the complete uncommitted change must reach the fork
   writeFileSync(join(repo, "arena.jsonl"), "{}\n");                 // the log must never enter a fork
   const fk = new GitForker(repo);
   const [A, B] = fk.fork(2);
   assert.equal(existsSync(join(A!.path, "arena.jsonl")), false);
   writeFileSync(join(repo, "arena.jsonl"), "{}\n{}\n");             // and base-side growth is never a fork change
-  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), "one\ntwo\n");
+  assert.equal(readFileSync(join(A!.path, "a.txt"), "utf8"), dirty);
   writeFileSync(join(A!.path, "b.txt"), "hello\n");
-  writeFileSync(join(A!.path, "a.txt"), "one\ntwo\nthree\n");
+  writeFileSync(join(A!.path, "a.txt"), dirty + "three\n");
   assert.deepEqual(fk.diff(A!).map((c) => `${c.status} ${c.path}`).sort(), ["A b.txt", "M a.txt"]);
   assert.deepEqual(fk.diff(B!), []);
   const out = fk.promote(A!); assert.match(out, /synced 2 file/);
   assert.equal(readFileSync(join(repo, "b.txt"), "utf8"), "hello\n");
-  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), "one\ntwo\nthree\n");
+  assert.equal(readFileSync(join(repo, "a.txt"), "utf8"), dirty + "three\n");
   fk.drop(A!); fk.drop(B!);
   assert.equal(execSync("git worktree list", { cwd: repo, encoding: "utf8" }).trim().split("\n").length, 1);
 });

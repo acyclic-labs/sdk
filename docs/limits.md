@@ -1928,7 +1928,7 @@ The shared FixedIndex insertion now returns the prepared leaf through its owned 
 | Acyclic/git subprocess timeout120000ms | `arena/packages/arena/src/acyclic.ts:16`, `arena/packages/arena/src/forks.ts:36` | 1 | DELETE hidden command deadlines. These commands await their actual exit; explicit worker/test deadlines remain separate caller policy. |
 | maxFiles default12, maxDiffChars default1500 | `arena/packages/arena/src/arena.ts:132` | 1, optional caller excerpt policy | DELETE defaults. Omitted options select all changed paths and complete diffs. Explicit finite excerpts retain omission markers. |
 | Test output last12 lines; worker error last3 lines/400chars; state error200chars; git error300chars | `arena/packages/arena/src/arena.ts:69`, `arena/packages/arena/src/arena.ts:116`, `arena/packages/arena/src/opencode.ts:67`, `arena/packages/arena/src/opencode.ts:77`, `arena/packages/arena/src/forks.ts:38` | 1 | DELETE default omission so the original outputs reach reports and state. |
-| Synchronous subprocess default pipe maxBuffer | `arena/packages/arena/src/arena.ts:43`, `arena/packages/arena/src/forks.ts:36`, `arena/packages/arena/src/acyclic.ts:16` | 1 | OPEN: migrate complete output to the one general credited/file-backed capture mechanism. Removing excerpts does not remove this lower whole-buffer refusal. |
+| Synchronous subprocess default pipe maxBuffer | `arena/packages/arena/src/arena.ts:43`, `arena/packages/arena/src/forks.ts:36`, `arena/packages/arena/src/acyclic.ts:16` | 1 | DELETE via the canonical shared file-backed capture projection shipped in the standalone package; compilation, package isolation and boundary qualification pending. Whole-result residency remains explicit. |
 
 These changes do not establish bounded whole-state residency or inference context paging. The model context remains physical; complete context handling still needs the shared inference owner. No performance claim or whole Arena unbounded claim is made. Source/test compilation and the existing real diff/fork controls remain required.
 
@@ -2016,3 +2016,12 @@ The remaining local journal append-counter poll now waits on the existing public
 |---|---|---|---|
 | Objects replica test `settle` | `rust/crates/objects/src/grpc_tests.rs:287` | Readiness delay | OPEN: replace the50ms sleep with actual verification/replica wait registration; preserve the stale-view and exact authority/deadline negatives. |
 | Stream follow three-EOF terminal count | `rust/crates/stream/src/session/interest.rs:503` | 1 | OPEN: replace the implicit recovery-attempt total with the original cancellation/user policy and transient transport backoff. Preserve one operation identity, finite-read snapshot and terminal refusal controls; Streams owner retains the shared mechanism. |
+
+
+## Arena standalone subprocess capture
+
+| Limit | File:line | Category | Action |
+| --- | --- | --- | --- |
+| Node synchronous pipe maxBuffer on complete diff, git/status/apply, CLI and probe output | `arena/packages/arena/src/{arena,forks,acyclic,opencode}.ts` | 1 arbitrary aggregate output refusal | DELETE the pipe-buffer admission by using the existing shared file-backed capture primitive. The canonical module is projected at build time and ships inside the standalone package, including generated declarations; there is one implementation. |
+
+Arena build and test generation now project the canonical `scripts/process-capture.mjs` into their normal TypeScript outputs. All synchronous output carriers use that same primitive; explicit caller deadlines, failure status and diagnostics remain. Existing real diff and dirty-worktree fork/promotion controls cross the former default buffer with complete2MiB payloads. Full output still becomes the caller-requested string after process exit; this is no streaming-result or bounded-RSS claim. Current-source compilation, full Arena controls, published-package isolation and the former-buffer negative control remain pending.
