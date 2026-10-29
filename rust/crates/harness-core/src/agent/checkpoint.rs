@@ -492,6 +492,7 @@ mod tests {
         let record = State::record_bound(
             codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
             INBOX.len() + inbox.as_str().len() + SUBSCRIPTION_OVERHEAD,
+            0,
         );
         assert!(
             record <= acyclic_stream::MAX_RECORD_BYTES,
