@@ -118,6 +118,85 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     Ok(())
 }
 
+/// The model's real channel owns progress; dropping it must close the same
+/// Session that carries the local commands and follows, retaining queued input.
+#[tokio::test]
+async fn lost_model_producer_closes_local_session_without_settling_input() -> Result<()> {
+    use crate::model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest};
+    use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
+    use futures::StreamExt as _;
+    use std::sync::Mutex;
+    use tokio::sync::oneshot;
+
+    struct ClosingModel {
+        counts: Arc<ScriptedModelProvider>,
+        gate: Mutex<Option<(oneshot::Sender<()>, oneshot::Receiver<()>)>>,
+    }
+    impl ModelProvider for ClosingModel {
+        fn context_capacity(&self, model: &Model) -> Result<crate::context::ModelContextCapacity> {
+            self.counts.context_capacity(model)
+        }
+        fn count_tokens<'a>(
+            &'a self,
+            request: &'a PreparedModelRequest,
+        ) -> BoxProviderFuture<'a, Result<crate::context::ModelTokenCount>> {
+            self.counts.count_tokens(request)
+        }
+        fn generate<'a>(
+            &'a self,
+            _: &'a PreparedModelRequest,
+            _: ModelDispatch,
+        ) -> BoxProviderStream<'a, Result<ModelEvent>> {
+            let gate = self.gate.lock().unwrap().take();
+            futures::stream::once(async move {
+                let (entered, result) =
+                    gate.ok_or_else(|| Error::Invalid("second dispatch".into()))?;
+                let _ = entered.send(());
+                result
+                    .await
+                    .map_err(|_| Error::Storage("model producer closed".into()))?;
+                Err(Error::Invalid("model gate unexpectedly released".into()))
+            })
+            .boxed()
+        }
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        let directory = tempfile::tempdir().map_err(agent)?;
+        let project = volume(directory.path()).await?;
+        let (entered, entering) = oneshot::channel();
+        let (producer, result) = oneshot::channel();
+        let harness = Arc::new(LocalHarness::open(
+            volume_config(directory.path(), project, Arc::new(ClosingModel {
+                counts: text(),
+                gate: Mutex::new(Some((entered, result))),
+            }))?.compaction(crate::context::CompactionPolicy::Disabled),
+        ).await?);
+        let client = conversation(&harness).await?;
+        let mut events = client.observe(0).await?;
+        let inbox = client.send("lost-producer", "hello").await?;
+        entering.await.map_err(agent)?;
+        let waiting = async {
+            loop {
+                match events.next().await? {
+                    super::super::Event::Turn(_) => return Err::<(), _>(Error::Conflict("unsettled model produced a turn".into())),
+                    super::super::Event::Status(_) | super::super::Event::Output => {}
+                }
+            }
+        };
+        tokio::pin!(waiting);
+        assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
+        drop(producer);
+        assert!(matches!(waiting.await, Err(Error::Storage(_))));
+        let hosted = harness.agents.get().unwrap();
+        assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
+        assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
+        assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
+        assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
+        Ok(())
+    }).await.map_err(|_| Error::Conflict("closed local runtime retained a Session wait".into()))?
+}
+
 /// The names directly under `path` on `volume`.
 async fn names(
     harness: &LocalHarness,
@@ -194,13 +273,16 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
+    let completion = harness.agents.get().unwrap().runtime.completion();
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    // A turn that fails for good commits its agent's failure, which
-    // settlement reports.
-    let entries = settled(&agents, &root).await.inspect_err(|_| {
+    let entries = tokio::select! {
+        result = settled(&agents, &root) => result,
+        failure = completion => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
+    };
+    let entries = entries.inspect_err(|_| {
         let _ = waits.report(&mut std::io::stderr());
     })?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
@@ -489,8 +571,8 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         }),
     );
     let harness = open(pending.clone()).await?;
-    let (agents, root) = harness.agents().await?;
-    let (agents, root) = (Arc::clone(agents), root.clone());
+    harness.agents().await?;
+    let completion = harness.agents.get().unwrap().runtime.completion();
     conversation(&harness)
         .await?
         .send("hooked", "hello")
@@ -500,7 +582,7 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         // agent settling before dispatch is that failure.
         tokio::select! {
             request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
-            settled = settled(&agents, &root) => Err(Error::Conflict(format!("hooked turn ended before model dispatch: {:?}", settled.map(|entries| entries.len())))),
+            failure = completion => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
         }
     })
     .await

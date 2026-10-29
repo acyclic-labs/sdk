@@ -38,7 +38,7 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 /// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
     server: Arc<LocalServer>,
-    run: tokio::task::JoinHandle<()>,
+    pub(super) runtime: crate::hosting::Runtime,
 }
 
 /// The local harness's agent tree, served as every host serves one.
@@ -55,12 +55,6 @@ impl Hosted {
 
     pub(super) const fn server(&self) -> &Arc<LocalServer> {
         &self.server
-    }
-}
-
-impl Drop for Hosted {
-    fn drop(&mut self) {
-        self.run.abort();
     }
 }
 
@@ -403,19 +397,8 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let runner = Arc::clone(&server);
-        // A delivery that fails here retries only an uncertain commit: a
-        // turn that fails for good commits its agent's failure, which every
-        // observer reads from the agent's status.
-        let run = tokio::spawn(async move {
-            let error = runner
-                .run(|actor, error| {
-                    tracing::warn!(?actor, %error, "agent delivery failed");
-                })
-                .await;
-            tracing::error!(%error, "agent runtime stopped");
-        });
-        Ok(Hosted { server, run })
+        let runtime = crate::hosting::Runtime::start(Arc::clone(&server));
+        Ok(Hosted { server, runtime })
     }
 }
 

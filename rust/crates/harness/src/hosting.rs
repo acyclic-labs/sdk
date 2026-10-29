@@ -25,6 +25,11 @@ pub use acyclic_harness_core::filesystem::{
     hosting::{Bound, Placement, Prepared, RootRequest, RootSubmission, Turns, VerifiedCaller},
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::Runtime;
+
 use crate::{
     agent::{
         AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,

@@ -175,7 +175,7 @@ impl LocalHarness {
             Some(Arc::new(changes)),
             server.clone(),
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
-            None,
+            Some(hosted.runtime.lifetime()),
         );
         Connection::bind(session, observation.credential, Some(Arc::clone(self))).await
     }

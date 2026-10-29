@@ -24,6 +24,16 @@ without announcing an endpoint. The endpoint owns its runtime:
 dropping the endpoint aborts execution, and a failed runtime ends serving instead
 of accepting work without a producer. TLS is required away from loopback.
 
+Native applications use `hosting::Runtime::start(server)` to own that loop.
+Both the local composition and `server::Actors` use this owner. Its `lifetime()`
+feeds the existing in-process Session engine, and `completion()` ends network
+serving. A failed delivery retains its original input for recovery and closes
+the application's sessions. A client connecting after failure also sees the
+closed lifetime. Local observers receive errors through the Session, without
+an additional per-agent failure channel. Native workspace tools, admitted
+filesystem authority, approval policy and root reopen remain in their original
+compositions; this runtime owner alone does not provide deployment admission.
+
 ## Public client qualification
 
 Provision a disposable served tree with a model capable of answering the task.

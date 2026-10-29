@@ -1,5 +1,6 @@
 //! Stock agent turns over the public Actors runtime and an injected placement.
 use super::{Composition, Hosted, Verifier};
+pub use crate::hosting::Runtime;
 use crate::{
     Error,
     agent::IntentId,
@@ -82,15 +83,6 @@ impl<P: AuthorityProvider + 'static, O: 'static> Actors<P, O> {
             execution,
             platform,
         }
-    }
-}
-
-/// Dropping the endpoint aborts its sole runtime. Aborting/dropping the runtime
-/// closes its completion producer, so serving and its clients cannot wait forever.
-pub struct Runtime(tokio::task::JoinHandle<()>);
-impl Drop for Runtime {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
 
@@ -223,31 +215,13 @@ fn started<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
         }
     };
     let changes = server.bound().changes().map_err(super::failed)?;
-    let (completed, completion) = tokio::sync::oneshot::channel();
-    let running = server.clone();
-    let runtime = Runtime(tokio::spawn(async move {
-        let (failed, failure) = tokio::sync::oneshot::channel();
-        let failed = std::sync::Mutex::new(Some(failed));
-        let error = tokio::select! {
-            error = running.run(|actor, error| {
-                tracing::error!(?actor, %error, "actor delivery failed");
-                if let Some(failed) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-                    let _ = failed.send(Error::Storage(error.to_string()));
-                }
-            }) => Error::Storage(error.to_string()),
-            error = failure => error.unwrap_or_else(|_| Error::Storage("Actors delivery producer closed".into())),
-        };
-        let _ = completed.send(error);
-    }));
+    let runtime = Runtime::start(server.clone());
+    let completion = runtime.completion();
     Ok(Hosted::new(
         server,
         Arc::new(acyclic_stream::SystemUnixMillisClock),
         runtime,
         Some(Arc::new(changes)),
     )
-    .with_completion(async move {
-        Err(completion
-            .await
-            .unwrap_or_else(|_| Error::Storage("Actors runtime completion producer closed".into())))
-    }))
+    .with_completion(completion))
 }
