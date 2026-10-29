@@ -114,11 +114,10 @@ async fn call(
     Ok(decode_agent_reply(&response.body, command)?)
 }
 
-#[tokio::test]
-async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Result {
+fn binding() -> Result<Bound<MemoryStream, LogicalObjectStore<acyclic_objects::MemoryObjects>>> {
     let stream = Arc::new(MemoryStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();
-    let bound = Bound::local_root(
+    Ok(Bound::local_root(
         AuthorityRoot::new(
             "agents",
             [7; 32],
@@ -147,7 +146,259 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             clock: Arc::new(SystemClock),
             approval_policy: Default::default(),
         },
+    )?)
+}
+
+#[tokio::test]
+async fn session_reads_committed_tool_output_without_local_storage_features() -> Result {
+    use crate::conversation::{ContentAccess, ContentPublisher};
+    use crate::filesystem::{FilesystemContentPublisher, agent_authority};
+    use acyclic_harness_client::{MAX_READ_BYTES, ReadTarget};
+    use acyclic_stream::wire as session_wire;
+    use futures::StreamExt as _;
+
+    let bound = binding()?;
+    let agent = AgentId::from_bytes([2; 16]);
+    let private = VolumeRef::new(
+        provider()?,
+        "output-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
+        &mut None,
     )?;
+    let Serving::Served(server) = serve(
+        bound,
+        Arc::new(Owner::default()),
+        &IntentId::try_from("output-root")?,
+        RootRequest {
+            agent,
+            fresh: vec![VolumeBinding {
+                name: PRIVATE_VOLUME.into(),
+                volume: private,
+            }],
+            retained: Vec::new(),
+            brief: None,
+            policy: None,
+        },
+    )
+    .await?
+    else {
+        return Err("root publication was uncertain".into());
+    };
+    let bound = server.bound();
+    let root = server.root();
+    let state = bound.agents().state(root).await?;
+    let authority =
+        agent_authority(bound.issuer(), bound.admission(), root, &state.volumes, &[]).await?;
+    let publisher = FilesystemContentPublisher::new(
+        bound.volumes().clone(),
+        &authority.private.volume,
+        &authority.verifier,
+        &authority.scope,
+        64 * 1024,
+        None,
+    )?;
+    let body: Vec<u8> = (0..MAX_READ_BYTES + 17).map(|index| index as u8).collect();
+    let path = "tools/turn/stdout";
+    let (file, _) = publisher
+        .stage_once(
+            OperationId::from_bytes([4; 16]),
+            path,
+            &body,
+            "application/octet-stream",
+            "stdout",
+            ContentAccess::default(),
+        )?
+        .await?;
+    // The effect precedes observation. Replay uses the original volume's
+    // retained change stream, rather than a disposable notification.
+    let resource = bound.tool_resource(root).await?;
+    let resource_credential = acyclic_auth::testing::root(|block| {
+        use acyclic_auth::contract::*;
+        let Some(key) = block
+            .certificates
+            .as_mut()
+            .and_then(|chain| chain.keys.first_mut())
+        else {
+            return;
+        };
+        key.key.grants = GrantSet {
+            grants: vec![Grant {
+                kind: GrantKind::Resource(ResourceGrant {
+                    resource: ResourcePattern {
+                        name: resource.clone(),
+                        prefix: true,
+                    },
+                    actions: vec!["fs/list".into()],
+                }),
+            }],
+        };
+    });
+    let connect = |resources| -> Result<Client> {
+        let client = Client::in_process_with_products(
+            bound.agents().provider().clone(),
+            acyclic_stream::session::testing::authority(),
+            resources,
+            server.clone(),
+            Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            None,
+        );
+        client.register_credential(0, credential(server.resource()))?;
+        client.register_credential(1, resource_credential.clone().into())?;
+        Ok(client)
+    };
+    let subscription = session_wire::SessionSubscription {
+        credential: 1,
+        resume: Some(session_wire::SessionCursor {
+            next: 0,
+            opaque: Default::default(),
+        }),
+        kind: Some(session_wire::session_subscription::Kind::Follow(
+            session_wire::SessionFollow {
+                resource: resource.clone(),
+                delivery: session_wire::SessionDelivery::All as i32,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+    let missing = connect(None)?;
+    assert!(matches!(
+        missing.subscribe(subscription.clone()).await,
+        Err(StreamError::Unsupported)
+    ));
+    let connected = connect(Some(Arc::new(bound.changes()?)))?;
+    let mut follow = connected.subscribe(subscription).await?;
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while let Some(update) = follow.next().await {
+            if let Some(session_wire::session_frame::Body::Data(data)) = update?.body
+                && let Some(session_wire::session_data::Item::Record(record)) = data.item
+            {
+                let changes = acyclic_stream::decode_changes(&record.value)?;
+                if changes
+                    .entries
+                    .iter()
+                    .any(|entry| entry.key.as_ref() == path.as_bytes())
+                {
+                    return Ok::<_, acyclic_stream::StreamError>(());
+                }
+            }
+        }
+        Err(acyclic_stream::StreamError::Unavailable)
+    })
+    .await?;
+    observed?;
+    for offset in [0, MAX_READ_BYTES, body.len() as u64] {
+        // Reconnect between pages. Both exact FileRef and tool-path reads use
+        // this same admitted reader, with no local filesystem provider.
+        let client = connect(Some(Arc::new(bound.changes()?)))?;
+        for target in [
+            ReadTarget::ToolOutput { path: path.into() },
+            ReadTarget::File { file: file.clone() },
+        ] {
+            let reply = call(
+                &client,
+                "agents",
+                &AgentCommand::Read {
+                    agent: root.clone(),
+                    target,
+                    offset,
+                },
+            )
+            .await??;
+            let (bytes, length) = reply.content()?;
+            assert_eq!(length, body.len() as u64);
+            assert_eq!(
+                bytes,
+                body[offset as usize..]
+                    .iter()
+                    .take(MAX_READ_BYTES as usize)
+                    .copied()
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+    let client = connect(Some(Arc::new(bound.changes()?)))?;
+    publisher
+        .stage_once(
+            OperationId::from_bytes([5; 16]),
+            "notes/private",
+            b"not tool output",
+            "text/plain",
+            "private",
+            ContentAccess::default(),
+        )?
+        .await?;
+    for (agent, path) in [
+        (root.clone(), "../outside"),
+        (root.clone(), "tools/missing"),
+        (root.clone(), "notes/private"),
+        (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
+    ] {
+        assert!(
+            call(
+                &client,
+                "agents",
+                &AgentCommand::Read {
+                    agent,
+                    target: ReadTarget::ToolOutput { path: path.into() },
+                    offset: 0,
+                }
+            )
+            .await?
+            .is_err()
+        );
+    }
+    let foreign = VolumeRef::new(
+        provider()?,
+        "another-private".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
+        &mut None,
+    )?;
+    let foreign = crate::conversation::FileRef::new(
+        foreign,
+        file.path().into(),
+        file.version().into(),
+        file.descriptor().clone(),
+        file.display_name().into(),
+        &mut None,
+    )?;
+    assert!(
+        call(
+            &client,
+            "agents",
+            &AgentCommand::Read {
+                agent: root.clone(),
+                target: ReadTarget::File { file: foreign },
+                offset: 0,
+            }
+        )
+        .await?
+        .is_err()
+    );
+    let denied = connect(Some(Arc::new(bound.changes()?)))?;
+    denied.register_credential(0, credential("actor:/another-server"))?;
+    assert!(
+        call(
+            &denied,
+            "agents",
+            &AgentCommand::Read {
+                agent: root.clone(),
+                target: ReadTarget::ToolOutput { path: path.into() },
+                offset: 0,
+            }
+        )
+        .await
+        .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Result {
+    let bound = binding()?;
+    let stream = bound.agents().provider().clone();
     let agent = AgentId::from_bytes([1; 16]);
     let private = VolumeBinding {
         name: PRIVATE_VOLUME.into(),

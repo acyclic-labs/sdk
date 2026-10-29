@@ -433,7 +433,7 @@ impl WasmAgentServer {
         serve(
             self.bound.agents().provider().clone(),
             self.authority.clone(),
-            None,
+            Some(Arc::new(self.bound.changes().map_err(agent_error)?)),
             server,
             "harness".into(),
             acyclic_stream::session::Limits::default(),

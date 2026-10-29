@@ -395,15 +395,10 @@ where
                             .read_file(agent, file, *offset, MAX_READ_BYTES)
                             .await?
                     }
-                    #[cfg(feature = "filesystem-local")]
                     ReadTarget::ToolOutput { path } => {
                         self.bound
                             .read_tool_output(agent, path, *offset, MAX_READ_BYTES)
                             .await?
-                    }
-                    #[cfg(not(feature = "filesystem-local"))]
-                    ReadTarget::ToolOutput { .. } => {
-                        return Err(Error::Record("this host announces no tool output"));
                     }
                 };
                 Ok(AgentReply::read(&bytes, length))

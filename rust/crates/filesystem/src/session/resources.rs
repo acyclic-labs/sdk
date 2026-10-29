@@ -12,18 +12,18 @@ mod policy;
 
 /// Owning filesystem and its exact backing Streams provider. No policy query
 /// callback or caller-supplied principal can manufacture an allowing decision.
-pub struct ChangeProvider<P, A: 'static, O: 'static> {
+pub struct ChangeProvider<P: ?Sized, A: 'static, O: 'static> {
     streams: Arc<P>,
     fs: Fs<A, O>,
 }
-impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>
+impl<P: StreamProvider + ?Sized, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>
     ChangeProvider<P, A, O>
 {
-    /// Requires a process-owned policy fence and the same backend owner.
+    /// Binds the same backend owner. Each follow requires an enforceable
+    /// policy fence before registering or disclosing any metadata.
     pub fn new(fs: Fs<A, O>, streams: Arc<P>) -> Result<Self, StreamError> {
-        if !fs.has_process_policy_owner()
-            || fs.operation_claims().owner_identity()
-                != streams.context().operation_claims().owner_identity()
+        if fs.operation_claims().owner_identity()
+            != streams.context().operation_claims().owner_identity()
         {
             return Err(StreamError::AccessDenied);
         }
@@ -55,11 +55,14 @@ impl PolicyState {
 
 impl<P, A, O> ResourceProvider for ChangeProvider<P, A, O>
 where
-    P: StreamProvider,
+    P: StreamProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
     fn follow(&self, request: ResourceFollowRequest) -> Result<ResourceSubscription, StreamError> {
+        if !self.fs.has_process_policy_owner() {
+            return Err(StreamError::AccessDenied);
+        }
         let encoded = request
             .resource
             .strip_prefix("fs:/")

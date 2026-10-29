@@ -492,13 +492,9 @@ where
     ///
     /// # Errors
     /// As [`super::FilesystemHost::change_provider`].
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub fn changes(
         &self,
-    ) -> Result<acyclic_fs::session::ChangeProvider<P, StreamAuthorityStore<P>, O>, Error>
-    where
-        P: Sized,
-    {
+    ) -> Result<acyclic_fs::session::ChangeProvider<P, StreamAuthorityStore<P>, O>, Error> {
         self.volumes
             .change_provider(self.agents.provider().clone())
             .map_err(turn)
@@ -561,7 +557,6 @@ where
     ///
     /// # Errors
     /// As [`Self::read_file`].
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub async fn read_tool_output(
         &self,
         agent: &AgentPath,
