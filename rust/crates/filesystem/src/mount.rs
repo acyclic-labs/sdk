@@ -100,15 +100,20 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
             .bindings
             .get_mut(selected)
             .ok_or(MountError::UnmappedPath)?;
-        let relative = relative_path(path, &binding.path, binding.checkout.volume_config().limits)?;
+        let relative = relative_path(path, &binding.path)?;
         Ok(RoutedCheckout {
             mount_id: binding.mount_id,
-            path: NamespacePath::from_portable_in_profile(
-                &relative,
+            path: NamespacePath::from_text_in_profile(
+                relative,
                 binding.checkout.volume_config().profile,
                 binding.checkout.volume_config().limits,
             )
-            .map_err(MountError::InvalidNamespacePath)?,
+            .map_err(|error| match error {
+                NamespacePathError::Path(error) if binding.path.as_str() != PortablePath::ROOT => {
+                    MountError::InvalidPath(error)
+                }
+                error => MountError::InvalidNamespacePath(error),
+            })?,
             checkout: &mut binding.checkout,
         })
     }
@@ -210,22 +215,19 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedVie
     }
 }
 
-fn relative_path(
-    path: &PortablePath,
-    mount: &PortablePath,
-    limits: crate::model::VolumeLimits,
-) -> Result<PortablePath, MountError> {
+fn relative_path<'a>(path: &'a PortablePath, mount: &PortablePath) -> Result<&'a str, MountError> {
     if mount.as_str() == PortablePath::ROOT {
-        return Ok(path.clone());
+        return Ok(path.as_str());
     }
     if path == mount {
-        return PortablePath::parse(PortablePath::ROOT, limits).map_err(MountError::InvalidPath);
+        return Ok(PortablePath::ROOT);
     }
     let relative = path
         .as_str()
         .strip_prefix(mount.as_str())
+        .filter(|suffix| suffix.starts_with('/'))
         .ok_or(MountError::UnmappedPath)?;
-    PortablePath::parse(relative, limits).map_err(MountError::InvalidPath)
+    Ok(relative)
 }
 
 /// Reproducible selection of one generation for each mounted volume.
