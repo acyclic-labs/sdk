@@ -409,12 +409,55 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
         name: name.into(),
         revision: REVISION.into(),
         description: description.into(),
-        input_schema: schema::input::<T>()?,
+        input_schema: model_schema(schema::input::<T>()?),
         projection_schema: json_projection_schema(output.clone()),
         output_schema: output,
     };
     definition.validate(&mut None)?;
     Ok(definition)
+}
+
+/// `schema` as the model reads it, with nothing every request would repeat
+/// for no meaning: the root's draft URI (2020-12 is the compiler's default),
+/// its type title, and its description (the tool's own description says it),
+/// and each all-constant `oneOf` as the `enum` of its values, whose meaning
+/// the field's description states. Every agent tool request carries this, so
+/// it is the context a turn's mandatory content pays for each tool.
+fn model_schema(mut schema: serde_json::Value) -> serde_json::Value {
+    if let Some(root) = schema.as_object_mut() {
+        for key in ["$schema", "title", "description"] {
+            root.remove(key);
+        }
+    }
+    enumerate(&mut schema);
+    schema
+}
+
+fn enumerate(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            let values = object.get("oneOf").and_then(|variants| {
+                variants
+                    .as_array()?
+                    .iter()
+                    .map(|variant| {
+                        variant
+                            .get("const")
+                            .filter(|value| value.is_string())
+                            .cloned()
+                    })
+                    .collect::<Option<Vec<_>>>()
+            });
+            if let Some(values) = values {
+                object.remove("oneOf");
+                object.insert("type".into(), json!("string"));
+                object.insert("enum".into(), serde_json::Value::Array(values));
+            }
+            object.values_mut().for_each(enumerate);
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(enumerate),
+        _ => {}
+    }
 }
 
 /// The model definitions of the agent tools among `names`, exactly as
@@ -509,4 +552,35 @@ pub fn bind_agent_tools(
         registry.select_model_version(name, REVISION)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_schemas_carry_only_meaning() -> Result<()> {
+        let names = AGENT_TOOLS.map(String::from);
+        for definition in definitions(&names)? {
+            let root = definition.input_schema.as_object();
+            for key in ["$schema", "title", "description"] {
+                assert!(root.is_some_and(|root| !root.contains_key(key)), "{key}");
+            }
+        }
+        let wait = &definitions(&["wait".into()])?[0].input_schema;
+        assert_eq!(wait["$defs"]["WaitMode"]["enum"], json!(["all", "any"]));
+        let check = |value| {
+            crate::executor::check_json_schema_value(wait, &value, "tool", &mut None)
+                .map(|checked| checked.is_ok())
+        };
+        assert!(check(json!({"agents": ["a"], "mode": "any"}))?);
+        assert!(check(json!({"agents": ["a"]}))?);
+        // Negative control: the enum still rejects what the type rejects.
+        assert!(!check(json!({"agents": ["a"], "mode": "some"}))?);
+        assert!(
+            serde_json::from_value::<WaitAgentInput>(json!({"agents": [], "mode": "some"}))
+                .is_err()
+        );
+        Ok(())
+    }
 }
