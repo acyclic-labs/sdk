@@ -4858,24 +4858,12 @@ mod demand_admission_tests {
         }
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(16, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if matches!(receipt.value, WatchBatch::Changes { ref changes, .. }
-                if changes.iter().any(|change| matches!(change,
-                    WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected)))
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the native child hint was not delivered"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        changes_until_matching(&watch, |changes| {
+            changes.iter().any(|change| {
+                matches!(change, WatchChange::Modified(path) | WatchChange::MetadataChanged(path)
+                if path == &expected)
+            })
+        })?;
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
@@ -4887,32 +4875,48 @@ mod demand_admission_tests {
         watch: &Mutex<NativeWatch>,
         expected: &NamespacePath,
     ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut seen = Vec::new();
-        loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if let WatchBatch::Changes { changes, .. } = receipt.value {
-                seen.extend(changes);
-            }
-            if seen.iter().any(|change| match change {
-                WatchChange::Renamed { from, to } => from == expected || to == expected,
-                WatchChange::Created(path)
-                | WatchChange::Removed(path)
-                | WatchChange::Modified(path)
-                | WatchChange::MetadataChanged(path)
-                | WatchChange::Arrived(path) => path == expected,
-            }) {
-                return Ok(seen);
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{expected:?} never arrived: {seen:?}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        changes_until_matching(watch, |changes| mentions(changes, expected))
+    }
+
+    #[cfg(windows)]
+    fn changes_until_matching(
+        watch: &Mutex<NativeWatch>,
+        mut ready: impl FnMut(&[WatchChange]) -> bool,
+    ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let mut seen = Vec::new();
+                    loop {
+                        let changed = watch
+                            .lock()
+                            .map_err(|_| NativeWatchError::StatePoisoned)?
+                            .changed_with_native_work(&work);
+                        changed.await?;
+                        let receipt = watch
+                            .lock()
+                            .map_err(|_| NativeWatchError::StatePoisoned)?
+                            .poll(64, WorkBudget::UNBOUNDED, &cancellation)?;
+                        match receipt.value {
+                            WatchBatch::Changes { changes, .. } => seen.extend(changes),
+                            WatchBatch::RescanRequired { reason, .. } => {
+                                return Err(
+                                    format!("native watch lost continuity: {reason:?}").into()
+                                );
+                            }
+                        }
+                        if ready(&seen) {
+                            return Ok::<_, Box<dyn std::error::Error>>(seen);
+                        }
+                    }
+                })
+                .await?
+            })
     }
 
     #[cfg(windows)]
