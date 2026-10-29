@@ -107,8 +107,8 @@ fn emit(output: &mut impl Write, line: &Value) -> std::io::Result<()> {
 /// `{"approve": request, "approved": bool}` or `{"cancel": true}`. A prompt is
 /// message `operation:id`, so rerunning the operation replays it. Each settled
 /// prompt prints `{"id", "inbox", "text"}` (or `"error"`), each approval
-/// request `{"approval": request}`. Exits once stdin closes and every prompt
-/// settled.
+/// request `{"approval": request}`. Exits, successfully, once stdin closes
+/// and every prompt settled, whether answered or failed.
 pub async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,
@@ -185,11 +185,13 @@ pub async fn jsonl(
                             }
                         }
                     }
+                    // An ended turn answers every outstanding prompt with its
+                    // reason; each is a record, so the stream goes on and a
+                    // later prompt starts the agent's next turn.
                     if let Some(reason) = ended {
                         for (inbox, (_, id)) in std::mem::take(&mut pending) {
                             emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
                         }
-                        return Ok(1);
                     }
                     if let Phase::WaitingApproval { id } = &status.phase
                         && announced.as_ref() != Some(id)
