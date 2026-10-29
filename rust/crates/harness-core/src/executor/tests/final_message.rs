@@ -49,7 +49,7 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             operation_id: OperationId::new(),
             input: ModelContent::Text("hello".into()),
             selected_context: None,
-            max_steps: 2,
+            max_steps: Some(2),
         };
         let result = executor.execute(input.clone(), &journal).now_or_never();
         if completed {
