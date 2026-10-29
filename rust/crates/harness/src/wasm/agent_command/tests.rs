@@ -168,7 +168,7 @@ async fn a_browser_command_past_one_frame_executes_and_answers_as_itself() -> Re
     ] {
         let encoded = serde_json::to_vec(&command).map_err(|error| error.to_string())?;
         let command = WasmAgentCommand::new(&Uint8Array::from(encoded.as_slice()))?;
-        assert_eq!(command.bytes(), encoded);
+        assert_eq!(owned(&command.bytes())?, encoded);
         let value = command.value()?;
         assert_eq!(js_sys::Reflect::get(&value, &"kind".into())?, kind);
         let prepared = controls.prepare(&command)?;
@@ -186,6 +186,11 @@ async fn a_browser_command_past_one_frame_executes_and_answers_as_itself() -> Re
     Ok(())
 }
 
+/// A returned array's bytes, read through the one caller-array snapshot.
+fn owned(array: &Uint8Array) -> Result<Vec<u8>, JsValue> {
+    Ok(crate::wasm::bytes::snapshot(array, |_| Ok(()))?.0)
+}
+
 #[wasm_bindgen_test]
 async fn discovers_controls_from_credential_and_refuses_wrong_authority() -> Result<(), JsValue> {
     let stream = session()?;
@@ -200,12 +205,12 @@ async fn discovers_controls_from_credential_and_refuses_wrong_authority() -> Res
         br#"{"kind":"cancel","agent":"harness/agents/00000000000000000000000000000001","id":"original-cancel"}"#.as_slice(),
     ))?;
     let cancel = controls.prepare(&cancel)?;
-    let cancel_bytes = cancel.bytes()?;
-    let original = prepared.bytes()?;
+    let cancel_bytes = owned(&cancel.bytes()?)?;
+    let original = owned(&prepared.bytes()?)?;
     // A second discovery cannot replace an already prepared command's bytes.
     discover_agent_controls(&stream, 7).await?;
-    assert_eq!(prepared.bytes()?, original);
-    assert_eq!(cancel.bytes()?, cancel_bytes);
+    assert_eq!(owned(&prepared.bytes()?)?, original);
+    assert_eq!(owned(&cancel.bytes()?)?, cancel_bytes);
     let reply = prepared.execute().await?;
     assert_eq!(js_sys::Reflect::get(&reply, &"kind".into())?, "root");
     stream.register_credential(8, &testing::credential())?;
