@@ -1599,3 +1599,5 @@ Check305 at9a62cbd6d6 passes native all-target Harness-core/Harness/GraphCoder a
 | Skill directory300 default-count refusal test | `rust/crates/harness/tests/e2e/local_skills.rs` (removed) | 1 deleted-cap test | Delete obsolete default256-discovery-bound test. Default DiscoveryWork has optional None totals. Existing shared native catalog finite directory/entry denial controls remain; no model-context budget is widened to force a larger catalog into one physical request. Paged catalog/context residency remains separately OPEN. |
 
 Changed-source qualification pending. The existing range finite-hash assertion only gains actual-result diagnostics; its exact typed error/counter/65536 policy stays unchanged.
+
+P1 consumer-gate fixture composition: include the existing publication-receipt.mjs dependency when copying the real Cargo publisher into the isolated gate fixture. Keep the original consumer build-count, feature failure, negative old-check-only, affected-package and Windows gate assertions unchanged. This fixes fixture import completeness without changing the production gate or filtering tests. Actual bb2 runtime qualification pending.

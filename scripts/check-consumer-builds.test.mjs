@@ -35,7 +35,7 @@ test('shared gate rejects codegen-only failures and scopes PR consumers; old che
   try {
     mkdirSync(join(cwd, 'scripts')); mkdirSync(join(cwd, 'bin'));
     writeFileSync(join(cwd, 'metadata.json'), JSON.stringify(metadata));
-    for (const name of ['check-feature-matrix.mjs', 'publish-cargo-crates.mjs']) {
+    for (const name of ['check-feature-matrix.mjs', 'publish-cargo-crates.mjs', 'publication-receipt.mjs']) {
       writeFileSync(join(cwd, 'scripts', name), readFileSync(new URL(name, import.meta.url)));
     }
     mkdirSync(join(cwd, 'release'));
