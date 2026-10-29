@@ -661,17 +661,14 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             .path(relative, None)
             .map_err(MaterializeError::from)?;
         let expected_root_identity = options.expected_root_identity;
-        let prepared = host_io(None, native_work.clone(), move |work| {
-            prepare_restore(
-                destination_root,
-                relative,
-                expected_root_identity,
-                replacement,
-                work,
-            )
-        })
-        .await
-        .map_err(MaterializeError::from)??;
+        let prepared = prepare_restore_io(
+            destination_root,
+            relative,
+            expected_root_identity,
+            replacement,
+            native_work.clone(),
+        )
+        .await?;
         let (stage_path, stage_allocation) = prepared.stage_path;
         let materialize_options = MaterializeOptions {
             destination: stage_path,

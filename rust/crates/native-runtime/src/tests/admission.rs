@@ -116,6 +116,70 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
     Ok(())
 }
 
+#[test]
+fn contended_os_lock_waits_leave_a_worker_to_release_the_holder() -> io::Result<()> {
+    if passed_in_exclusive_process(
+        "tests::admission::contended_os_lock_waits_leave_a_worker_to_release_the_holder",
+    )? {
+        return Ok(());
+    }
+    let threads = workers(&BLOCKING_WORKERS, false)?.exclusive_threads();
+    let temporary = tempfile::NamedTempFile::new()?;
+    let holder = FileLock::acquire(temporary.reopen()?, FileLockMode::Exclusive)?;
+    let (entered, started) = mpsc::channel();
+    let mut waiters = Vec::new();
+    let waker = completion_waker();
+    let mut context = Context::from_waker(&waker);
+    for index in 0..threads * 2 {
+        let file = FileLock::new(temporary.reopen()?);
+        let entered = entered.clone();
+        let mut waiter = Box::pin(async move {
+            let credit = blocking_wait_credit(std::future::pending::<io::Result<()>>()).await?;
+            run_blocking_io(
+                move || {
+                    let _credit = credit;
+                    entered.send(index).map_err(io::Error::other)?;
+                    file.lock(FileLockMode::Exclusive)?;
+                    file.unlock()
+                },
+                None,
+            )?
+            .await?
+        });
+        assert!(waiter.as_mut().poll(&mut context).is_pending());
+        if index < threads - 1 {
+            assert_eq!(started.recv().map_err(io::Error::other)?, index);
+        }
+        waiters.push(waiter);
+    }
+    assert!(matches!(started.try_recv(), Err(mpsc::TryRecvError::Empty)));
+
+    // Queued cancellation needs no worker, and dropping a queued observer
+    // removes its intrusive admission node without consuming physical credit.
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    let mut admission = Box::pin(blocking_wait_credit(async {
+        let _ = cancelled.await;
+        Ok::<(), io::Error>(())
+    }));
+    assert!(admission.as_mut().poll(&mut context).is_pending());
+    cancel.send(()).map_err(|()| io::ErrorKind::BrokenPipe)?;
+    let error = complete(admission).err().ok_or(io::ErrorKind::Other)?;
+    assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+    let mut abandoned = Box::pin(blocking_wait_credit(
+        std::future::pending::<io::Result<()>>(),
+    ));
+    assert!(abandoned.as_mut().poll(&mut context).is_pending());
+    drop(abandoned);
+
+    // The holder's unlock uses exactly the same shared worker service. Without
+    // wait credit every worker is in flock/LockFileEx and this cannot execute.
+    complete(run_blocking_io(move || holder.unlock(), None)?)??;
+    for waiter in waiters {
+        complete(waiter)?;
+    }
+    Ok(())
+}
+
 /// Holds host jobs until the test opens it.
 #[derive(Clone)]
 struct Gate(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
