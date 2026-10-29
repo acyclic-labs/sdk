@@ -46,10 +46,7 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
             release: ReleaseSignal {
-                released: Arc::new((
-                    crate::sync::Mutex::new(false),
-                    crate::sync::Condvar::new(),
-                )),
+                released: Arc::new((crate::sync::Mutex::new(false), crate::sync::Condvar::new())),
             },
         }
     }
