@@ -23,7 +23,7 @@ pub(in crate::filesystem) struct FilesystemTurnGoal<A: 'static, O: 'static> {
     volume: VolumeRef,
     read: ContentGrant,
     write: ContentGrant,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     policy: GoalContinuationPolicy,
 }
 
@@ -34,7 +34,7 @@ impl<A, O> FilesystemTurnGoal<A, O> {
         agent: &AgentState,
         verifier: &AuthorityVerifier,
         scope: &Scope,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         policy: GoalContinuationPolicy,
     ) -> Result<Option<Self>> {
         let Some(binding) = agent
