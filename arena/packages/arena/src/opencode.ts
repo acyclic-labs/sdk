@@ -67,7 +67,7 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
         res.tokens.cacheWrite += Number(cache.write ?? 0); res.tokens.cacheRead += Number(cache.read ?? 0);
       } else if (e.type === "tool_use") res.toolCalls += 1;
       else if (e.type === "text") res.text += String(part.text ?? "");
-      else if (e.type === "error") res.error = JSON.stringify(part).slice(0, 400);
+      else if (e.type === "error") res.error = JSON.stringify(part);
       opts.onEvent?.({ type: e.type ?? "?", part });
     };
     p.stdout.on("data", (d) => { buf += d.toString(); const lines = buf.split("\n"); buf = lines.pop() ?? ""; lines.forEach(handle); });
@@ -76,7 +76,7 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
       clearTimeout(timer); handle(buf);
       res.exitCode = code; res.ms = Date.now() - t0;
       res.ok = code === 0 && !res.timedOut && !res.error;
-      if (!res.ok && !res.error) res.error = res.timedOut ? `timed out after ${timeoutMs} ms` : err.trim().split("\n").slice(-3).join(" | ").slice(0, 400);
+      if (!res.ok && !res.error) res.error = res.timedOut ? `timed out after ${timeoutMs} ms` : err.trim();
       cleanup(); resolve(res);
     });
     p.on("error", (e) => { clearTimeout(timer); res.error = String(e); res.ms = Date.now() - t0; cleanup(); resolve(res); });

@@ -1919,3 +1919,15 @@ The whole Machines TypeScript build still fails two optional-field projections: 
 Qualification345 on signed7b5721a503: fresh Machines WASM generation and whole package TypeScript compilation pass. The complete real gRPC transport file passes22/22,0 skipped/cancelled/todo in1.366657065s. Binary duplex pressure, output-before-completion, original deadlines, authentication refusal, finite message limits, malformed/incomplete terminal streams and cancellation isolation remain covered. This closes the missing pageSize export and optional TypeScript projection qualification; it does not close remaining whole-value carriers or the full milestone.
 
 The shared FixedIndex insertion now returns the prepared leaf through its owned insertion link instead of traversing from the root and comparing the complete key again. All return-path visits are admitted before publication; original allocation/constructor failure rollback and existing-key admission remain. This source change targets the sealed-reference finite-budget regression without increasing the original128-item allowance. Existing generated histories, every-bit keys, original-funding retirement and native positive/negative controls remain required. Compilation/runtime qualification is pending; no measured performance claim is made.
+
+
+## Arena complete state and subprocess policy
+
+| Constant / policy | File:line | Category | Action |
+|---|---|---|---|
+| Acyclic/git subprocess timeout120000ms | `arena/packages/arena/src/acyclic.ts:16`, `arena/packages/arena/src/forks.ts:36` | 1 | DELETE hidden command deadlines. These commands await their actual exit; explicit worker/test deadlines remain separate caller policy. |
+| maxFiles default12, maxDiffChars default1500 | `arena/packages/arena/src/arena.ts:132` | 1, optional caller excerpt policy | DELETE defaults. Omitted options select all changed paths and complete diffs. Explicit finite excerpts retain omission markers. |
+| Test output last12 lines; worker error last3 lines/400chars; state error200chars; git error300chars | `arena/packages/arena/src/arena.ts:69`, `arena/packages/arena/src/arena.ts:116`, `arena/packages/arena/src/opencode.ts:67`, `arena/packages/arena/src/opencode.ts:77`, `arena/packages/arena/src/forks.ts:38` | 1 | DELETE default omission so the original outputs reach reports and state. |
+| Synchronous subprocess default pipe maxBuffer | `arena/packages/arena/src/arena.ts:43`, `arena/packages/arena/src/forks.ts:36`, `arena/packages/arena/src/acyclic.ts:16` | 1 | OPEN: migrate complete output to the one general credited/file-backed capture mechanism. Removing excerpts does not remove this lower whole-buffer refusal. |
+
+These changes do not establish bounded whole-state residency or inference context paging. The model context remains physical; complete context handling still needs the shared inference owner. No performance claim or whole Arena unbounded claim is made. Source/test compilation and the existing real diff/fork controls remain required.
