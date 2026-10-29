@@ -725,8 +725,7 @@ where
         let operation = OperationId::from_bytes(operation);
         // The existing publication owns both the submitted source identity
         // and expanded bytes; no separate replay record is needed.
-        let source = blake3::hash(source.as_bytes());
-        let path = format!("inputs/{operation}/{source}.txt");
+        let path = || format!("inputs/{operation}-{}.txt", blake3::hash(source.as_bytes()));
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&self.volumes),
             &authority.private.volume,
@@ -742,11 +741,12 @@ where
                 .map_err(turn)?
                 .await
                 .map_err(turn)?;
-            if staged.as_ref().is_some_and(|file| file.path() != path) {
+            if staged.as_ref().is_some_and(|file| file.path() != path()) {
                 return Err(Error::Conflict("input identity reused with changed source"));
             }
             return Ok(staged);
         };
+        let path = path();
         let staged = publisher
             .stage_once(
                 operation,
