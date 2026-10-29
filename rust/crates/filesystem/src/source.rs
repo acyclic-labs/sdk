@@ -81,6 +81,9 @@ pub enum ReconcileOutcome<A: 'static, O: 'static> {
 /// Fail-closed attached-source failure.
 #[derive(Debug, Error)]
 pub enum SourceError {
+    /// The caller cancelled a native source observation.
+    #[error("source observation was cancelled")]
+    Cancelled,
     /// Source configuration is empty or exceeds workspace bounds.
     #[error("source options are invalid")]
     InvalidOptions,
@@ -254,13 +257,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), SourceError> {
-        let changed = self
-            .inner
-            .lock()
-            .await
-            .watcher
-            .changed_with_native_work(work);
-        changed.await.map_err(engine)
+        let changed = {
+            let cancelled = work
+                .scope_cancellation_wait()
+                .map_err(source_native_error)?;
+            let session = tokio::select! {
+                biased;
+                () = cancelled => return Err(SourceError::Cancelled),
+                session = self.inner.lock() => session,
+            };
+            work.admit(WorkCounters::UNCHARGED)
+                .map_err(source_native_error)?;
+            session.watcher.changed_with_native_work(work)
+        };
+        changed.await.map_err(|error| match error {
+            crate::watch::NativeWatchError::Cancelled(_) => SourceError::Cancelled,
+            error => engine(error),
+        })
     }
 
     /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
@@ -1454,11 +1467,74 @@ fn engine(error: impl std::fmt::Display) -> SourceError {
     SourceError::Engine(error.to_string())
 }
 
+fn source_native_error(error: crate::NativeTreeMaterializationError) -> SourceError {
+    match error {
+        crate::NativeTreeMaterializationError::Cancelled => SourceError::Cancelled,
+        error => engine(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
     use std::sync::atomic::{AtomicU8, Ordering};
+
+    #[tokio::test]
+    async fn cancelled_observer_settles_while_the_source_session_is_locked()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::future::Future as _;
+        use std::task::{Context, Poll, Waker};
+
+        let root = tempfile::tempdir()?;
+        let workspace = Box::pin(Fs::memory().attach_directory(
+            "cancelled-source-observation",
+            root.path(),
+            SourceOptions::default(),
+        ))
+        .await?;
+        let source = workspace.source().ok_or("source missing")?;
+        let session = source.inner.lock().await;
+        for cancel_authority in [false, true] {
+            for cancel_early in [false, true] {
+                let authority = CancellationToken::new();
+                let original =
+                    crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &authority)
+                        .map_err(|(error, _)| error)?;
+                let (work, invocation) = original.invocation_view()?;
+                let cancelled = if cancel_authority {
+                    &authority
+                } else {
+                    &invocation
+                };
+                if cancel_early {
+                    cancelled.cancel();
+                }
+                let mut changed = std::pin::pin!(source.changed_with_native_work(&work));
+                if !cancel_early {
+                    assert!(
+                        changed
+                            .as_mut()
+                            .poll(&mut Context::from_waker(Waker::noop()))
+                            .is_pending()
+                    );
+                    cancelled.cancel();
+                }
+                assert!(matches!(
+                    changed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop())),
+                    Poll::Ready(Err(SourceError::Cancelled))
+                ));
+                assert!(
+                    source.inner.try_lock().is_err(),
+                    "cancellation cannot unlock another operation"
+                );
+            }
+        }
+        drop(session);
+        Ok(())
+    }
 
     #[derive(Clone, Copy, Eq, PartialEq)]
     enum AppendGatePhase {
