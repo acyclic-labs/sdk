@@ -93,7 +93,7 @@ impl MachinesWorkspace {
     pub async fn shell(
         &self,
         input: ShellInput,
-        maximum_output: u64,
+        maximum_output: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
         self.shell_until(input, maximum_output, None).await
     }
@@ -101,7 +101,7 @@ impl MachinesWorkspace {
     async fn shell_until(
         &self,
         input: ShellInput,
-        maximum_output: u64,
+        maximum_output: Option<u64>,
         task_deadline: Option<u64>,
     ) -> Result<acyclic_machines::ExecStream> {
         input.validate()?;
@@ -120,8 +120,10 @@ impl MachinesWorkspace {
         let mut command = ExecCommand::new(argv, timeout)
             .map_err(|error| map_error(error, None))?
             .with_expiry(expiry)
-            .with_stdin(stdin)
-            .with_output_limit(maximum_output);
+            .with_stdin(stdin);
+        if let Some(maximum) = maximum_output {
+            command = command.with_output_limit(maximum);
+        }
         if let Some(cwd) = input.cwd.filter(|value| !value.is_empty()) {
             command = command
                 .with_cwd(cwd)
