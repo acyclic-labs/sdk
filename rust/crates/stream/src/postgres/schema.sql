@@ -19,38 +19,10 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
     generation bytea NOT NULL CHECK (octet_length(generation) = 16)
 );
 
--- Physical transaction entry: acquire the publication fence before reading a
--- bounded page, then return one head/clock row (NULL command). The
--- caller keeps this transaction open for canonical planning and publication.
-CREATE OR REPLACE FUNCTION acyclic_stream_read_fenced(
-    stream_namespace text,
-    after_revision bigint,
-    page_size bigint
-) RETURNS TABLE (revision bigint, at_millis bigint, command bytea)
-LANGUAGE plpgsql VOLATILE AS $$
-BEGIN
-    IF current_setting('transaction_isolation') <> 'read committed' THEN
-        RAISE EXCEPTION USING ERRCODE = 'PST02',
-            MESSAGE = 'STEP stream-fenced-read failed: READ COMMITTED required',
-            HINT = 'Recovery: reopen PostgresStream::connect with the same database and namespace';
-    END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(stream_namespace, 1937006962));
-    -- VOLATILE obtains this snapshot after lock acquisition, including when a
-    -- competing publisher committed while this statement waited for the lock.
-    RETURN QUERY SELECT j.revision, j.at_millis, j.command
-        FROM acyclic_stream_journal AS j
-        WHERE j.namespace = stream_namespace AND j.revision > after_revision
-        ORDER BY j.revision LIMIT page_size;
-    RETURN QUERY SELECT COALESCE(max(j.revision), 0),
-        floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, NULL::bytea
-        FROM acyclic_stream_journal AS j WHERE j.namespace = stream_namespace;
-END;
-$$;
-
 -- Physical append-if-revision only. The canonical Stream core decides paths,
 -- conditions and retry identity; SQL never decodes a command. VOLATILE keeps
 -- the head query's READ COMMITTED snapshot after the namespace lock wait.
--- The core plans at the caller-read transaction clock; the row records exactly
+-- The core plans at the journal-read database clock; the row records exactly
 -- that time so replay reproduces the same decision.
 CREATE OR REPLACE FUNCTION acyclic_stream_publish(
     stream_namespace text,

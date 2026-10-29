@@ -1,7 +1,7 @@
 //! PostgreSQL durability and notification transport for the canonical Stream core.
 //!
 //! A database owns one ordered command journal. Each process keeps a shared core
-//! replica, refreshed in bounded pages. Transactions serialize publication across
+//! replica, refreshed in bounded pages. Server-side conditional publication orders
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
@@ -17,7 +17,7 @@ const PAGE: usize = 64;
 mod port;
 #[cfg(test)]
 mod tests;
-use port::{PgJournal, Storage};
+use port::PgJournal;
 const SCHEMA: &str = include_str!("postgres/schema.sql");
 
 struct Session {
@@ -27,7 +27,7 @@ struct Session {
     // Keep that pending work across temporary journal/replica owners.
     observed_head: u64,
     publish: Statement,
-    read_fenced: Statement,
+    read: Statement,
     wakes: watch::Receiver<()>,
 }
 
@@ -82,7 +82,8 @@ impl PostgresStream {
         });
         client
             .query_one(
-                "SELECT set_config('application_name', $1, false)",
+                "SELECT set_config('application_name', $1, false), \
+                 set_config('default_transaction_isolation', 'read committed', false)",
                 &[&format!("acyclic-stream-query-{namespace}")],
             )
             .await
@@ -105,9 +106,15 @@ impl PostgresStream {
             )
             .await
             .map_err(unavailable)?;
-        let read_fenced = client
+        let read = client
             .prepare(
-                "SELECT revision, at_millis, command FROM acyclic_stream_read_fenced($1,$2,$3)",
+                "SELECT j.revision,j.at_millis,j.command,h.head,h.at_millis FROM \
+                 (SELECT COALESCE(max(revision),0) AS head, \
+                 floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS at_millis \
+                 FROM acyclic_stream_journal WHERE namespace=$1) h \
+                 LEFT JOIN LATERAL (SELECT revision,at_millis,command FROM acyclic_stream_journal \
+                 WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3) j ON true \
+                 ORDER BY j.revision",
             )
             .await
             .map_err(unavailable)?;
@@ -143,7 +150,7 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         let clock = Arc::new(ReplicaClock::default());
-        // Both planning and recorded admission use the transaction's database
+        // Both planning and recorded admission use the journal's database
         // clock. A process wall-clock skew cannot override SQL admission.
         // Every process replays the namespace journal in one order, so all
         // replicas share its scope, its generation and revision indexes. The
@@ -168,7 +175,7 @@ impl PostgresStream {
                 cursor: 0,
                 observed_head: 0,
                 publish,
-                read_fenced,
+                read,
                 wakes,
             }),
             clock,
@@ -201,17 +208,16 @@ impl PostgresStream {
                         cursor,
                         observed_head,
                         publish,
-                        read_fenced,
+                        read,
                         wakes,
                     } = &mut *session;
                     let mut replica = Replicated::new(
                         PgJournal {
-                            storage: Storage::Connection(client),
+                            client,
                             publish,
-                            read_fenced,
+                            read,
                             namespace: &inner.namespace,
                             wakes,
-                            at_millis: 0,
                             head: observed_head,
                         },
                         inner.core.clone(),
@@ -266,17 +272,16 @@ impl PostgresStream {
             cursor,
             observed_head,
             publish,
-            read_fenced,
+            read,
             wakes,
         } = &mut *session;
         let mut replica = Replicated::new(
             PgJournal {
-                storage: Storage::Connection(client),
+                client,
                 publish,
-                read_fenced,
+                read,
                 namespace: &self.inner.namespace,
                 wakes,
-                at_millis: 0,
                 head: observed_head,
             },
             self.inner.core.clone(),
@@ -308,23 +313,16 @@ impl PostgresStream {
                 cursor,
                 observed_head,
                 publish,
-                read_fenced,
+                read,
                 wakes,
             } = &mut *session;
-            let transaction = client
-                .build_transaction()
-                .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
-                .start()
-                .await
-                .map_err(unavailable)?;
             let mut replica = Replicated::new(
                 PgJournal {
-                    storage: Storage::Fenced(Some(transaction)),
+                    client,
                     publish,
-                    read_fenced,
+                    read,
                     namespace: &provider.inner.namespace,
                     wakes,
-                    at_millis: 0,
                     head: observed_head,
                 },
                 provider.inner.core.clone(),

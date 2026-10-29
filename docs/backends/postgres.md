@@ -23,15 +23,15 @@ requirements are documented in [S3-compatible blob storage](s3.md).
 Filesystem does not inspect backend types.
 
 Postgres commits an ordered command journal under a transaction-scoped namespace
-advisory lock. Publication explicitly uses READ COMMITTED so catch-up obtains a
-fresh snapshot after lock acquisition, even when the database's default isolation
-is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, exact
+advisory lock. Connect sets READ COMMITTED for this session, including databases
+whose default is REPEATABLE READ. Catch-up reads a bounded snapshot without
+holding the publication fence. The canonical shared Stream core owns append-if-tail CAS, exact
 idempotency, hierarchical fork/commit, filters and bounded public paging. Journal
 rows bind commands to the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
 the visible core. The shared `MemoryStream::apply_durable` prepares the canonical
 decision before invoking SQL publication and installs accepted state only after
-COMMIT. Refused conditions do not publish a journal row; successful same-key
+the server's implicit COMMIT. Refused conditions do not publish a journal row; successful same-key
 replays reuse their retained outcome. The historical runtime receipts below
 qualify their exact source, rather than every subsequent change to this path.
 SQL synchronous commit must remain enabled for durable acknowledgements.
@@ -53,9 +53,9 @@ Publication obligations and controls:
 
 | Obligation | Argument and negative control |
 | --- | --- |
-| Safety | The existing transaction fence covers head comparison, ordered inserts and COMMIT. SQL evaluates no Stream condition. A stale cursor adds no rows; an expired later frame rolls back an already inserted prefix. Planning-clock and actual-clock deadline refusals are checked separately. |
-| Progress | The awaited query and COMMIT are completed by the owned PostgreSQL protocol driver. Dropping that driver ends the request with an error; dropping the notification driver ends follows with `Unavailable`. No polling or per-stream producer is added. Transport errors retain the existing fail-closed reconciliation path. |
-| Cost | One publication query and one COMMIT serve a supplied batch, independent of its width; encoding and insertion cost O(input bytes + frames). Tests use widths 1/16/256; compare against a scalar-call loop as the measurement negative control. The indexed namespace-head lookup is still an index seek, not a proved O(1) storage operation. Full history replay and independent-command batch planning remain separate costs. |
+| Safety | The server transaction fence covers head comparison, ordered inserts and implicit COMMIT. SQL evaluates no Stream condition. A stale cursor adds no rows; the shared replica discards the uninstalled decision, catches up and replans the original command and deadline. An expired later frame rolls back an already inserted prefix. A deferred-trigger commit failure must return an error even after the function produces its row. |
+| Progress | The owned PostgreSQL protocol driver completes the query through transaction completion. Dropping that driver ends the request with an error; dropping the notification driver ends follows with `Unavailable`. No polling or per-stream producer is added. A competing session can publish while the first session plans. Transport errors retain the existing fail-closed reconciliation path. |
+| Cost | One prepared publication query serves a supplied batch, independent of its width, with one server commit and no separate COMMIT exchange. Encoding and insertion cost O(input bytes + frames). Tests use widths 1/16/256; compare against a scalar-call loop as the measurement negative control. The indexed namespace-head lookup remains an index seek, not a proved O(1) storage operation. Full history replay and contention retries remain separate costs. |
 
 The real SQL controls run with the existing Postgres provider checks. They verify
 order and replay stamps, consumed identity gaps, malformed-array refusal, atomic
@@ -64,16 +64,17 @@ lock fairness, survival of an indefinitely stalled network or constant total
 recovery cost. Measure messages, advisory-lock hold and p99 with the scalar-call
 negative control before making a performance claim.
 
-`acyclic_stream_read_fenced(namespace, after_revision, page_size)` acquires the
-transaction's namespace lock before obtaining a READ COMMITTED journal page and
-returns its database-clock sample. The canonical core replays each bounded page
-under that fence, then prepares the decision. An empty backlog now uses four
-sequential request/response stages: BEGIN, fenced page/clock, publication, COMMIT.
-Additional catch-up pages retain the fence and replace the planning clock sample;
-statement preparation and initial installation are outside this warm path.
-These are source-derived stages, not measured network messages or a throughput
-claim. The final publication function checks the actual database clock after
-insertion, so time spent replaying or planning cannot extend admission.
+A prepared read obtains one READ COMMITTED journal page, head and database-clock
+sample. The canonical core replays each bounded page, then prepares the decision.
+An empty backlog uses two sequential request/response stages: read and conditional
+publication, reduced from BEGIN, fenced read, publication and COMMIT. There is one
+advisory acquisition, inside publication, instead of two; no database lock spans
+client-side replay or planning. A concurrent winner makes the proposal stale and
+the shared replica replans. Additional catch-up pages replace the planning clock
+sample; statement preparation and initial installation are outside this warm path.
+These are source-derived stages, not measured packet counts or a throughput claim.
+The final publication function checks the actual database clock after insertion,
+so time spent replaying or planning cannot extend admission.
 
 An applied revision floor already covered by this replica needs no SQL query.
 `read_commit` similarly returns an already-retained immutable successful envelope
@@ -82,11 +83,10 @@ returning absence. These paths check replica health and introduce no receipt or
 negative cache. Mutable observations retain authoritative refresh. Delayed NOTIFY
 alone never establishes freshness or permits returning an uncovered revision.
 
-Portable catch-up/replanning/batching belongs with the shared Streams replica,
-whose owner retains G07's port. Extraction must preserve the DG071
-prepare/persist/install boundary, namespace generation and distinct physical
-journal cursor versus canonical revision index. No condition evaluator moves to
-SQL, and four stages do not constitute the one-round-trip target or G07 closure.
+The shared Streams replica owns catch-up and stale-CAS replanning. The physical
+port has no condition evaluator, retry cache or private connection protocol.
+Two stages do not establish the one-round-trip target, bounded contention
+latency or constant total recovery cost.
 
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
