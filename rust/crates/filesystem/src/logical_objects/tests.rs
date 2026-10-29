@@ -237,3 +237,114 @@ async fn a_publication_root_keeps_its_closure_through_every_collection()
     }
     Ok(())
 }
+
+async fn survives_collections(store: &Store, id: ObjectId) -> Result<bool, ObjectStoreError> {
+    for _ in 0..3 {
+        store
+            .provider()
+            .collect()
+            .await
+            .map_err(ObjectStoreError::LogicalObjects)?;
+    }
+    let cancel = CancellationToken::new();
+    Ok(store
+        .read(id, 64, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await
+        .is_ok())
+}
+
+#[tokio::test]
+async fn each_root_retains_what_its_clones_staged() -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    for flush_b in [true, false] {
+        let a = acyclic_objects::RootId::new(b"a".to_vec())?;
+        let b = acyclic_objects::RootId::new(b"b".to_vec())?;
+        let first = store(64)?.with_publication_root(a.clone());
+        let second = first.clone().with_publication_root(b.clone());
+        // Staged through the second root's clone, published first by the
+        // first root.
+        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"shared"));
+        let id = object.object_id();
+        second
+            .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await?;
+        let _hold = first
+            .flush_before_publish(
+                crate::PublicationScope::Everything,
+                &mut AuthorityWork::new(BUDGET, &cancel),
+            )
+            .await?;
+        if flush_b {
+            let _hold = second
+                .flush_before_publish(
+                    crate::PublicationScope::Everything,
+                    &mut AuthorityWork::new(BUDGET, &cancel),
+                )
+                .await?;
+        }
+        first.provider().release(&a).await?;
+        // Negative control: with the second root's retention also released,
+        // nothing keeps the blob.
+        if !flush_b {
+            first.provider().release(&b).await?;
+        }
+        assert_eq!(survives_collections(&first, id).await?, flush_b);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_root_retains_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
+    let root = acyclic_objects::RootId::new(b"volume".to_vec())?;
+    let store = store(64)?.with_publication_root(root);
+    let exhausted = WorkBudget {
+        backend_write_operations: 0,
+        ..BUDGET
+    };
+    let cancel = CancellationToken::new();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    for (body, budget, token) in [
+        (&b"no budget"[..], exhausted, &cancel),
+        (&b"cancelled"[..], BUDGET, &cancelled),
+    ] {
+        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::copy_from_slice(body));
+        let id = object.object_id();
+        store
+            .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await?;
+        let refused = store
+            .flush_before_publish(
+                crate::PublicationScope::Everything,
+                &mut AuthorityWork::new(budget, token),
+            )
+            .await;
+        assert!(refused.is_err());
+        // A refused flush retained nothing.
+        assert!(!survives_collections(&store, id).await?);
+    }
+    // A refused flush keeps the blob staged for the root's next publication,
+    // here on a fresh store whose staging holds no swept blob.
+    let store = LogicalObjectStore::new(Arc::clone(store.provider()))
+        .with_publication_root(acyclic_objects::RootId::new(b"next".to_vec())?);
+    let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"kept"));
+    let id = object.object_id();
+    store
+        .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
+        .await?;
+    let refused = store
+        .flush_before_publish(
+            crate::PublicationScope::Everything,
+            &mut AuthorityWork::new(exhausted, &cancel),
+        )
+        .await;
+    assert!(refused.is_err());
+    let _hold = store
+        .flush_before_publish(
+            crate::PublicationScope::Everything,
+            &mut AuthorityWork::new(BUDGET, &cancel),
+        )
+        .await?;
+    assert!(survives_collections(&store, id).await?);
+    Ok(())
+}

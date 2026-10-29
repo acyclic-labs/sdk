@@ -64,6 +64,14 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 const PAGE: usize = 1000;
 
+/// Why a root batch did not commit.
+enum Commit {
+    /// It may have: its keys stay.
+    Unknown,
+    /// It did not: its keys are removed.
+    Failed(Error),
+}
+
 /// A medium shared by many accounts. Each [`Account`] is isolated: equal bytes
 /// in two accounts are two blobs, and no account observes another's.
 pub struct Store<M> {
@@ -575,6 +583,37 @@ impl<M: Medium> Account<M> {
 
     fn index_key(&self, child: &Digest, tag: &str) -> String {
         format!("{}{tag}", self.index_prefix(child))
+    }
+
+    /// Indexes `references` under `tag`, flushes them with their closure,
+    /// then creates the root batch `key` that commits them. `Failed` leaves
+    /// the keys for the caller to remove; `Unknown` may have committed.
+    async fn commit_batch(
+        &self,
+        references: &[Digest],
+        tag: &str,
+        key: &str,
+        batch: Vec<u8>,
+    ) -> Result<(), Commit> {
+        match self.reference(references, tag).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return Err(Commit::Unknown),
+            Err(error) => return Err(Commit::Failed(error)),
+        }
+        // Delete consults only the index, so the closure and this batch's
+        // index keys are durable before the batch that commits them.
+        let index = references
+            .iter()
+            .map(|child| self.index_key(child, tag))
+            .collect();
+        self.flush_blobs(Some(references), index)
+            .await
+            .map_err(Commit::Failed)?;
+        match self.medium.create(key, batch.into()).await {
+            Ok(_) => Ok(()),
+            Err(MediumError::Ambiguous(_)) => Err(Commit::Unknown),
+            Err(error) => Err(Commit::Failed(medium(error))),
+        }
     }
 
     /// Removes `tag`'s index keys, once its holder is gone.
@@ -1414,31 +1453,36 @@ impl<M: Medium> crate::Blobs for Account<M> {
         }
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
+        self.medium
+            .allocate(references.len() as u64 * 32)
+            .map_err(medium)?;
         let batch = encode_batch(&references);
         // Each retain owns its batch and keys, so a concurrent release of an
         // equal batch never removes them.
         let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
         let tag = Self::batch_tag(root, &name);
-        match self.reference(&references, &tag).await {
-            Ok(Some(_)) => {}
-            Ok(None) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(error) => {
+        // The index-key vector is charged before any key is written, so a
+        // refused charge leaves nothing to clean up. Every key has one
+        // length: a fixed-width prefix and this tag.
+        let key = self.index_key(&references[0], &tag).len();
+        let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
+        self.medium.allocate(held).map_err(medium)?;
+        // Every write is withheld before the first key: n keys, then either
+        // their n removals or the closure flush, the batch and its flush. A
+        // refused budget leaves nothing behind, and removing the keys of a
+        // retain that failed is never refused.
+        let n = references.len() as u64;
+        self.medium
+            .reserve_writes(2 * n + 2, batch.len() as u64)
+            .map_err(medium)?;
+        let key = format!("{}{name}", self.root_prefix(root));
+        match self.commit_batch(&references, &tag, &key, batch).await {
+            Ok(()) => {}
+            Err(Commit::Unknown) => return Err(ErrorCode::OutcomeUnknown.into()),
+            Err(Commit::Failed(error)) => {
                 self.unreference(&references, &tag).await?;
                 return Err(error);
             }
-        }
-        // Delete consults only the index, so the closure and this batch's
-        // index keys are durable before the batch that commits them.
-        let index = references
-            .iter()
-            .map(|child| self.index_key(child, &tag))
-            .collect();
-        self.flush_blobs(Some(&references), index).await?;
-        let key = format!("{}{name}", self.root_prefix(root));
-        match self.medium.create(&key, batch.into()).await {
-            Ok(_) => {}
-            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(error) => return Err(medium(error)),
         }
         self.medium.flush(&[key]).await.map_err(moved)?;
         Ok(Retained {
@@ -1718,6 +1762,15 @@ impl<M: Medium> crate::Blobs for Account<M> {
         crate::NativeObjectsError,
     > {
         crate::native::put_batch(self, requests, meter)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        request: crate::ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<crate::ObjectsNativeFuture<'_, Retained>, crate::NativeObjectsError> {
+        crate::native::retain(self, request, meter)
     }
 }
 

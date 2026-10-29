@@ -2344,6 +2344,12 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
 struct Budget {
     limit: u64,
     held: std::sync::Mutex<(u64, u64)>,
+    cancelled: std::sync::atomic::AtomicBool,
+    /// Writes left, unbounded when `None`.
+    writes: std::sync::Mutex<Option<u64>>,
+    /// Whether a reservation withholds its writes; a hollow one charges
+    /// each reserved write as it happens, as if nothing was reserved.
+    withholds: bool,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2352,6 +2358,21 @@ impl Budget {
         Self {
             limit,
             held: std::sync::Mutex::new((0, 0)),
+            cancelled: std::sync::atomic::AtomicBool::new(false),
+            writes: std::sync::Mutex::new(None),
+            withholds: true,
+        }
+    }
+
+    /// Spends `count` writes, refused past the budget.
+    fn spend(&self, count: u64) -> std::io::Result<()> {
+        match &mut *self.writes.lock().unwrap() {
+            Some(left) if *left < count => Err(std::io::ErrorKind::QuotaExceeded.into()),
+            Some(left) => {
+                *left -= count;
+                Ok(())
+            }
+            None => Ok(()),
         }
     }
 
@@ -2376,21 +2397,42 @@ impl Budget {
 #[cfg(not(target_arch = "wasm32"))]
 impl acyclic_native_runtime::NativeReadMeter for Budget {
     fn check(&self) -> std::io::Result<()> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return Err(std::io::ErrorKind::Interrupted.into());
+        }
         Ok(())
     }
     fn reserve_operations(
         &self,
         _: acyclic_native_runtime::NativeOperationKind,
-        _: u64,
+        count: u64,
     ) -> std::io::Result<()> {
-        Ok(())
+        if self.withholds {
+            self.spend(count)
+        } else {
+            Ok(())
+        }
     }
-    fn cancel_reserved_operations(&self, _: acyclic_native_runtime::NativeOperationKind, _: u64) {}
+    fn cancel_reserved_operations(
+        &self,
+        _: acyclic_native_runtime::NativeOperationKind,
+        count: u64,
+    ) {
+        if self.withholds
+            && let Some(left) = &mut *self.writes.lock().unwrap()
+        {
+            *left += count;
+        }
+    }
     fn record_reserved_operation(
         &self,
         _: acyclic_native_runtime::NativeOperationKind,
     ) -> std::io::Result<()> {
-        Ok(())
+        if self.withholds {
+            Ok(())
+        } else {
+            self.spend(1)
+        }
     }
     fn admit_write_bytes(&self, _: usize) -> std::io::Result<()> {
         Ok(())
@@ -2454,13 +2496,14 @@ impl acyclic_native_runtime::NativeReadMeter for Budget {
         Ok(())
     }
     fn admit_read(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
+        self.check()
     }
     fn record_read(&self, _: usize) -> std::io::Result<()> {
         Ok(())
     }
     fn admit_write(&self, _: usize) -> std::io::Result<()> {
-        Ok(())
+        self.check()?;
+        self.spend(1)
     }
     fn record_write(&self, _: usize) -> std::io::Result<()> {
         Ok(())
@@ -2478,6 +2521,8 @@ struct Latent {
     inner: MemoryMedium,
     flight: std::sync::Mutex<(usize, usize)>,
     slow: std::sync::Mutex<Option<String>>,
+    /// Refuses any one engine allocation larger than this.
+    allocation: std::sync::Mutex<Option<u64>>,
 }
 
 impl Latent {
@@ -2556,6 +2601,14 @@ impl Medium for Latent {
         false
     }
     fn settle(&self) {}
+    fn allocate(&self, bytes: u64) -> Result<(), MediumError> {
+        match *self.allocation.lock().unwrap() {
+            Some(maximum) if bytes > maximum => {
+                Err(MediumError::Failed(std::io::ErrorKind::OutOfMemory.into()))
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2735,5 +2788,108 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
         matches!(&refused, Some(crate::NativeObjectsCause::Admission(error)) if error.kind() == std::io::ErrorKind::OutOfMemory),
         "{refused:?}"
     );
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_native_retain_runs_inside_the_callers_work() -> Result<(), Box<dyn std::error::Error>> {
+    for cancelled in [false, true] {
+        let store = Store::new(MemoryMedium::default());
+        let blobs = store.account(b"account")?;
+        let digest = blobs
+            .put(vec![7; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let budget = std::sync::Arc::new(Budget::new(u64::MAX));
+        let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request = crate::ObjectsNativeRequest::new(
+            (RootId::new(b"root".to_vec())?, vec![digest]),
+            (),
+            &meter,
+        )?;
+        let future = blobs.retain_native(request, std::sync::Arc::clone(&meter))?;
+        budget.cancelled.store(cancelled, Ordering::SeqCst);
+        let retained = future.await;
+        assert_eq!(retained.is_ok(), !cancelled);
+        if !cancelled {
+            // The batch body and its index key were charged while held.
+            assert!(budget.peak() >= (32 + std::mem::size_of::<String>()) as u64);
+        }
+        for _ in 0..3 {
+            blobs.collect().await?;
+        }
+        // Negative control: a retain its caller cancelled leaves no root.
+        assert_eq!(blobs.head(digest).await.is_ok(), !cancelled);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn a_retain_short_of_writes_writes_no_index_key() -> Result<(), Box<dyn std::error::Error>> {
+    // One reference with one write left: the index key fits, the root batch
+    // does not. Negative control: a hollow reservation writes the key, its
+    // batch is refused, and the key pins the blob with no batch to release.
+    for withholds in [true, false] {
+        let store = Store::new(MemoryMedium::default());
+        let blobs = store.account(b"account")?;
+        let digest = blobs
+            .put(vec![7; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        let root = RootId::new(b"root".to_vec())?;
+        let budget = std::sync::Arc::new(Budget {
+            withholds,
+            ..Budget::new(u64::MAX)
+        });
+        *budget.writes.lock().unwrap() = Some(1);
+        let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
+        let request = crate::ObjectsNativeRequest::new((root.clone(), vec![digest]), (), &meter)?;
+        let retained = blobs
+            .retain_native(request, std::sync::Arc::clone(&meter))?
+            .await;
+        assert!(retained.is_err());
+        blobs.release(&root).await?;
+        for _ in 0..3 {
+            blobs.collect().await?;
+        }
+        assert_eq!(blobs.head(digest).await.is_ok(), !withholds);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_retain_refused_its_memory_writes_no_index_key() -> Result<(), Box<dyn std::error::Error>>
+{
+    for refused in [false, true] {
+        let store = Store::new(Latent::default());
+        let blobs = store.account(b"account")?;
+        let digest = blobs
+            .put(vec![7; 8].into(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("unknown")?
+            .digest;
+        // The batch body fits; its index-key vector does not.
+        if refused {
+            *store.medium().allocation.lock().unwrap() = Some(32);
+        }
+        let retained = blobs
+            .retain(&RootId::new(b"root".to_vec())?, vec![digest])
+            .await;
+        assert_eq!(retained.is_ok(), !refused);
+        *store.medium().allocation.lock().unwrap() = None;
+        for _ in 0..3 {
+            blobs.collect().await?;
+        }
+        // A refused retain pins nothing: the blob is swept. Negative
+        // control: the admitted retain keeps it.
+        assert_eq!(blobs.head(digest).await.is_ok(), !refused);
+    }
     Ok(())
 }

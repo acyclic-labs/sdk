@@ -1,10 +1,10 @@
 //! Original-meter producers over the same engine paths as ordinary calls.
 use crate::{
-    Account, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
-    Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
-    native_future, native_input_meter,
+    Account, Blobs, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
+    Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, Retained,
+    RootId, native_future, native_input_meter,
 };
-use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
+use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,6 +20,8 @@ pub(crate) struct Metered<M> {
     meter: Meter,
     held: Mutex<ReadAllocation>,
     refusal: Mutex<Option<std::io::Error>>,
+    /// Writes withheld for this call, and the bytes they may carry.
+    reserved: Mutex<(u64, u64)>,
 }
 
 impl<M> Metered<M> {
@@ -29,7 +31,43 @@ impl<M> Metered<M> {
             inner,
             meter,
             refusal: Mutex::new(None),
+            reserved: Mutex::new((0, 0)),
         }
+    }
+
+    /// Admits one write of at most `bytes`: from the reservation while it
+    /// lasts, else from the budget. Whether the reservation paid. A reserved
+    /// write still honors cancellation, except a removal: one is only ever
+    /// the cleanup of a write that did not commit, so it always proceeds.
+    fn admit_write(&self, bytes: usize, cleanup: bool) -> Result<bool, MediumError> {
+        let mut reserved = self.reserved.lock().unwrap_or_else(PoisonError::into_inner);
+        if reserved.0 == 0 || reserved.1 < bytes as u64 {
+            drop(reserved);
+            return self.charge(self.meter.admit_write(bytes)).map(|()| false);
+        }
+        if !cleanup {
+            self.charge(self.meter.check())?;
+        }
+        reserved.0 -= 1;
+        reserved.1 -= bytes as u64;
+        drop(reserved);
+        self.charge(
+            self.meter
+                .record_reserved_operation(NativeOperationKind::Write),
+        )?;
+        Ok(true)
+    }
+
+    fn record_write(&self, paid: bool, maximum: usize, written: usize) -> Result<(), MediumError> {
+        self.charge(if paid {
+            self.meter.record_reserved_bytes(
+                NativeOperationKind::Write,
+                maximum as u64,
+                written as u64,
+            )
+        } else {
+            self.meter.record_write(written)
+        })
     }
 
     /// Keeps the meter's own refusal for the caller; the engine sees a failure.
@@ -70,14 +108,14 @@ impl<M> Metered<M> {
 #[async_trait::async_trait]
 impl<M: Medium> Medium for Metered<M> {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        self.charge(self.meter.admit_write(bytes.len()))?;
+        let paid = self.admit_write(bytes.len(), false)?;
         let created = self.inner.create(key, bytes.clone()).await;
         let written = if matches!(created, Ok(true)) {
             bytes.len()
         } else {
             0
         };
-        self.charge(self.meter.record_write(written))?;
+        self.record_write(paid, bytes.len(), written)?;
         created
     }
 
@@ -101,9 +139,9 @@ impl<M: Medium> Medium for Metered<M> {
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
-        self.charge(self.meter.admit_write(0))?;
+        let paid = self.admit_write(0, true)?;
         let removed = self.inner.remove(key).await;
-        self.charge(self.meter.record_write(0))?;
+        self.record_write(paid, 0, 0)?;
         removed
     }
 
@@ -113,21 +151,21 @@ impl<M: Medium> Medium for Metered<M> {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<bool, MediumError> {
-        self.charge(self.meter.admit_write(bytes.len()))?;
+        let paid = self.admit_write(bytes.len(), false)?;
         let replaced = self.inner.replace(key, expected, bytes.clone()).await;
         let written = if matches!(replaced, Ok(true)) {
             bytes.len()
         } else {
             0
         };
-        self.charge(self.meter.record_write(written))?;
+        self.record_write(paid, bytes.len(), written)?;
         replaced
     }
 
     async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
-        self.charge(self.meter.admit_write(0))?;
+        let paid = self.admit_write(0, false)?;
         let flushed = self.inner.flush(keys).await;
-        self.charge(self.meter.record_write(0))?;
+        self.record_write(paid, 0, 0)?;
         flushed
     }
 
@@ -144,9 +182,9 @@ impl<M: Medium> Medium for Metered<M> {
     }
 
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        self.charge(self.meter.admit_write(0))?;
+        let paid = self.admit_write(0, false)?;
         let removed = self.inner.remove_if(key, expected).await;
-        self.charge(self.meter.record_write(0))?;
+        self.record_write(paid, 0, 0)?;
         removed
     }
 
@@ -169,6 +207,41 @@ impl<M: Medium> Medium for Metered<M> {
 
     fn allocate(&self, bytes: u64) -> Result<(), MediumError> {
         self.hold(usize::try_from(bytes).unwrap_or(usize::MAX))
+    }
+
+    fn reserve_writes(&self, operations: u64, bytes: u64) -> Result<(), MediumError> {
+        self.charge(
+            self.meter
+                .reserve_operations(NativeOperationKind::Write, operations),
+        )?;
+        if let Err(error) = self.charge(self.meter.reserve_bytes(NativeOperationKind::Write, bytes))
+        {
+            self.meter
+                .cancel_reserved_operations(NativeOperationKind::Write, operations);
+            return Err(error);
+        }
+        let mut reserved = self.reserved.lock().unwrap_or_else(PoisonError::into_inner);
+        reserved.0 += operations;
+        reserved.1 += bytes;
+        Ok(())
+    }
+}
+
+impl<M> Drop for Metered<M> {
+    /// Returns what the call's reservation did not spend.
+    fn drop(&mut self) {
+        let (operations, bytes) = *self
+            .reserved
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if operations > 0 {
+            self.meter
+                .cancel_reserved_operations(NativeOperationKind::Write, operations);
+        }
+        if bytes > 0 {
+            self.meter
+                .cancel_reserved_bytes(NativeOperationKind::Write, bytes);
+        }
     }
 }
 
@@ -207,6 +280,20 @@ fn checked<T, M>(
 ) -> Result<T, NativeObjectsError> {
     medium.meter.check()?;
     value.map_err(|error| medium.cause(error))
+}
+
+pub(crate) fn retain<'a, M: Medium>(
+    account: &'a Account<M>,
+    request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+    meter: Meter,
+) -> Result<ObjectsNativeFuture<'a, Retained>, NativeObjectsError> {
+    native_input_meter(&meter, &request)?;
+    let ((root, references), custody) = request.split();
+    let (medium, account) = metered(account, &meter);
+    native_future(&meter, async move {
+        let _custody = custody;
+        checked(&medium, account.retain(&root, references).await)
+    })
 }
 
 pub(crate) fn get<'a, M: Medium>(
