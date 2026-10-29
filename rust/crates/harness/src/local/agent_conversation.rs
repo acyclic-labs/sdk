@@ -61,7 +61,13 @@ pub enum Sent {
 /// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
 /// closed conversation, is a refusal; any other failure after the request
 /// left may have committed it.
-fn sent(exchange: std::result::Result<AgentReply, AgentExchangeError>) -> Result<Sent> {
+fn sent(exchange: super::endpoint::Exchange) -> Result<Sent> {
+    // A command that never left, such as one over the command limit,
+    // committed nothing: it is refused.
+    let exchange = match exchange {
+        Ok(exchange) => exchange,
+        Err(unsent) => return Ok(Sent::Refused(unsent.to_string())),
+    };
     match exchange {
         Ok(AgentReply::Delivered {
             delivery: Delivered::Committed { inbox },
@@ -175,12 +181,17 @@ impl Conversation {
     /// When the prompt cannot be prepared, or the endpoint answers another
     /// command.
     pub async fn deliver(&self, id: &str, prompt: &str) -> Result<Sent> {
+        // An id that names no intent never leaves either.
+        let intent = match IntentId::try_from(id) {
+            Ok(intent) => intent,
+            Err(error) => return Ok(Sent::Refused(error.to_string())),
+        };
         let command = AgentCommand::Prompt {
             agent: self.agent().clone(),
-            id: intent(id)?,
+            id: intent,
             body: ModelContent::Text(prompt.to_owned()),
         };
-        let sent = sent(self.connection.exchange(&command).await?)?;
+        let sent = sent(self.connection.exchange(&command).await)?;
         tracing::debug!(id, ?sent, "message sent");
         Ok(sent)
     }
@@ -449,6 +460,7 @@ fn finished(phase: &Phase) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_harness_client::CommandError;
     use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
 
     #[test]
@@ -458,17 +470,23 @@ mod tests {
             reason: "Unknown command: /gone".into(),
         });
         assert_eq!(
-            sent(Err(refused))?,
+            sent(Ok(Err(refused)))?,
             Sent::Refused("Unknown command: /gone".into())
         );
+        // A command that never left, such as one over the command limit.
         assert_eq!(
-            sent(Ok(AgentReply::Delivered {
+            sent(Err(CommandError::Capacity))?,
+            Sent::Refused(CommandError::Capacity.to_string())
+        );
+        assert_eq!(
+            sent(Ok(Ok(AgentReply::Delivered {
                 delivery: Delivered::Committed { inbox: 4 },
-            }))?,
+            })))?,
             Sent::Accepted(4)
         );
-        // Negative controls: an unknown commit outcome, and a session that
-        // failed after the request left, may each have committed it.
+        // Negative controls: an unknown commit outcome, a session that
+        // failed after the request left, and a reply that failed to decode
+        // may each have committed it.
         let request = CommitRequest {
             deadline_unix_millis: None,
             conditions: Vec::new(),
@@ -477,11 +495,17 @@ mod tests {
         };
         let unknown = AgentControlFailure::Unknown(Box::new(request));
         assert_eq!(
-            sent(Err(AgentExchangeError::Control(unknown)))?,
+            sent(Ok(Err(AgentExchangeError::Control(unknown))))?,
             Sent::Unknown
         );
         assert_eq!(
-            sent(Err(AgentExchangeError::Session(StreamError::Unavailable)))?,
+            sent(Ok(Err(AgentExchangeError::Session(
+                StreamError::Unavailable
+            ))))?,
+            Sent::Unknown
+        );
+        assert_eq!(
+            sent(Ok(Err(AgentExchangeError::Command(CommandError::Invalid))))?,
             Sent::Unknown
         );
         Ok(())

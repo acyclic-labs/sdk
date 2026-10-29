@@ -6,7 +6,7 @@
 use super::{LocalHarness, storage};
 use crate::{Error, Result, agent::AgentPath};
 use acyclic_harness_client::{
-    AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
+    AgentCommand, AgentControls, AgentExchangeError, AgentReply, CommandError, PreparedCommand,
 };
 use acyclic_stream::session::Client;
 use std::sync::Arc;
@@ -43,10 +43,7 @@ impl Connection {
     ///
     /// # Errors
     /// Only when `command` cannot be prepared, before anything is sent.
-    pub(super) async fn exchange(
-        &self,
-        command: &AgentCommand,
-    ) -> Result<std::result::Result<AgentReply, AgentExchangeError>> {
+    pub(super) async fn exchange(&self, command: &AgentCommand) -> Exchange {
         exchanged(&self.controls, command).await
     }
 
@@ -130,18 +127,21 @@ impl Connection {
 }
 
 async fn execute(controls: &AgentControls, command: &AgentCommand) -> Result<AgentReply> {
-    exchanged(controls, command).await?.map_err(exchange)
+    exchanged(controls, command)
+        .await
+        .map_err(exchange)?
+        .map_err(exchange)
 }
 
-/// `command`'s exchange with its failure still typed: a decoded refusal, an
-/// unknown commit outcome, or a session failure. Only preparing it fails here.
-async fn exchanged(
-    controls: &AgentControls,
-    command: &AgentCommand,
-) -> Result<std::result::Result<AgentReply, AgentExchangeError>> {
-    let prepared = controls
-        .prepare(PreparedCommand::new(command).map_err(exchange)?)
-        .map_err(exchange)?;
+/// A command's exchange with its failure still typed. `Err` is a command
+/// that never left: preparing it failed, so it committed nothing. `Ok` holds
+/// what the sent request returned: a reply, a decoded refusal, an unknown
+/// commit outcome or a session failure.
+pub(super) type Exchange =
+    std::result::Result<std::result::Result<AgentReply, AgentExchangeError>, CommandError>;
+
+async fn exchanged(controls: &AgentControls, command: &AgentCommand) -> Exchange {
+    let prepared = controls.prepare(PreparedCommand::new(command)?)?;
     Ok(controls.execute(&prepared).await)
 }
 

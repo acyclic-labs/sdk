@@ -763,6 +763,26 @@ async fn a_replayed_command_answers_from_its_first_delivery_after_the_command_is
 }
 
 #[tokio::test]
+async fn an_oversized_prompt_is_refused_and_the_conversation_goes_on() -> Result<()> {
+    use crate::local::agent_conversation::Sent;
+    let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    let client = conversation(&harness).await?;
+    let oversized = "x".repeat(acyclic_harness_client::MAX_AGENT_COMMAND_BYTES);
+    // Over the command limit, the prompt never leaves: it is refused, not
+    // an error that ends the caller's stream.
+    assert!(matches!(
+        client.deliver("oversized", &oversized).await?,
+        Sent::Refused(_)
+    ));
+    // Negative control: the next prompt on the same conversation commits.
+    assert!(matches!(
+        client.deliver("next", "hello").await?,
+        Sent::Accepted(_)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
     use crate::model::{ModelContent, ModelContentPart};
     const MENTIONS: usize = 1_000;
