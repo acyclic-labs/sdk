@@ -113,7 +113,8 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
         };
         // A cancellation during the accepted native wait must release its newly
         // acquired lock before starting any recovery or destination mutation.
-        crate::demand::SourceDemandReadWork::check(work).map_err(MaterializeError::from)?;
+        work.admit(WorkCounters::UNCHARGED)
+            .map_err(MaterializeError::from)?;
         Ok(lock)
     })
 }
