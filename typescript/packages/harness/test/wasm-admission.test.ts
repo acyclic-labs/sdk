@@ -69,6 +69,13 @@ test("browser and frontend initialization share the retained WASM ABI", async ()
   await ensureClientWasm();
 });
 
+test("browser admission refuses an artifact without its Machines workspace binding", () => {
+  const missing = { ...raw };
+  delete missing.wasmagentregistry_bindMachinesWorkspace;
+  expect(() => assertBrowserWasmExports(missing)).toThrow();
+  expect(() => assertBrowserWasmExports(raw)).not.toThrow();
+});
+
 test("client admission requires both Rust JSON directions before dispatch", () => {
   for (const symbol of ["decodeClientJson", "encodeCanonicalJson", "discoverAgentControls"] as const) {
     for (const actual of [wrappers, raw]) {
