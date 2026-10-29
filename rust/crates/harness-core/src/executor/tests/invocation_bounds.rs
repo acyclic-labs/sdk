@@ -66,7 +66,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
             RuntimeScope::new(
                 Capabilities::new(["tool:call:example.echo"]),
                 Limits {
-                    file_bytes: maximum,
+                    file_bytes: Some(maximum),
                     render_bytes: Some(render),
                     ..Limits::default()
                 },
@@ -75,7 +75,7 @@ async fn saved_invocation_envelope_is_bounded_before_stock_journal_io_or_executi
         )?;
         // Exercise either side of the effective min(stock, scope) limit.
         if !bare_at_limit {
-            executor.limits.file_bytes = maximum;
+            executor.limits.file_bytes = Some(maximum);
         }
         let mut prior = vec![ModelMessage {
             role: ModelRole::Assistant,
