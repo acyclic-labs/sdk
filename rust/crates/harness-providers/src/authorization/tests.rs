@@ -143,9 +143,11 @@ fn specification(origin: &str, authentication: Authentication) -> crate::Provide
 
 #[tokio::test]
 async fn protected_references_rotate_per_exchange_and_never_escape_the_host() -> Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:15484")
-        .await
-        .unwrap();
+    let listener = (15400..15500)
+        .find_map(|port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).ok())
+        .expect("no available loopback fixture port in 15400..15500");
+    listener.set_nonblocking(true).unwrap();
+    let listener = tokio::net::TcpListener::from_std(listener).unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let secrets = Arc::new(Mutex::new(Secrets {
         generation: 1,
@@ -325,7 +327,10 @@ async fn protected_references_rotate_per_exchange_and_never_escape_the_host() ->
     ));
     registry.register(
         "openai".into(),
-        specification("http://127.0.0.1:15485", spec.authentication.clone()),
+        specification(
+            &origin.replacen("http://", "https://", 1),
+            spec.authentication.clone(),
+        ),
     )?;
     assert!(matches!(
         registry.resolve("openai/gpt-5"),

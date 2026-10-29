@@ -163,8 +163,10 @@ async fn http_failure(
     }
     let mut prefix = Vec::new();
     while prefix.len() < EXCERPT_BYTES {
-        let Some(Ok(chunk)) = body.next().await else {
-            break;
+        let chunk = match body.next().await {
+            Some(Ok(chunk)) => chunk,
+            Some(Err(error)) => return error,
+            None => break,
         };
         let room = EXCERPT_BYTES - prefix.len();
         prefix.extend_from_slice(chunk.get(..room).unwrap_or(&chunk));

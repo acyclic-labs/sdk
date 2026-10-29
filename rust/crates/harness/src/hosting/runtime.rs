@@ -52,15 +52,15 @@ impl Runtime {
     /// Waits for the actual runtime failure or the loss of its task producer.
     /// Each observer shares the same retained failure; no polling or history.
     pub fn completion(&self) -> impl Future<Output = Result<()>> + Send + 'static {
-        let mut failure = self.failure.clone();
+        let failure = self.failure.clone();
+        let mut lifetime = self.lifetime.clone();
         async move {
-            let reason = match failure.wait_for(Option::is_some).await {
-                Ok(reason) => reason.as_ref().map_or_else(
-                    || "Actors runtime completion producer closed".into(),
-                    Clone::clone,
-                ),
-                Err(_) => "Actors runtime completion producer closed".into(),
-            };
+            // Cancellation of every active delivery precedes endpoint closure.
+            let _ = lifetime.changed().await;
+            let reason = failure.borrow().as_ref().map_or_else(
+                || "Actors runtime completion producer closed".into(),
+                Clone::clone,
+            );
             Err(Error::Storage(reason))
         }
     }
