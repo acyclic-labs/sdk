@@ -4,6 +4,7 @@ use acyclic_native_runtime::{
     CaptureSchedule, ControlledCapture, OwnedCaptureInput, ProcessControl, ProcessCustody,
     ProcessTree, TaskSpawner,
 };
+use futures::FutureExt;
 use std::{
     io,
     path::PathBuf,
@@ -23,7 +24,7 @@ pub struct LocalOptions {
 /// with the host user's OS privileges; this is not a tenant isolation boundary.
 /// Lifecycle and selected-volume admission remain with the Machine owner.
 pub struct LocalMachine {
-    id: MachineId,
+    pub(super) id: MachineId,
     options: Arc<LocalOptions>,
 }
 
@@ -73,12 +74,13 @@ impl LocalMachine {
     pub async fn exec<H: CaptureHandler>(
         &self,
         command: ExecCommand,
-        handler: H,
+        mut handler: H,
     ) -> LocalExecution<H> {
         let machine = self.id;
         let (deadline, maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,
             Err(error) => {
+                handler.retired(true);
                 return LocalExecution(Output::failed(
                     machine,
                     error,
@@ -111,7 +113,7 @@ impl LocalMachine {
                         .current_dir(
                             command
                                 .cwd
-                                .map(PathBuf::from)
+                                .map(|cwd| options.cwd.join(cwd))
                                 .as_ref()
                                 .unwrap_or(&options.cwd),
                         )
@@ -140,24 +142,30 @@ impl LocalMachine {
                         input,
                         handler,
                     )),
-                    Err(failure) => Err((
-                        match failure {
-                            StartFailure::Refused(error) => ProviderError::Rejected(format!(
-                                "local command refused before spawn: {error}; recovery: restore original workspace authority before a new command"
-                            )),
-                            StartFailure::Dispatched => {
-                                ProviderError::CommandIndeterminate(machine)
-                            }
-                        },
-                        Some(handler.into_inner()),
-                    )),
+                    Err(failure) => {
+                        handler.retired(matches!(&failure, StartFailure::Refused(_)));
+                        Err((
+                            match failure {
+                                StartFailure::Refused(error) => ProviderError::Rejected(format!(
+                                    "local command refused before spawn: {error}; recovery: restore original workspace authority before a new command"
+                                )),
+                                StartFailure::Dispatched => {
+                                    ProviderError::CommandIndeterminate(machine)
+                                }
+                            },
+                            Some(handler.into_inner()),
+                        ))
+                    }
                 }
             },
             None,
         );
         let result = match submitted {
-            Ok(submitted) => submitted
+            Ok(submitted) => std::panic::AssertUnwindSafe(submitted)
+                .catch_unwind()
                 .await
+                .ok()
+                .and_then(Result::ok)
                 .unwrap_or(Err((ProviderError::CommandIndeterminate(machine), None))),
             Err(_) => Err((ProviderError::CommandIndeterminate(machine), None)),
         };
@@ -180,13 +188,6 @@ fn admit(
         .ok_or_else(|| ProviderError::Invalid("local command deadline overflow; recovery: supply a representable original timeout".into()))?;
     let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
-    if command
-        .cwd
-        .as_ref()
-        .is_some_and(|cwd| !std::path::Path::new(cwd).is_absolute())
-    {
-        return Err(ProviderError::Invalid("local command directory is relative; recovery: resolve it under the original workspace before dispatch".into()));
-    }
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),
         None => ProcessControl::unbounded(),

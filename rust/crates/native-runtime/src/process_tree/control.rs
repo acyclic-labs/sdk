@@ -123,6 +123,9 @@ impl<H: CaptureHandler> CaptureHandler for ControlledCapture<H> {
     fn observe(&mut self, output: ProcessOutput<'_>) -> io::Result<ProcessInput> {
         self.inner.observe(output)
     }
+    fn retired(&mut self, cleanup_completed: bool) {
+        self.inner.retired(cleanup_completed);
+    }
 }
 
 #[cfg(test)]

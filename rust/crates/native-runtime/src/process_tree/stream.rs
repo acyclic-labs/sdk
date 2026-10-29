@@ -53,10 +53,7 @@ impl<H: CaptureHandler> Capture<H> {
     fn finish(mut self, result: io::Result<()>) -> CaptureOutcome<H> {
         let result = self.pump.finish(&mut self.tree, result, None);
         drop(self.tree);
-        CaptureOutcome {
-            handler: self.handler,
-            result,
-        }
+        CaptureOutcome::new(self.handler, result)
     }
 }
 

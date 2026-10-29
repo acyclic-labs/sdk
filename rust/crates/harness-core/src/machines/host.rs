@@ -8,6 +8,19 @@ pub struct MachinesHost {
 }
 
 impl MachinesHost {
+    /// Constructs the same task tool binding for local and hosted providers.
+    /// The Machine and volume are the platform's original admitted selection.
+    pub fn workspace(
+        &self,
+        machine: MachineId,
+        volume: &crate::conversation::VolumeRef,
+        signed: crate::core::Scope,
+        verifier: crate::core::AuthorityVerifier,
+    ) -> Result<super::MachinesWorkspace> {
+        let sandbox = SandboxRef::new(self.provider_ref.clone(), machine.as_bytes().into(), None)?;
+        super::MachinesWorkspace::new(self.clone(), sandbox, volume, signed, verifier)
+    }
+
     /// Binds one explicit provider implementation and immutable provider identity.
     pub fn new(provider: Arc<dyn MachinesProvider>, provider_ref: ProviderRef) -> Result<Self> {
         provider_ref.validate(&mut None)?;

@@ -11,7 +11,11 @@ pub struct FileAccess {
 impl FileAccess {
     /// Paths address the admitted guest, never the client filesystem.
     pub fn new(path: String, offset: u64, deadline_unix_ms: u64) -> Result<Self, ProviderError> {
-        if !path.starts_with('/') || path.contains('\0') || deadline_unix_ms == 0 {
+        let bytes = path.as_bytes();
+        let absolute = path.starts_with('/')
+            || path.starts_with("\\\\")
+            || matches!(bytes, [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic());
+        if !absolute || path.contains('\0') || deadline_unix_ms == 0 {
             return Err(ProviderError::Invalid("guest file admission failed; recovery: supply an absolute NUL-free guest path and the original positive deadline".into()));
         }
         Ok(Self {

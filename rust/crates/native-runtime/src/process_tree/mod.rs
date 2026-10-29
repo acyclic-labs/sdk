@@ -876,7 +876,7 @@ impl ProcessTree {
                 };
                 let result = pump.finish(&mut tree, result, None);
                 drop(tree);
-                CaptureOutcome { handler, result }
+                CaptureOutcome::new(handler, result)
             },
             None,
         )?
@@ -916,17 +916,14 @@ impl ProcessTree {
                 Err(error) => {
                     let result = pump.finish(&mut self, Err(error), None);
                     drop(self);
-                    Err(CaptureOutcome { handler, result })
+                    Err(CaptureOutcome::new(handler, result))
                 }
             },
             Err(failure) => {
                 // Cleanup of an unstarted capture may block; it runs on the
                 // pool like every other turn.
                 drop(self);
-                Err(CaptureOutcome {
-                    handler,
-                    result: Err(failure),
-                })
+                Err(CaptureOutcome::new(handler, Err(failure)))
             }
         }
     }

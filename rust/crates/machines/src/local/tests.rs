@@ -101,9 +101,10 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
         assert!(exit.is_none());
         let original = buffers.lock().unwrap().pop_front().unwrap();
         assert_eq!(original, (is_stderr, bytes.as_ptr() as usize, bytes.len()));
+        let copied = bytes.clone();
         assert_ne!(
             original.1,
-            bytes.clone().as_ptr() as usize,
+            copied.as_ptr() as usize,
             "copying fails the same native-buffer oracle"
         );
         destination.extend(bytes);
@@ -232,9 +233,10 @@ async fn public_output_moves_native_buffers_and_preserves_terminal_cleanup() -> 
             assert!(!terminal);
             let original = buffers.lock().unwrap().pop_front().unwrap();
             assert_eq!(original, (is_stderr, bytes.as_ptr() as usize, bytes.len()));
+            let copied = bytes.clone();
             assert_ne!(
                 original.1,
-                bytes.clone().as_ptr() as usize,
+                copied.as_ptr() as usize,
                 "copying transport fails identity"
             );
             destination.extend_from_slice(&bytes);

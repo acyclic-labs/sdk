@@ -27,7 +27,10 @@ pub const PLATFORM: ShellSpec = ShellSpec {
 
 /// Unix hosts retain the bash command language.
 #[cfg(not(windows))]
-pub const PLATFORM: ShellSpec = ShellSpec {
+pub const PLATFORM: ShellSpec = BASH;
+
+/// Bash contract for a Linux or macOS Machine, regardless of the client OS.
+pub const BASH: ShellSpec = ShellSpec {
     name: "shell",
     description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view. Use bash syntax and Unix paths. No OS sandbox in release 1; writes outside the task view are not captured",
     executables: &["bash"],

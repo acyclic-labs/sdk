@@ -6,6 +6,8 @@ use std::task::{Context, Poll};
 
 mod process;
 pub use process::{LocalExecution, LocalMachine, LocalOptions};
+mod provider;
+pub use provider::provider;
 
 struct Output<H: CaptureHandler, C> {
     machine: MachineId,
@@ -133,5 +135,7 @@ pub fn output<H: CaptureHandler>(
     Box::pin(Output::new(machine, capture, std::convert::identity))
 }
 
+#[cfg(test)]
+mod provider_tests;
 #[cfg(test)]
 mod tests;

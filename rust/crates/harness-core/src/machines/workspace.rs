@@ -10,7 +10,7 @@ use crate::{
 use acyclic_machines::{ExecCommand, capture_exec};
 use acyclic_stream::BoxProviderFuture;
 
-/// Shell executor for one explicitly admitted Linux machine and volume.
+/// Shell executor for one explicitly admitted machine and volume.
 /// File tools retain the task's existing authenticated content bindings.
 pub struct MachinesWorkspace {
     host: MachinesHost,
@@ -19,6 +19,8 @@ pub struct MachinesWorkspace {
     verifier: AuthorityVerifier,
     read: String,
     write: String,
+    executable: String,
+    shell: &'static acyclic_host_platform::shell::ShellSpec,
 }
 
 impl MachinesWorkspace {
@@ -50,7 +52,25 @@ impl MachinesWorkspace {
             verifier,
             read,
             write,
+            executable: "bash".into(),
+            shell: &acyclic_host_platform::shell::BASH,
         })
+    }
+
+    /// Selects the actual Machine's shell from its trusted hosting preset.
+    /// Native hosts pass their already-resolved executable and PLATFORM spec;
+    /// hosted Linux defaults use BASH. The task executor remains the same.
+    pub fn with_shell(
+        mut self,
+        executable: String,
+        shell: &'static acyclic_host_platform::shell::ShellSpec,
+    ) -> Result<Self> {
+        if executable.is_empty() || executable.contains('\0') {
+            return Err(Error::Invalid("Machine shell selection failed; recovery: bind the host's original resolved executable".into()));
+        }
+        self.executable = executable;
+        self.shell = shell;
+        Ok(self)
     }
 
     /// Streams one shell invocation, preserving channel bytes and terminal status.
@@ -73,15 +93,18 @@ impl MachinesWorkspace {
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
         let expiry = task_deadline.map_or(expiry, |deadline| deadline.min(expiry));
         let timeout = input.timeout_ms()?;
-        let arguments = acyclic_host_platform::shell::arguments("bash")
-            .ok_or_else(|| Error::Invalid("Linux shell contract is absent; recovery: restore the shared bash invocation table".into()))?;
-        let argv = std::iter::once("bash".into())
-            .chain(arguments.iter().map(|value| (*value).into()))
-            .chain(std::iter::once(input.command))
+        let (source, stdin) = match self.shell.stdin_bootstrap {
+            Some(bootstrap) => (bootstrap.to_owned(), input.command.into_bytes()),
+            None => (input.command, Vec::new()),
+        };
+        let argv = std::iter::once(self.executable.clone())
+            .chain(self.shell.arguments.iter().map(|value| (*value).into()))
+            .chain(std::iter::once(source))
             .collect();
         let mut command = ExecCommand::new(argv, timeout)
             .map_err(|error| map_error(error, None))?
             .with_expiry(expiry)
+            .with_stdin(stdin)
             .with_output_limit(maximum_output);
         if let Some(cwd) = input.cwd.filter(|value| !value.is_empty()) {
             command = command

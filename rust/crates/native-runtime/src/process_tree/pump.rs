@@ -114,6 +114,10 @@ pub trait CaptureHandler: Send + 'static {
     fn check(&mut self) -> io::Result<()>;
     /// Observes newly captured output, returning exchange input.
     fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput>;
+    /// Releases live execution admission after the original physical cleanup.
+    /// Observation may retain this handler longer; it cannot delay retirement.
+    /// Owner loss skips this callback and must remain an unproved retirement.
+    fn retired(&mut self, _cleanup_completed: bool) {}
 }
 
 /// A finished async capture: its handler and the bounded result. A tree
@@ -124,6 +128,17 @@ pub struct CaptureOutcome<H> {
     pub handler: H,
     /// The bounded output, or the failure with partial output.
     pub result: Result<Output, ProcessCaptureFailure>,
+}
+
+impl<H: CaptureHandler> CaptureOutcome<H> {
+    pub(super) fn new(mut handler: H, result: Result<Output, ProcessCaptureFailure>) -> Self {
+        handler.retired(
+            result
+                .as_ref()
+                .map_or_else(|failure| failure.cleanup_completed, |_| true),
+        );
+        Self { handler, result }
+    }
 }
 
 pub(super) struct Pump<'a> {
