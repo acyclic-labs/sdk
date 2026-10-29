@@ -126,13 +126,16 @@ fn batched_capture_budget_is_cumulative_across_paths() -> Result<(), Box<dyn std
             assert!(single_bytes > 0);
         } else {
             let error = result.expect_err("capture ceiling ignored");
-            assert!(matches!(
-                error.error,
-                crate::CaptureError::Kernel(error) if matches!(*error,
-                    FsError::Work(_)
-                        | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
-                )
-            ));
+            assert!(
+                matches!(
+                    &error.error,
+                    crate::CaptureError::Kernel(error) if matches!(error.as_ref(),
+                        FsError::Work(_)
+                            | FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(_))
+                    )
+                ),
+                "capture ceiling lost its typed refusal: {error:?}"
+            );
             assert!(!candidate.has_pending_mutations());
             if count == 0 {
                 assert_eq!(work.receipt().source_entries_visited, 0);
