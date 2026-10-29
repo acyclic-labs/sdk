@@ -1,5 +1,5 @@
-//! Ordinary files have no upload receipt. Authenticate their descriptor with
-//! bounded streaming reads; never allocate or slice a whole-file buffer.
+//! Authenticate retained file descriptors with bounded streaming reads.
+//! Metadata recovery and ordinary ranges share the same immutable-file verifier.
 use super::*;
 use sha2::{Digest as _, Sha256};
 
@@ -15,7 +15,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
-            "range file length differs from its descriptor",
+            "file length differs from its descriptor",
         ));
     }
     let mut digest = Sha256::new();
@@ -41,7 +41,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             return Err(stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
-                "range authentication did not make exact progress",
+                "file authentication did not make exact progress",
             ));
         }
         io.charge(WorkCounters {
@@ -57,7 +57,7 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
-            "range file content differs from its descriptor",
+            "file content differs from its descriptor",
         ));
     }
     Ok(())
