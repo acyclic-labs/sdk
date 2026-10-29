@@ -478,8 +478,8 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     let (store, provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
     // Every new file restages the same default metadata; the blob store
-    // dedupes it by digest, so the work per publication stays constant
-    // however many came before.
+    // dedupes it by digest and a repeat put writes nothing, so the work per
+    // publication is only its fresh body however many came before.
     let (shared, shared_bytes) = blob(OwnedBytes::from_static(b"shared metadata"));
     let publish = |index: usize| {
         let store = &store;
@@ -528,7 +528,7 @@ async fn each_publication_writes_only_what_is_not_already_durable()
         let (fresh, work) = publish(index).await?;
         assert_eq!(work.backend_write_operations, 1);
         assert_eq!(work.backend_read_operations, 0);
-        assert_eq!(work.object_bytes_written, 15 + 14);
+        assert_eq!(work.object_bytes_written, 14);
         assert!(store.index().objects.is_empty());
         published.push(fresh);
     }

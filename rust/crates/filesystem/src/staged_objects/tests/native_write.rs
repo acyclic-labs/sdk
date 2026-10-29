@@ -217,6 +217,13 @@ struct CancelAfterNativePut {
 }
 
 impl AsyncObjectStore for CancelAfterNativePut {
+    async fn flush_before_publish(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::PublicationHold, crate::ObjectStoreError> {
+        self.inner.flush_before_publish(scope, context).await
+    }
     async fn put_many(
         &self,
         writes: &[ObjectWrite],

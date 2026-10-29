@@ -127,6 +127,29 @@ fn accounting<'a>(
         context.cancellation,
     ))
 }
+impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
+    /// The stream entry is the commit: its closure is durable first, in one
+    /// durability round.
+    async fn flush_scope(
+        &self,
+        scope: crate::PublicationScope<'_>,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        work.charge(WorkCounters {
+            durability_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let flushed = match scope {
+            crate::PublicationScope::Closure { objects, .. } => {
+                let blobs: Vec<_> = objects.iter().copied().map(blob).collect();
+                self.provider.flush(Some(&blobs)).await
+            }
+            crate::PublicationScope::Everything => self.provider.flush(None).await,
+        };
+        flushed.map_err(ObjectStoreError::LogicalObjects)?;
+        work.check()
+    }
+}
 macro_rules! operate {
     ($context:ident, $work:ident, $body:expr) => {{
         let (result, spent) = {
@@ -214,15 +237,7 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let Some(root) = &self.publication_root else {
-            // The stream entry is the commit: its closure is durable first.
-            let flushed = match scope {
-                crate::PublicationScope::Closure { objects, .. } => {
-                    let blobs: Vec<_> = objects.iter().copied().map(blob).collect();
-                    self.provider.flush(Some(&blobs)).await
-                }
-                crate::PublicationScope::Everything => self.provider.flush(None).await,
-            };
-            flushed.map_err(ObjectStoreError::LogicalObjects)?;
+            operate!(context, work, self.flush_scope(scope, &mut work).await)?;
             return Ok(crate::PublicationHold::none());
         };
         let root = root.clone();

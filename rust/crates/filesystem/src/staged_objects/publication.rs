@@ -57,7 +57,10 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         self.drain_locked(&mut spill, &unswept, &targets, work)
             .await?;
-        Ok(unswept.into_hold())
+        // Draining only stores the objects; the inner store makes the
+        // record's closure durable, so the record is appended only after.
+        let inner = self.inner.flush_before_publish(scope, work).await?;
+        Ok(unswept.into_hold().with(inner))
     }
 
     pub(super) async fn drain_locked(
