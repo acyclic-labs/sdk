@@ -252,7 +252,7 @@ impl transport::Transport for Endpoint {
         })
     }
 }
-pub(super) fn client(connect: Function) -> Client {
+pub(super) fn client(connect: Function, scope: Option<crate::RevisionScope>) -> Client {
     let home = Arc::new(Endpoint {
         connect: connect.clone(),
         node: None,
@@ -266,5 +266,10 @@ pub(super) fn client(connect: Function) -> Client {
         });
         Box::pin(async move { Ok(endpoint) })
     });
-    Client::with_transport(home, moved, Arc::new(PlatformExecutor))
+    let revisions = Arc::default();
+    let revisions = match scope {
+        Some(scope) => crate::RevisionTracker::scoped(&revisions, scope),
+        None => revisions,
+    };
+    Client::tracking(home, moved, Arc::new(PlatformExecutor), revisions)
 }

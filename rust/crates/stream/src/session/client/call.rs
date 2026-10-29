@@ -61,7 +61,7 @@ impl Client {
         credential: u32,
     ) -> Result<crate::Heads, StreamError> {
         request.validate()?;
-        request.at_least = self.revisions.floor(&request.at_least);
+        request.at_least = self.revisions.floor(&request.at_least)?;
         let reply = self
             .reply(
                 Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),

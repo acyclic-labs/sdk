@@ -21,6 +21,84 @@ fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamE
 }
 
 #[tokio::test]
+async fn revision_scope_selection_preserves_other_views_and_explicit_minima() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let own = provider.wait_applied(&Default::default()).await?;
+    let foreign = crate::AppliedRevisions::in_process().at(1);
+    let fixture = Fixture::open(Arc::clone(&provider), "owner").await?;
+    let client = grpc::Client::from_channel(
+        fixture._channel.clone(),
+        "Bearer fixture"
+            .parse()
+            .map_err(|_| StreamError::InvalidArgument)?,
+    );
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    client.session_client()?.revisions().observe(&own);
+    client.session_client()?.revisions().observe(&foreign);
+    for _ in 0..2 {
+        assert_eq!(
+            client.head(StreamPath::new("events")?).await.err(),
+            Some(StreamError::RevisionForeign),
+            "one refusal cannot retire another required authority"
+        );
+    }
+    let selected = client.with_revision_scope(own.scope.clone());
+    assert_eq!(selected.head(StreamPath::new("events")?).await?.tail, 1);
+    let mut healthy = crate::records_only(
+        selected
+            .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+            .await?,
+    );
+    let mut conflicting = crate::FollowRequest::new(StreamPath::new("events")?, 1);
+    conflicting.at_least = crate::RevisionCut::of(crate::Revision {
+        incarnation: own.incarnation ^ 1,
+        ..own.clone()
+    });
+    assert_eq!(
+        selected.follow(conflicting).await.err(),
+        Some(StreamError::RevisionForeign)
+    );
+    append(&provider, "events", 1).await?;
+    assert_eq!(healthy.next().await.transpose()?.unwrap().sequence, 1);
+    assert_eq!(
+        selected
+            .wait_applied(&crate::RevisionCut::of(foreign))
+            .await,
+        Err(StreamError::RevisionForeign),
+        "routing never filters an explicit minimum"
+    );
+    assert_eq!(
+        client
+            .session_client()?
+            .revisions()
+            .floor(&Default::default())?
+            .iter()
+            .len(),
+        2
+    );
+    selected
+        .session_client()?
+        .revisions()
+        .observe(&crate::Revision {
+            incarnation: own.incarnation ^ 1,
+            ..own
+        });
+    assert_eq!(
+        selected.head(StreamPath::new("events")?).await.err(),
+        Some(StreamError::RevisionForeign),
+        "a new incarnation cannot retire either incarnation's writes"
+    );
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    let fresh = fixture.client()?;
+    assert_eq!(fresh.head(StreamPath::new("events")?).await?.tail, 2);
+    Ok(())
+}
+
+#[tokio::test]
 async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> TestResult {
     use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
     let provider = Arc::new(MemoryStream::default());

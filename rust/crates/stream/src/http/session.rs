@@ -3,6 +3,15 @@ use rustls::pki_types::{CertificateDer, pem::PemObject};
 use tonic::transport::{ClientTlsConfig, Endpoint};
 
 impl HttpStream {
+    /// Selects a route's implicit authority from an authenticated receipt,
+    /// sharing observations while retaining every explicit minimum.
+    pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Result<Self, StreamError> {
+        let mut client = self.clone();
+        let session = self.session_client()?.with_revision_scope(scope);
+        client.sessions = Arc::new(crate::query_sync::SyncMutex::new(Some(session)));
+        Ok(client)
+    }
+
     /// Receives canonical ALL/LATEST data on the same session as ordinary follows.
     pub async fn follow_data(
         &self,

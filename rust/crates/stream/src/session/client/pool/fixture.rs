@@ -102,6 +102,7 @@ pub(in crate::session::client) fn route(
     records: mpsc::Sender<Result<Delivery, StreamError>>,
 ) -> Route {
     Route {
+        revisions: Arc::default(),
         filter: None,
         credential: 0,
         raw: false,

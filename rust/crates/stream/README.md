@@ -10,6 +10,17 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+Revision refusals never clear a client's requirements, and a new incarnation
+cannot prove the old incarnation's writes. Explicit reset adoption starts a new
+client frontier. A client spanning independent routes can use
+`with_revision_scope` (TypeScript: `revisionScope`) with the scope from an
+authenticated receipt or observation. This selects that route's implicit
+participant without deleting another view's requirements; every explicit
+minimum still travels intact. Views share observations with their original
+tracker. A selected participant has direct, constant-work access; requesting
+the full multi-authority frontier still costs its actual participant count.
+Selection grants no authority and establishes no cross-authority retirement.
+
 An application receipt stream is ordinary retained stream history. Retain its
 terminal outcomes for at least as long as a caller may replay the corresponding
 identity, and publish the receipt in the same Commit as the effects it certifies.

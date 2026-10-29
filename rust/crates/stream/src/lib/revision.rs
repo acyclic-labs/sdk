@@ -104,7 +104,8 @@ impl RevisionCut {
         })
     }
 
-    /// Removes one scope's floor, after its authority refused the incarnation.
+    /// Explicitly removes one participant. The caller must already possess
+    /// coverage evidence; a refusal alone proves no retirement.
     pub fn forget(&mut self, scope: &RevisionScope) {
         self.0.retain(|entry| &entry.scope != scope);
     }
@@ -131,24 +132,120 @@ impl RevisionCut {
 }
 
 /// A client's last observed revision per authority, forwarded as the floor of
-/// every later read. Each authority keeps its own participant; a reset
-/// incarnation replaces its scope's entry.
-#[derive(Debug, Default)]
-pub struct RevisionTracker(crate::query_sync::SyncMutex<RevisionCut>);
+/// every later read. A foreign refusal or a reply from another incarnation
+/// never retires an existing requirement. A new client starts a new frontier.
+#[derive(Debug)]
+pub struct RevisionTracker(TrackedRevisions);
+
+type ObservedRevisions =
+    std::collections::BTreeMap<RevisionScope, crate::query_sync::Arc<ObservedAuthority>>;
+
+#[path = "revision/participant.rs"]
+mod participant;
+use participant::ObservedAuthority;
+
+#[derive(Debug)]
+enum TrackedRevisions {
+    All(crate::query_sync::SyncMutex<ObservedRevisions>),
+    Selected {
+        source: crate::query_sync::Arc<RevisionTracker>,
+        authority: crate::query_sync::Arc<ObservedAuthority>,
+    },
+}
+
+impl Default for RevisionTracker {
+    fn default() -> Self {
+        Self(TrackedRevisions::All(
+            crate::query_sync::SyncMutex::default(),
+        ))
+    }
+}
 
 impl RevisionTracker {
-    fn cut(&self) -> impl std::ops::DerefMut<Target = RevisionCut> + '_ {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    fn cut(&self) -> impl std::ops::DerefMut<Target = ObservedRevisions> + '_ {
+        match &self.0 {
+            TrackedRevisions::All(observed) => observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            TrackedRevisions::Selected { source, .. } => source.cut(),
+        }
+    }
+
+    fn authority(&self, scope: &RevisionScope) -> crate::query_sync::Arc<ObservedAuthority> {
+        if let TrackedRevisions::Selected { authority, .. } = &self.0
+            && &authority.scope == scope
+        {
+            return crate::query_sync::Arc::clone(authority);
+        }
+        crate::query_sync::Arc::clone(
+            self.cut().entry(scope.clone()).or_insert_with(|| {
+                crate::query_sync::Arc::new(ObservedAuthority::new(scope.clone()))
+            }),
+        )
+    }
+
+    fn participants(
+        &self,
+        mut visit: impl FnMut(Revision) -> Result<(), StreamError>,
+    ) -> Result<(), StreamError> {
+        match &self.0 {
+            TrackedRevisions::All(_) => {
+                for authority in self.cut().values() {
+                    if let Some(revision) = authority.revision()? {
+                        visit(revision)?;
+                    }
+                }
+            }
+            TrackedRevisions::Selected { authority, .. } => {
+                if let Some(revision) = authority.revision()? {
+                    visit(revision)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Selects one explicitly routed storage authority's implicit frontier.
+    /// Observations remain shared: other views keep every other authority and
+    /// every explicit request minimum is still forwarded unchanged.
+    ///
+    /// Choose the scope from an authenticated receipt or observation. Selection
+    /// conveys no authorization and proves no retirement or reset. A selected
+    /// floor and same-authority observation access their retained participant
+    /// directly, independent of this client's K unrelated authorities. View
+    /// construction performs one indexed lookup and allocates one view; the
+    /// participant is allocated once per scope. Views never form a chain.
+    #[must_use]
+    pub fn scoped(
+        self: &crate::query_sync::Arc<Self>,
+        scope: RevisionScope,
+    ) -> crate::query_sync::Arc<Self> {
+        let source = match &self.0 {
+            TrackedRevisions::All(_) => self,
+            TrackedRevisions::Selected { source, .. } => source,
+        };
+        crate::query_sync::Arc::new(Self(TrackedRevisions::Selected {
+            source: crate::query_sync::Arc::clone(source),
+            authority: source.authority(&scope),
+        }))
     }
 
     /// Records a revision a peer issued or served.
     pub fn observe(&self, revision: &Revision) {
-        let mut cut = self.cut();
-        if cut.get(&revision.scope) != Some(revision) {
-            cut.observe(revision.clone());
+        self.with_authority(&revision.scope, |authority| authority.observe(revision));
+    }
+
+    fn with_authority<T>(
+        &self,
+        scope: &RevisionScope,
+        apply: impl FnOnce(&ObservedAuthority) -> T,
+    ) -> T {
+        if let TrackedRevisions::Selected { authority, .. } = &self.0
+            && &authority.scope == scope
+        {
+            return apply(authority);
         }
+        apply(&self.authority(scope))
     }
 
     /// Accepts a reply served against the `minimum` this client sent: the
@@ -164,7 +261,10 @@ impl RevisionTracker {
             return Err(StreamError::InvalidResponse);
         }
         if let Some(applied) = applied {
-            self.observe(applied);
+            self.with_authority(&applied.scope, |authority| {
+                authority.observe(applied);
+                authority.revision().map(|_| ())
+            })?;
         }
         Ok(())
     }
@@ -183,14 +283,60 @@ impl RevisionTracker {
         }
     }
 
-    /// The floor to forward: every observed participant, raised by `explicit`.
+    /// The floor to forward: every selected participant, raised by `explicit`.
+    /// Conflicting incarnations refuse with `RevisionForeign`: neither one
+    /// proves the other's writes, including after an explicit reset minimum.
     #[must_use]
-    pub fn floor(&self, explicit: &RevisionCut) -> RevisionCut {
-        let mut cut = self.cut().clone();
-        for revision in explicit.iter() {
-            cut.observe(revision.clone());
+    pub fn floor(&self, explicit: &RevisionCut) -> Result<RevisionCut, StreamError> {
+        fn merge(
+            observed: impl Iterator<Item = Result<Option<Revision>, StreamError>>,
+            capacity: usize,
+            explicit: &RevisionCut,
+        ) -> Result<RevisionCut, StreamError> {
+            let mut cut = Vec::with_capacity(capacity.saturating_add(explicit.0.len()));
+            let mut explicit = explicit.iter().peekable();
+            for revision in observed {
+                let Some(mut revision) = revision? else {
+                    continue;
+                };
+                while explicit
+                    .peek()
+                    .is_some_and(|next| next.scope < revision.scope)
+                {
+                    cut.push(explicit.next().unwrap().clone());
+                }
+                if explicit
+                    .peek()
+                    .is_some_and(|next| next.scope == revision.scope)
+                {
+                    let next = explicit.next().unwrap();
+                    if !revision.same_authority(next) {
+                        return Err(StreamError::RevisionForeign);
+                    }
+                    if revision.index < next.index {
+                        revision = next.clone();
+                    }
+                }
+                cut.push(revision);
+            }
+            cut.extend(explicit.cloned());
+            Ok(RevisionCut(cut))
         }
-        cut
+        match &self.0 {
+            TrackedRevisions::All(_) => {
+                let observed = self.cut();
+                merge(
+                    observed.values().map(|value| value.revision()),
+                    observed.len(),
+                    explicit,
+                )
+            }
+            TrackedRevisions::Selected { authority, .. } => {
+                let revision = authority.revision()?;
+                let capacity = usize::from(revision.is_some());
+                merge(std::iter::once(Ok(revision)), capacity, explicit)
+            }
+        }
     }
 
     /// Raises the wire cut `at_least` with every observed participant that
@@ -201,29 +347,33 @@ impl RevisionTracker {
         &self,
         at_least: &mut Vec<crate::wire::Revision>,
         served: &RevisionCut,
-    ) {
-        for revision in self.cut().iter() {
-            if served.covers(revision) {
-                continue;
-            }
-            let wire = crate::wire_codec::revision_to_wire(revision);
-            match at_least.iter_mut().find(|entry| entry.scope == wire.scope) {
-                // An explicit minimum of another incarnation stays the caller's.
-                Some(entry) if entry.incarnation == wire.incarnation => {
-                    entry.index = entry.index.max(wire.index);
+    ) -> Result<(), StreamError> {
+        let mut positions = std::collections::BTreeMap::new();
+        for (index, revision) in at_least.iter().enumerate() {
+            positions.entry(revision.scope.clone()).or_insert(index);
+        }
+        self.participants(|revision| {
+            match positions
+                .get(revision.scope.as_bytes())
+                .map(|index| &mut at_least[*index])
+            {
+                Some(entry) => {
+                    if entry.incarnation.as_ref() != revision.incarnation.to_be_bytes() {
+                        return Err(StreamError::RevisionForeign);
+                    }
+                    if !served.covers(&revision) {
+                        entry.index = entry.index.max(revision.index);
+                    }
                 }
-                Some(_) => {}
-                None => at_least.push(wire),
+                // Tracked scopes are unique. Appended entries never need an
+                // index: later iterations can only match the original cut.
+                None if !served.covers(&revision) => {
+                    at_least.push(crate::wire_codec::revision_to_wire(&revision));
+                }
+                None => {}
             }
-        }
-    }
-
-    /// Drops every floor after an authority refused one as foreign: the
-    /// refusal surfaced once, and later reads proceed without the lost proof.
-    pub fn refused(&self, error: &StreamError) {
-        if *error == StreamError::RevisionForeign {
-            *self.cut() = RevisionCut::default();
-        }
+            Ok(())
+        })
     }
 }
 
@@ -475,6 +625,101 @@ mod tests {
     }
 
     #[test]
+    fn scoped_frontiers_retain_requirements_without_cloning_unrelated_authorities() {
+        use prost::Message as _;
+        use std::sync::Arc;
+        for count in [1_u64, 1_000, 100_000] {
+            let tracker = Arc::new(RevisionTracker::default());
+            for index in 0..count {
+                tracker.observe(&Revision {
+                    scope: RevisionScope::new(index.to_be_bytes().to_vec()),
+                    incarnation: 1,
+                    index: 7,
+                });
+            }
+            let selected = RevisionScope::new(0_u64.to_be_bytes().to_vec());
+            let view = tracker.scoped(selected.clone());
+            let floor = view.floor(&RevisionCut::default()).unwrap();
+            assert_eq!(floor.iter().len(), 1);
+            assert_eq!(floor.get(&selected).unwrap().index, 7);
+            let bytes: usize = floor
+                .iter()
+                .map(|revision| crate::wire_codec::revision_to_wire(revision).encoded_len())
+                .sum();
+            // Negative control: choosing the full dependency set must pay for
+            // all participants. Selection cannot erase that original view.
+            assert_eq!(
+                tracker.floor(&RevisionCut::default()).unwrap().iter().len(),
+                count as usize
+            );
+            eprintln!("revision_scopes={count} selected_participants=1 floor_bytes={bytes}");
+
+            let unrelated = Revision {
+                scope: RevisionScope::new(b"explicit".to_vec()),
+                incarnation: 19,
+                index: 81,
+            };
+            let explicit = RevisionCut::of(unrelated.clone());
+            let floor = view.floor(&explicit).unwrap();
+            assert_eq!(floor.iter().len(), 2);
+            assert_eq!(floor.get(&unrelated.scope), Some(&unrelated));
+            let reset = Revision {
+                scope: selected.clone(),
+                incarnation: 2,
+                index: 1,
+            };
+            assert_eq!(
+                view.floor(&RevisionCut::of(reset.clone())),
+                Err(StreamError::RevisionForeign)
+            );
+            assert_eq!(
+                view.floor(&RevisionCut::default())
+                    .unwrap()
+                    .get(&selected)
+                    .unwrap()
+                    .incarnation,
+                1
+            );
+
+            let mut wire = vec![crate::wire_codec::revision_to_wire(&unrelated)];
+            view.raise_uncovered(&mut wire, &RevisionCut::default())
+                .unwrap();
+            assert_eq!(wire.len(), 2);
+            assert_eq!(crate::wire_codec::cut_from_wire(wire).unwrap(), floor);
+            let mut warm = Vec::new();
+            view.raise_uncovered(&mut warm, &floor).unwrap();
+            assert!(
+                warm.is_empty(),
+                "a served frontier adds no warm wire control"
+            );
+            let mut reset_wire = vec![crate::wire_codec::revision_to_wire(&reset)];
+            assert_eq!(
+                view.raise_uncovered(&mut reset_wire, &floor),
+                Err(StreamError::RevisionForeign)
+            );
+            view.observe(&Revision {
+                scope: selected.clone(),
+                incarnation: 1,
+                index: 8,
+            });
+            assert_eq!(
+                tracker
+                    .floor(&RevisionCut::default())
+                    .unwrap()
+                    .get(&selected)
+                    .unwrap()
+                    .index,
+                8
+            );
+            let again = view.scoped(unrelated.scope.clone());
+            match &again.0 {
+                TrackedRevisions::Selected { source, .. } => assert!(Arc::ptr_eq(source, &tracker)),
+                TrackedRevisions::All(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
     fn a_reconnect_to_a_lagging_replica_never_lowers_the_floor() {
         let first = AppliedRevisions::in_process();
         let second = AppliedRevisions::in_process();
@@ -483,18 +728,27 @@ mod tests {
         tracker.observe(&second.at(2));
         // A resumed open on a replica that served an older cut.
         tracker.observe(&first.at(3));
-        let floor = tracker.floor(&RevisionCut::default());
+        let floor = tracker.floor(&RevisionCut::default()).unwrap();
         assert_eq!(floor.get(first.scope()), Some(&first.at(5)));
         // Each authority keeps its own participant, never a max.
         assert_eq!(floor.get(second.scope()), Some(&second.at(2)));
         // An explicit lower minimum does not lower it either.
-        let floor = tracker.floor(&RevisionCut::of(first.at(1)));
+        let floor = tracker.floor(&RevisionCut::of(first.at(1))).unwrap();
         assert_eq!(floor.get(first.scope()), Some(&first.at(5)));
-        // Negative control: only a refusal drops the floor.
-        tracker.refused(&StreamError::Unavailable);
-        assert_eq!(tracker.floor(&RevisionCut::default()).iter().len(), 2);
-        tracker.refused(&StreamError::RevisionForeign);
-        assert_eq!(tracker.floor(&RevisionCut::default()).iter().len(), 0);
+        // An authenticated reset observation cannot prove the old writes.
+        let reset = Revision {
+            incarnation: first.at(5).incarnation ^ 1,
+            ..first.at(9)
+        };
+        tracker.observe(&reset);
+        assert_eq!(
+            tracker.floor(&RevisionCut::default()),
+            Err(StreamError::RevisionForeign)
+        );
+        assert_eq!(
+            tracker.served(&floor, Some(&reset)),
+            Err(StreamError::InvalidResponse)
+        );
     }
 
     #[tokio::test]

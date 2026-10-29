@@ -201,7 +201,7 @@ async fn an_explicit_minimum_carries_a_write_across_clients() -> TestResult {
 }
 
 #[tokio::test]
-async fn a_foreign_minimum_is_refused_once() -> TestResult {
+async fn a_foreign_minimum_cannot_retire_a_required_floor() -> TestResult {
     let replica = Replica::new().await?;
     let (digest, committed) = written(&client(&replica), b"owned").await?;
     replica.catch_up().await?;
@@ -228,8 +228,29 @@ async fn a_foreign_minimum_is_refused_once() -> TestResult {
         reset.head(digest).await.map_err(|error| error.code),
         Err(wire::ErrorCode::RevisionForeign)
     );
-    // The refusal surfaced; the dropped floor no longer blocks reads.
-    assert_eq!(foreign.head(digest).await?.digest, digest);
+    // Observing both incarnations cannot silently replace either requirement.
+    own.revisions().observe(&Revision {
+        incarnation: committed.incarnation.wrapping_add(1),
+        ..committed.clone()
+    });
+    assert_eq!(
+        own.head(digest).await.map_err(|error| error.code),
+        Err(wire::ErrorCode::RevisionForeign)
+    );
+    // A refusal proves no retirement. The original minimum still refuses.
+    assert_eq!(
+        foreign.head(digest).await.map_err(|error| error.code),
+        Err(wire::ErrorCode::RevisionForeign)
+    );
+    // Explicit routing selects a relevant authority, without deleting another
+    // view's requirements or interpreting its foreign index as progress.
+    foreign.revisions().observe(&committed);
+    let scoped = foreign.with_revision_scope(committed.scope.clone());
+    assert_eq!(scoped.head(digest).await?.digest, digest);
+    assert_eq!(
+        foreign.head(digest).await.map_err(|error| error.code),
+        Err(wire::ErrorCode::RevisionForeign)
+    );
     Ok(())
 }
 

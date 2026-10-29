@@ -139,6 +139,7 @@ fn open(
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
     let command = Command::Open(Box::new(OpenCommand {
+        revisions: Arc::clone(&pool.revisions),
         filter: None,
         credential: 0,
         id,

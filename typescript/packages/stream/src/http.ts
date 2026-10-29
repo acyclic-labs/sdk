@@ -13,7 +13,11 @@ import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validatePathValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
-export interface HttpStreamProviderOptions extends CredentialOptions { readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory }
+export interface HttpStreamProviderOptions extends CredentialOptions {
+  readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver; readonly webSocketFactory?: SessionWebSocketFactory;
+  /** Select an implicit authority from an authenticated receipt; explicit minima remain intact. */
+  readonly revisionScope?: Uint8Array;
+}
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
@@ -28,7 +32,7 @@ export class HttpStreamProvider implements StreamProvider {
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#credential = credentialProvider(options);
-    this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory));
+    this.#sessions = new StreamSessions(webSocketSession(this.#endpoint, this.#credential, options.webSocketFactory), true, options.revisionScope);
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
     this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
@@ -146,7 +150,6 @@ export class HttpStreamProvider implements StreamProvider {
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     if (!response.ok) {
       const error = await hostedError(route, text, response.status);
-      this.#sessions.refused(error);
       throw error;
     }
     try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }

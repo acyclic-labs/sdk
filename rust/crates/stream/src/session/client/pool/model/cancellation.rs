@@ -26,6 +26,7 @@ pub fn verify_cancel_before_open(broken: bool) {
             let (ready, _opened) = oneshot::channel();
             opening
                 .send(Command::Open(Box::new(OpenCommand {
+                    revisions: Arc::default(),
                     filter: None,
                     credential: 0,
                     id: 5,
