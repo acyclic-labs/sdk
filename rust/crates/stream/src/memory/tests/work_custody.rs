@@ -46,7 +46,8 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
             idempotency_key: IdempotencyKey::new("prebox")?,
         };
         if limit != u64::MAX {
-            let future = provider.native_commit(request, None, meter.original());
+            let future =
+                provider.native_write(crate::WriteRequest::Commit(request), None, meter.original());
             assert!(
                 matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
                 if error.kind() == std::io::ErrorKind::OutOfMemory)
@@ -56,7 +57,11 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
         } else {
             let mut future = None;
             let physical = acyclic_test_support::measure(|| {
-                future = Some(provider.native_commit(request, None, meter.original()));
+                future = Some(provider.native_write(
+                    crate::WriteRequest::Commit(request),
+                    None,
+                    meter.original(),
+                ));
             });
             let future = future.ok_or("native constructor was not called")?;
             assert!(matches!(future, crate::NativeProviderFuture::Funded { .. }));
