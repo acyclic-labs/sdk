@@ -4,17 +4,6 @@ use crate::wire;
 
 /// Shared inference transport ceiling.
 pub const MAXIMUM_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
-/// HTTP JSON/NDJSON ceiling, sized above ordinary base64 expansion of the wire
-/// limit while intentionally bounding escaped JSON strings separately.
-pub const MAXIMUM_HTTP_JSON_BYTES: usize = 16 * 1024 * 1024;
-/// Largest admitted candidate set.
-pub const MAXIMUM_EVALUATION_CANDIDATES: usize = 256;
-/// Largest admitted case set.
-pub const MAXIMUM_EVALUATION_CASES: usize = 4_096;
-/// Largest admitted metric set.
-pub const MAXIMUM_EVALUATION_METRICS: usize = 64;
-/// Largest materialized result set.
-pub const MAXIMUM_EVALUATION_RESULTS: u64 = 65_536;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Error {
@@ -45,14 +34,13 @@ fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
 }
 
 pub(crate) fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
-    if spec.candidates.is_empty() || spec.candidates.len() > MAXIMUM_EVALUATION_CANDIDATES {
+    if spec.candidates.is_empty() {
         return Err(Error::Invalid("evaluation candidate count is invalid"));
     }
     let mut candidate_digests = std::collections::BTreeSet::new();
     for candidate in &spec.candidates {
         let digest = fixed::<32>(&candidate.digest)?;
         if candidate.media_type.is_empty()
-            || candidate.media_type.len() > 256
             || candidate.logical_size == 0
             || !candidate_digests.insert(digest)
         {
@@ -64,11 +52,7 @@ pub(crate) fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<()
         .suite
         .as_ref()
         .ok_or(Error::Invalid("evaluation suite is absent"))?;
-    if suite.identity.is_empty()
-        || suite.identity.len() > 256
-        || suite.cases.is_empty()
-        || suite.cases.len() > MAXIMUM_EVALUATION_CASES
-    {
+    if suite.identity.is_empty() || suite.cases.is_empty() {
         return Err(Error::Invalid("evaluation suite is invalid"));
     }
     fixed::<32>(&suite.digest)?;
@@ -89,18 +73,17 @@ pub(crate) fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<()
         .grader
         .as_ref()
         .ok_or(Error::Invalid("evaluation grader is absent"))?;
-    if grader.handle.is_empty() || grader.handle.len() > 4_096 {
+    if grader.handle.is_empty() {
         return Err(Error::Invalid("evaluation grader is invalid"));
     }
     fixed::<32>(&grader.artifact_digest)?;
 
-    if spec.metrics.is_empty() || spec.metrics.len() > MAXIMUM_EVALUATION_METRICS {
+    if spec.metrics.is_empty() {
         return Err(Error::Invalid("evaluation metric count is invalid"));
     }
     let mut metric_ids = std::collections::BTreeSet::new();
     for metric in &spec.metrics {
         if metric.identity.is_empty()
-            || metric.identity.len() > 256
             || !metric_ids.insert(metric.identity.as_str())
             || wire::EvaluationAggregation::try_from(metric.aggregation)
                 .unwrap_or(wire::EvaluationAggregation::Unspecified)
@@ -118,10 +101,7 @@ pub(crate) fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<()
                 .and_then(|cases| candidates.checked_mul(cases))
         })
         .ok_or(Error::Invalid("evaluation result count overflow"))?;
-    if spec.maximum_case_results == 0
-        || spec.maximum_case_results > possible_results
-        || spec.maximum_case_results > MAXIMUM_EVALUATION_RESULTS
-    {
+    if spec.maximum_case_results == 0 || spec.maximum_case_results > possible_results {
         return Err(Error::Invalid("evaluation result bound is invalid"));
     }
     fixed::<32>(&spec.spec_digest)?;
@@ -302,7 +282,7 @@ pub(crate) fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Res
     if fixed::<16>(&view.run_id)? != expected || fixed::<32>(&view.input).is_err() {
         return Err(Error::Invalid("Run identity differs"));
     }
-    if view.model.is_empty() || view.model.len() > 256 {
+    if view.model.is_empty() {
         return Err(Error::Invalid("Run model is invalid"));
     }
     if let Some(result) = &view.result {
@@ -502,7 +482,7 @@ pub(crate) fn validate_context_view(
     if let Some(parent) = &view.parent {
         fixed::<32>(parent)?;
     }
-    if view.model.is_empty() || view.model.len() > 256 {
+    if view.model.is_empty() {
         return Err(Error::Invalid("Context model is invalid"));
     }
     validate_provenance(

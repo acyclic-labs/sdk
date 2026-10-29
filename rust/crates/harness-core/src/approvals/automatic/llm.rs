@@ -28,7 +28,7 @@ pub(super) async fn review_model(
     let (model, provider) = binding;
     let capacity = provider.context_capacity(model)?;
     capacity.validate()?;
-    let output = capacity.default_output_budget().min(256);
+    let output = capacity.default_output_budget();
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: model.clone(),
@@ -102,7 +102,10 @@ async fn collect_review(
     let mut completed = false;
     while let Some(event) = events.next().await {
         count += 1;
-        if count > limits.model_events_per_step {
+        if limits
+            .model_events_per_step
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(Error::Invalid("approver event bound exceeded".into()));
         }
         match event? {

@@ -80,7 +80,7 @@ struct Writer<'a, 'b, 'c, 'd> {
     index: super::arrays::Index,
     prefix: usize,
     written: u64,
-    maximum: u64,
+    maximum: Option<u64>,
     output: Option<&'a mut Vec<u8>>,
     digest: Option<&'a mut (dyn FnMut(&[u8]) -> Result<()> + 'd)>,
     compare: Option<(&'a [u8], &'a mut bool)>,
@@ -96,7 +96,7 @@ impl Write for Writer<'_, '_, '_, '_> {
                 self.written.checked_add(bytes.len() as u64),
                 "JSON byte count overflow",
             )?;
-            if written > self.maximum {
+            if self.maximum.is_some_and(|maximum| written > maximum) {
                 return Err(boundary("JSON exceeds admitted output", scope.code));
             }
             scope.event(JsonCodecCharge::Work {
@@ -252,11 +252,14 @@ impl Formatter for Format<'_, '_, '_> {
                     maximum_items: scope
                         .bounds
                         .maximum_items
-                        .saturating_sub(scope.lexical.items),
+                        .map(|maximum| maximum.saturating_sub(scope.lexical.items)),
                     ..scope.bounds
                 };
                 let code = scope.code;
-                if fragment.len() as u64 > bounds.maximum_bytes {
+                if bounds
+                    .maximum_bytes
+                    .is_some_and(|maximum| fragment.len() as u64 > maximum)
+                {
                     return Err(boundary("JSON input exceeds declared byte bound", code));
                 }
                 let mut lexical = admission::Lexical::default();
@@ -348,7 +351,7 @@ fn write<T: Serialize + ?Sized>(
     output: Option<&mut Vec<u8>>,
     digest: Option<&mut dyn FnMut(&[u8]) -> Result<()>>,
     compare: Option<(&[u8], &mut bool)>,
-    maximum: u64,
+    maximum: Option<u64>,
     canonical: bool,
 ) -> Result<u64> {
     let admitted_items = scope.lexical.items;

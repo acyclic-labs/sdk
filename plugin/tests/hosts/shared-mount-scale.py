@@ -16,7 +16,7 @@ import tempfile
 import time
 import traceback
 from native_events import native_event_fixture
-from native_fixture import fixture_environment
+from native_fixture import fixture_environment, wait_for_file
 
 
 def interrupted(signum, frame):
@@ -92,11 +92,8 @@ sys.exit(17)
             bridge = None
             gates = []
             try:
-                deadline = time.monotonic() + 2
-                while not (workspace / '.acyclic-sdk/host-files/owner.json').is_file():
-                    assert owner.poll() is None, (root / 'owner.log').read_text()[-2000:]
-                    assert time.monotonic() < deadline, 'owner readiness'
-                    time.sleep(.001)
+                wait_for_file(workspace / '.acyclic-sdk/host-files/owner.json', timeout=2)
+                assert owner.poll() is None, (root / 'owner.log').read_text()[-2000:]
                 launch = subprocess.run([binary, 'host', host, '--', *flags], cwd=workspace,
                                         env=env, capture_output=True, text=True, timeout=2)
                 assert launch.returncode == 0, launch.stderr

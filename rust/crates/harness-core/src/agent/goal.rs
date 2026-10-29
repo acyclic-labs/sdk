@@ -6,7 +6,7 @@
 //! ordinary inbox input: no timer, no polling. The loop's position is carried by
 //! the message identity, so a replayed step recomputes the same continuation and
 //! the agent keeps no goal state. An exhausted allowance rewrites GOAL.md as
-//! `blocked` instead.
+//! `blocked` instead when the caller selects a finite allowance.
 
 use super::{AgentState, Error, InboxRecord, IntentId, Message, Out, Sender, TurnInput};
 use crate::{
@@ -37,8 +37,9 @@ pub trait TurnGoal: acyclic_stream::ProviderPlatform {
 }
 
 /// The goal loop `input` belongs to and how many continuations it has had: a
-/// continuation names both; any other input starts a loop of its own `turn`.
-fn position(agent: &AgentState, input: &TurnInput, turn: OperationId) -> (String, u32) {
+/// continuation names both. Counts are decimal identities, so unlimited loops
+/// do not depend on a fixed-width integer.
+fn position<'a>(agent: &AgentState, input: &'a TurnInput) -> Option<(&'a str, &'a str)> {
     if let TurnInput::Message {
         from: Sender::Agent { path },
         id,
@@ -49,11 +50,29 @@ fn position(agent: &AgentState, input: &TurnInput, turn: OperationId) -> (String
             .as_str()
             .strip_prefix(GOAL_INTENT)
             .and_then(|rest| rest.rsplit_once(':'))
-        && let Ok(count) = count.parse()
+        && !count.is_empty()
+        && count.bytes().all(|digit| digit.is_ascii_digit())
     {
-        return (run.to_owned(), count);
+        return Some((run, count));
     }
-    (turn.to_string(), 0)
+    None
+}
+
+fn next_intent(run: &str, count: &str) -> Result<IntentId, Error> {
+    let prefix = count.trim_end_matches('9');
+    let mut id = String::with_capacity(GOAL_INTENT.len() + run.len() + count.len() + 2);
+    id.push_str(GOAL_INTENT);
+    id.push_str(run);
+    id.push(':');
+    if prefix.is_empty() {
+        id.push('1');
+    } else {
+        let (rest, digit) = prefix.split_at(prefix.len() - 1);
+        id.push_str(rest);
+        id.push(char::from(digit.as_bytes()[0] + 1));
+    }
+    id.extend(std::iter::repeat_n('0', count.len() - prefix.len()));
+    IntentId::try_from(id)
 }
 
 /// What `agent`'s turn `turn`, started by `input`, does about its goal once it
@@ -72,7 +91,13 @@ pub async fn settle(
         return Ok(None);
     }
     let policy = goal.policy();
-    let (run, count) = position(agent, input, turn);
+    let fresh_run;
+    let (run, count) = if let Some(position) = position(agent, input) {
+        position
+    } else {
+        fresh_run = turn.to_string();
+        (fresh_run.as_str(), "0")
+    };
     let view = loop {
         let Some(view) = goal.read().await.map_err(failed)? else {
             return Ok(None);
@@ -80,12 +105,19 @@ pub async fn settle(
         if view.status != GoalStatus::Active {
             return Ok(None);
         }
-        if count < policy.max_continuations {
+        if policy
+            .max_continuations
+            .is_none_or(|maximum| count.parse::<u32>().is_ok_and(|count| count < maximum))
+        {
             break view;
         }
         // A concurrent edit wins the conditioned rewrite: decide again on it.
         match goal
-            .rewrite(&view, &policy.blocked(&view), &format!("goal-block:{turn}"))
+            .rewrite(
+                &view,
+                &policy.blocked(&view).expect("selected exhausted allowance"),
+                &format!("goal-block:{turn}"),
+            )
             .await
         {
             Ok(()) => return Ok(None),
@@ -93,7 +125,7 @@ pub async fn settle(
             Err(error) => return Err(failed(error)),
         }
     };
-    let id = IntentId::try_from(format!("{GOAL_INTENT}{run}:{}", count + 1))?;
+    let id = next_intent(run, count)?;
     Ok(Some(Out::Send {
         to: agent.path.clone(),
         record: InboxRecord::Message(Message {

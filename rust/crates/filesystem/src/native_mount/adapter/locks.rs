@@ -12,18 +12,16 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .map_err(MountSourceError::NativeWork)?;
         let mut lease = {
             let future = std::pin::pin!(tokio::task::unconstrained(async {
-                tokio::time::timeout(
-                    CALLBACK_TIMEOUT,
-                    self.checkout.view_gate.read_for_callback_with_carrier(
+                self.checkout
+                    .view_gate
+                    .read_for_callback_with_carrier(
                         owner,
                         expected_epoch,
                         &mut carrier,
                         work.cancellation(),
                         Some(&self.cancellation),
-                    ),
-                )
-                .await
-                .map_err(|_| MountSourceError::Stale)?
+                    )
+                    .await
             }));
             self.runtime.poll_prepared(prepared, future)?
         };
