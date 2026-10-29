@@ -31,10 +31,10 @@ pub async fn capture_exec(
                 ));
             }
             ExecOutput::Data(bytes) => {
-                append(&mut captured.stdout, &bytes, &mut received, maximum_bytes)?
+                append(&mut captured.stdout, bytes, &mut received, maximum_bytes)?
             }
             ExecOutput::Stderr(bytes) => {
-                append(&mut captured.stderr, &bytes, &mut received, maximum_bytes)?
+                append(&mut captured.stderr, bytes, &mut received, maximum_bytes)?
             }
             ExecOutput::ExitCode(code) => {
                 captured.exit_code = Some(code);
@@ -51,13 +51,17 @@ pub async fn capture_exec(
 
 fn append(
     destination: &mut Vec<u8>,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     received: &mut u64,
     maximum: u64,
 ) -> Result<(), ProviderError> {
     *received = received.checked_add(bytes.len() as u64)
         .filter(|value| *value <= maximum)
         .ok_or_else(|| ProviderError::Rejected("exec producer exceeded its output allowance; recovery: stop the original command and repair producer accounting".into()))?;
-    destination.extend_from_slice(bytes);
+    if destination.is_empty() {
+        *destination = bytes;
+    } else {
+        destination.extend_from_slice(&bytes);
+    }
     Ok(())
 }
