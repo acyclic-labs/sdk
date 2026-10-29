@@ -159,6 +159,8 @@ impl RecordCache {
         self.entries.clear();
         self.lru.clear();
         self.meta.clear();
+        self.meta_lru.clear();
+        self.aliases.clear();
         self.passed.clear();
         self.passed_bytes = 0;
         self.bytes = 0;
@@ -1252,6 +1254,31 @@ mod tests {
         cache.remove_stream(&path("new"), false);
         assert!(cache.fork(&path("child")).is_none());
         assert!(cache.aliases.is_empty());
+
+        // A new credential source reuses paths but never the previous source's
+        // dependency or residency indexes. Existing UI clones keep their charge.
+        cache.insert_record(&path("old"), 0, OwnedBytes::from(vec![7; 64]), None);
+        cache.observe_origin(
+            &path("child"),
+            Some(ForkOrigin {
+                source: path("old"),
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([2; 32]),
+            }),
+        );
+        let old_view = cache.record(&path("child"), 0).unwrap().clone();
+        cache.reset_access(super::super::Access::default());
+        assert_eq!(cache.backing_bytes(), 64);
+        cache.insert_record(&path("child"), 0, OwnedBytes::from_static(b"new"), None);
+        cache.remove_stream(&path("old"), false);
+        assert_eq!(cache.record(&path("child"), 0).unwrap().as_ref(), b"new");
+        for index in 0..12 {
+            cache.begin_frame();
+            cache.observe_tail(&path(&format!("source-{index}")), 1);
+        }
+        assert!(cache.streams() <= 4);
+        drop(old_view);
+        assert_eq!(cache.backing_bytes(), 0);
     }
 
     #[test]
