@@ -419,3 +419,34 @@ Mutation controls remove cancellation custody, fence ordering or cohort
 separation and must fail the same deterministic schedules. As with native
 watch delivery, abort notification work is proportional to live listeners;
 there is no scan over completed requests or historical cohorts.
+
+## Identity MCP completion ownership
+
+An identity operation's task owns the sole completion-watch sender; the parked
+request holds only a receiver. The task publishes its result before completing
+that event. Aborting or unwinding the task drops its producer and wakes the same
+wait. An absent result then becomes typed `operation_unavailable`, with a fixed
+recovery command and no task diagnostic or credential contents.
+
+Result removal and the closed-producer observation share the existing result
+mutex. A producer therefore cannot publish between an empty-slot observation
+and a terminal-loss verdict. The existing task, result slot and MCP wait remain
+the only owners; no monitor task, timer, registry, history or readiness probe is
+introduced. Each progress invocation does fixed work after a primitive event.
+The real Tokio task control holds server admission before credential or network
+access: a live producer keeps the wake pending, task abort completes it, and the
+parked request settles once with the typed error. Removing producer-loss
+detection fails that same control immediately. The stdio tool-list/argument
+control still exercises the maintained MCP server.
+
+| Operation | Before | After |
+| --- | --- | --- |
+| Completion storage | 1 shared result slot and 1 success-only notification owner | Same result slot and 1 producer-owned watch channel |
+| Pending progress | 1 result mutex acquisition and notification wait | Same result lock, 1 closed-producer observation under it, and the watch wait |
+| Completion publication | 1 result publication and 1 notification | Same; the watch additionally carries producer lifetime |
+| Lost operation task | No result or completion event; wait could remain pending | Producer drop completes the existing event; 1 typed terminal result |
+
+This change adds zero tasks, timers, RPCs, durability barriers, credential reads
+or payload copies. Watch synchronization replaces notification synchronization;
+no latency reduction or total allocator-internal count is claimed. Blocking
+identity persistence still requires the native bounded-I/O adapter separately.
