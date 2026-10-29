@@ -35,6 +35,7 @@ use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
+#[cfg(test)]
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
@@ -71,12 +72,7 @@ pub struct CheckoutMountSource<A: 'static, O: 'static> {
     native_original: Option<crate::NativeMaterializationWork>,
     native_io_original: Option<crate::NativeMaterializationWork>,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
-    cleanup_credit: StdMutex<
-        Option<(
-            crate::materializer::NativeWorkReservation,
-            crate::materializer::NativeWorkReservation,
-        )>,
-    >,
+    cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
     _namespace_allocation: Option<crate::NativeAllocation>,
     _source_allocation: Option<crate::NativeAllocation>,
 }
