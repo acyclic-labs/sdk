@@ -1008,12 +1008,12 @@ describe("website Stream contract", () => {
       () => provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }),
     ]) await expect(Promise.resolve().then(operation)).rejects.toThrow();
     await expect(provider.read("bad path", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toThrow();
-    await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(provider.read("valid", { from: 0n, limit: 0 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.read("valid", { from: 0n, limit: 1.5 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.follow("bad path", { from: 0n })[Symbol.asyncIterator]().next()).rejects.toThrow();
     await expect(provider.follow("valid", { from: -1n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.childrenPage({ parent: "bad path", limit: 1 })).rejects.toThrow();
-    await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(provider.childrenPage({ limit: 0 })).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(provider.childrenPage(null as never)).rejects.toMatchObject({ code: "invalid_argument" });
     expect(calls).toBe(0);
   });
