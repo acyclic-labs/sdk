@@ -199,9 +199,9 @@ impl ModelContent {
                     metadata,
                     ..
                 }) => {
-                    value_bound(arguments, limits.render_bytes, work)?;
+                    value_bound(arguments, Some(limits.render_bytes), work)?;
                     if !metadata.is_null() {
-                        value_bound(metadata, limits.render_bytes, work)?;
+                        value_bound(metadata, Some(limits.render_bytes), work)?;
                     }
                 }
                 ModelContentPart::Reasoning { block } => {
@@ -362,6 +362,6 @@ impl ToolResultContent {
                 ));
             }
         }
-        preparation::result_bound(self, limits.render_bytes, work)
+        preparation::result_bound(self, Some(limits.render_bytes), work)
     }
 }
