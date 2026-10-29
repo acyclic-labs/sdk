@@ -80,7 +80,9 @@ pub(crate) use blob::BlobDemandFailure;
 pub(crate) use blob::{build_blob_with_accounting, read_blob_range_with_accounting};
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 pub(crate) use content_eq::records_match_content;
-pub(crate) use file_read::{OriginalReadAccounting, read_object_with_accounting};
+pub(crate) use file_read::{
+    OriginalReadAccounting, read_object_with_accounting, release_standalone_read_bytes,
+};
 pub(crate) use file_read::{decode_owned, owned_read_bytes};
 pub(crate) use generation_mutation::{
     apply_generation_mutations_retaining_with_accounting, clone_generation_root_with_accounting,
