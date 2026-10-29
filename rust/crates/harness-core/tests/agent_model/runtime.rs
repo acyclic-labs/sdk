@@ -179,7 +179,7 @@ async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor()
         host.send(&root, &user(), &record).await?,
         Delivered::Committed { .. }
     ));
-    // The root's pending inbox follow holds its waker: the append alone wakes it.
+    // Confirmed delivery wakes the tracked root without an idle inbox follow.
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     let state = actors.load(&host.actor(&child)?).await?;
@@ -337,7 +337,10 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
     let failures = host.runtime().drain().await;
     assert!(failures.is_empty(), "{failures:?}");
     assert_eq!(
-        reply.await?,
+        match futures::poll!(reply.as_mut()) {
+            std::task::Poll::Ready(result) => result?,
+            std::task::Poll::Pending => panic!("committed spawn step left its reply pending"),
+        },
         SpawnOutcome::Spawned {
             child: child.clone()
         }

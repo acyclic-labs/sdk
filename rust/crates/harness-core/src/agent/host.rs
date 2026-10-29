@@ -377,18 +377,25 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         mut request: CommitRequest,
     ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
+        let actor = self.actor(to)?;
         request
             .mutations
-            .push(self.runtime.store().activation(&self.actor(to)?).mutation);
+            .push(self.runtime.store().activation(&actor).mutation);
         match submit(&*self.provider, request).await? {
-            Submitted::Committed(receipt) => receipt
-                .appends
-                .iter()
-                .find(|append| append.path == inbox)
-                .map(|append| Delivered::Committed {
+            Submitted::Committed(receipt) => {
+                let append = receipt
+                    .appends
+                    .iter()
+                    .find(|append| append.path == inbox)
+                    .ok_or(Error::Record("commit receipt omits the inbox append"))?;
+                // Persistent activation serves hosted dispatchers. A locally
+                // driven runtime has no idle follow, so signal its ready slot
+                // on this same confirmed-commit path as well.
+                self.runtime.wake(&actor);
+                Ok(Delivered::Committed {
                     inbox: append.start,
                 })
-                .ok_or(Error::Record("commit receipt omits the inbox append")),
+            }
             Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
             Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
             Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),
