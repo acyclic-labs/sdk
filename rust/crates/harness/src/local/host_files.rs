@@ -124,7 +124,7 @@ fn status_key(action: &HostAction) -> String {
 
 const NO_OWNER: &str = "no running GraphCoder workspace owner; start graphcoder --host-workspace outside the host sandbox";
 
-/// What a waiter receives: its reply, or its owner's exit.
+/// What a waiter receives: its reply, observation failure or its owner's exit.
 enum Delivery {
     Reply(Result<Value>),
     Gone,
@@ -163,8 +163,10 @@ impl Shared {
             let failure = notification_failure(error);
             waiters.failure = Some(failure.clone());
             for key in waiters.keys.values_mut() {
-                for (_, waiter) in std::mem::take(&mut key.waiting) {
-                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(failure.clone()))));
+                for (operation, waiter) in std::mem::take(&mut key.waiting) {
+                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
+                        "operation={operation}; {failure}"
+                    )))));
                 }
             }
             return;

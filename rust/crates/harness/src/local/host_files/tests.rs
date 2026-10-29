@@ -308,18 +308,28 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         .note(Err(notify::Error::io(std::io::Error::from(
             std::io::ErrorKind::BrokenPipe,
         ))));
-    let failure = match first_reply
+    let first_failure = match first_reply
         .try_recv()
         .expect("watch failure settles the first reply")
     {
         Delivery::Reply(Err(Error::Storage(failure))) => failure,
         _ => panic!("watch failure must retain its storage cause"),
     };
+    let failure = lock(&bridge.shared.waiters)
+        .failure
+        .clone()
+        .expect("the first notification cause remains available");
+    assert_eq!(
+        first_failure,
+        format!("operation={}; {failure}", first.operation)
+    );
+    assert!(Error::Storage(first_failure).uncertain());
     assert!(failure.contains("step=observe native workspace files:"));
     assert!(failure.ends_with("recovery=acyclic agents"));
     assert!(matches!(
         second_reply.try_recv(),
-        Ok(Delivery::Reply(Err(Error::Storage(ref error)))) if error == &failure
+        Ok(Delivery::Reply(Err(Error::Storage(ref error))))
+            if error == &format!("operation={}; {failure}", second.operation)
     ));
     drop((first, second));
     bridge
