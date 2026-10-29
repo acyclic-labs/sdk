@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 type ServiceFs<P, O> = Fs<StreamAuthorityStore<P>, LogicalObjectStore<O>>;
 
-async fn filesystem<P: StreamProvider, O: Blobs + 'static>(
+async fn filesystem<P: acyclic_harness_core::store::JournalProvider, O: Blobs + 'static>(
     stream: Arc<P>,
     objects: Arc<O>,
     durable: bool,
@@ -51,7 +51,7 @@ fn cases() -> TestResult<Vec<(PathBuf, Value)>> {
     Ok(cases)
 }
 
-async fn compare<P: StreamProvider, O: Blobs + 'static>(
+async fn compare<P: acyclic_harness_core::store::JournalProvider, O: Blobs + 'static>(
     stream: Arc<P>,
     filesystem: ServiceFs<P, O>,
 ) -> TestResult<usize> {

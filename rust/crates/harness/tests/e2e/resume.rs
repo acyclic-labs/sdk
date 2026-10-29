@@ -107,7 +107,7 @@ impl AsRef<dyn ExecutionJournal> for Journal {
 }
 
 /// Opens the journal of `identity` on `stream`, with its files under `files`.
-async fn journal<P: StreamProvider + 'static>(
+async fn journal<P: acyclic_harness_core::store::JournalProvider + 'static>(
     stream: Arc<P>,
     files: &Path,
     identity: &Identity,
@@ -322,7 +322,7 @@ async fn child_turn(turn: impl std::future::Future<Output = TestResult>) -> Test
 /// Runs a child turn on `remote`, kills it once its prefix is journaled, and
 /// resumes it in this process from `stream`. Returns the resumed journal's
 /// observations, after the resumed text and provider counts passed.
-pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
+pub(super) async fn kill_and_resume<P: acyclic_harness_core::store::JournalProvider + 'static>(
     remote: &Remote,
     stream: Arc<P>,
 ) -> TestResult<Vec<Value>> {
@@ -405,7 +405,11 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
 
 /// Negative control: an operation that no killed process journaled cannot be
 /// resumed by a provider that only reconciles.
-pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<P>) -> TestResult {
+pub(super) async fn resume_unjournaled<
+    P: acyclic_harness_core::store::JournalProvider + 'static,
+>(
+    stream: Arc<P>,
+) -> TestResult {
     let files = tempfile::tempdir()?;
     let identity = Identity::new(u128::from_be_bytes(*uuid::Uuid::new_v4().as_bytes()));
     let journal = journal(stream, files.path(), &identity).await?;

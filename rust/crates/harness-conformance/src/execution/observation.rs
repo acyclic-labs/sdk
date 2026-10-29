@@ -46,7 +46,7 @@ pub async fn collect_on<P, A, O>(
     stream: Arc<P>,
 ) -> TestResult<Observation>
 where
-    P: StreamProvider,
+    P: acyclic_harness_core::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -61,7 +61,7 @@ async fn collect_in<P, A, O>(
     storage: MemoryHarnessStorage<P, A, O>,
 ) -> TestResult<Observation>
 where
-    P: StreamProvider,
+    P: acyclic_harness_core::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

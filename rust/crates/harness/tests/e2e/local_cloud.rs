@@ -56,7 +56,10 @@ fn scenarios() -> TestResult<Vec<(PathBuf, Value)>> {
 }
 
 /// The trace of `case` on `stream`, after its own oracle passed.
-async fn trace<P: StreamProvider>(case: &Value, stream: Arc<P>) -> TestResult<Value> {
+async fn trace<P: acyclic_harness_core::store::JournalProvider>(
+    case: &Value,
+    stream: Arc<P>,
+) -> TestResult<Value> {
     Ok(Value::Array(
         execution::run_on(Scenario::from_value(case.clone())?, stream)
             .await?
@@ -108,7 +111,9 @@ impl Drop for Loopback {
     }
 }
 
-async fn loopback<P: StreamProvider + 'static>(provider: Arc<P>) -> TestResult<Loopback> {
+async fn loopback<P: acyclic_harness_core::store::JournalProvider + 'static>(
+    provider: Arc<P>,
+) -> TestResult<Loopback> {
     use acyclic_stream::{grpc, session, wire};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
