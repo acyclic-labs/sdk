@@ -1,3 +1,4 @@
+use super::super::capture::{KILL_BEFORE_CAPTURE, OWED_WRITE_UNAPPLIED};
 use super::*;
 
 mod admission_cost;
@@ -7,8 +8,10 @@ mod recovery;
 thread_local! {
     /// Counterfactual: reread and hash even an identical authenticated payload.
     pub(super) static REREAD_MATCHING_PAYLOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Stops a publication after its physical write, before its capture.
-    pub(super) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Stops a publication after it owes its write, before the write.
+    pub(super) static KILL_BEFORE_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: observation requires access to every mount.
+    pub(super) static OBSERVE_EVERY_MOUNT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Negative control: a replay never captures, as before the fix.
     pub(super) static REPLAY_SKIPS_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

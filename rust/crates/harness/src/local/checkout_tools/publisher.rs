@@ -151,11 +151,11 @@ impl CheckoutPublisher {
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
     }
 
-    /// Settles a staged file in an unmounted checkout: materializes its exact
-    /// bytes, finishes the capture of that physical write while it is still
-    /// pending, and returns the reference to the generation that holds exactly
-    /// those bytes. A first attempt and every replay, whether it enters
-    /// through the write or through recovery, settle the same way.
+    /// Settles a staged file in an unmounted checkout: owes the write its
+    /// physical publication and capture, finishes that debt, and returns the
+    /// reference to the generation that holds exactly the written bytes. A
+    /// first attempt and every replay, whether it enters through the write
+    /// or through recovery, settle the same way.
     async fn settle(
         &self,
         view: &workspace::View,
@@ -166,10 +166,11 @@ impl CheckoutPublisher {
         // The physical write carries host metadata (mode, owner, times) that
         // the staged generation cannot predict, so it is owed a capture of
         // its own, under the write's operation, so the agent's own write is
-        // not observed later as a foreign change to its file. The debt is
-        // recorded durably before the write reaches disk. This write
-        // finishes it under the same lock; after an interruption, the next
-        // capture of this checkout finishes it first, whichever command or
+        // not observed later as a foreign change to its file. The debt names
+        // the write and its capture and is recorded durably before the write
+        // reaches disk. This write finishes it under the same lock; after an
+        // interruption, the next capture of this checkout finishes it first,
+        // publishing the write if it never reached disk, whichever command or
         // replay that is, while the staged generation is still the head. One
         // operation may publish several paths, so the capture's identity
         // names the path too.
@@ -184,16 +185,15 @@ impl CheckoutPublisher {
         self.tools
             .owe_write_capture(selected, watcher, owed)
             .await?;
-        self.materialize(view, operation, &file).await?;
         #[cfg(all(test, not(loom)))]
-        if tests::KILL_BEFORE_CAPTURE.get() {
-            return Err(Error::Storage("killed before the write's capture".into()));
+        if tests::KILL_BEFORE_WRITE.get() {
+            return Err(Error::Storage("killed before the write".into()));
         }
         self.finish_pending_capture(view, watcher).await?;
         self.observed(view, operation, file).await
     }
 
-    // Every publication entry point settles the same durable capture debt.
+    // Every publication entry point settles the same durable debt.
     async fn finish_pending_capture(
         &self,
         view: &workspace::View,
@@ -217,54 +217,6 @@ impl CheckoutPublisher {
         Ok(acyclic_fs::GenerationId::new(
             acyclic_fs::Digest::from_bytes(staged.as_resource().key().try_into().map_err(storage)?),
         ))
-    }
-
-    async fn materialize(
-        &self,
-        view: &workspace::View,
-        operation: OperationId,
-        file: &FileRef,
-    ) -> Result<()> {
-        let reference = self.files.file_generation(file, None)?;
-        let digest = acyclic_fs::Digest::from_bytes(
-            reference.as_resource().key().try_into().map_err(storage)?,
-        );
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let workspace = view.workspace();
-        let to = workspace
-            .generation(
-                acyclic_fs::GenerationId::new(digest),
-                acyclic_fs::WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
-            .map_err(storage)?
-            .value;
-        let parents = to
-            .parents(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        let [parent] = parents.as_slice() else {
-            return Err(Error::Storage(
-                "file publication has no unique parent generation".into(),
-            ));
-        };
-        let from = workspace
-            .generation(*parent, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
-            .await
-            .map_err(storage)?
-            .value;
-        crate::tools::git::publish_checkout_transition(
-            &self.tools.workspace.path,
-            self.tools.workspace.identity,
-            &self.tools.workspace.store,
-            publication_operation(operation, file.path()),
-            from,
-            to,
-            &|| std::future::ready(Ok(())),
-        )
-        .await
     }
 }
 
@@ -388,20 +340,41 @@ impl ContentPublisher for CheckoutPublisher {
                 let view = active
                     .as_ref()
                     .unwrap_or_else(|| self.tools.workspace.view());
+                // A publication is admitted only through a mount the caller
+                // may write, so a mount outside its authority holds none of
+                // its operations: observation skips it. A caller that may
+                // reach no mount is refused.
+                let mut refused = None;
+                let mut admitted = false;
                 for (_, mount) in self.tools.workspace.mounts.mounts() {
                     let workspace = mount
                         .view
                         .source
                         .as_ref()
                         .map_or_else(|| view.workspace(), |source| source.workspace.workspace());
-                    access::require_volume_access(
+                    match access::require_volume_access(
                         workspace,
                         &mount.view.volume,
                         &self.tools.signed,
                         ceiling.unwrap_or(self.tools.signed.capabilities()),
                         "local checkout publication",
                     )
-                    .await?;
+                    .await
+                    {
+                        Ok(()) => admitted = true,
+                        Err(
+                            error @ (Error::FilesystemAccessConfiguration(_)
+                            | Error::Unauthorized(_)),
+                        ) => {
+                            #[cfg(all(test, not(loom)))]
+                            if tests::OBSERVE_EVERY_MOUNT.get() {
+                                return Err(error);
+                            }
+                            refused.get_or_insert(error);
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
                     let file = self
                         .writer_for(&mount.view.volume, workspace)?
                         .observe_staged_once(
@@ -430,7 +403,10 @@ impl ContentPublisher for CheckoutPublisher {
                         return Ok((Some(file), None));
                     }
                 }
-                Ok((None, None))
+                match refused {
+                    Some(error) if !admitted => Err(error),
+                    _ => Ok((None, None)),
+                }
             })
             .await
         })

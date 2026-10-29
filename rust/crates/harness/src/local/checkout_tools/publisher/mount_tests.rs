@@ -242,3 +242,76 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
     );
     Ok(())
 }
+
+// A caller with project-only grants recovers its own project write: a
+// publication that never committed observes as absent rather than failing
+// on the scratch mount it may not reach, and a committed one is returned.
+// Negative control: requiring access to every mount refuses the caller.
+#[tokio::test]
+async fn project_only_callers_recover_their_own_operations() -> Result<()> {
+    let (_directory, _state, harness, publisher) = native_fixture().await?;
+    let project_only = Capabilities::new([
+        harness
+            .project
+            .capability(VolumeOperation::Read, &mut None)?,
+        harness
+            .project
+            .capability(VolumeOperation::Write, &mut None)?,
+    ]);
+    let (publisher, project_only) = (&publisher, &project_only);
+    let access = move || crate::conversation::ContentAccess {
+        ceiling: Some(project_only),
+        io: None,
+    };
+    let observe = move |operation| async move {
+        publisher
+            .observe_staged_once(operation, 1024, access())?
+            .await
+            .map(|(file, _)| file)
+    };
+    let operation = OperationId::new();
+    let (written, _) = publisher
+        .stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes",
+            "text/plain",
+            "result.txt",
+            access(),
+        )?
+        .await?;
+    for strict in [false, true] {
+        super::tests::OBSERVE_EVERY_MOUNT.set(strict);
+        let missing = observe(OperationId::new()).await;
+        let recovered = observe(operation).await;
+        super::tests::OBSERVE_EVERY_MOUNT.set(false);
+        if strict {
+            assert!(matches!(
+                missing,
+                Err(Error::FilesystemAccessConfiguration(_) | Error::Unauthorized(_))
+            ));
+        } else {
+            assert!(missing?.is_none());
+            assert_eq!(
+                recovered?.map(|file| file.version().to_owned()),
+                Some(written.version().to_owned())
+            );
+        }
+    }
+    // A caller that may reach no mount is still refused.
+    let none = Capabilities::new(Vec::<String>::new());
+    assert!(matches!(
+        publisher
+            .observe_staged_once(
+                OperationId::new(),
+                1024,
+                crate::conversation::ContentAccess {
+                    ceiling: Some(&none),
+                    io: None
+                },
+            )?
+            .await,
+        Err(Error::FilesystemAccessConfiguration(_) | Error::Unauthorized(_))
+    ));
+    Ok(())
+}

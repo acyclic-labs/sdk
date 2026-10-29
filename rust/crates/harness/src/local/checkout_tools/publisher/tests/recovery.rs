@@ -476,3 +476,125 @@ async fn a_clean_write_capture_cannot_capture_a_later_user_edit() -> Result<()> 
     );
     Ok(())
 }
+
+/// How a write that stopped after it owed its write, before the write
+/// reached disk, is finished.
+#[derive(Clone, Copy)]
+enum Finish {
+    Replay,
+    AnotherWriteThenRecovery,
+    Recovery,
+}
+
+/// Whether, after the interruption, `finish` leaves the checkout holding the
+/// write's bytes, returns the capture under the write's own operation, and
+/// keeps that reference editable.
+async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> Result<bool> {
+    let (directory, _harness, publisher) = fixture().await?;
+    let operation = OperationId::new();
+    let write = || {
+        publisher.stage_once(
+            operation,
+            "result.txt",
+            b"agent bytes\n",
+            "text/plain",
+            "result.txt",
+            crate::conversation::ContentAccess::default(),
+        )
+    };
+    KILL_BEFORE_WRITE.set(true);
+    let interrupted = match write() {
+        Ok(staged) => staged.await.err(),
+        Err(error) => Some(error),
+    };
+    KILL_BEFORE_WRITE.set(false);
+    assert!(
+        interrupted.is_some(),
+        "the first attempt was not interrupted"
+    );
+    assert!(
+        !directory.path().join("result.txt").exists(),
+        "the interrupted write reached disk"
+    );
+    let recover = || async {
+        publisher
+            .observe_staged_once(
+                operation,
+                1024,
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await
+            .map(|(file, _)| file)
+    };
+    OWED_WRITE_UNAPPLIED.set(unapplied);
+    let finished = match finish {
+        Finish::Replay => async { Ok(Some(write()?.await?.0)) }.await,
+        Finish::Recovery => recover().await,
+        Finish::AnotherWriteThenRecovery => {
+            let other = async {
+                publisher
+                    .stage_once(
+                        OperationId::new(),
+                        "other.txt",
+                        b"other bytes\n",
+                        "text/plain",
+                        "other.txt",
+                        crate::conversation::ContentAccess::default(),
+                    )?
+                    .await
+            }
+            .await;
+            match other {
+                Ok(_) => recover().await,
+                Err(error) => Err(error),
+            }
+        }
+    };
+    OWED_WRITE_UNAPPLIED.set(false);
+    let Ok(Some(finished)) = finished else {
+        return Ok(false);
+    };
+    let written = std::fs::read(directory.path().join("result.txt")).ok();
+    let key = acyclic_fs::IdempotencyKey::from_bytes(
+        capture::capture_operation(write_capture(operation, finished.path()), 1).into_bytes(),
+    );
+    let capture = publisher
+        .tools
+        .workspace
+        .view()
+        .workspace()
+        .operation_generation(
+            key,
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map_err(storage)?
+        .value;
+    let settled = capture.is_some_and(|capture| {
+        hex::encode(capture.id().digest().into_bytes()) == finished.version()
+    });
+    let edited = match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None) {
+        Ok(staged) => staged.await.is_ok(),
+        Err(_) => false,
+    };
+    Ok(written.as_deref() == Some(b"agent bytes\n".as_slice()) && settled && edited)
+}
+
+// A write that stopped after owing its write, before the write, is
+// published by whichever entry point finishes the debt, so its capture
+// holds its bytes and its reference stays editable. Negative control:
+// finishing the debt without publishing the write, as before, captures the
+// missing file and leaves the write's reference unsettled or stale.
+#[tokio::test]
+async fn an_owed_write_that_never_reached_disk_is_published_before_its_capture() -> Result<()> {
+    for finish in [
+        Finish::Replay,
+        Finish::AnotherWriteThenRecovery,
+        Finish::Recovery,
+    ] {
+        assert!(an_unwritten_owed_write_is_settled(finish, false).await?);
+        assert!(!an_unwritten_owed_write_is_settled(finish, true).await?);
+    }
+    Ok(())
+}

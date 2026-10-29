@@ -216,6 +216,21 @@ where
         .map_err(storage)?
         .value;
     if !settled && staged.workspace_id == view.workspace().id() && head.id() == staged.generation {
+        // The debt is the write and its capture together: a write that
+        // stopped before its physical publication is published first, so its
+        // capture holds the write's bytes, whichever entry point finishes it.
+        // A replay of an already published transition is idempotent.
+        #[cfg(all(test, not(loom)))]
+        let apply = !OWED_WRITE_UNAPPLIED.get();
+        #[cfg(not(all(test, not(loom))))]
+        let apply = true;
+        if apply {
+            apply_owed_write(physical, view, operation, staged.generation).await?;
+        }
+        #[cfg(all(test, not(loom)))]
+        if KILL_BEFORE_CAPTURE.get() {
+            return Err(Error::Storage("killed before the write's capture".into()));
+        }
         record_changes(
             configuration,
             selected,
@@ -229,6 +244,62 @@ where
     }
     before_effect().await?;
     reconciliation::replace_owed_write(physical, Some(owed), None).await
+}
+
+#[cfg(all(test, not(loom)))]
+std::thread_local! {
+    /// Stops an owed write between its physical publication and its capture.
+    pub(in crate::local) static KILL_BEFORE_CAPTURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Negative control: finishing a debt captures without publishing the
+    /// owed write, as before the debt named the write.
+    pub(in crate::local) static OWED_WRITE_UNAPPLIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Publishes the staged generation's transition from its unique parent into
+/// the checkout, under the write's publication operation.
+async fn apply_owed_write(
+    physical: &LocalWorkspace,
+    view: &workspace::View,
+    operation: acyclic_fs::OperationId,
+    staged: acyclic_fs::GenerationId,
+) -> Result<()> {
+    let cancellation = CancellationToken::new();
+    let workspace = view.workspace();
+    let to = workspace
+        .generation(staged, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let parents = to
+        .parents(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    let parent = match parents.as_slice() {
+        // A root generation is no transition: nothing to publish.
+        [] => return Ok(()),
+        [parent] => *parent,
+        _ => {
+            return Err(Error::Storage(
+                "file publication has no unique parent generation".into(),
+            ));
+        }
+    };
+    let from = workspace
+        .generation(parent, WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value;
+    crate::tools::git::publish_checkout_transition(
+        &physical.path,
+        physical.identity,
+        &physical.store,
+        operation,
+        from,
+        to,
+        &|| std::future::ready(Ok(())),
+    )
+    .await
 }
 
 pub(in crate::local) async fn record_changes<F, Fut>(
