@@ -24,18 +24,18 @@ impl FileProjectionPolicy {
     }
 
     /// How a file a user attaches to a prompt projects: a supported image
-    /// natively, under the default render bounds; anything else as bounded text.
+    /// natively, with its exact immutable source extent; anything else as bounded text.
     #[must_use]
     pub fn for_attachment(file: &FileRef) -> Self {
         match file.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                let bounds = crate::conversation::Limits::default().render_bytes;
+                let bytes = file.descriptor().byte_length();
                 Self::Native(Box::new(NativeMediaPolicy {
                     intent: NativeMediaIntent::Image {
                         detail: ImageDetail::Auto,
                     },
-                    maximum_bytes: bounds,
-                    maximum_work: bounds,
+                    maximum_bytes: bytes,
+                    maximum_work: bytes,
                     configuration: None,
                 }))
             }

@@ -6,7 +6,7 @@ use serde_json::Value;
 pub(crate) async fn read_tool_call(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<ToolCall> {
     let (mut value, hold) = read_value(resolver, file, maximum, io).await?;
@@ -78,7 +78,7 @@ pub(crate) async fn read_tool_call(
 pub(super) async fn read_reasoning(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<crate::model::ReasoningBlock> {
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
@@ -123,7 +123,7 @@ pub(super) async fn read_reasoning(
 pub(super) async fn read_result(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<ToolResultContent> {
     let (value, hold) = read_value(resolver, file, maximum, io).await?;
@@ -154,7 +154,7 @@ pub(super) async fn read_result(
 pub(crate) async fn read_value<'a>(
     resolver: &dyn ContentResidencyVerifier,
     file: &FileRef,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&'a PreparationIo>,
 ) -> Result<(Value, Option<ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
@@ -162,7 +162,7 @@ pub(crate) async fn read_value<'a>(
         io.check_cancellation()?;
     }
     if file.descriptor().media_type() != "application/json"
-        || file.descriptor().byte_length() > maximum
+        || maximum.is_some_and(|maximum| file.descriptor().byte_length() > maximum)
     {
         return Err(stock_boundary(
             io,
@@ -172,7 +172,9 @@ pub(crate) async fn read_value<'a>(
     }
     #[cfg(feature = "filesystem")]
     let _bytes_hold;
-    let bytes = resolver.read(file, maximum, None, io)?.await?;
+    let bytes = resolver
+        .read(file, file.descriptor().byte_length(), None, io)?
+        .await?;
     #[cfg(feature = "filesystem")]
     {
         _bytes_hold = match io {
@@ -183,7 +185,7 @@ pub(crate) async fn read_value<'a>(
             _ => None,
         };
     }
-    if bytes.len() as u64 > maximum {
+    if maximum.is_some_and(|maximum| bytes.len() as u64 > maximum) {
         return Err(stock_boundary(
             io,
             Invalid,
@@ -234,7 +236,7 @@ fn conversion_allowance<T: crate::filesystem::UploadRecord>(
 #[cfg(feature = "filesystem")]
 fn convert<'a, T: crate::filesystem::UploadRecord>(
     source: (Value, crate::filesystem::DecodeReservation<'a>),
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     maximum_depth: u32,
     io: &'a PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
@@ -242,7 +244,7 @@ fn convert<'a, T: crate::filesystem::UploadRecord>(
     let (shape, layout) = crate::executor::json::admit_value_layout(
         &input,
         crate::executor::json::JsonBounds {
-            maximum_bytes: Some(maximum_bytes),
+            maximum_bytes,
             maximum_items: Some(io.remaining()?.items_examined),
             maximum_depth,
         },

@@ -1,14 +1,11 @@
-//! The one bound on every host's `shell` and `fs` calls, applied by the shared
-//! workspace executor so each backend inherits it: operands within the
-//! scope's limits before dispatch, and a text-only result within the bytes
-//! one model context part renders.
+//! Caller-selected operand and result policies, shared by every workspace host.
 use crate::{Error, Result, runtime::ToolContext, tool::ToolResult};
 use serde_json::{Map, Value};
 
 /// The call's scope limits that bound it: rendered bytes and path bytes.
-pub(super) fn limits(context: &ToolContext) -> (u64, Option<std::num::NonZeroUsize>) {
+pub(super) fn limits(context: &ToolContext) -> (Option<u64>, Option<std::num::NonZeroUsize>) {
     let limits = context.effective_scope().limits();
-    (limits.render_bytes, limits.path_bytes)
+    (Some(limits.render_bytes), limits.path_bytes)
 }
 
 /// Refuses an operand the model must correct: a command longer than one
@@ -16,10 +13,12 @@ pub(super) fn limits(context: &ToolContext) -> (u64, Option<std::num::NonZeroUsi
 pub(super) fn operands(
     name: &str,
     arguments: &Value,
-    (render, path): (u64, Option<std::num::NonZeroUsize>),
+    (render, path): (Option<u64>, Option<std::num::NonZeroUsize>),
 ) -> Result<()> {
     let text = |field: &str| arguments.get(field).and_then(Value::as_str).unwrap_or("");
-    if text("command").len() as u64 > render {
+    if let Some(render) = render
+        && text("command").len() as u64 > render
+    {
         return Err(Error::Invalid(format!(
             "{name} command exceeds its {render}-byte bound"
         )));
@@ -37,8 +36,12 @@ pub(super) fn operands(
 /// The result within `maximum` encoded JSON bytes once the model projection
 /// wraps it. A shell result keeps its fields and shortens `stdout` then
 /// `stderr`; any other result becomes the leading text of its own encoding.
-/// Either way it is marked `truncated`.
-pub(super) fn result(name: &str, result: ToolResult, maximum: u64) -> Result<ToolResult> {
+/// A shortened result is marked `truncated`. No policy returns the original
+/// result without encoding or copying it.
+pub(super) fn result(name: &str, result: ToolResult, maximum: Option<u64>) -> Result<ToolResult> {
+    let Some(maximum) = maximum else {
+        return Ok(result);
+    };
     if name == super::shell::PLATFORM.name {
         if let Value::Object(fields) = result.value {
             if let Some(text) = fields.get("text").and_then(Value::as_str)
@@ -198,7 +201,7 @@ mod tests {
             value: json!({"success": true, "exit_code": 0, "stop": null,
                 "stdout": "o".repeat(4096), "stderr": ""}),
         };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
+        let bounded = result(super::super::shell::PLATFORM.name, flooded, Some(BOUND)).unwrap();
         assert!(
             projected_len(&bounded) <= BOUND,
             "{}",
@@ -217,7 +220,16 @@ mod tests {
                 "stdout": "\"o\n".repeat(4096), "stderr": "é".repeat(4096),
             }),
         };
-        let bounded = result(super::super::shell::PLATFORM.name, flooded, BOUND).unwrap();
+        let original_stdout = flooded.value["stdout"].as_str().unwrap().as_ptr();
+        let complete = result(super::super::shell::PLATFORM.name, flooded, None).unwrap();
+        assert_eq!(
+            complete.value["stdout"].as_str().unwrap().as_ptr(),
+            original_stdout
+        );
+        assert_eq!(complete.value["stdout"], "\"o\n".repeat(4096));
+        assert_eq!(complete.value["stderr"], "é".repeat(4096));
+        assert!(complete.value.get("truncated").is_none());
+        let bounded = result(super::super::shell::PLATFORM.name, complete, Some(BOUND)).unwrap();
         assert!(projected_len(&bounded) <= BOUND);
         assert_eq!(bounded.value["exit_code"], 3);
         assert_eq!(bounded.value["truncated"], true);
@@ -232,7 +244,7 @@ mod tests {
         let listing = ToolResult {
             value: json!({"Paths": (0..512).map(|n| format!("dir/\"{n}\".bin")).collect::<Vec<_>>()}),
         };
-        let bounded = result("fs", listing, BOUND).unwrap();
+        let bounded = result("fs", listing, Some(BOUND)).unwrap();
         assert!(projected_len(&bounded) <= BOUND);
         assert_eq!(bounded.value["truncated"], true);
         assert!(
@@ -245,7 +257,7 @@ mod tests {
             operands(
                 "fs",
                 &json!({"command": "x".repeat(257)}),
-                (BOUND, std::num::NonZeroUsize::new(8))
+                (Some(BOUND), std::num::NonZeroUsize::new(8))
             )
             .is_err()
         );
@@ -253,9 +265,17 @@ mod tests {
             operands(
                 "shell",
                 &json!({"command": "ls", "cwd": "d".repeat(9)}),
-                (BOUND, std::num::NonZeroUsize::new(8))
+                (Some(BOUND), std::num::NonZeroUsize::new(8))
             )
             .is_err()
+        );
+        assert!(
+            operands(
+                "shell",
+                &json!({"command": "x".repeat(4096), "cwd": "d".repeat(9)}),
+                (None, None)
+            )
+            .is_ok()
         );
     }
 }
