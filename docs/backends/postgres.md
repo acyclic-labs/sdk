@@ -27,7 +27,7 @@ advisory lock. Connect sets READ COMMITTED for this session, including databases
 whose default is REPEATABLE READ. Catch-up reads a bounded snapshot without
 holding the publication fence. The canonical shared Stream core owns append-if-tail CAS, exact
 idempotency, hierarchical fork/commit, filters and bounded public paging. Journal
-rows bind commands to the database clock sample, so reopening preserves record times and retry
+rows bind commands to the database acceptance clock, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
 the visible core. The shared `MemoryStream::apply_durable` prepares the canonical
 decision before invoking SQL publication and installs accepted state only after
@@ -36,10 +36,10 @@ replays reuse their retained outcome. The historical runtime receipts below
 qualify their exact source, rather than every subsequent change to this path.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
-`acyclic_stream_publish(namespace, expected_revision, command_bytes[], planned_millis[], deadlines[])`
+`acyclic_stream_publish(namespace, expected_revision, command_bytes[], deadlines[])`
 is the physical publication primitive for one frame or an ordered batch. Its
 prepared call checks the journal cursor once under the namespace fence, records
-each command's planned database-clock time, inserts the exact commands in array
+the batch's database acceptance time, inserts the exact commands in array
 order and queues one NOTIFY in one server-side statement. The returned identity
 is an opaque storage cursor; gaps never imply missing Stream records. A final
 database-clock check against the earliest deadline aborts every insertion and
@@ -64,17 +64,26 @@ lock fairness, survival of an indefinitely stalled network or constant total
 recovery cost. Measure messages, advisory-lock hold and p99 with the scalar-call
 negative control before making a performance claim.
 
-A prepared read obtains one READ COMMITTED journal page, head and database-clock
-sample. The canonical core replays each bounded page, then prepares the decision.
-An empty backlog uses two sequential request/response stages: read and conditional
-publication, reduced from BEGIN, fenced read, publication and COMMIT. There is one
-advisory acquisition, inside publication, instead of two; no database lock spans
-client-side replay or planning. A concurrent winner makes the proposal stale and
-the shared replica replans. Additional catch-up pages replace the planning clock
-sample; statement preparation and initial installation are outside this warm path.
-These are source-derived stages, not measured packet counts or a throughput claim.
-The final publication function checks the actual database clock after insertion,
-so time spent replaying or planning cannot extend admission.
+The shared replica can prepare against its retained cut when the journal supplies
+an acceptance clock. An accepted uncontended write needs one conditional
+publication statement, reduced from a read followed by publication. The cursor
+CAS validates the exact cut used for planning; a stale proposal catches up in
+bounded pages and replans the original command and deadline. Each prepared read
+obtains one READ COMMITTED journal page, head and database-clock sample. A local
+condition or capacity refusal refreshes before returning, because notifications
+alone cannot establish freshness. Permanent successful key replay and an
+immutable changed-request key conflict need no SQL.
+
+The returned database clock binds only the original unpublished records and
+envelope. Selected COW paths retain their original allocations; timestamp binding
+does not rebuild the namespace, copy payloads or request new allocation admission
+after durability. Other journals can retain their existing proposal-clock cut.
+There is one advisory acquisition and one database commit per publication, with
+no database lock spanning client-side planning. A final database-clock deadline
+check after insertion prevents planning or lock-wait time from extending admission.
+Statement preparation, initial installation, contention and catch-up are separate
+costs. These operation counts do not establish latency, throughput or a calibrated
+hardware-floor ratio.
 
 An applied revision floor already covered by this replica needs no SQL query.
 `read_commit` similarly returns an already-retained immutable successful envelope

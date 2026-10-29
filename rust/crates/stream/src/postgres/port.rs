@@ -81,16 +81,11 @@ async fn append(
         return Err(StreamError::InvalidArgument);
     }
     let expected = i64::try_from(expected).map_err(unavailable)?;
-    let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
     // Encode each canonical command once into its storage array element.
     let bytes: Vec<Vec<u8>> = frames
         .iter()
         .map(|frame| frame.command.encode_to_vec())
         .collect();
-    let millis: Vec<i64> = frames
-        .iter()
-        .map(|frame| i64::try_from(frame.at_millis).map_err(unavailable))
-        .collect::<Result<_, _>>()?;
     let deadlines: Vec<Option<i64>> = frames
         .iter()
         .map(|frame| {
@@ -100,10 +95,7 @@ async fn append(
         })
         .collect();
     let row = client
-        .query_one(
-            publish,
-            &[&namespace, &expected, &bytes, &millis, &deadlines],
-        )
+        .query_one(publish, &[&namespace, &expected, &bytes, &deadlines])
         .await
         .map_err(|error| {
             if error
@@ -121,6 +113,6 @@ async fn append(
     }
     Ok(AppendIf::Accepted {
         sequence,
-        at_millis,
+        at_millis: u64::try_from(row.get::<_, i64>(1)).map_err(unavailable)?,
     })
 }

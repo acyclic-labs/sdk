@@ -350,7 +350,7 @@ impl LocalStream {
                 {
                     return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
                 }
-                {
+                let (file, offset) = {
                     let mut journal = stream
                         .inner
                         .journal
@@ -368,10 +368,25 @@ impl LocalStream {
                         });
                     }
                     journal
-                        .append(&mut frame, required)
-                        .map_err(|_| stream.inner.poison())?;
-                    written = true;
-                }
+                        .begin_append(required)
+                        .map_err(|_| stream.inner.poison())?
+                };
+                // Publication owns this offset through completion. Journal
+                // metadata and earlier flush cuts remain available during I/O.
+                file.write(|file| {
+                    #[cfg(all(test, not(loom)))]
+                    pause_journal_write(&stream.inner.journal)?;
+                    Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
+                })
+                .map_err(|_| stream.inner.poison())?
+                .map_err(|_| stream.inner.poison())?;
+                stream
+                    .inner
+                    .journal
+                    .lock()
+                    .map_err(|_| stream.inner.poison())?
+                    .complete_append(frame.encoded.len() as u64, required);
+                written = true;
                 #[cfg(feature = "test-support")]
                 if let Some(cut) = &cut {
                     stream.cut_after_write(cut.as_ref(), fail_cut_truncation)?;

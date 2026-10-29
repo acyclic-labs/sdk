@@ -89,7 +89,7 @@ impl PostgresStream {
         let publish = client
             .prepare(
                 "SELECT revision, at_millis, accepted FROM acyclic_stream_publish(\
-                 $1,$2,$3::bytea[],$4::bigint[],$5::bigint[])",
+                 $1,$2,$3::bytea[],$4::bigint[])",
             )
             .await
             .map_err(unavailable)?;
@@ -157,19 +157,22 @@ impl PostgresStream {
         );
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
-            session: Mutex::new(Replicated::new(
-                PgJournal {
-                    client,
-                    head: 0,
-                    publish,
-                    read,
-                    wakes,
-                    namespace: namespace.to_owned(),
-                },
-                core.clone(),
-                clock,
-                0,
-            )),
+            session: Mutex::new(
+                Replicated::new(
+                    PgJournal {
+                        client,
+                        head: 0,
+                        publish,
+                        read,
+                        wakes,
+                        namespace: namespace.to_owned(),
+                    },
+                    core.clone(),
+                    clock,
+                    0,
+                )
+                .with_acceptance_clock(),
+            ),
             core,
             failed: AtomicBool::new(false),
             failure,
