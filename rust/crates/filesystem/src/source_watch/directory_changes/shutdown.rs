@@ -150,7 +150,7 @@ impl Drop for NativeSourceWatch {
             let wake = self
                 .shared
                 .cleanup_start(&mut work, WRITE)
-                .and_then(|()| hub::wake(&self.shared));
+                .and_then(|()| self.shared.hub.wake(&self.shared));
             if let Err(error) = wake {
                 self.shared.note_failure(error);
             }
@@ -210,7 +210,7 @@ impl Shared {
             reads.cancelling = true;
         }
         // The buffer stays owned until the cancelled read completes.
-        if !self.await_completion(reads) {
+        if !self.await_completion(reads)? {
             return result;
         }
         self.cleanup_start(work, READ)?;
