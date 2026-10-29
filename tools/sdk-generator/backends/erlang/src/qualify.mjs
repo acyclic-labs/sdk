@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,10 +28,10 @@ export function verifyDependencies(root, bytes, pin = qualificationPins) {
 }
 
 // Injected commands support offline lifecycle controls; CLI qualification is native.
-export async function qualify(args, { command = spawnSync, onProgress = () => {}, toolchain = pins,
+export async function qualify(args, { command = captureCommand, onProgress = () => {}, toolchain = pins,
   runtimePin = toolchain.runtime["linux-x64"], dependencyPin = qualificationPins,
   toolIndexBytes = read("../toolchains/generator-files.json"), dependencyIndexBytes = read("../toolchains/dependency-files.json") } = {}) {
-  if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
+  if (command === captureCommand && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
   const admitted = await readPackage(args);
   if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1 and Stream v1 exports");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies"].map(name => [name, realpathSync(args[name])]));
@@ -79,7 +79,7 @@ export async function qualify(args, { command = spawnSync, onProgress = () => {}
   const logNames = [];
   const run = (name, executable, argv) => {
     onProgress("Run " + name);
-    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
+    const result = command(executable, argv, { cwd: consumer, env, encoding: "utf8", timeout: 180_000 });
     const text = (result.stdout ?? "") + (result.stderr ?? "");
     const log = "logs/" + name + ".log"; put(log, text); logNames.push(log);
     if (result.error || result.status !== 0) throw new Error("Erlang qualification command failed: " + name + "\n" + text);
