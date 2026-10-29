@@ -270,60 +270,64 @@ fn invalid_commands_are_rejected_before_dispatch() {
 
 #[tokio::test]
 async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
-    let (machine, io, shutdown, task) = fixture().await;
-    let source = format!(
-        "read -r line; printf '%s' \"$line\"; #{}",
-        "é😀".repeat(16_000)
-    );
-    let mut argv = vec![
-        "bash".into(),
-        "--noprofile".into(),
-        "--norc".into(),
-        "-c".into(),
-        source,
-        String::new(),
-    ];
-    argv.extend(std::iter::repeat_n("argument".into(), 65));
-    let stdin = [0, 255, 10].repeat(50_000);
-    let command = ExecCommand::new(argv.clone(), 300_000)
-        .unwrap()
-        .with_stdin(stdin.clone())
-        .with_cwd("/workspace/sub directory".into())
-        .unwrap()
-        .with_expiry(4_102_444_800_000)
-        .with_output_limit(4);
-    let output = machine.exec(command).await.unwrap();
-    let sender = io.sender();
-    for value in [
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stdout as i32,
-            bytes: vec![0, 255],
-        }),
-        wire::exec_output::Output::Data(wire::ExecData {
-            stream: wire::ExecStream::Stderr as i32,
-            bytes: vec![254, 10],
-        }),
-        wire::exec_output::Output::ExitCode(7),
-    ] {
-        sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+    for maximum in [None, Some(4)] {
+        let (machine, io, shutdown, task) = fixture().await;
+        let source = format!(
+            "read -r line; printf '%s' \"$line\"; #{}",
+            "é😀".repeat(16_000)
+        );
+        let mut argv = vec![
+            "bash".into(),
+            "--noprofile".into(),
+            "--norc".into(),
+            "-c".into(),
+            source,
+            String::new(),
+        ];
+        argv.extend(std::iter::repeat_n("argument".into(), 65));
+        let stdin = [0, 255, 10].repeat(50_000);
+        let mut command = ExecCommand::new(argv.clone(), 300_000)
+            .unwrap()
+            .with_stdin(stdin.clone())
+            .with_cwd("/workspace/sub directory".into())
+            .unwrap()
+            .with_expiry(4_102_444_800_000);
+        if let Some(maximum) = maximum {
+            command = command.with_output_limit(maximum);
+        }
+        let output = machine.exec(command).await.unwrap();
+        let sender = io.sender();
+        for value in [
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stdout as i32,
+                bytes: vec![0, 255],
+            }),
+            wire::exec_output::Output::Data(wire::ExecData {
+                stream: wire::ExecStream::Stderr as i32,
+                bytes: vec![254, 10],
+            }),
+            wire::exec_output::Output::ExitCode(7),
+        ] {
+            sender.send(Ok(frame(machine.id(), value))).await.unwrap();
+        }
+        drop(sender);
+        let captured = capture_exec(output, maximum).await.unwrap();
+        assert_eq!(captured.stdout, [0, 255]);
+        assert_eq!(captured.stderr, [254, 10]);
+        assert_eq!(captured.exit_code, Some(7));
+        assert!(captured.stop.is_none());
+        let request = io.commands.lock().unwrap().first().unwrap().clone();
+        assert_eq!(request.argv, argv);
+        assert_eq!(request.stdin, stdin);
+        assert_eq!(
+            request.start.cwd.as_deref(),
+            Some("/workspace/sub directory")
+        );
+        assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
+        assert_eq!(request.start.maximum_output_bytes, maximum);
+        assert_eq!(request.start.timeout_ms, Some(300_000));
+        stop(shutdown, task).await;
     }
-    drop(sender);
-    let captured = capture_exec(output, 4).await.unwrap();
-    assert_eq!(captured.stdout, [0, 255]);
-    assert_eq!(captured.stderr, [254, 10]);
-    assert_eq!(captured.exit_code, Some(7));
-    assert!(captured.stop.is_none());
-    let request = io.commands.lock().unwrap().first().unwrap().clone();
-    assert_eq!(request.argv, argv);
-    assert_eq!(request.stdin, stdin);
-    assert_eq!(
-        request.start.cwd.as_deref(),
-        Some("/workspace/sub directory")
-    );
-    assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
-    assert_eq!(request.start.maximum_output_bytes, Some(4));
-    assert_eq!(request.start.timeout_ms, Some(300_000));
-    stop(shutdown, task).await;
 }
 
 #[tokio::test]
@@ -511,7 +515,7 @@ async fn stopped_capture_retains_reason_and_physical_cleanup_receipt() {
         .await
         .unwrap();
     drop(sender);
-    let captured = capture_exec(output, 0).await.unwrap();
+    let captured = capture_exec(output, Some(0)).await.unwrap();
     assert_eq!(captured.exit_code, None);
     assert_eq!(
         captured.stop,
@@ -553,7 +557,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
         .await
         .unwrap();
     assert!(matches!(
-        capture_exec(output, 1).await,
+        capture_exec(output, Some(1)).await,
         Err(ProviderError::Rejected(_))
     ));
     tokio::time::timeout(Duration::from_secs(1), sender.closed())
