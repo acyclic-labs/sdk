@@ -37,6 +37,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             self.root.base,
             self.volume.config,
             self.base_authority_head(),
+            self.prepared_merge_parent.is_some()
+                || (self.volume.config.concurrency
+                    == crate::model::ConcurrencyMode::SerializedAuthority
+                    && self.mode.mutations == MutationMode::PrivateOverlay
+                    && self.mode.consistency != ConsistencyMode::Pinned),
         )
     }
 

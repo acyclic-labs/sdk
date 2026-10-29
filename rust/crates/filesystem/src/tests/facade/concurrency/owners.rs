@@ -9,6 +9,17 @@ struct ForeignOwner {
     racing_operation: Option<OperationId>,
     forbid_replay: Arc<std::sync::atomic::AtomicBool>,
     dispatch_gate: Option<Arc<DispatchGate>>,
+    _retirement: Option<Arc<Retirement>>,
+}
+
+struct Retirement(Option<tokio::sync::oneshot::Sender<()>>);
+
+impl Drop for Retirement {
+    fn drop(&mut self) {
+        if let Some(retired) = self.0.take() {
+            let _ = retired.send(());
+        }
+    }
 }
 
 impl AsyncAuthorityStore for ForeignOwner {
@@ -138,6 +149,9 @@ impl AsyncAuthorityStore for ForeignOwner {
         if matches!(result, Ok(crate::AppendGroupOutcome::Rejected { .. })) {
             self.forbid_probe.store(true, Ordering::SeqCst);
         }
+        if let Some(gate) = &self.dispatch_gate {
+            gate.completed.notify_one();
+        }
         result
     }
 }
@@ -236,7 +250,7 @@ async fn native_rejected_groups_reply_without_a_head_probe() -> TestResult {
 #[cfg(not(target_arch = "wasm32"))]
 async fn check_rejected_group_reply(native: bool) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -265,6 +279,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
             racing_operation: Some(operation),
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -296,7 +311,10 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
         Arc::clone(&objects),
         EmbeddedCapabilities::MEMORY,
     );
-    let volume = first.create_volume(config(), B, &cancel).await?.value;
+    let volume = first
+        .create_volume(serialized_config(), B, &cancel)
+        .await?
+        .value;
     let mut seed = open_checkout(&volume, writable_manual(), &cancel).await?;
     for name in ["a", "b"] {
         seed.create(
@@ -319,6 +337,7 @@ async fn independent_owners_use_durable_frontiers_and_recover_original_operation
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         objects,
         EmbeddedCapabilities::MEMORY,
@@ -434,7 +453,7 @@ async fn native_committed_volume_witness_never_certifies_an_overlapping_read() -
 #[cfg(not(target_arch = "wasm32"))]
 async fn check_committed_volume_witness(native: bool, overlapping_read: bool) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -449,6 +468,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: None,
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -527,6 +547,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
 struct DispatchGate {
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
+    completed: tokio::sync::Notify,
     active: std::sync::atomic::AtomicBool,
     preflights: std::sync::atomic::AtomicUsize,
     quotes: std::sync::atomic::AtomicUsize,
@@ -598,7 +619,7 @@ async fn check_successor_intake(
 ) -> TestResult {
     use futures::future::{Either, select};
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c", "abandoned"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -615,6 +636,7 @@ async fn check_successor_intake(
             racing_operation: reject.then_some(operations[0]),
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: None,
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -782,11 +804,117 @@ async fn native_owned_append_survives_either_client_cancelling_its_token() -> Te
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_owned_append_keeps_final_refusals_after_reply_cancellation() -> TestResult {
+    let cancel = CancellationToken::new();
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
+    for name in ["a", "b"] {
+        create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
+    }
+    commit(&mut seed, &cancel).await?;
+    let base = seed.authority_head.ok_or("missing base")?;
+    let gate = Arc::new(DispatchGate::default());
+    let observer = Fs::new(
+        ForeignOwner {
+            inner: Arc::new(crate::StreamAuthorityStore::new(
+                volume.fs.inner.authority.provider(),
+            )),
+            claims: Default::default(),
+            forbid_probe: Default::default(),
+            racing_operation: None,
+            forbid_replay: Default::default(),
+            dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: None,
+        },
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
+        EmbeddedCapabilities::MEMORY,
+    );
+    let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
+    let clients = [CancellationToken::new(), CancellationToken::new()];
+    let mut proposals = Vec::new();
+    for (name, client) in ["a", "b"].into_iter().zip(&clients) {
+        let mut checkout = edit(&observed, name, &cancel).await?;
+        let original =
+            crate::NativeMaterializationWork::new(B, client).map_err(|(error, _)| error)?;
+        checkout =
+            checkout.private_candidate(&mut KernelAccounting::native(&original, client), client)?;
+        checkout.validate_native_work(&original)?;
+        proposals.push((checkout, original));
+    }
+    let refused = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let final_checks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut replies = Box::pin(futures::future::join_all(
+        proposals
+            .iter_mut()
+            .enumerate()
+            .map(|(index, (checkout, original))| {
+                let client = &clients[index];
+                let refused = Arc::clone(&refused);
+                let final_checks = Arc::clone(&final_checks);
+                async move {
+                    let mut seal = move |_: &crate::NativeMaterializationWork| {
+                        let result = if index == 0 && refused.load(Ordering::SeqCst) {
+                            final_checks.fetch_add(1, Ordering::SeqCst);
+                            Err(FsError::InvalidDiff)
+                        } else {
+                            Ok(())
+                        };
+                        std::future::ready(result)
+                    };
+                    checkout
+                        .publish_pending_against_with_native_work(
+                            OperationId::new(),
+                            None,
+                            None,
+                            None,
+                            PublicationPermit::Unrestricted,
+                            base,
+                            original,
+                            client,
+                            &mut seal,
+                            None,
+                            None,
+                        )
+                        .await
+                }
+            }),
+    ));
+    assert!(matches!(
+        futures::future::select(Box::pin(gate.started.notified()), replies.as_mut()).await,
+        futures::future::Either::Left(_)
+    ));
+    clients[0].cancel();
+    refused.store(true, Ordering::SeqCst);
+    gate.release.notify_one();
+    // The actual owned append must finish its final checks without polling replies.
+    gate.completed.notified().await;
+    let outcomes = replies.await;
+    assert!(
+        matches!(
+            &outcomes[1],
+            Err(FsError::Publication(
+                crate::kernel::PublicationError::GroupAborted(
+                    crate::kernel::GroupAbort::SealFailed
+                )
+            ))
+        ),
+        "a cancelled reply bypassed the final refusal: {outcomes:?}"
+    );
+    assert_eq!(final_checks.load(Ordering::SeqCst), 1);
+    let mut accounting = KernelAccounting::standalone(B, &cancel);
+    let (_, head) = volume
+        .resolve_head_generation(&mut accounting, &cancel)
+        .await?;
+    assert_eq!(head, base, "a refused member published an owned prefix");
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn check_owned_append_client_drop(native: bool, explicit_cancellation: bool) -> TestResult {
     use futures::future::{AbortHandle, Abortable, Either, select};
     for dropped in 0..2 {
         let cancel = CancellationToken::new();
-        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
         for name in ["a", "b"] {
             create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
         }
@@ -802,6 +930,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
                 racing_operation: None,
                 forbid_replay: Default::default(),
                 dispatch_gate: Some(Arc::clone(&gate)),
+                _retirement: None,
             },
             crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
             EmbeddedCapabilities::MEMORY,
@@ -835,11 +964,18 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
         } else {
             abort_b.abort();
         }
-        assert!(
-            matches!(futures::poll!(joined.as_mut()), std::task::Poll::Pending),
-            "a dropped reply aborted another admitted writer"
-        );
-        gate.release.notify_one();
+        if explicit_cancellation {
+            // Complete the owned append before polling the cancelled reply:
+            // cancellation must not depend on reply delivery marking loss.
+            gate.release.notify_one();
+            gate.completed.notified().await;
+        } else {
+            assert!(
+                matches!(futures::poll!(joined.as_mut()), std::task::Poll::Pending),
+                "a dropped reply aborted another admitted writer"
+            );
+            gate.release.notify_one();
+        }
         let (first, second) = joined.await;
         let (withdrawn, delivered) = if dropped == 0 {
             (first, second)
@@ -906,12 +1042,13 @@ async fn native_owned_append_retains_the_actual_composition_after_every_client_l
 async fn check_composition_custody(native: bool) -> TestResult {
     use futures::future::{Either, select};
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
     commit(&mut seed, &cancel).await?;
     let gate = Arc::new(DispatchGate::default());
+    let (retired, retirement) = tokio::sync::oneshot::channel();
     let observer = Fs::new(
         ForeignOwner {
             inner: Arc::new(crate::StreamAuthorityStore::new(
@@ -922,6 +1059,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
             racing_operation: None,
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
+            _retirement: Some(Arc::new(Retirement(Some(retired)))),
         },
         crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
@@ -949,9 +1087,11 @@ async fn check_composition_custody(native: bool) -> TestResult {
         "durability I/O outlived the actual filesystem composition"
     );
     gate.release.notify_one();
-    while actual.strong_count() != 0 {
-        tokio::task::yield_now().await;
-    }
+    retirement.await?;
+    assert!(
+        actual.upgrade().is_none(),
+        "completed owner retained composition"
+    );
     verify_owned_operations(&volume, operations, &cancel).await
 }
 
@@ -960,7 +1100,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
 fn ready_memory_batches_need_no_detached_executor() -> TestResult {
     futures::executor::block_on(async {
         let cancel = CancellationToken::new();
-        let (volume, mut seed) = fixture(config(), &cancel).await?;
+        let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
         for name in ["a", "b"] {
             create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
         }

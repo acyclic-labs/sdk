@@ -28,7 +28,7 @@ async fn proposal(
 #[tokio::test]
 async fn completed_round_receipt_custody_does_not_exclude_the_next_batch() -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c", "d"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -109,7 +109,7 @@ async fn completed_round_receipt_custody_does_not_exclude_the_next_batch() -> Te
 async fn disjoint_proposals_with_different_bases_share_one_append_and_original_retries()
 -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b", "c"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -221,7 +221,7 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
 async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_caller_rebase()
 -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     let count = crate::async_storage::MAX_AUTHORITY_GROUP_MEMBERS + 1;
     for index in 0..count {
         create(
@@ -290,7 +290,7 @@ async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_cal
 #[tokio::test]
 async fn evidence_capacity_splits_disjoint_proposals_before_stream_admission() -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     let count = 24;
     for index in 0..count {
         create(

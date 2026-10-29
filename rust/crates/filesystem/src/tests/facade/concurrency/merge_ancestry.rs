@@ -26,7 +26,8 @@ async fn native_prepared_merge_ancestry_survives_stale_head_normalization() -> T
 
 async fn composed_merge(stale: bool, native: bool) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let selected = if stale { config() } else { serialized_config() };
+    let (volume, mut seed) = fixture(selected, &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }

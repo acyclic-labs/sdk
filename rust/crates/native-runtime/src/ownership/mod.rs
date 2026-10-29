@@ -124,15 +124,46 @@ impl OwnershipReleaseBarrier {
 
     /// Blocks until every ownership-anchor clone has released the owner.
     pub fn wait(self) {
+        self.wait_for(None);
+    }
+
+    /// Waits for owner release, refusing at the absolute deadline.
+    /// A deadline bounds this blocking wait itself, including worker shutdown.
+    pub fn wait_until(self, deadline: std::time::Instant) -> std::io::Result<()> {
+        if self.wait_for(Some(deadline)) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "ownership release deadline expired",
+            ))
+        }
+    }
+
+    fn wait_for(self, deadline: Option<std::time::Instant>) -> bool {
         let (lock, released) = &*self.released;
         let mut guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while self.owner.strong_count() != 0 {
-            guard = released
-                .wait(guard)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            guard = match deadline {
+                None => released
+                    .wait(guard)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                Some(deadline) => {
+                    let Some(remaining) =
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    else {
+                        return false;
+                    };
+                    released
+                        .wait_timeout(guard, remaining)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+            };
         }
+        true
     }
 }
 

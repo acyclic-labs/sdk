@@ -206,6 +206,16 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
             .ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
+        let mut checkout = state
+            .checkout
+            .private_candidate(
+                &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
+                cancellation,
+            )
+            .map_err(MountSourceError::from)?;
+        // Every native mutation retains the policy metadata it was admitted
+        // against in the same proof that authorizes its publication.
+        checkout.access_policy_revision(&work, cancellation).await?;
         Ok(CheckoutCandidate {
             _publication: publication,
             deadline: None,
@@ -217,13 +227,7 @@ impl<A: 'static, O: 'static> SharedCheckout<A, O> {
                     cancellation,
                 )
                 .map_err(MountSourceError::from)?,
-            checkout: state
-                .checkout
-                .private_candidate(
-                    &mut crate::kernel::allocation::KernelAccounting::native(&work, cancellation),
-                    cancellation,
-                )
-                .map_err(MountSourceError::from)?,
+            checkout,
             operation,
             epoch,
             stamp,

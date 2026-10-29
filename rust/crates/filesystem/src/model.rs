@@ -38,7 +38,8 @@ pub enum ConsistencyMode {
     TrackingSafe,
     /// Receive generation changes and apply them at safe boundaries.
     Live,
-    /// Report newer heads and require an explicit caller refresh.
+    /// Report newer heads and require an explicit caller refresh for reads.
+    /// An explicit commit follows the volume's concurrency contract.
     Manual,
 }
 
@@ -52,8 +53,11 @@ pub enum ConcurrencyMode {
     /// Writers publish against an expected immutable generation and receive a
     /// typed conflict instead of implicit retry or merge.
     Optimistic,
-    /// One authority orders every admitted direct-live mutation; safe disjoint
-    /// races may rebase and retry within the caller's explicit bounds.
+    /// One authority orders admitted mutations. Non-pinned private overlays may
+    /// compose disjoint proposals after checking their captured preconditions.
+    /// Each direct-live attempt remains exact; its caller may rebase and retry
+    /// only within its explicit bounds. Pinned overlays remain exact unless
+    /// the caller explicitly prepares a merge.
     SerializedAuthority,
 }
 

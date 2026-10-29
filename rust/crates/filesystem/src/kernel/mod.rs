@@ -221,9 +221,9 @@ pub use probe::{
 pub(crate) use publication::AuthorityActor;
 pub(crate) use publication::authority_actor;
 pub use publication::{
-    PublicationCache, PublicationError, PublicationFailure, PublicationIntent, PublicationOwner,
-    PublicationReceipt, PublishGenerationRequest, PublishedGeneration, decode_published_generation,
-    publish_generation,
+    GroupAbort, PublicationCache, PublicationError, PublicationFailure, PublicationIntent,
+    PublicationOwner, PublicationReceipt, PublishGenerationRequest, PublishedGeneration,
+    decode_published_generation, publish_generation,
 };
 pub(crate) use publication::{PublicationPreconditions, contextual_publication_fingerprint};
 pub(crate) use publication::{

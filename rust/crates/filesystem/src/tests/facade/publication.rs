@@ -1,6 +1,80 @@
 use super::*;
 
 #[tokio::test]
+async fn only_serialized_non_pinned_overlays_compose_disjoint_publications() -> TestResult {
+    for simultaneous in [false, true] {
+        for (config, mode, composed) in [
+            (config(), writable_manual(), false),
+            (config(), writable_pinned(), false),
+            (serialized_config(), writable_manual(), true),
+            (serialized_config(), writable_pinned(), false),
+        ] {
+            let cancel = CancellationToken::new();
+            let (volume, _) = fixture(config, &cancel).await?;
+            let mut first = open_checkout(&volume, mode, &cancel).await?;
+            let mut second = open_checkout(&volume, mode, &cancel).await?;
+            create(&mut first, "left", OwnedBytes::from_static(b"L"), &cancel).await?;
+            create(&mut second, "right", OwnedBytes::from_static(b"R"), &cancel).await?;
+            let publish_first = first.commit(
+                OperationId::new(),
+                None,
+                None,
+                None,
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>,
+            );
+            let publish_second = second.commit(
+                OperationId::new(),
+                None,
+                None,
+                None,
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>,
+            );
+            let (left, right) = if simultaneous {
+                futures::future::join(publish_first, publish_second).await
+            } else {
+                (publish_first.await, publish_second.await)
+            };
+            let mut committed = 0;
+            for outcome in [left?.value, right?.value] {
+                match outcome {
+                    LivePublicationObservation::Committed { .. } => committed += 1,
+                    LivePublicationObservation::Conflict { .. } if !composed => {}
+                    other => {
+                        return Err(format!("unexpected publication outcome: {other:?}").into());
+                    }
+                }
+            }
+            assert_eq!(committed, if composed { 2 } else { 1 });
+            assert_eq!(
+                usize::from(first.has_pending_mutations())
+                    + usize::from(second.has_pending_mutations()),
+                2 - committed
+            );
+            let mut current = open_checkout(&volume, pinned(), &cancel).await?;
+            let mut published = 0;
+            for name in ["left", "right"] {
+                published += usize::from(
+                    current
+                        .lookup_no_follow(&path(name)?, B, &cancel)
+                        .await?
+                        .value
+                        .record
+                        .is_some(),
+                );
+            }
+            assert_eq!(published, committed);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();

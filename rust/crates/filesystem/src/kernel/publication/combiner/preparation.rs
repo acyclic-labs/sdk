@@ -46,10 +46,13 @@ impl<P> Drop for Job<P> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !self.finished {
-            state.abort();
+            state.abort_with(GroupAbort::JobDropped);
         }
         for member in &state.members {
-            Self::return_work(&member.value, Err(PublicationError::GroupAborted.into()));
+            Self::return_work(
+                &member.value,
+                Err(PublicationError::GroupAborted(state.abort_cause).into()),
+            );
         }
         drop(state);
         self.group.signal.notify_waiters();
@@ -64,7 +67,7 @@ impl<P: PublicationOwner> Job<P> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.phase == Phase::Aborted {
-            return Err(PublicationError::GroupAborted.into());
+            return Err(PublicationError::GroupAborted(state.abort_cause).into());
         }
         let mut prepared = self
             .sponsor
@@ -103,7 +106,9 @@ impl<P: PublicationOwner> Job<P> {
                     Self::return_work(&member.value, Ok(None));
                     return Ok(());
                 }
-                Plan::Aborted => return Err(PublicationError::GroupAborted.into()),
+                Plan::Aborted => {
+                    return Err(PublicationError::GroupAborted(state.abort_cause).into());
+                }
             }
         };
         let funding = proposal
@@ -140,7 +145,7 @@ impl<P: PublicationOwner> Job<P> {
                 prepared.publication_pin = generation.pin;
                 Ok(Some((generation.root, predecessor)))
             }
-            Ok(_) => Err(PublicationError::GroupAborted.into()),
+            Ok(_) => Err(PublicationError::GroupAborted(state.abort_cause).into()),
             Err(error) => Err(error),
         });
         let failed = matches!(prepared.prefix_result, Some(Err(_)));
@@ -151,7 +156,7 @@ impl<P: PublicationOwner> Job<P> {
         drop(state);
         self.group.signal.notify_waiters();
         if failed {
-            Err(PublicationError::GroupAborted.into())
+            Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into())
         } else {
             Ok(())
         }
@@ -297,7 +302,7 @@ impl Ticket {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.phase == Phase::Aborted {
-            return Err(PublicationError::GroupAborted.into());
+            return Err(PublicationError::GroupAborted(state.abort_cause).into());
         }
         self.proposal
             .prepared
@@ -404,10 +409,9 @@ impl Ticket {
         if let Some(completed) = prepared.completed_work.take() {
             completed.restore(accounting)?;
         }
-        let result = prepared
-            .prefix_result
-            .take()
-            .ok_or_else(|| crate::FsError::Publication(PublicationError::GroupAborted))?;
+        let result = prepared.prefix_result.take().ok_or_else(|| {
+            crate::FsError::Publication(PublicationError::GroupAborted(state.abort_cause))
+        })?;
         Ok(Some(result))
     }
 }

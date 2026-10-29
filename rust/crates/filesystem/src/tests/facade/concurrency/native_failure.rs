@@ -15,7 +15,7 @@ impl From<FsError> for SealFailure {
 async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no_prefix()
 -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut seed) = fixture(config(), &cancel).await?;
+    let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     for name in ["a", "b"] {
         create(&mut seed, name, OwnedBytes::from_static(b"old"), &cancel).await?;
     }
@@ -82,7 +82,9 @@ async fn native_batch_preserves_the_failing_members_typed_error_and_publishes_no
         match outcome {
             Err(SealFailure::Owner(7)) => owners += 1,
             Err(SealFailure::Filesystem(FsError::Publication(
-                crate::kernel::PublicationError::GroupAborted,
+                crate::kernel::PublicationError::GroupAborted(
+                    crate::kernel::GroupAbort::SealFailed,
+                ),
             ))) => {}
             outcome => return Err(format!("wrong producer seal result: {outcome:?}").into()),
         }

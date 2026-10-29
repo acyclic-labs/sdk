@@ -65,7 +65,7 @@ pub(super) fn packet<T>(
     match allocation {
         KernelOwnedAllocation::NativeOriginal(allocation) => {
             acyclic_objects::ObjectsNativeRequest::new(data, allocation, &work.runtime_meter())
-                .map_err(|error| native_error(error).into())
+                .map_err(|error| native_error(error, work).into())
         }
         _ => Err(ObjectStoreError::Corrupt.into()),
     }

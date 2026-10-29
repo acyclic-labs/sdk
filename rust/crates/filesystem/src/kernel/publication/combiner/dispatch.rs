@@ -58,12 +58,14 @@ impl Ticket {
             tokio::pin!(notified);
             notified.as_mut().enable();
             accounting.check()?;
-            let phase = self
-                .group
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .phase;
+            let (phase, abort_cause) = {
+                let state = self
+                    .group
+                    .state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (state.phase, state.abort_cause)
+            };
             if matches!(phase, Phase::Complete | Phase::Aborted) {
                 let mut prepared = self
                     .proposal
@@ -77,7 +79,7 @@ impl Ticket {
                     return Err(prepared
                         .error
                         .take()
-                        .unwrap_or_else(|| PublicationError::GroupAborted.into()));
+                        .unwrap_or_else(|| PublicationError::GroupAborted(abort_cause).into()));
                 }
                 let outcome = prepared
                     .outcome
@@ -214,6 +216,10 @@ fn handoff<P: PublicationOwner, G: crate::OwnedAuthorityGuard>(
                     Ok(())
                 });
             let failed = result.is_err();
+            let abort_cause = match &result {
+                Err(crate::FsError::Publication(PublicationError::GroupAborted(cause))) => *cause,
+                _ => GroupAbort::PhaseEnded,
+            };
             {
                 let mut prepared = leader
                     .prepared
@@ -230,7 +236,7 @@ fn handoff<P: PublicationOwner, G: crate::OwnedAuthorityGuard>(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if failed || !state.complete() {
-                    state.abort();
+                    state.abort_with(abort_cause);
                 }
             }
             dispatch_group.signal.notify_waiters();
@@ -242,7 +248,7 @@ fn handoff<P: PublicationOwner, G: crate::OwnedAuthorityGuard>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if !state.handoff() {
-            return Err(PublicationError::GroupAborted.into());
+            return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
         }
     }
     if let Some(task) = owner.authority().own_group(batch) {
@@ -261,7 +267,7 @@ fn prepare_requests(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if state.phase != Phase::Sealing {
-        return Err(PublicationError::GroupAborted.into());
+        return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
     }
     let mut expected = None;
     for proposal in state.selected() {
@@ -317,7 +323,7 @@ fn distribute(group: &Group, outcome: crate::AppendGroupOutcome) -> Result<(), c
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if state.phase != Phase::Appending {
-        return Err(PublicationError::GroupAborted.into());
+        return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
     }
     match outcome {
         crate::AppendGroupOutcome::Published {
@@ -443,20 +449,16 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
         .members
         .len();
     for index in 0..count {
-        let notified = group.signal.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
         let proposal = {
             let state = group
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if state.phase != Phase::Appending {
-                return Err(PublicationError::GroupAborted.into());
+                return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
             }
             match state.selected_at(index) {
-                Some((_, true)) => return Err(PublicationError::GroupAborted.into()),
-                Some((proposal, false)) => Arc::clone(proposal),
+                Some((proposal, _)) => Arc::clone(proposal),
                 None => continue,
             }
         };
@@ -467,29 +469,8 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
             .seal
             .take()
             .ok_or(crate::FsError::InvalidDiff)?;
-        let result = {
-            let future = (seal.callback)();
-            tokio::pin!(future);
-            loop {
-                tokio::select! {
-                    biased;
-                    () = notified.as_mut() => {
-                        notified.set(group.signal.notified());
-                        notified.as_mut().enable();
-                        let state = group
-                            .state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if state.phase != Phase::Appending
-                            || state.selected_at(index).is_some_and(|(_, withdrawn)| withdrawn)
-                        {
-                            break Err(PublicationError::GroupAborted.into());
-                        }
-                    }
-                    result = future.as_mut() => break result,
-                }
-            }
-        };
+        // Reply withdrawal never bypasses an admitted operation's final guard.
+        let result = (seal.callback)().await;
         proposal
             .prepared
             .lock()

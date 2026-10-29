@@ -348,11 +348,16 @@ impl VringControl {
 
 impl std::task::Wake for VringControl {
     fn wake(self: Arc<Self>) {
-        self.stop();
+        self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        self.stop();
+        // Retain the original refusal before shutdown can wake a worker with
+        // a transport error. The first actual failure still owns retirement.
+        match self.work.admit(crate::WorkCounters::UNCHARGED) {
+            Err(error) => self.fail(error.into()),
+            Ok(()) => self.stop(),
+        }
     }
 }
 

@@ -101,6 +101,7 @@ impl DependencyLedger {
         base: ObjectId,
         config: VolumeConfig,
         head: Option<Head>,
+        rebase: bool,
     ) -> Result<
         (
             PublicationFreeze,
@@ -115,6 +116,7 @@ impl DependencyLedger {
             base,
             config,
             head,
+            rebase,
             reads: self.proof().dependencies.clone(),
         });
         Ok((freeze, preconditions))

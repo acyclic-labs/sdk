@@ -71,7 +71,7 @@ async fn propose(
 
 async fn check_history(mut pending: Vec<(u8, u8)>) -> TestResult {
     let cancel = CancellationToken::new();
-    let (volume, mut serial) = fixture(config(), &cancel).await?;
+    let (volume, mut serial) = fixture(serialized_config(), &cancel).await?;
     for key in 0..4 {
         create(
             &mut serial,
