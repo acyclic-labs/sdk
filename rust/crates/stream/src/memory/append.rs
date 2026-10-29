@@ -97,7 +97,7 @@ impl MemoryStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 let _input = _input;
                 let _holds = (_histories, _paths);
-                self.install_retained(state, retained)?;
+                let retained = self.install_retained(state, retained)?;
                 install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;
                 state.last_committed_at_micros = time;
@@ -108,7 +108,7 @@ impl MemoryStream {
                     Some(request.idempotency_key.clone()),
                     digest,
                     IdempotencyOutcome::Append(outcome.clone()),
-                    allocation,
+                    (allocation, retained),
                 );
                 Ok((outcome, Default::default()))
             },

@@ -64,18 +64,18 @@ pub(crate) fn take_pending() -> Vec<Worker> {
     })
 }
 
-pub(super) fn spawn(worker: impl Future<Output = ()> + Send + 'static) {
+pub(crate) fn spawn(worker: impl Future<Output = ()> + Send + 'static) {
+    let worker: Worker = Box::pin(worker);
     let worker = EXECUTOR.with(|executor| {
         let mut executor = executor.borrow_mut();
         if let Some((_, workers)) = executor.as_mut() {
-            workers.push(Box::pin(worker));
+            workers.push(worker);
             None
         } else {
             Some(worker)
         }
     });
     if let Some(worker) = worker {
-        let worker = Box::pin(worker);
         loom::thread::spawn(move || super::park(worker));
     }
 }

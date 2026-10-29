@@ -90,54 +90,47 @@ impl StreamProvider for LocalStream {
         request: crate::WriteRequest,
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
-        Box::pin(async move {
-            #[cfg(feature = "test-support")]
-            match &request {
-                crate::WriteRequest::Append(request) => {
-                    acyclic_native_runtime::testing::describe(|| {
-                        format!("append {} {:?}", request.path, request.idempotency_key)
-                    })
-                }
-                crate::WriteRequest::Commit(request) => describe_commit(request),
-                crate::WriteRequest::Fork(_) => {}
-            }
-            let span = obs::OperationSpan::new(match &request {
-                crate::WriteRequest::Append(request) => tracing::info_span!(
-                    "acyclic.stream.append",
-                    items = request.records.len(),
-                    bytes = request
-                        .records
-                        .iter()
-                        .map(crate::AppendRecord::payload_bytes)
-                        .sum::<usize>(),
-                    rev = Empty,
-                    outcome = Empty,
-                    error.kind = Empty,
-                ),
-                crate::WriteRequest::Fork(_) => {
-                    tracing::info_span!("acyclic.stream.fork", outcome = Empty, error.kind = Empty,)
-                }
-                crate::WriteRequest::Commit(request) => tracing::info_span!(
-                    "acyclic.stream.commit",
-                    items = request.mutations.len(),
-                    outcome = Empty,
-                    error.kind = Empty,
-                ),
-            });
-            span.scope(async {
-                let operation = span.clone();
-                self.exclusive(&span, move |stream| async move {
-                    let outcome = stream.execute(request, None).await?.outcome;
-                    if let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &outcome
-                    {
-                        operation.record("rev", receipt.tail);
-                    }
-                    Ok(outcome)
+        #[cfg(feature = "test-support")]
+        match &request {
+            crate::WriteRequest::Append(request) => {
+                acyclic_native_runtime::testing::describe(|| {
+                    format!("append {} {:?}", request.path, request.idempotency_key)
                 })
-                .await
-            })
-            .await
-        })
+            }
+            crate::WriteRequest::Commit(request) => describe_commit(request),
+            crate::WriteRequest::Fork(_) => {}
+        }
+        let span = obs::OperationSpan::new(match &request {
+            crate::WriteRequest::Append(request) => tracing::info_span!(
+                "acyclic.stream.append",
+                items = request.records.len(),
+                bytes = request
+                    .records
+                    .iter()
+                    .map(crate::AppendRecord::payload_bytes)
+                    .sum::<usize>(),
+                rev = Empty,
+                outcome = Empty,
+                error.kind = Empty,
+            ),
+            crate::WriteRequest::Fork(_) => {
+                tracing::info_span!("acyclic.stream.fork", outcome = Empty, error.kind = Empty,)
+            }
+            crate::WriteRequest::Commit(request) => tracing::info_span!(
+                "acyclic.stream.commit",
+                items = request.mutations.len(),
+                outcome = Empty,
+                error.kind = Empty,
+            ),
+        });
+        let operation = span.clone();
+        Box::pin(self.exclusive(span, move |stream| async move {
+            let outcome = stream.execute(request, None).await?.outcome;
+            if let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &outcome {
+                operation.record("rev", receipt.tail);
+            }
+            Ok(outcome)
+        }))
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

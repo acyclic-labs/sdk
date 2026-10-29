@@ -11,6 +11,7 @@ async fn apply(
     persist: impl Future<Output = Result<(), StreamError>>,
 ) -> Result<WriteOutcome, StreamError> {
     let canonical = core.canonicalize(command)?;
+    let persist = std::pin::pin!(persist);
     core.apply_durable(&canonical, deadline, persist)
         .await
         .map(|execution| execution.outcome)

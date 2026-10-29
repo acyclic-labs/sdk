@@ -51,6 +51,7 @@ pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool)
                     .await
                     .map_err(|_| StreamError::Unavailable)
             };
+            let persist = std::pin::pin!(persist);
             block_on(publishing.apply_durable(&command, None, persist))
         });
         entered.recv().unwrap();

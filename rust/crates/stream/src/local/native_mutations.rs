@@ -140,7 +140,7 @@ impl LocalStream {
                 error.kind = Empty
             ));
             let result = stream
-                .exclusive(&span, move |stream| async move {
+                .exclusive(span, move |stream| async move {
                     let _input = input;
                     let execution = stream.execute(WriteRequest::Append(request), None).await?;
                     let crate::WriteOutcome::Append(outcome) = execution.outcome else {

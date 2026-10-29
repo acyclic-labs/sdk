@@ -71,6 +71,9 @@ impl HistoryCursor {
         self.records.position()
     }
     async fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
+        if path.tail < self.records.source().tail {
+            return Err(StreamError::PrefixNotRetained);
+        }
         if let Some(root) = &self.records.source().root {
             if path
                 .history
