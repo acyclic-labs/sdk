@@ -156,9 +156,9 @@ pub fn charge(work: &NativeCustody, bytes_copied: u64, items_examined: u64) -> R
     Ok(())
 }
 
-/// Rejects unbounded or empty allowances at both transformation and I/O boundaries.
-pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+/// Validates an optional byte policy at transformation and I/O boundaries.
+pub(crate) fn validate_edit_bound(maximum_bytes: Option<u64>) -> Result<()> {
+    if matches!(maximum_bytes, Some(0 | u64::MAX)) {
         return Err(Error::Invalid(
             "edit byte bound must be positive and finite".into(),
         ));
@@ -166,21 +166,22 @@ pub(crate) fn validate_edit_bound(maximum_bytes: u64) -> Result<()> {
     Ok(())
 }
 
-/// Replaces one unambiguous exact occurrence within finite input/output bounds.
+/// Replaces one unambiguous exact occurrence under an optional byte policy.
 pub(crate) fn exact_replace(
     source: &str,
     old_text: &str,
     new_text: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: &mut NativeCustody,
 ) -> Result<String> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+    if matches!(maximum_bytes, Some(0 | u64::MAX)) {
         return Err(invalid(work, "edit byte bound must be positive and finite"));
     }
-    if source.len() as u64 > maximum_bytes
-        || old_text.len() as u64 > maximum_bytes
-        || new_text.len() as u64 > maximum_bytes
-        || old_text.is_empty()
+    if maximum_bytes.is_some_and(|maximum| {
+        source.len() as u64 > maximum
+            || old_text.len() as u64 > maximum
+            || new_text.len() as u64 > maximum
+    }) || old_text.is_empty()
     {
         return Err(invalid(work, "exact edit has invalid text or byte bounds"));
     }
@@ -201,7 +202,7 @@ pub(crate) fn exact_replace(
         .len()
         .checked_sub(old_text.len())
         .and_then(|length| length.checked_add(new_text.len()))
-        .filter(|length| *length as u64 <= maximum_bytes)
+        .filter(|length| maximum_bytes.is_none_or(|maximum| *length as u64 <= maximum))
         .ok_or_else(|| invalid(work, "exact edit output exceeds byte bound"))?;
     let mut output = String::new();
     reserve_string(work, &mut output, output_bytes)?;
@@ -227,37 +228,40 @@ mod tests {
     fn exact_edit_preserves_utf8_and_rejects_overlapping_matches() -> Result<()> {
         let mut work = None;
         assert_eq!(
-            exact_replace("before 🦀 after", "🦀", "日本語", 64, &mut work)?,
+            exact_replace("before 🦀 after", "🦀", "日本語", None, &mut work)?,
             "before 日本語 after"
         );
         assert_eq!(
-            exact_replace("a\r\nb\n", "\r\n", "\n", 8, &mut work)?,
+            exact_replace("a\r\nb\n", "\r\n", "\n", Some(8), &mut work)?,
             "a\nb\n"
         );
         assert!(matches!(
-            exact_replace("aaa", "aa", "b", 8, &mut work),
+            exact_replace("aaa", "aa", "b", Some(8), &mut work),
             Err(Error::Conflict(_))
         ));
         assert!(matches!(
-            exact_replace("ééé", "éé", "b", 8, &mut work),
+            exact_replace("ééé", "éé", "b", Some(8), &mut work),
             Err(Error::Conflict(_))
         ));
-        assert!(exact_replace("one one", "one", "two", 8, &mut work).is_err());
-        assert!(exact_replace("one", "missing", "two", 8, &mut work).is_err());
-        assert!(exact_replace("one", "", "two", 8, &mut work).is_err());
+        assert!(exact_replace("one one", "one", "two", Some(8), &mut work).is_err());
+        assert!(exact_replace("one", "missing", "two", Some(8), &mut work).is_err());
+        assert!(exact_replace("one", "", "two", Some(8), &mut work).is_err());
         Ok(())
     }
 
     #[test]
     fn exact_edit_checks_input_and_output_byte_bounds() -> Result<()> {
         let mut work = None;
-        assert_eq!(exact_replace("abc", "b", "", 3, &mut work)?, "ac");
-        assert_eq!(exact_replace("abc", "abc", "xyz", 3, &mut work)?, "xyz");
-        assert!(exact_replace("abc", "b", "long", 4, &mut work).is_err());
-        assert!(exact_replace("abc", "abc", "a", 2, &mut work).is_err());
-        assert!(exact_replace("abc", "a", "a", 0, &mut work).is_err());
-        assert!(exact_replace("abc", "a", "a", u64::MAX, &mut work).is_err());
-        assert!(exact_replace("é", "é", "🦀", 3, &mut work).is_err());
+        assert_eq!(exact_replace("abc", "b", "", Some(3), &mut work)?, "ac");
+        assert_eq!(
+            exact_replace("abc", "abc", "xyz", Some(3), &mut work)?,
+            "xyz"
+        );
+        assert!(exact_replace("abc", "b", "long", Some(4), &mut work).is_err());
+        assert!(exact_replace("abc", "abc", "a", Some(2), &mut work).is_err());
+        assert!(exact_replace("abc", "a", "a", Some(0), &mut work).is_err());
+        assert!(exact_replace("abc", "a", "a", Some(u64::MAX), &mut work).is_err());
+        assert!(exact_replace("é", "é", "🦀", Some(3), &mut work).is_err());
         Ok(())
     }
 
@@ -283,7 +287,7 @@ mod tests {
                                         .map(|_| offset)
                                 })
                                 .collect();
-                            let result = exact_replace(&source, &needle, "X", 64, &mut work);
+                            let result = exact_replace(&source, &needle, "X", Some(64), &mut work);
                             if matches.len() == 1 {
                                 assert_eq!(result.ok(), Some(source.replacen(&needle, "X", 1)));
                             } else {
