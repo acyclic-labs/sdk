@@ -48,8 +48,8 @@ pub fn objects_v1_digest(bytes: &[u8]) -> Vec<u8> {
 }
 /// Checks one route's binary reply against its binary request, as the Rust clients do.
 #[wasm_bindgen]
-pub fn verify_objects_v1(route: &str, input: &[u8], output: &[u8]) -> Result<(), JsValue> {
-    acyclic_objects::route::verify(route, input, output).map_err(error)
+pub fn verify_objects_v1(route: &str, input: Vec<u8>, output: Vec<u8>) -> Result<(), JsValue> {
+    acyclic_objects::route::verify(route, input.into(), output.into()).map_err(error)
 }
 
 /// One in-memory account served through the canonical route dispatch.
@@ -68,7 +68,7 @@ impl ObjectsV1Memory {
     }
     /// Serves one route's binary input message, returning its binary output.
     pub async fn invoke(&self, route: String, bytes: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-        acyclic_objects::route::invoke(&self.inner, &route, &bytes)
+        acyclic_objects::route::invoke(&self.inner, &route, bytes.into())
             .await
             .map_err(error)
     }
