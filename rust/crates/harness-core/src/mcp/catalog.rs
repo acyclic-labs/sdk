@@ -149,7 +149,7 @@ impl McpCatalog {
             return Err(Error::Invalid("MCP catalog allowance exceeded".into()));
         }
         if let Some(maximum) = maximum_bytes {
-            crate::executor::json::json_byte_length(self, u64::from(maximum), &mut None)?;
+            crate::executor::json::json_byte_length(self, Some(u64::from(maximum)), &mut None)?;
         }
         crate::executor::compile_json_schema(&self.projection_schema, "MCP projection", &mut None)?;
         check()?;
