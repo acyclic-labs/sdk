@@ -15,12 +15,17 @@ use tokio_postgres::{AsyncMessage, Client, NoTls, Statement};
 
 const PAGE: usize = 64;
 mod port;
+#[cfg(test)]
+mod tests;
 use port::{PgJournal, Storage};
 const SCHEMA: &str = include_str!("postgres/schema.sql");
 
 struct Session {
     client: Client,
     cursor: u64,
+    // A later page can observe an append beyond the refresh's pinned target.
+    // Keep that pending work across temporary journal/replica owners.
+    observed_head: u64,
     publish: Statement,
     read_fenced: Statement,
     wakes: watch::Receiver<()>,
@@ -161,6 +166,7 @@ impl PostgresStream {
             session: Mutex::new(Session {
                 client,
                 cursor: 0,
+                observed_head: 0,
                 publish,
                 read_fenced,
                 wakes,
@@ -193,6 +199,7 @@ impl PostgresStream {
                     let Session {
                         client,
                         cursor,
+                        observed_head,
                         publish,
                         read_fenced,
                         wakes,
@@ -205,7 +212,7 @@ impl PostgresStream {
                             namespace: &inner.namespace,
                             wakes,
                             at_millis: 0,
-                            head: *cursor,
+                            head: observed_head,
                         },
                         inner.core.clone(),
                         Arc::clone(&inner.clock),
@@ -257,6 +264,7 @@ impl PostgresStream {
         let Session {
             client,
             cursor,
+            observed_head,
             publish,
             read_fenced,
             wakes,
@@ -269,7 +277,7 @@ impl PostgresStream {
                 namespace: &self.inner.namespace,
                 wakes,
                 at_millis: 0,
-                head: *cursor,
+                head: observed_head,
             },
             self.inner.core.clone(),
             Arc::clone(&self.inner.clock),
@@ -298,6 +306,7 @@ impl PostgresStream {
             let Session {
                 client,
                 cursor,
+                observed_head,
                 publish,
                 read_fenced,
                 wakes,
@@ -316,7 +325,7 @@ impl PostgresStream {
                     namespace: &provider.inner.namespace,
                     wakes,
                     at_millis: 0,
-                    head: *cursor,
+                    head: observed_head,
                 },
                 provider.inner.core.clone(),
                 Arc::clone(&provider.inner.clock),

@@ -107,6 +107,76 @@ async fn crash_before_application_commit_replays_despite_returned_credit() -> Te
 }
 
 #[tokio::test]
+async fn keyed_application_checkpoints_reopen_without_a_contiguous_anchor() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    crate::conformance::key_seek::verify(&*provider).await?;
+    let client = Client::in_process(
+        provider,
+        crate::session::testing::authority(),
+        Arc::new(crate::runtime::PlatformExecutor),
+    );
+    client.register_credential(0, crate::session::testing::credential())?;
+    let mut selected = subscription();
+    let Some(Kind::Follow(follow)) = &mut selected.kind else {
+        unreachable!()
+    };
+    follow.resource = wire_codec::session::stream_resource(crate::conformance::key_seek::SOURCE);
+    follow.key = Some(wire::ReadKeySeek {
+        key: Bytes::from_static(b"a"),
+        before: 4,
+    });
+    follow.read_limit = 3;
+    follow.until = 4;
+    let mut source = client.deliveries(selected.clone()).await?;
+    let first = data(&mut source).await?;
+    assert_eq!(sequence(&first)?, 0);
+    let proposed = first.checkpoint().clone();
+    let Some(Body::Data(frame)) = &first.frame().body else {
+        unreachable!()
+    };
+    let Some(Item::Record(record)) = &frame.item else {
+        unreachable!()
+    };
+    let commit_id = record.commit_id.clone();
+    drop(first);
+    assert_eq!(source.checkpoint()?.resume, selected.resume);
+    drop(source);
+
+    // A crash before the application decision replays the first sparse item.
+    let mut recovered = client.deliveries(selected).await?;
+    let first = data(&mut recovered).await?;
+    assert_eq!(sequence(&first)?, 0);
+    assert!(first.commit()?);
+    let committed = recovered.checkpoint()?;
+    assert_eq!(committed, proposed);
+    drop(recovered);
+
+    // Both the proposed durable cut and the committed cut reopen at the next
+    // matching key, skipping sequence one without inventing a prefix fence.
+    let mut resumed = client.deliveries(committed.clone()).await?;
+    let next = data(&mut resumed).await?;
+    assert_eq!(sequence(&next)?, 2);
+    assert!(next.discard()?);
+    assert_eq!(resumed.checkpoint()?.resume.ok_or("no cut")?.next, 3);
+    drop(resumed);
+    let mut resumed = client.deliveries(proposed).await?;
+    assert_eq!(sequence(&data(&mut resumed).await?)?, 2);
+
+    // Negative control: the former checkpoint's contiguous anchor is invalid
+    // for a key seek and would prevent recovery before any record is served.
+    let mut invalid = committed;
+    let Some(Kind::Follow(follow)) = &mut invalid.kind else {
+        unreachable!()
+    };
+    follow.preceding_commit_id = commit_id;
+    assert!(matches!(
+        client.deliveries(invalid).await,
+        Err(StreamError::InvalidArgument)
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_fences_an_outstanding_application_decision() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 4).await?;

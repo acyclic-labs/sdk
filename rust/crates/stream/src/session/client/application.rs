@@ -41,7 +41,7 @@ impl Client {
         let cursor = self
             .open_cursor(kind, resume, true, true, filter, credential)
             .await?;
-        if matches!(&subscription.kind, Some(Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32)
+        if matches!(&subscription.kind, Some(Kind::Follow(follow)) if follow.delivery == wire::SessionDelivery::All as i32 && follow.key.is_none())
         {
             cursor.progress.track_records()?;
         }
@@ -91,6 +91,7 @@ impl ApplicationSubscription {
             checkpoint.resume = Some(after);
             if let Some(Kind::Follow(follow)) = &mut checkpoint.kind {
                 follow.preceding_commit_id = if follow.delivery == wire::SessionDelivery::All as i32
+                    && follow.key.is_none()
                 {
                     preceding
                 } else {
@@ -117,7 +118,8 @@ impl ApplicationSubscription {
     /// Last explicitly decided cut. An outstanding or abandoned delivery is
     /// absent from it. Store the proposed frame's cursor with the consumer's
     /// effects atomically, then commit its handle; this accessor alone supplies
-    /// no durability. ALL checkpoints also retain their preceding commit fence.
+    /// no durability. Contiguous ALL checkpoints retain their preceding commit
+    /// fence; indexed reads retain their sparse sequence and exact key instead.
     pub fn checkpoint(&self) -> Result<wire::SessionSubscription, StreamError> {
         let position = self.cursor.progress.subscription()?;
         let mut subscription = self.subscription.clone();

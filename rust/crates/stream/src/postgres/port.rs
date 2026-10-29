@@ -14,7 +14,7 @@ pub(super) struct PgJournal<'a> {
     pub(super) namespace: &'a str,
     pub(super) wakes: &'a mut watch::Receiver<()>,
     pub(super) at_millis: u64,
-    pub(super) head: u64,
+    pub(super) head: &'a mut u64,
 }
 
 impl CommandJournal for PgJournal<'_> {
@@ -96,7 +96,7 @@ impl CommandJournal for PgJournal<'_> {
             }
         };
         self.at_millis = at_millis;
-        self.head = head;
+        *self.head = head;
         Ok(JournalPage {
             entries,
             head,
@@ -105,7 +105,7 @@ impl CommandJournal for PgJournal<'_> {
     }
 
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>> {
-        let head = self.head;
+        let head = *self.head;
         let mut wakes = self.wakes.clone();
         Box::pin(async move {
             if head > after {

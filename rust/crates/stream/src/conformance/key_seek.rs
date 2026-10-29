@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) const SOURCE: &str = "key-seek/source";
+
 pub(crate) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     verify_with(provider, async |request| provider.read(request).await).await
 }
@@ -8,7 +10,7 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
     provider: &P,
     mut read_records: impl AsyncFnMut(ReadRequest) -> Result<crate::RecordStream, StreamError>,
 ) -> Result<(), StreamError> {
-    let source = path("key-seek/source")?;
+    let source = path(SOURCE)?;
     let record =
         |key: &'static [u8], value: &'static [u8]| -> Result<crate::AppendRecord, StreamError> {
             Ok(crate::AppendRecord {

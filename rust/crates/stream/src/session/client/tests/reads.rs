@@ -35,12 +35,12 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
         read_limit: 1,
         until: 4,
         delivery: wire::SessionDelivery::All as i32,
-        resource: wire_codec::session::stream_resource("conformance/keys"),
+        resource: wire_codec::session::stream_resource(crate::conformance::key_seek::SOURCE),
         ..Default::default()
     };
     let record = wire_codec::record_wire(
         provider
-            .read(read("conformance/keys", 0, 1)?)
+            .read(read(crate::conformance::key_seek::SOURCE, 0, 1)?)
             .await?
             .next()
             .await
