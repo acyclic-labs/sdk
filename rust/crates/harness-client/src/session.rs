@@ -14,6 +14,8 @@ use std::{
 
 #[cfg(all(test, feature = "agents"))]
 mod viewport_tests;
+mod views;
+use views::Views;
 
 type Follow = BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>;
 
@@ -91,9 +93,9 @@ pub struct WireSession {
     policy: DemandPolicy,
     demand: ViewDemand,
     follows: BTreeMap<StreamPath, Subscription>,
-    views: BTreeMap<StreamPath, RetainedView>,
+    views: Views<StreamPath>,
     resources: BTreeMap<String, Subscription>,
-    resource_views: BTreeMap<String, RetainedView>,
+    resource_views: Views<String>,
     view_policy: StreamViewPolicy,
     revision: u64,
 }
@@ -122,9 +124,9 @@ impl WireSession {
             policy,
             demand: ViewDemand::default(),
             follows: BTreeMap::new(),
-            views: BTreeMap::new(),
+            views: Views::default(),
             resources: BTreeMap::new(),
-            resource_views: BTreeMap::new(),
+            resource_views: Views::default(),
             view_policy,
             revision: 0,
         }
@@ -548,13 +550,10 @@ impl WireSession {
 
     /// Display payload/record charge across the bounded selected folds,
     /// including final views retained after a follow ends.
+    /// Reads two maintained totals without visiting any selected fold.
     #[must_use]
-    pub fn retained_bytes(&self) -> usize {
-        self.views
-            .values()
-            .chain(self.resource_views.values())
-            .map(|retained| retained.view.retained_bytes())
-            .sum()
+    pub const fn retained_bytes(&self) -> usize {
+        self.views.bytes() + self.resource_views.bytes()
     }
 
     /// All retained folds, including terminal resources, share one finite cap.
@@ -638,7 +637,7 @@ fn poll_open<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
 /// The one poll and fold shared by stream and filesystem follows.
 fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
     follows: &mut BTreeMap<K, Subscription>,
-    views: &mut BTreeMap<K, RetainedView>,
+    views: &mut Views<K>,
     session_revision: &mut u64,
     key: &Q,
     context: &mut Context<'_>,
@@ -665,7 +664,7 @@ fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
                 views
                     .get_mut(key)
                     .ok_or(WireSessionError::NotOpen)
-                    .and_then(|view| {
+                    .and_then(|mut view| {
                         view.view
                             .apply(&frame, revision)
                             .map_err(WireSessionError::Stream)
