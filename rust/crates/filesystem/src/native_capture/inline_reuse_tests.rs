@@ -51,7 +51,7 @@ async fn check(body: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path())?,
         maximum_paths: Some(8),
-        maximum_extent_spans: 8,
+        maximum_extent_spans: Some(8),
     };
     capture(&mut checkout, &options, &path, &work, None).await?;
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
