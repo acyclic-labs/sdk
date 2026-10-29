@@ -9,7 +9,13 @@ impl Digest {
     /// Hashes `bytes`.
     #[must_use]
     pub fn of(bytes: &[u8]) -> Self {
-        Self(*blake3::hash(bytes).as_bytes())
+        Self(acyclic_stream::content_digest(bytes))
+    }
+
+    /// The digest a seal proved for its bytes.
+    #[must_use]
+    pub const fn sealed(body: &acyclic_stream::SealedBytes) -> Self {
+        Self(*body.digest())
     }
 
     /// Wraps an already computed BLAKE3-256 value.

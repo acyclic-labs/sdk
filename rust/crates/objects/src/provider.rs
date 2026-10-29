@@ -1,5 +1,5 @@
 //! The account-scoped blob contract every provider implements.
-use crate::{ByteRange, Digest, Error, Kind, Manifest, wire};
+use crate::{ByteRange, Digest, Error, Kind, Manifest, Sealed, wire};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture};
 #[cfg(not(target_arch = "wasm32"))]
@@ -333,12 +333,31 @@ pub trait Blobs: Send + Sync {
     /// A put that references or repeats an earlier put of the batch starts
     /// only once that put completed, so outcomes never depend on timing.
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
+        let sealed = requests
+            .into_iter()
+            .map(|(body, references)| (Sealed::new(body), references))
+            .collect();
+        self.put_batch_sealed(sealed).await
+    }
+
+    /// [`Blobs::put`] of bytes already sealed: a provider that names or
+    /// verifies a blob by its digest reuses the seal's instead of hashing
+    /// again.
+    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        self.put(body.into_bytes(), references).await
+    }
+
+    /// [`Blobs::put_batch`] of bytes already sealed.
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         let driven = crate::batch::drive(
             requests,
             BATCH_WINDOW,
             |_| Ok::<_, std::convert::Infallible>(()),
-            |(body, references)| self.put(body, references),
+            |(body, references)| self.put_sealed(body, references),
             |put| results.push(put),
         )
         .await;
@@ -382,7 +401,7 @@ pub trait Blobs: Send + Sync {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
-        _request: ObjectsNativeRequest<(OwnedBytes, Vec<Digest>)>,
+        _request: ObjectsNativeRequest<(Sealed, Vec<Digest>)>,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
@@ -392,7 +411,7 @@ pub trait Blobs: Send + Sync {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
-        _requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+        _requests: ObjectsNativeRequest<Vec<(Sealed, Vec<Digest>)>>,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
@@ -415,6 +434,15 @@ pub trait Blobs: Send + Sync {
 impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         (**self).put(body, references).await
+    }
+    async fn put_sealed(&self, body: Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        (**self).put_sealed(body, references).await
+    }
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        (**self).put_batch_sealed(requests).await
     }
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         (**self).put_manifest(manifest).await
@@ -488,7 +516,7 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
-        request: ObjectsNativeRequest<(OwnedBytes, Vec<Digest>)>,
+        request: ObjectsNativeRequest<(Sealed, Vec<Digest>)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         (**self).put_native(request, meter)
@@ -496,7 +524,7 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
-        requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+        requests: ObjectsNativeRequest<Vec<(Sealed, Vec<Digest>)>>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         (**self).put_batch_native(requests, meter)

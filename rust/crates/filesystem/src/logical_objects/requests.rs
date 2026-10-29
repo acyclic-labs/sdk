@@ -1,6 +1,6 @@
 use super::*;
 pub(super) type GetRequest = (acyclic_objects::Digest, ByteRange, u64);
-pub(super) type PutRequest = (OwnedBytes, Vec<acyclic_objects::Digest>);
+pub(super) type PutRequest = (acyclic_stream::SealedBytes, Vec<acyclic_objects::Digest>);
 
 /// Original custody for a request whose data owns no heap storage.
 pub(super) fn guard(

@@ -170,8 +170,8 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
             context,
             work,
             async {
-                self.validate_write(id, &bytes, &mut work)?;
-                self.publish(id, bytes, &mut work).await
+                let body = self.validate_write(id, bytes, &mut work)?;
+                self.publish(id, body, &mut work).await
             }
             .await
         )
@@ -181,20 +181,16 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
         object: crate::storage::HashedObject,
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        let (id, bytes) = object.into_parts();
-        operate!(context, work, self.publish(id, bytes, &mut work).await)
+        let id = object.object_id();
+        let (_, body) = object.into_sealed();
+        operate!(context, work, self.publish(id, body, &mut work).await)
     }
     async fn put_many(
         &self,
         writes: &[ObjectWrite],
         context: &mut AuthorityWork<'_>,
     ) -> Result<(), ObjectStoreError> {
-        operate!(
-            context,
-            work,
-            self.publish_batch::<false, _, _>(writes, write::raw_parts, &mut work)
-                .await
-        )
+        operate!(context, work, self.publish_batch(writes, &mut work).await)
     }
     async fn put_many_hashed(
         &self,
@@ -207,12 +203,7 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
         if context.is_native() {
             return Err(ObjectStoreError::NativeUnavailable);
         }
-        operate!(
-            context,
-            work,
-            self.publish_batch::<true, _, _>(objects, write::hashed_parts, &mut work)
-                .await
-        )
+        operate!(context, work, self.publish_batch(objects, &mut work).await)
     }
     async fn flush_before_publish(
         &self,

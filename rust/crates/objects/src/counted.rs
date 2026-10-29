@@ -17,6 +17,10 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().put(body, references).await
     }
+    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
+        self.record(RequestClass::Data);
+        self.inner().put_sealed(body, references).await
+    }
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
         self.record(RequestClass::Data);
         self.inner().put_manifest(manifest).await
@@ -74,6 +78,13 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().put_batch(requests).await
     }
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        self.record(RequestClass::Data);
+        self.inner().put_batch_sealed(requests).await
+    }
     async fn get_batch(
         &self,
         requests: Vec<(Digest, ByteRange, u64)>,
@@ -102,7 +113,7 @@ impl<P: Blobs> Blobs for Counted<P> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
-        request: ObjectsNativeRequest<(OwnedBytes, Vec<Digest>)>,
+        request: ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
         self.record(RequestClass::Data);
@@ -111,7 +122,7 @@ impl<P: Blobs> Blobs for Counted<P> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
-        requests: ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+        requests: ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         self.record(RequestClass::Data);

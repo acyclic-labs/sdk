@@ -71,6 +71,7 @@ dependencies = [
  "acyclic-proto-build",
  "async-trait",
  "base64",
+ "blake3",
  "bytes",
  "futures",
  "js-sys",

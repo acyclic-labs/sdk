@@ -12,9 +12,13 @@ use std::{
 use std::{io, sync::Arc};
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
+mod sealed;
 mod unique;
 #[cfg(not(target_arch = "wasm32"))]
 pub use prepared::{PreparedOwnedBytes, PreparedOwnedBytesError, PreparedOwnedBytesFailure};
+#[cfg(any(test, feature = "test-support"))]
+pub use sealed::hashed_on_this_thread;
+pub use sealed::{SealedBytes, content_digest};
 pub use unique::UniqueOwnedBytes;
 
 #[derive(Clone)]

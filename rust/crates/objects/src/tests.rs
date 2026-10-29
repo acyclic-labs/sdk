@@ -2338,6 +2338,15 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
     Ok(())
 }
 
+/// Seals each body of a batch.
+#[cfg(not(target_arch = "wasm32"))]
+fn sealed(requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<(crate::Sealed, Vec<Digest>)> {
+    requests
+        .into_iter()
+        .map(|(body, references)| (crate::Sealed::new(body), references))
+        .collect()
+}
+
 /// A meter that admits all but live allocation past `limit`, recording the
 /// peak it held, for driving the native entry points.
 #[cfg(not(target_arch = "wasm32"))]
@@ -2630,7 +2639,7 @@ async fn a_native_batch_has_every_member_in_flight_at_once()
     store.medium().peak();
     let batch = blobs
         .put_batch_native(
-            crate::ObjectsNativeRequest::new(bodies(1), (), &meter)?,
+            crate::ObjectsNativeRequest::new(sealed(bodies(1)), (), &meter)?,
             std::sync::Arc::clone(&meter),
         )?
         .await?;
@@ -2724,7 +2733,7 @@ async fn a_native_batch_member_starts_once_the_members_it_needs_complete()
     slow(1);
     let receipts = blobs
         .put_batch_native(
-            crate::ObjectsNativeRequest::new(batch(1), (), &meter)?,
+            crate::ObjectsNativeRequest::new(sealed(batch(1)), (), &meter)?,
             std::sync::Arc::clone(&meter),
         )?
         .await?;
@@ -2765,7 +2774,7 @@ async fn a_native_batch_many_times_its_budget_completes_within_it()
     let put = async |seed: u8, limit: u64, window: usize| {
         let budget = std::sync::Arc::new(Budget::new(limit));
         let meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = budget.clone();
-        let request = crate::ObjectsNativeRequest::new(bodies(seed), (), &meter)?;
+        let request = crate::ObjectsNativeRequest::new(sealed(bodies(seed)), (), &meter)?;
         let receipts = crate::native::put_window(&blobs, request, meter, window)?.await?;
         for receipt in receipts {
             assert!(matches!(receipt?.put(), Put::Created { .. }));
@@ -2891,5 +2900,67 @@ async fn a_retain_refused_its_memory_writes_no_index_key() -> Result<(), Box<dyn
         // control: the admitted retain keeps it.
         assert_eq!(blobs.head(digest).await.is_ok(), !refused);
     }
+    Ok(())
+}
+
+/// Bytes this thread hashed while `work` ran.
+#[cfg(feature = "test-support")]
+async fn hashed<T>(work: impl Future<Output = T>) -> (T, u64) {
+    let before = acyclic_stream::hashed_on_this_thread();
+    let value = work.await;
+    (value, acyclic_stream::hashed_on_this_thread() - before)
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn a_put_hashes_its_body_once() -> Result<(), Box<dyn std::error::Error>> {
+    const LENGTH: u64 = 1 << 20;
+    // Storage keys hash a few short names beside the body.
+    let once = |hashed: u64, bodies: u64| {
+        assert!(
+            (bodies * LENGTH..bodies * LENGTH + 4096).contains(&hashed),
+            "{hashed} bytes hashed for {bodies} bodies"
+        );
+    };
+    let body = |seed: u8| OwnedBytes::from(vec![seed; LENGTH as usize]);
+    let blobs = crate::MemoryObjects::memory();
+    blobs.put(vec![0].into(), Vec::new()).await?;
+    let (put, bytes) = hashed(blobs.put(body(1), Vec::new())).await;
+    put?;
+    once(bytes, 1);
+    let (puts, bytes) =
+        hashed(blobs.put_batch((2..6).map(|seed| (body(seed), Vec::new())).collect())).await;
+    for put in puts {
+        put?;
+    }
+    once(bytes, 4);
+    // A sealed body is stored without another hash.
+    let sealed = crate::Sealed::new(body(6));
+    let (put, bytes) = hashed(blobs.put_sealed(sealed, Vec::new())).await;
+    put?;
+    once(bytes, 0);
+    // A received body is hashed once, where it crosses the trust boundary.
+    let served = body(8);
+    let request = crate::wire::PutBlobRequest {
+        digest: Some(Digest::of(&served).into()),
+        body: bytes::Bytes::from_owner(served),
+        references: Vec::new(),
+    };
+    let (put, bytes) = hashed(crate::route::put_blob(&blobs, request)).await;
+    put?;
+    once(bytes, 1);
+    // Negative control: a provider that only implements `put` lowers a
+    // sealed batch to it, and the body is hashed twice.
+    let unsealed = Overlap {
+        inner: crate::MemoryObjects::memory(),
+        live: Default::default(),
+        peak: Default::default(),
+    };
+    unsealed.put(vec![0].into(), Vec::new()).await?;
+    let (puts, bytes) = hashed(unsealed.put_batch(vec![(body(7), Vec::new())])).await;
+    for put in puts {
+        put?;
+    }
+    once(bytes, 2);
     Ok(())
 }

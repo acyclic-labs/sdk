@@ -99,3 +99,64 @@ fn list_pages(bencher: Bencher, page_size: u32) {
         }
     });
 }
+
+const SIZES: [usize; 3] = [4 << 10, 1 << 20, 64 << 20];
+
+/// A distinct body of `length` bytes per index.
+fn sized(index: u64, length: usize) -> OwnedBytes {
+    let mut bytes = vec![0x5a; length];
+    bytes[..8].copy_from_slice(&index.to_le_bytes());
+    bytes.into()
+}
+
+/// A put and the flush that makes it durable: one hash, one copy, one
+/// device flush is the floor.
+#[divan::bench(args = SIZES, sample_count = 20)]
+fn put_durable(bencher: Bencher, length: usize) {
+    let runtime = runtime();
+    let (_root, blobs) = store(&runtime);
+    let mut index = 0;
+    bencher
+        .counter(divan::counter::BytesCount::new(length))
+        .with_inputs(|| {
+            index += 1;
+            sized(index, length)
+        })
+        .bench_local_values(|body| {
+            runtime.block_on(async {
+                let digest = blobs.put(body, Vec::new()).await.unwrap();
+                blobs.flush(None).await.unwrap();
+                digest
+            })
+        });
+}
+
+/// Floor term `B_hash`: one content hash of the body.
+#[divan::bench(args = SIZES, sample_count = 20)]
+fn floor_hash(bencher: Bencher, length: usize) {
+    let body = sized(0, length);
+    bencher
+        .counter(divan::counter::BytesCount::new(length))
+        .bench_local(|| acyclic_stream::content_digest(&body));
+}
+
+/// Floor term `B_copy`: one copy of the body.
+#[divan::bench(args = SIZES, sample_count = 20)]
+fn floor_copy(bencher: Bencher, length: usize) {
+    let body = sized(0, length);
+    bencher
+        .counter(divan::counter::BytesCount::new(length))
+        .bench_local(|| body.to_vec());
+}
+
+/// Floor term `F_flush`: one data flush of a just-written file.
+#[divan::bench(sample_count = 20)]
+fn floor_flush(bencher: Bencher) {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let mut file = std::fs::File::create(root.path().join("flush")).unwrap();
+    bencher.bench_local(|| {
+        file.write_all(&[1]).unwrap();
+        file.sync_data().unwrap();
+    });
+}

@@ -1,6 +1,5 @@
 //! The one batch driver every provider and native entry point shares.
-use crate::{ByteRange, Digest};
-use acyclic_stream::OwnedBytes;
+use crate::{ByteRange, Digest, Sealed};
 use futures::stream::{self, StreamExt};
 use std::sync::{Mutex, PoisonError};
 
@@ -12,9 +11,9 @@ pub(crate) trait Member {
     fn needs(&self) -> &[Digest];
 }
 
-impl Member for (OwnedBytes, Vec<Digest>) {
+impl Member for (Sealed, Vec<Digest>) {
     fn publishes(&self) -> Option<Digest> {
-        Some(Digest::of(&self.0))
+        Some(Digest::sealed(&self.0))
     }
     fn needs(&self) -> &[Digest] {
         &self.1

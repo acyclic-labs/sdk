@@ -48,6 +48,7 @@ acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 base64 = "0.23.1"
+blake3 = "1.8.2"
 bytes.workspace = true
 futures.workspace = true
 pin-project-lite = "0.2.17"

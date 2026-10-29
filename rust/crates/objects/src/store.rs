@@ -1289,13 +1289,14 @@ impl<M: Medium> Account<M> {
 
     pub(crate) async fn put_inner(
         &self,
-        body: OwnedBytes,
+        body: crate::Sealed,
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
         let references = canonical(references);
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        let digest = Digest::of(&body);
+        let digest = Digest::sealed(&body);
+        let body = body.into_bytes();
         let length = body.len() as u64;
         self.publish(
             digest,
@@ -1319,6 +1320,10 @@ impl<M: Medium> Account<M> {
 #[async_trait::async_trait]
 impl<M: Medium> crate::Blobs for Account<M> {
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+        self.put_inner(crate::Sealed::new(body), references).await
+    }
+
+    async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
         self.put_inner(body, references).await
     }
 
@@ -1745,7 +1750,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_native(
         &self,
-        request: crate::ObjectsNativeRequest<(OwnedBytes, Vec<Digest>)>,
+        request: crate::ObjectsNativeRequest<(crate::Sealed, Vec<Digest>)>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<crate::ObjectsNativeFuture<'_, crate::ObjectsPutReceipt>, crate::NativeObjectsError>
     {
@@ -1755,7 +1760,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     #[cfg(not(target_arch = "wasm32"))]
     fn put_batch_native(
         &self,
-        requests: crate::ObjectsNativeRequest<Vec<(OwnedBytes, Vec<Digest>)>>,
+        requests: crate::ObjectsNativeRequest<Vec<(crate::Sealed, Vec<Digest>)>>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<
         crate::ObjectsNativeFuture<'_, crate::ObjectsBatch<crate::ObjectsPutReceipt>>,
