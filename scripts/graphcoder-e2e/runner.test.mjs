@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, close as fsClose, createWriteStream, mkdtempSync, open as fsOpen, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -196,6 +196,43 @@ test("history reads only completed lines while a later write is in flight", asyn
   assert.deepEqual(await events.history(), [{ n: 1 }, { n: 2 }]);
   // Negative control: reading to EOF takes the partial line.
   assert.throws(() => readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)), SyntaxError);
+});
+
+test("a transcript write that fails or is lost ends history and waits with the spool cause, never a hang", async t => {
+  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
+  // A file stream whose writes fail, or (the ignored-error control) report
+  // success without writing anything.
+  const stream = (name, write) => createWriteStream(join(directory, name), { fs: {
+    open: fsOpen, close: fsClose,
+    write: (_fd, buffer, _offset, length, _position, done) => write(length, done),
+    writev: (_fd, buffers, _position, done) => write(buffers.reduce((total, buffer) => total + buffer.length, 0), done),
+  } });
+  await t.test("the write error is latched", async () => {
+    const source = new PassThrough();
+    const events = new Spool(source, new Promise(() => {}), { transcript: stream("failed.jsonl", (_length, done) => done(new Error("injected EIO"))) });
+    const waiting = events.next(() => false);
+    source.write('{"n":1}\n');
+    await assert.rejects(waiting, error => error.kind === "spool" && /injected EIO/.test(error.message));
+    await assert.rejects(events.history(), error => error.kind === "spool" && /injected EIO/.test(error.message));
+    await assert.rejects(events.next(() => true), error => error.kind === "spool");
+  });
+  await t.test("negative control: an ignored error leaves a short file, read as a typed short read", async () => {
+    const source = new PassThrough();
+    const events = new Spool(source, new Promise(() => {}), { transcript: stream("lost.jsonl", (length, done) => done(null, length)) });
+    const first = events.next(event => event.n === 1);
+    source.write('{"n":1}\n');
+    await first;
+    await assert.rejects(events.history(), error => error.kind === "spool" && /ends at byte 0 of 8/.test(error.message));
+  });
+});
+
+test("a source closed without ending still ends the spool and its transcript", async () => {
+  const source = new PassThrough();
+  let close; const closed = new Promise(resolve => { close = resolve; });
+  const events = new Spool(source, closed, { transcript: join(mkdtempSync(join(tmpdir(), "e2e-history-")), "events.jsonl") });
+  const waiting = events.next(() => false);
+  source.destroy(); close({ code: 0, signal: null });
+  await assert.rejects(waiting, error => error.kind === "eof");
 });
 
 test("a transcript failure while the child runs ends it with the spool cause and reaps the child", async () => {

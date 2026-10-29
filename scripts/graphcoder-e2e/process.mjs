@@ -154,6 +154,9 @@ export function conptyArgs(binary, args) {
 function transcript(stream, path) {
   const file = createWriteStream(path);
   stream.pipe(file);
+  // A source destroyed without an end never ends its pipe: end the file so
+  // its finish still arrives.
+  stream.once("close", () => { if (!stream.readableEnded) file.end(); });
   return new Promise((resolve, reject) => {
     file.once("finish", resolve);
     file.once("error", error => { stream.unpipe(file); stream.resume(); reject(error); });
@@ -193,7 +196,11 @@ export class SpoolEnded extends Error {
 // The spool is a pipe destination: it takes the next chunk only once the
 // transcript has drained, so queued bytes are bounded by one source chunk
 // plus the stream buffers, not by the size of a burst. The transcript is a
-// path, or any writable sink (then without `history`).
+// path, or any writable sink; a file stream's own path serves `history`.
+//
+// Every wait has a producer: each write's callback settles it, a transcript
+// failure latches a typed `spool` cause that every current and later
+// caller receives, and EOF follows the source's end or its close.
 export class Spool {
   sequence = 0;
   ended;
@@ -209,12 +216,13 @@ export class Spool {
   // Bytes of whole lines the transcript has finished writing. Writes finish
   // in order, so [0, completed) is always a run of complete lines.
   #completed = 0;
+  #broken;
   #blocked;
   constructor(stream, closed, { transcript, key, unique = false } = {}) {
     this.#key = key; this.#unique = unique;
     if (typeof transcript === "string") { this.#path = transcript; this.#file = createWriteStream(transcript); }
-    else this.#file = transcript;
-    this.#file?.on("error", error => this.fail(new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error)));
+    else { this.#file = transcript; this.#path = typeof transcript?.path === "string" ? transcript.path : undefined; }
+    this.#file?.on("error", error => this.#break(error));
     const decoder = new StringDecoder("utf8");
     let partial = "";
     const lines = (text, done) => {
@@ -232,7 +240,11 @@ export class Spool {
       write: (chunk, _encoding, done) => lines(decoder.write(chunk), done),
       final: done => { const rest = partial + decoder.end(); partial = ""; rest ? lines(rest + "\n", done) : done(); },
     });
-    const drained = new Promise(resolve => sink.once("finish", resolve));
+    // Every line taken, or a source that closed without ending.
+    const drained = new Promise(resolve => {
+      sink.once("finish", resolve);
+      stream.once("close", () => { if (!stream.readableEnded) resolve(); });
+    });
     stream.pipe(sink);
     stream.once("error", error => this.fail(new SpoolEnded("source", error.message, error)));
     // EOF only after every line the source produced has been taken.
@@ -252,7 +264,13 @@ export class Spool {
     if (this.#file) {
       const file = this.#file;
       const bytes = Buffer.from(line + "\n");
-      this.#written = new Promise(resolve => { room = file.write(bytes, () => { this.#completed += bytes.length; resolve(); }); });
+      this.#written = new Promise(resolve => {
+        room = file.write(bytes, error => {
+          // Only written bytes count; a failed write latches the cause.
+          if (error) this.#break(error); else this.#completed += bytes.length;
+          resolve();
+        });
+      });
     }
     for (const key of this.#key?.(event) ?? []) {
       if (this.#index.has(key)) {
@@ -269,7 +287,14 @@ export class Spool {
     }
     return room;
   }
+  // A transcript failure: typed, latched for history, and the end of the spool.
+  #break(error) {
+    this.#broken ??= new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error);
+    this.fail(this.#broken);
+  }
   fail(error) {
+    // A chunk held for drain is released however the spool ends.
+    this.#blocked?.();
     if (this.ended) return;
     this.ended = error;
     for (const wait of this.#pending) wait.reject(error);
@@ -277,8 +302,6 @@ export class Spool {
     for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(error);
     this.#waiting.clear();
     this.#file?.end();
-    // An ended spool discards, so the source is never held on a dead sink.
-    this.#blocked?.();
   }
   // The first event after this call that `match` accepts.
   next(match) {
@@ -304,11 +327,17 @@ export class Spool {
   async history(match = () => true) {
     assert.ok(this.#path, "event history requires a transcript");
     await this.#written;
+    if (this.#broken) throw this.#broken;
     // Exactly the completed lines: a later write may already have put part
     // of its line in the file.
     const bytes = Buffer.alloc(this.#completed), fd = openSync(this.#path, "r");
-    try { for (let at = 0; at < bytes.length;) at += readSync(fd, bytes, at, bytes.length - at, at); }
-    finally { closeSync(fd); }
+    try {
+      for (let at = 0; at < bytes.length;) {
+        const read = readSync(fd, bytes, at, bytes.length - at, at);
+        if (read === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends at byte ${at} of ${bytes.length} written`, { at, completed: bytes.length });
+        at += read;
+      }
+    } finally { closeSync(fd); }
     return bytes.toString("utf8").split("\n").filter(Boolean).map(line => JSON.parse(line)).filter(match);
   }
 }
