@@ -562,7 +562,8 @@ fn physical_cleanup_joins_last_lease(
     let before = root.receipt();
     let (waiting, observed) = std::sync::mpsc::channel();
     source
-        .capture_gate
+        .capture_signal
+        .gate
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .physical_cleanup_wait_observed = Some(waiting);
@@ -581,7 +582,8 @@ fn physical_cleanup_joins_last_lease(
             .upgrade()
             .ok_or("source retired before its last lease")?;
         let gate = owner
-            .capture_gate
+            .capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         assert_eq!(gate.producers, 1);
@@ -622,7 +624,8 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         let lease = source.native_source_io_lease(source.clone())?;
         let (waiting, observed) = std::sync::mpsc::channel();
         source
-            .capture_gate
+            .capture_signal
+            .gate
             .lock()
             .unwrap()
             .physical_cleanup_wait_observed = Some(waiting);
@@ -641,6 +644,10 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
         // cancellation waker, immediately before Condvar's atomic wait.
         observed.recv()?;
         assert!(!worker.is_finished());
+        assert_eq!(
+            root.receipt().allocation_operations,
+            before.allocation_operations + u64::from(cancellable)
+        );
         root_stop.cancel();
         if cancellable {
             wait.cancel();
@@ -649,7 +656,7 @@ fn source_cleanup_waits_on_completion_or_its_registered_cancellation()
                 Err(MountSourceError::Cancelled)
             ));
             assert!(!source.capture_retired());
-            assert_eq!(source.capture_gate.lock().unwrap().producers, 1);
+            assert_eq!(source.capture_signal.gate.lock().unwrap().producers, 1);
             drop(lease);
             assert!(source.shutdown_accepted_cleanup()?);
         } else {
@@ -857,7 +864,8 @@ fn physical_source_quiescence_includes_accepted_owner_destruction()
     let lease = source.native_source_io_lease(owner)?;
     let (waiting, observed) = std::sync::mpsc::channel();
     source
-        .capture_gate
+        .capture_signal
+        .gate
         .lock()
         .unwrap()
         .physical_cleanup_wait_observed = Some(waiting);
@@ -867,7 +875,7 @@ fn physical_source_quiescence_includes_accepted_owner_destruction()
     let finishing = std::thread::spawn(move || drop(lease));
     destroying.recv()?;
     let complete = {
-        let gate = source.capture_gate.lock().unwrap();
+        let gate = source.capture_signal.gate.lock().unwrap();
         gate.producers == 0 || gate.retired
     };
     // Release before asserting so the negative does not strand worker threads.
