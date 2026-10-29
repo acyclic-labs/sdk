@@ -66,7 +66,8 @@ export interface HostedFsCapabilities extends EngineCapabilities {
   readonly profiles: readonly FsProfile[];
   readonly maximumRequestBytes: bigint;
   readonly maximumResponseBytes: bigint;
-  readonly maximumTransactionMutations: number;
+  /** Optional deployment-selected whole-transaction policy. */
+  readonly maximumTransactionMutations: number | undefined;
   readonly maximumPageItems: number;
   readonly nativeMountCredentials: boolean;
   readonly s3Credentials: boolean;
