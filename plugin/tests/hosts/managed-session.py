@@ -4,9 +4,10 @@ Run on Linux: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER
 Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """
-import json, os, pathlib, selectors, signal, subprocess, sys, tempfile, time, traceback
+import json, os, pathlib, signal, subprocess, sys, tempfile, time, traceback
 from native_events import native_event_fixture
 from native_fixture import fixture_environment
+from native_mcp import McpClient
 if len(sys.argv) != 5:
  raise SystemExit(__doc__)
 acyclic, graphcoder, real_codex = map(lambda path: str(pathlib.Path(path).resolve()), sys.argv[1:4])
@@ -20,11 +21,13 @@ def interrupted(signum, frame):
 signal.signal(signal.SIGTERM,interrupted)
 with tempfile.TemporaryDirectory(prefix='.plugins-session-proof-',dir=pathlib.Path.home()) as temporary:
  root=pathlib.Path(temporary);workspace=root/'workspace';workspace.mkdir();state=root/'state';state.mkdir();bin_dir=root/'bin';bin_dir.mkdir()
- env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied')})
+ env=fixture_environment(root, {'PATH':str(bin_dir)+':'+os.environ['PATH'],'FIXTURE_CODEX':real_codex,'FIXTURE_EVENTS':str(fixture_path),'FIXTURE_ACYCLIC':acyclic,'FIXTURE_WORKSPACE':str(workspace),'FIXTURE_OUTSIDE':str(state/'denied'),'FIXTURE_HOST_SUPPORT':str(pathlib.Path(__file__).resolve().parent)})
  (workspace/'AGENTS.md').write_text('native instruction discovery fixture')
  fake=bin_dir/'codex'
  fake.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,subprocess,sys,time,traceback
+sys.path.insert(0,os.environ['FIXTURE_HOST_SUPPORT'])
+from native_mcp import McpClient
 def failed(kind,error,stack):
  pathlib.Path('.volumes/scratch/native-error.txt').write_text(''.join(traceback.format_exception(kind,error,stack)))
  sys.__excepthook__(kind,error,stack)
@@ -62,24 +65,17 @@ checked=subprocess.run(base+['sh','-c',
 assert checked.returncode==(17 if prompt=='failed' else 0),checked.stderr
 if prompt=='recursive':
  nested=subprocess.Popen([os.environ['FIXTURE_ACYCLIC'],'__mcp','codex'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
- nested.stdin.write((json.dumps({'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'native-session-conformance','version':'1'}}})+'\\n').encode());nested.stdin.flush()
- initialized=json.loads(nested.stdout.readline())
- assert initialized.get('id')==0 and 'result' in initialized,('step=initialize recursive MCP client; recovery=python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX recursive',initialized)
- nested.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\\n');nested.stdin.flush()
- def call(identifier,name):
-  arguments={'reference':'nested'}
-  if name=='spawn':arguments['prompt']='first'
-  nested.stdin.write((json.dumps({'id':identifier,'method':'tools/call','params':{'name':name,'arguments':arguments}})+'\\n').encode());nested.stdin.flush()
-  response=json.loads(nested.stdout.readline());result=response['result'];assert not result.get('isError'),result
-  return json.loads(result['content'][0]['text'])
+ mcp=None
  try:
-  grandchild=call(1,'spawn');finished=call(2,'wait')
+  mcp=McpClient(nested,'python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX recursive')
+  grandchild=mcp.call('spawn','nested','first');finished=mcp.call('wait','nested')
   assert finished['reply']['kind']=='answered' and finished['reply']['outcome'].get('Succeeded') is not None,finished
   merged=subprocess.run(base+[os.environ['FIXTURE_ACYCLIC'],'fs','merge','agents/nested'],capture_output=True,text=True)
   assert merged.returncode==0,merged.stderr
   assert (cwd/'first.txt').read_text()=='native'
   assert not (cwd/'.acyclic-sdk').exists(),'nested custody was authored into the child project'
  finally:
+  if mcp:mcp.close()
   nested.stdin.close();assert nested.wait(timeout=2)==0
 if prompt=='cancelled':
  child=subprocess.Popen(['sh','-c','sleep 30'])
@@ -92,7 +88,7 @@ if prompt=='resumed':
  assert args[args.index('resume')+1]==event['thread_id']
 
 ''');fake.chmod(0o755)
- owner=None;bridge=None;pending=b'';responses={};sequence=0
+ owner=None;bridge=None;mcp=None
  def start_owner():
   global owner
   log=(root/'owner.log').open('w+')
@@ -105,38 +101,17 @@ if prompt=='resumed':
   result=subprocess.run([acyclic,'__workspace'],input=json.dumps(action),text=True,cwd=workspace,env=env,capture_output=True,timeout=2)
   assert result.returncode==0,(result.stdout[-1000:],result.stderr[-1000:]);return json.loads(result.stdout)
  def start_bridge(task):
-  global bridge,pending,responses
-  pending=b'';responses={}
+  global bridge,mcp
   inherited=json.loads((workspace/'root-launch.json').read_text())['args']
   bridge=subprocess.Popen([acyclic,'__mcp','codex'],cwd=workspace,env={**env,'ACYCLIC_HOST_ARGS':json.dumps(inherited),'ACYCLIC_WORKSPACE':str(workspace),'ACYCLIC_TASK':task},stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=(root/'bridge.log').open('w+'))
-  bridge.stdin.write((json.dumps({'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'native-session-conformance','version':'1'}}})+'\n').encode());bridge.stdin.flush()
-  response(0,initialize=True)
-  bridge.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n');bridge.stdin.flush()
+  mcp=McpClient(bridge,'python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario)
  def submit(name,reference,prompt=None):
-  global sequence
-  sequence+=1;args={'reference':reference}
-  if prompt is not None:args['prompt']=prompt
-  bridge.stdin.write((json.dumps({'jsonrpc':'2.0','id':sequence,'method':'tools/call','params':{'name':name,'arguments':args}})+'\n').encode());bridge.stdin.flush();return sequence
- def response(identifier,initialize=False):
-  global pending
-  deadline=time.monotonic()+3
-  with selectors.DefaultSelector() as ready:
-   ready.register(bridge.stdout,selectors.EVENT_READ)
-   while identifier not in responses:
-    if b'\n' not in pending:
-     remaining=deadline-time.monotonic();assert remaining>0 and ready.select(remaining),('MCP response',identifier,(root/'bridge.log').read_text()[-1200:])
-     chunk=os.read(bridge.stdout.fileno(),65536);assert chunk,'bridge exited';pending+=chunk
-    while b'\n' in pending:
-     line,pending=pending.split(b'\n',1);message=json.loads(line);responses[message['id']]=message
-  message=responses.pop(identifier);assert 'error' not in message,message
-  if initialize:
-   assert 'protocolVersion' in message.get('result',{}),('step=initialize MCP client; recovery=python3 plugin/tests/hosts/managed-session.py ACYCLIC GRAPHCODER CODEX '+scenario,message)
-   return message['result']
-  result=message['result'];assert not result.get('isError'),result
-  return json.loads(result['content'][0]['text'])
- def tool(name,reference,prompt=None):return response(submit(name,reference,prompt))
+  return mcp.submit(name,reference,prompt)
+ def response(identifier):return mcp.result(identifier)
+ def tool(name,reference,prompt=None):return mcp.call(name,reference,prompt)
  def close_bridge():
-  global bridge
+  global bridge,mcp
+  if mcp:mcp.close();mcp=None
   if bridge and bridge.poll() is None:bridge.stdin.close();assert bridge.wait(timeout=2)==0,(root/'bridge.log').read_text()[-1200:]
   bridge=None
  def stop_owner():
@@ -209,6 +184,7 @@ if prompt=='resumed':
    if error.is_file():print('FIXTURE_NATIVE_ERROR',view.name,error.read_text()[-4000:],flush=True)
   raise
  finally:
+  if mcp:mcp.close()
   if bridge and bridge.poll() is None:
    bridge.stdin.close()
    try:bridge.wait(timeout=2)

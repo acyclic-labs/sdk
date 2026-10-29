@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """No models: exercise the installed MCP entry point for every host adapter.
 
-Run on bb2 with a prebuilt binary: python3 mcp-framing.py ACYCLIC.
+Run with a prebuilt binary: python3 mcp-framing.py ACYCLIC.
 The never-newline peer keeps stdin open until the server has rejected it.
 """
 import argparse
@@ -12,11 +12,12 @@ import subprocess
 import tempfile
 import time
 from native_fixture import fixture_environment
+from native_mcp import McpClient, McpFailure
 
 options = argparse.ArgumentParser(description=__doc__)
 options.add_argument("binary")
 options.add_argument("--host", choices=("codex", "claude-code", "pi"))
-options.add_argument("--case", choices=("framed", "oversized-open", "oversized-delimited"))
+options.add_argument("--case", choices=("framed", "oversized-open", "oversized-delimited", "initialized", "closed-producer"))
 args = options.parse_args()
 binary = str(Path(args.binary).resolve())
 started = time.monotonic()
@@ -29,8 +30,26 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
             process = subprocess.Popen([binary, "__mcp", host], cwd=root, env=env,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)
+            client = None
             try:
-                if case == "framed":
+                if case in ("initialized", "closed-producer"):
+                    recovery = f"python3 plugin/tests/hosts/mcp-framing.py {binary} --host {host} --case {case}"
+                    client = McpClient(process, recovery)
+                    if case == "initialized":
+                        client.send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+                        tools = client.response(1)["tools"]
+                        assert {tool["name"] for tool in tools} == {
+                            "spawn", "send", "wait", "cancel", "archive", "resume"}, (
+                                f"step=verify initialized MCP tools; recovery={recovery}")
+                    process.stdin.close()
+                    if case == "closed-producer":
+                        try:
+                            client.response(1)
+                        except McpFailure as error:
+                            assert "producer closed before response" in str(error), str(error)
+                        else:
+                            raise AssertionError(f"step=observe MCP producer closure; recovery={recovery}")
+                elif case == "framed":
                     requests = [json.dumps({"jsonrpc": "2.0", "id": number,
                                             "method": "ping"}).encode()
                                 for number in (1, 2)]
@@ -57,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                     assert not process.stdin.closed, "peer must remain open during rejection"
                 # Framing/decoding failures emit -32700 and terminate with an
                 # error; the shipping CLI propagates that error as exit 1.
-                expected_exit = 0 if case == "framed" else 1
+                expected_exit = 0 if case in ("framed", "initialized", "closed-producer") else 1
                 actual_exit = process.wait(timeout=2)
                 diagnostic = process.stderr.read().decode()
                 assert actual_exit == expected_exit, (
@@ -67,6 +86,8 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                 )
                 results.append({"host": host, "case": case, "passed": True})
             finally:
+                if client is not None:
+                    client.close()
                 if process.poll() is None:
                     process.kill()
                     process.wait()
