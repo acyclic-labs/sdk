@@ -410,7 +410,7 @@ impl Ticket {
             completed.restore(accounting)?;
         }
         let result = prepared.prefix_result.take().ok_or_else(|| {
-                crate::FsError::Publication(PublicationError::GroupAborted(state.abort_cause))
+            crate::FsError::Publication(PublicationError::GroupAborted(state.abort_cause))
         })?;
         Ok(Some(result))
     }
