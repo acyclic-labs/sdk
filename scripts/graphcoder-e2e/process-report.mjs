@@ -84,11 +84,13 @@ export class ProcessReport {
     this.#resolve();
   }
   #endReady(outcome, cause) {
-    if (this.#ready) return;
+    if (this.#ready || !this.#readyReject) return;
+    const reject = this.#readyReject;
+    this.#readyReject = undefined;
     const error = new Error(`report capability ended: ${cause ?? outcome}`);
     error.code = "REPORT_CONTROL_ENDED";
     error.outcome = outcome;
-    this.#readyReject(error);
+    reject(error);
   }
   request(deadline) {
     if (!this.#request) {
