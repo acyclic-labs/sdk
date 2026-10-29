@@ -87,11 +87,11 @@ impl SkillMetadata {
         }
     }
 
-    /// Loads the selected skill at its discovered generation under a finite body limit.
+    /// Loads the selected skill at its discovered generation under an optional body limit.
     pub async fn invoke(
         &self,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Result<ModelMessage> {
         self.invoke_observed(reader, maximum_bytes, None).await
     }
@@ -99,12 +99,15 @@ impl SkillMetadata {
     pub(crate) async fn invoke_observed(
         &self,
         reader: &dyn ContentResidencyVerifier,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ModelMessage> {
         use crate::{executor::stock_boundary, wire::ErrorCode};
+        let maximum_bytes = maximum_bytes.into();
         crate::executor::with_history_io(io, |work| self.validate(work))?;
-        if maximum_bytes == 0 || maximum_bytes > crate::conversation::MAX_EXACT_JS_INTEGER {
+        if maximum_bytes.is_some_and(|maximum| {
+            maximum == 0 || maximum > crate::conversation::MAX_EXACT_JS_INTEGER
+        }) {
             return Err(stock_boundary(
                 io,
                 ErrorCode::Invalid,
@@ -122,7 +125,7 @@ impl SkillMetadata {
                 &source.root.directory,
                 &source.path,
                 Some(&source.generation),
-                Some(maximum_bytes),
+                maximum_bytes,
                 crate::conversation::ContentAccess {
                     ceiling: None,
                     io: content_io,
@@ -131,7 +134,7 @@ impl SkillMetadata {
             .await?;
         if file.volume() != &source.root.volume
             || file.path() != source.path
-            || bytes.len() as u64 > maximum_bytes
+            || maximum_bytes.is_some_and(|maximum| bytes.len() as u64 > maximum)
         {
             return Err(stock_boundary(
                 io,
