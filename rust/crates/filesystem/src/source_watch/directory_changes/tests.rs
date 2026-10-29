@@ -46,9 +46,19 @@ fn assert_retired(shared: &Shared) {
 }
 fn wait_retired(shared: &Shared) -> Instant {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !shared.stop_completed.load(Ordering::Acquire) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    let arrivals = shared
+        .arrivals
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let waited = shared
+        .arrived
+        .wait_timeout_while(
+            arrivals,
+            deadline.saturating_duration_since(Instant::now()),
+            |()| !shared.stop_completed.load(Ordering::Acquire) && shared.hub.check().is_ok(),
+        )
+        .unwrap_or_else(PoisonError::into_inner);
+    drop(waited);
     assert!(shared.stop_completed.load(Ordering::Acquire));
     assert_retired(shared);
     deadline
