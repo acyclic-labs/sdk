@@ -172,11 +172,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         let (abort, registration) = AbortHandle::new_pair();
         self.aborts.insert(id, abort);
         let work = async move {
-            if !access.allows() {
+            if !access.check().await {
                 return None;
             }
             let outcome = execute(provider.as_ref(), op).await;
-            access.allows().then_some((id, outcome))
+            access.check().await.then_some((id, outcome))
         };
         self.ops.push(Box::pin(async move {
             Abortable::new(work, registration).await.ok().flatten()
@@ -214,11 +214,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let access = reader.cache.access.clone();
             let open = async move {
                 let opened = async {
-                    if !access.allows() {
+                    if !access.check().await {
                         return Err(StreamError::AccessDenied);
                     }
                     let head = provider.head(path.clone()).await?;
-                    if !access.allows() {
+                    if !access.check().await {
                         return Err(StreamError::AccessDenied);
                     }
                     let records = provider
@@ -231,7 +231,10 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     Ok((head, records))
                 }
                 .await;
-                access.allows().then_some((path, from, observed, opened))
+                access
+                    .check()
+                    .await
+                    .then_some((path, from, observed, opened))
             };
             self.opening.push(Box::pin(async move {
                 Abortable::new(open, registration).await.ok().flatten()

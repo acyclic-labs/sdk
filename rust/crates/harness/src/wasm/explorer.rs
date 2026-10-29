@@ -238,6 +238,7 @@ impl WasmExplorer {
                 CredentialStatus::Pending => "pending",
                 CredentialStatus::Current => "current",
                 CredentialStatus::Unavailable => "unavailable",
+                CredentialStatus::Unsupported => "unsupported",
                 CredentialStatus::SourceLost => "sourceLost",
             },
             connectivity,

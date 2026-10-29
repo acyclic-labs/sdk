@@ -506,7 +506,6 @@ impl Reader {
     ) {
         self.credentials = provider
             .credential_provider()
-            .cloned()
             .map(|provider| Credentials::new(provider, now, self.policy.timeout_ms));
         self.reset_source();
     }
@@ -530,7 +529,7 @@ impl Reader {
         let access = self
             .credentials
             .as_ref()
-            .map_or(Access::Unqualified, Credentials::access);
+            .map_or(Access::Local, Credentials::access);
         self.cache.reset_access(access);
         match self.credential_status() {
             CredentialStatus::Current => {

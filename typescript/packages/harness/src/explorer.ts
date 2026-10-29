@@ -19,7 +19,7 @@ export interface ExplorerHistoryRow { sequence: bigint; value: Uint8Array | null
 /** Connectivity and residency; `stale` marks an offline, cache-only view. */
 export interface ExplorerHealth {
   /** Trusted source custody, independently of transport connectivity. */
-  credentials: "unqualified" | "pending" | "current" | "unavailable" | "sourceLost";
+  credentials: "unqualified" | "pending" | "current" | "unavailable" | "unsupported" | "sourceLost";
   /** One encoded snapshot waiting for source admission in the shared reader. */
   snapshotBytes: number;
   connectivity: "online" | "degraded" | "offline";

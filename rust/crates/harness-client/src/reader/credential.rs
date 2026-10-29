@@ -1,7 +1,7 @@
 //! Source custody for the shared reader, driven by its existing task.
 
 use acyclic_auth::credential::{
-    CredentialBinding, CredentialProvider, CredentialWatch, ResolvedCredential,
+    CredentialAction, CredentialBinding, CredentialProvider, CredentialWatch, ResolvedCredential,
 };
 use std::{
     future::Future,
@@ -20,6 +20,8 @@ pub enum CredentialStatus {
     Current,
     /// Source availability, invalidation or expiry prevents reuse.
     Unavailable,
+    /// The configured source cannot guard synchronous retained views.
+    Unsupported,
     /// The registered notification producer ended. Replace the configured
     /// source to recover; connectivity changes cannot revive this producer.
     SourceLost,
@@ -30,24 +32,31 @@ pub(super) enum Access {
     /// Explicit sans-I/O use; no remote qualification is asserted.
     #[default]
     Local,
-    Unqualified,
     Closed,
     Lease(ResolvedCredential),
 }
 
 impl Access {
+    pub(super) async fn check(&self) -> bool {
+        match self {
+            Self::Local => true,
+            Self::Closed => false,
+            Self::Lease(lease) => lease.check().await.is_ok(),
+        }
+    }
+
     pub(super) fn allows(&self) -> bool {
         match self {
-            Self::Local | Self::Unqualified => true,
+            Self::Local => true,
             Self::Closed => false,
-            Self::Lease(lease) => lease.check().is_ok(),
+            Self::Lease(lease) => matches!(lease.retained_access(), Some(Ok(()))),
         }
     }
 
     pub(super) fn binding(&self) -> Result<Option<CredentialBinding>, super::SnapshotError> {
         match self {
             Self::Local => Ok(None),
-            Self::Lease(lease) if lease.check().is_ok() => {
+            Self::Lease(lease) if matches!(lease.retained_access(), Some(Ok(()))) => {
                 lease.binding().map(Some).ok_or(super::SnapshotError)
             }
             _ => Err(super::SnapshotError),
@@ -62,6 +71,7 @@ type Resolution = acyclic_stream::BoxProviderFuture<
 
 pub(super) struct Credentials {
     provider: CredentialProvider,
+    registering: Option<CredentialAction<Option<CredentialWatch>>>,
     watch: Option<CredentialWatch>,
     resolving: Option<Resolution>,
     lease: Option<ResolvedCredential>,
@@ -75,6 +85,7 @@ impl Credentials {
     pub(super) fn new(provider: CredentialProvider, now: u64, timeout_ms: u64) -> Self {
         let mut state = Self {
             provider,
+            registering: None,
             watch: None,
             resolving: None,
             lease: None,
@@ -88,20 +99,32 @@ impl Credentials {
     }
 
     fn restart(&mut self, now: u64) {
+        self.registering = None;
         self.watch = None;
         self.resolving = None;
         self.lease = None;
-        self.deadline = None;
+        self.deadline = Some(now.saturating_add(self.timeout_ms));
         self.registered_at = now;
         // Registration precedes both resolution and any retained-data access.
-        self.watch = match self.provider.watch() {
+        self.registering = Some(self.provider.watch());
+        self.status = CredentialStatus::Pending;
+    }
+
+    fn registered(
+        &mut self,
+        result: Result<Option<CredentialWatch>, acyclic_auth::credential::CredentialError>,
+    ) {
+        self.registering = None;
+        self.watch = match result {
             Ok(Some(watch)) => Some(watch),
             Ok(None) => {
-                self.status = CredentialStatus::Unqualified;
+                self.deadline = None;
+                self.status = CredentialStatus::Unsupported;
                 return;
             }
             Err(_) => {
-                self.status = CredentialStatus::Unavailable;
+                self.deadline = None;
+                self.status = CredentialStatus::SourceLost;
                 return;
             }
         };
@@ -110,13 +133,17 @@ impl Credentials {
             .as_ref()
             .is_none_or(|watch| watch.validity().revision.is_none())
         {
+            self.deadline = None;
             self.status = CredentialStatus::Unavailable;
             return;
         }
         self.status = CredentialStatus::Pending;
-        self.deadline = Some(now.saturating_add(self.timeout_ms));
         let provider = self.provider.clone();
-        self.resolving = Some(Box::pin(async move { provider.resolve().await }));
+        self.resolving = Some(Box::pin(async move {
+            let lease = provider.resolve().await?;
+            lease.check().await?;
+            Ok(lease)
+        }));
     }
 
     pub(super) fn status(&self) -> CredentialStatus {
@@ -124,7 +151,7 @@ impl Credentials {
             && self
                 .lease
                 .as_ref()
-                .is_none_or(|lease| lease.check().is_err())
+                .is_none_or(|lease| !matches!(lease.retained_access(), Some(Ok(()))))
         {
             CredentialStatus::Unavailable
         } else {
@@ -134,7 +161,6 @@ impl Credentials {
 
     pub(super) fn access(&self) -> Access {
         match self.status() {
-            CredentialStatus::Unqualified => Access::Unqualified,
             CredentialStatus::Current => self.lease.clone().map_or(Access::Closed, Access::Lease),
             _ => Access::Closed,
         }
@@ -154,6 +180,7 @@ impl Credentials {
         match self.watch.as_mut().map(|watch| Pin::new(watch).poll(cx)) {
             Some(Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
             Some(Poll::Ready(Err(_))) => {
+                self.registering = None;
                 self.watch = None;
                 self.resolving = None;
                 self.lease = None;
@@ -177,7 +204,7 @@ impl Credentials {
             && (self
                 .lease
                 .as_ref()
-                .is_none_or(|lease| lease.check().is_err())
+                .is_none_or(|lease| !matches!(lease.retained_access(), Some(Ok(()))))
                 || self.deadline.is_some_and(|deadline| now >= deadline));
         let mut reset = changed || expired;
         if reset {
@@ -186,10 +213,31 @@ impl Credentials {
         if self.status == CredentialStatus::Pending
             && self.deadline.is_some_and(|deadline| now >= deadline)
         {
+            self.registering = None;
             self.resolving = None;
             self.deadline = None;
             self.status = CredentialStatus::Unavailable;
             return true;
+        }
+        if let Some(registering) = &mut self.registering {
+            match Pin::new(registering).poll(cx) {
+                Poll::Ready(result) => {
+                    self.registered(result);
+                    reset |= self.status != CredentialStatus::Pending;
+                    // Registration can observe a source which already changed
+                    // or lost its producer. Never resolve against that cut.
+                    match self.poll_watch(cx) {
+                        Poll::Ready(Ok(())) => {
+                            self.restart(now);
+                            cx.waker().wake_by_ref();
+                            return true;
+                        }
+                        Poll::Ready(Err(())) => return true,
+                        Poll::Pending => {}
+                    }
+                }
+                Poll::Pending => return reset,
+            }
         }
         let resolved = match self.resolving.as_mut() {
             Some(resolving) => match resolving.as_mut().poll(cx) {
@@ -206,17 +254,22 @@ impl Credentials {
                 && let Some(binding) = lease.binding()
                 && let Some(watch) = &self.watch
                 && watch.validity().revision.as_ref() == Some(&binding.revision)
-                && lease.check().is_ok()
             {
-                let remaining = binding
-                    .expires_at_unix_seconds
-                    .saturating_sub(watch.validity().now_unix_seconds);
-                self.deadline = Some(
-                    self.registered_at
-                        .saturating_add(remaining.saturating_mul(1000)),
-                );
-                self.lease = Some(lease);
-                self.status = CredentialStatus::Current;
+                match lease.retained_access() {
+                    Some(Ok(())) => {
+                        let remaining = binding
+                            .expires_at_unix_seconds
+                            .saturating_sub(watch.validity().now_unix_seconds);
+                        self.deadline = Some(
+                            self.registered_at
+                                .saturating_add(remaining.saturating_mul(1000)),
+                        );
+                        self.lease = Some(lease);
+                        self.status = CredentialStatus::Current;
+                    }
+                    None => self.status = CredentialStatus::Unsupported,
+                    Some(Err(_)) => {}
+                }
             }
             // Wake/register the source watch after resolving as well: a
             // refresh may have invalidated its registration while awaited.
@@ -258,6 +311,233 @@ mod tests {
     }
 
     #[test]
+    fn async_only_and_raw_sources_refuse_retained_views_without_dispatching_checks() {
+        use acyclic_auth::credential::{
+            CredentialCacheError, CredentialError, CredentialRequest, CredentialResolution,
+            CredentialSource,
+        };
+        use futures::channel::oneshot;
+        use std::sync::atomic::AtomicUsize;
+
+        struct Source {
+            provider: CredentialProvider,
+            admission: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+            checks: Arc<AtomicUsize>,
+        }
+        struct Request {
+            lease: ResolvedCredential,
+            admission: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+            checks: Arc<AtomicUsize>,
+        }
+        impl CredentialRequest for Request {
+            fn token(&self) -> &str {
+                self.lease.as_str()
+            }
+            fn binding(&self) -> Option<CredentialBinding> {
+                self.lease.binding()
+            }
+            fn check(&self) -> CredentialAction<()> {
+                self.checks.fetch_add(1, Ordering::SeqCst);
+                let lease = self.lease.clone();
+                match self.admission.lock().unwrap().take() {
+                    Some(receive) => CredentialAction::Pending(Box::pin(async move {
+                        receive.await.map_err(|_| {
+                            CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
+                        })?;
+                        lease.check().await
+                    })),
+                    None => lease.check(),
+                }
+            }
+            fn reject(&self) -> CredentialAction<bool> {
+                self.lease.reject()
+            }
+        }
+        impl CredentialSource for Source {
+            fn resolve(&self) -> CredentialResolution<'_> {
+                Box::pin(async move {
+                    ResolvedCredential::from_custodian(Request {
+                        lease: self.provider.resolve().await?,
+                        admission: self.admission.clone(),
+                        checks: self.checks.clone(),
+                    })
+                    .await
+                })
+            }
+            fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
+                self.provider.watch()
+            }
+        }
+
+        let cache = CredentialCache::new(
+            |_| async {
+                CredentialSnapshot::new("credential".into(), CredentialRevision::from([1; 32]), 20)
+            },
+            || CredentialValidity {
+                now_unix_seconds: 10,
+                revision: Some(CredentialRevision::from([1; 32])),
+            },
+        );
+        let (send, receive) = oneshot::channel();
+        let checks = Arc::new(AtomicUsize::new(0));
+        let provider = CredentialProvider::from_custodian(Source {
+            provider: cache.into(),
+            admission: Arc::new(Mutex::new(Some(receive))),
+            checks: checks.clone(),
+        });
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.credentials = Some(Credentials::new(provider, 0, 100));
+        reader.reset_source();
+        let ready = Arc::new(Ready(AtomicBool::new(false)));
+        let waker = Waker::from(ready.clone());
+        let mut cx = Context::from_waker(&waker);
+        assert!(!reader.advance_credentials(0, &mut cx));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        assert!(!reader.readable());
+        assert!(!reader.advance_credentials(1, &mut cx));
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
+        send.send(()).unwrap();
+        assert!(ready.0.load(Ordering::SeqCst));
+        assert!(reader.advance_credentials(1, &mut cx));
+        assert_eq!(reader.credential_status(), CredentialStatus::Unsupported);
+        let admitted_checks = checks.load(Ordering::SeqCst);
+        assert_eq!(admitted_checks, 2);
+        assert!(!reader.readable());
+        assert!(reader.snapshot().is_empty());
+        assert!(reader.restore(b"untrusted").is_err());
+        assert_eq!(reader.next_deadline(), None);
+        reader.network_changed(true, 2);
+        assert!(!reader.advance_credentials(2, &mut cx));
+        assert_eq!(checks.load(Ordering::SeqCst), admitted_checks);
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let resolved = calls.clone();
+        reader.credentials = Some(Credentials::new(
+            CredentialProvider::new(move || {
+                resolved.fetch_add(1, Ordering::SeqCst);
+                async { Ok("credential".into()) }
+            }),
+            0,
+            100,
+        ));
+        reader.reset_source();
+        assert!(reader.advance_credentials(0, &mut cx));
+        assert_eq!(reader.credential_status(), CredentialStatus::Unsupported);
+        assert!(!reader.readable());
+        assert!(reader.snapshot().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn awaited_registration_preserves_its_event_cut_and_original_deadline() {
+        use acyclic_auth::credential::{
+            CredentialCacheError, CredentialError, CredentialResolution, CredentialSource,
+        };
+        use futures::channel::oneshot;
+        use std::sync::atomic::AtomicUsize;
+
+        struct Source {
+            provider: CredentialProvider,
+            first: Mutex<Option<oneshot::Receiver<CredentialWatch>>>,
+            registrations: Arc<AtomicUsize>,
+            resolutions: Arc<AtomicUsize>,
+        }
+        impl CredentialSource for Source {
+            fn resolve(&self) -> CredentialResolution<'_> {
+                self.resolutions.fetch_add(1, Ordering::SeqCst);
+                Box::pin(self.provider.resolve())
+            }
+            fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
+                self.registrations.fetch_add(1, Ordering::SeqCst);
+                match self.first.lock().unwrap().take() {
+                    Some(receive) => CredentialAction::Pending(Box::pin(async move {
+                        receive.await.map(Some).map_err(|_| {
+                            CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
+                        })
+                    })),
+                    None => self.provider.watch(),
+                }
+            }
+        }
+
+        // Complete registration, lose its producer, cancel at the original
+        // deadline, or deliver a cut invalidated while registration awaited.
+        for case in 0..4 {
+            let validity = Arc::new(Mutex::new(CredentialValidity {
+                now_unix_seconds: 10,
+                revision: Some(CredentialRevision::from([1; 32])),
+            }));
+            let observed = validity.clone();
+            let refreshed = validity.clone();
+            let cache = CredentialCache::new(
+                move |_| {
+                    let revision = refreshed.lock().unwrap().revision.clone().unwrap();
+                    async move { CredentialSnapshot::new("credential".into(), revision, 20) }
+                },
+                move || observed.lock().unwrap().clone(),
+            );
+            let watch = cache.watch().unwrap();
+            let (send, receive) = oneshot::channel();
+            let registrations = Arc::new(AtomicUsize::new(0));
+            let resolutions = Arc::new(AtomicUsize::new(0));
+            let provider = CredentialProvider::from_custodian(Source {
+                provider: cache.clone().into(),
+                first: Mutex::new(Some(receive)),
+                registrations: registrations.clone(),
+                resolutions: resolutions.clone(),
+            });
+            let mut state = Credentials::new(provider, 10, 25);
+            let ready = Arc::new(Ready(AtomicBool::new(false)));
+            let waker = Waker::from(ready.clone());
+            let mut cx = Context::from_waker(&waker);
+            assert!(!state.poll(10, &mut cx));
+            assert_eq!(state.status(), CredentialStatus::Pending);
+            assert!(!state.access().allows());
+            assert_eq!(state.deadline(), Some(35));
+            assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+
+            match case {
+                1 => {
+                    drop(send);
+                    assert!(ready.0.load(Ordering::SeqCst));
+                    assert!(state.poll(11, &mut cx));
+                    assert_eq!(state.status(), CredentialStatus::SourceLost);
+                    state.retry(12);
+                    assert_eq!(state.status(), CredentialStatus::SourceLost);
+                }
+                2 => {
+                    assert!(state.poll(35, &mut cx));
+                    assert!(send.is_canceled());
+                    assert_eq!(state.status(), CredentialStatus::Unavailable);
+                    assert_eq!(state.deadline(), None);
+                    assert!(!state.poll(1_000, &mut cx));
+                    assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+                }
+                _ => {
+                    if case == 3 {
+                        validity.lock().unwrap().revision = Some(CredentialRevision::from([2; 32]));
+                        cache.invalidate().unwrap();
+                    }
+                    assert!(send.send(watch).is_ok());
+                    assert!(ready.0.load(Ordering::SeqCst));
+                    assert!(state.poll(34, &mut cx));
+                    if case == 3 {
+                        assert_eq!(state.status(), CredentialStatus::Pending);
+                        assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+                        assert!(state.poll(34, &mut cx));
+                    }
+                    assert_eq!(state.status(), CredentialStatus::Current);
+                    assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+                }
+            }
+            assert_eq!(
+                registrations.load(Ordering::SeqCst),
+                if case == 3 { 2 } else { 1 }
+            );
+        }
+    }
+
+    #[test]
     fn lost_producer_ends_pending_and_admitted_custody_without_rearming() {
         use acyclic_auth::credential::{
             CredentialCacheError, CredentialError, CredentialResolution, CredentialSource,
@@ -273,7 +553,7 @@ mod tests {
             fn resolve(&self) -> CredentialResolution<'_> {
                 Box::pin(self.provider.resolve())
             }
-            fn watch(&self) -> Result<Option<CredentialWatch>, CredentialError> {
+            fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
                 self.registrations.fetch_add(1, Ordering::SeqCst);
                 self.watch
                     .lock()
@@ -281,6 +561,7 @@ mod tests {
                     .take()
                     .map(Some)
                     .ok_or(CredentialError::Invalid)
+                    .into()
             }
         }
 
@@ -544,7 +825,7 @@ mod tests {
             let Access::Lease(old_lease) = old_lease else {
                 panic!("missing admitted lease");
             };
-            assert!(!old_lease.reject().unwrap());
+            assert!(!old_lease.reject().await.unwrap());
             assert!(reader.readable());
             validity.lock().unwrap().now_unix_seconds = 20;
             assert!(!reader.readable());
