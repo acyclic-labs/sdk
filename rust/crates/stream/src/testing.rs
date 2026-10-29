@@ -57,13 +57,15 @@ impl Requests {
     /// Panics if any counter precedes the earlier snapshot. Take both snapshots
     /// in order from the same ledger, without counter overflow.
     pub fn since(self, earlier: Self) -> Self {
-        Self(std::array::from_fn(|index| {
+        let mut delta = self;
+        for (current, previous) in delta.0.iter_mut().zip(earlier.0) {
             assert!(
-                self.0[index] >= earlier.0[index],
+                *current >= previous,
                 "request ledger moved backwards; take both snapshots from the same wrapper"
             );
-            self.0[index] - earlier.0[index]
-        }))
+            *current -= previous;
+        }
+        delta
     }
 }
 
