@@ -172,14 +172,18 @@ where
     workspace.access.require(workspace.view.workspace()).await?;
     // A replayed request returns its saved result before reading any
     // command input (a patch file it consumed may be gone by now).
-    if let Some(request) = workspace.request.clone()
-        && let Some(output) =
-            GitCompatRepository::new(workspace.repository, workspace.store.clone())
-                .for_request(request)
-                .request_result()
-                .await
-                .map_err(super::errors::compat_error::<S>)?
+    if let Some(request) = &workspace.request
+        && let Some(output) = (RepositoryAccess {
+            access: workspace.access,
+            filesystem: workspace.filesystem,
+            store: workspace.store,
+            current: workspace.view.workspace(),
+            repository: workspace.repository,
+        })
+        .request_result(request.operation)
+        .await?
     {
+        before_effect().await?;
         return Ok(Prepared::Complete(Output {
             command: Some(output),
             switched: None,

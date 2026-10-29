@@ -115,10 +115,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
         };
         let repository = acyclic_fs::GitCompatRepository::new(root.id(), self.store.clone())
             .for_request(request.clone());
-        if let Some(output) = repository
-            .request_result()
-            .await
-            .map_err(crate::tools::git::compat_error::<StreamGitCompatStore<P>>)?
+        if let Some(output) = (crate::tools::git::RepositoryAccess {
+            access: &access,
+            filesystem: &self.host.filesystem,
+            store: &self.store,
+            current: &root,
+            repository: root.id(),
+        })
+        .request_result(request.operation)
+        .await?
         {
             return Ok(Some(ToolResult {
                 value: serde_json::json!({"result": output}),

@@ -1,21 +1,39 @@
 //! Repository sources are authorized before exposing saved metadata or recovering an intent.
 use super::*;
 
-impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
+pub(crate) struct RepositoryAccess<'a, P: ?Sized + 'static, O: 'static, S> {
+    pub access: &'a crate::filesystem::WorkspaceAccess,
+    pub filesystem: &'a acyclic_fs::Fs<acyclic_fs::StreamAuthorityStore<P>, O>,
+    pub store: &'a S,
+    pub current: &'a ManagedWorkspace<P, O>,
+    pub repository: acyclic_fs::WorkspaceId,
+}
+
+impl<P, O, S> RepositoryAccess<'_, P, O, S>
 where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
-    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
-    pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
-        let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository_id)
+    pub(crate) async fn request_result(
+        &self,
+        operation: acyclic_fs::OperationId,
+    ) -> crate::Result<Option<GitCommandOutput>> {
+        let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository)
             .await
             .map_err(S::error)?
         else {
-            return Ok(());
+            return Ok(None);
         };
+        if state.request(operation).is_none() {
+            return Ok(None);
+        }
+        self.authorize(&state).await?;
+        self.access.require(self.current).await?;
+        Ok(state.request(operation).cloned())
+    }
+
+    async fn authorize(&self, state: &acyclic_fs::GitCompatState) -> crate::Result<()> {
         let mut workspaces = BTreeSet::new();
         workspaces.extend(state.branches.values().map(|branch| branch.workspace_id));
         workspaces.extend(state.retired_workspaces.iter().copied());
@@ -34,6 +52,63 @@ where
         }
         for id in workspaces {
             self.workspace(id).await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn workspace(
+        &self,
+        workspace_id: acyclic_fs::WorkspaceId,
+    ) -> crate::Result<ManagedWorkspace<P, O>> {
+        if workspace_id == self.current.id() {
+            self.access.require(self.current).await?;
+            return Ok(self.current.clone());
+        }
+        let graph = WorkspaceGraph::new(self.store.clone());
+        graph
+            .authorize_descendant(workspace_id, self.repository)
+            .await
+            .map_err(|error| match error {
+                acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => {
+                    Error::Unauthorized("Git workspace is outside its repository lineage".into())
+                }
+                error => S::lineage_error(error),
+            })?;
+        let workspace = acyclic_fs::WorkspaceResolver::resolve(
+            &((*self.filesystem).clone(), graph),
+            workspace_id,
+        )
+        .await
+        .map_err(S::lineage_error)?;
+        self.access.require(&workspace).await?;
+        Ok(workspace)
+    }
+}
+
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
+where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
+{
+    pub(super) fn repository_access(&self) -> RepositoryAccess<'_, P, O, S> {
+        RepositoryAccess {
+            access: self.access,
+            filesystem: self.fs,
+            store: self.store,
+            current: &self.current,
+            repository: self.repository_id,
+        }
+    }
+
+    pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
+        if let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository_id)
+            .await
+            .map_err(S::error)?
+        {
+            self.repository_access().authorize(&state).await?;
         }
         Ok(())
     }
