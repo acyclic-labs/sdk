@@ -246,37 +246,23 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
     ] {
         roots.insert(path.to_owned());
     }
-<<<<<<< HEAD
     (|| -> Result<(), Box<dyn std::error::Error>> {
         let package_manifest: Value =
             serde_json::from_slice(&std::fs::read(root.join("package.json"))?)?;
         if let Some(patches) = package_manifest.get("patchedDependencies") {
             for patch in patches.as_object().ok_or("patch dependencies must be an object")?.values() {
                 let path = patch.as_str().ok_or("patch paths must be strings")?;
-                roots.insert(relative(&root.join(path).canonicalize()?)?);
+                let canonical = relative(&root.join(path))?;
+                if canonical != path {
+                    return Err("dependency patch path must be canonical and relative".into());
+                }
+                roots.insert(canonical);
             }
         }
         Ok(())
     })().map_err(|error| format!(
         "STEP native-source-patches failed: {error}; recovery: correct package.json patchedDependencies and run bun scripts/generate.mjs {key}"
     ))?;
-=======
-    let workspace_npm: Value = serde_json::from_slice(&std::fs::read(root.join("package.json"))?)?;
-    if let Some(patches) = workspace_npm.get("patchedDependencies") {
-        for patch in patches
-            .as_object()
-            .ok_or("patched dependencies must be an object")?
-            .values()
-        {
-            let path = patch.as_str().ok_or("dependency patch path must be text")?;
-            let canonical = relative(&root.join(path))?;
-            if canonical != path {
-                return Err("dependency patch path must be canonical and relative".into());
-            }
-            roots.insert(canonical);
-        }
-    }
->>>>>>> 8817d1d7a1 (fix(codegen): derive dependency patch provenance from package metadata)
     for path in [
         format!("scripts/build-{key}-native.mjs"),
         format!("scripts/{key}-napi-types.mjs"),
