@@ -2,6 +2,7 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 
+mod availability;
 mod batch;
 mod blob;
 pub mod conformance;
@@ -35,6 +36,7 @@ mod store;
 mod tests;
 
 pub use acyclic_stream::SealedBytes as Sealed;
+pub use availability::{Availability, AvailabilityCursor, AvailabilitySource};
 pub use blob::{ByteRange, Digest, Kind, Manifest, Part};
 pub use medium::{Medium, MediumError, MemoryMedium};
 #[cfg(not(target_arch = "wasm32"))]
@@ -95,6 +97,14 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("blobs/collect", "CollectRequest", "CollectResponse"),
     ("blobs/usage", "UsageRequest", "UsageResponse"),
 ];
+
+/// Streaming routes, with one canonical Protobuf length-delimited message per
+/// frame. The first frame opens the observation before verification starts.
+pub const HTTP_STREAM_ROUTES: &[(&str, &str, &str)] = &[(
+    "blobs/availability",
+    "AvailabilityRequest",
+    "AvailabilityCursor",
+)];
 
 /// Largest caller-supplied PEM CA, client certificate, or private key.
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]

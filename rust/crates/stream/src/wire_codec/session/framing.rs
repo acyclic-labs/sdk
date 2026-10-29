@@ -3,13 +3,20 @@ use super::{StreamError, decode_frame, wire};
 
 /// Incremental length-delimited session frames. Retains only an incomplete
 /// frame; complete contiguous frames decode directly from their input chunk.
-#[derive(Default)]
-pub struct FrameDecoder {
+pub struct FrameDecoder<T = wire::SessionFrame> {
     grpc: bool,
     prefix: [u8; 10],
     prefix_len: usize,
     length: Option<usize>,
     body: Vec<u8>,
+    maximum: usize,
+    decode: fn(&[u8]) -> Result<T, StreamError>,
+}
+
+impl Default for FrameDecoder {
+    fn default() -> Self {
+        Self::with_decoder(crate::MAX_COMMAND_BYTES, decode_frame)
+    }
 }
 
 impl FrameDecoder {
@@ -23,10 +30,26 @@ impl FrameDecoder {
             ..Self::default()
         }
     }
+}
+
+impl<T> FrameDecoder<T> {
+    /// Uses the same framing for another canonical message. The decoder owns
+    /// validation at the external boundary; `maximum` bounds one frame only.
+    pub fn with_decoder(maximum: usize, decode: fn(&[u8]) -> Result<T, StreamError>) -> Self {
+        Self {
+            grpc: false,
+            prefix: [0; 10],
+            prefix_len: 0,
+            length: None,
+            body: Vec::new(),
+            maximum,
+            decode,
+        }
+    }
 
     /// Consume bytes through the next frame, leaving any following frames in
     /// `input`. An incomplete frame returns `None` after consuming the chunk.
-    pub fn read(&mut self, input: &mut &[u8]) -> Result<Option<wire::SessionFrame>, StreamError> {
+    pub fn read(&mut self, input: &mut &[u8]) -> Result<Option<T>, StreamError> {
         while self.length.is_none() {
             let Some((&byte, rest)) = input.split_first() else {
                 return Ok(None);
@@ -67,7 +90,7 @@ impl FrameDecoder {
                 }
                 length
             };
-            if length > crate::MAX_COMMAND_BYTES {
+            if length > self.maximum {
                 return Err(StreamError::LimitExceeded);
             }
             self.length = Some(length);
@@ -76,7 +99,7 @@ impl FrameDecoder {
         let frame = if self.body.is_empty() && input.len() >= length {
             let (frame, rest) = input.split_at(length);
             *input = rest;
-            decode_frame(frame)?
+            (self.decode)(frame)?
         } else {
             let received = (length - self.body.len()).min(input.len());
             let (part, rest) = input.split_at(received);
@@ -85,7 +108,7 @@ impl FrameDecoder {
             if self.body.len() != length {
                 return Ok(None);
             }
-            let frame = decode_frame(&self.body)?;
+            let frame = (self.decode)(&self.body)?;
             self.body.clear();
             frame
         };

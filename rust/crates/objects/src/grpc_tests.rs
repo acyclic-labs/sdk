@@ -55,6 +55,9 @@ impl Replica {
 
 #[async_trait::async_trait]
 impl Blobs for Replica {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.view.availability(digest).await
+    }
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         self.pending.lock().expect("pending").push(body.clone());
         self.primary.put(body, references).await
@@ -169,6 +172,99 @@ async fn caller_supplied_channel_refreshes_credentials_for_each_rpc() -> TestRes
             Some("Bearer credential-0".to_owned()),
             Some("Bearer credential-1".to_owned()),
         ]
+    );
+    Ok(())
+}
+
+fn resolved_client(resolve: AccountResolver, token: &'static str) -> GrpcObjects {
+    client_over(
+        resolve,
+        CredentialProvider::new(move || std::future::ready(Ok(token.into()))),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn grpc_availability_retains_original_context_at_open_and_delivery() -> TestResult {
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"context")?);
+    let source = account.availability_source().clone();
+    let resolve: AccountResolver = Arc::new(move |_| Ok(account.clone()));
+    crate::availability::client::context_tests::verify(
+        |context, credential| {
+            Box::new(client_over(resolve.clone(), credential).with_context(context))
+        },
+        source,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "original stop must settle availability opening")]
+async fn negative_control_availability_ignoring_context_keeps_opening() {
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"ignored-context").unwrap());
+    let source = account.availability_source().clone();
+    let resolve: AccountResolver = Arc::new(move |_| Ok(account.clone()));
+    crate::availability::client::context_tests::verify(
+        |_context, credential| Box::new(client_over(resolve.clone(), credential)),
+        source,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn grpc_availability_runs_shared_accounts_and_retains_source_failure() -> TestResult {
+    use futures::FutureExt as _;
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let first = Arc::new(store.account(b"grpc-first")?);
+    let second = Arc::new(store.account(b"grpc-second")?);
+    let granted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let resolve: AccountResolver = {
+        let first = first.clone();
+        let second = second.clone();
+        let granted = granted.clone();
+        Arc::new(move |metadata| {
+            match metadata
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+            {
+                Some("Bearer first") if granted.load(std::sync::atomic::Ordering::SeqCst) => {
+                    Ok(first.clone() as Arc<dyn Blobs>)
+                }
+                Some("Bearer second") => Ok(second.clone() as Arc<dyn Blobs>),
+                _ => Err(wire::ErrorCode::AccessDenied.into()),
+            }
+        })
+    };
+    let client = resolved_client(resolve.clone(), "first");
+    let other = resolved_client(resolve.clone(), "second");
+    crate::conformance::verify(&client, &other, "grpc-availability").await?;
+    let digest = Digest::of(b"physical event");
+    let mut observation = client.availability(digest).await?;
+    let mut unauthorized = other.availability(digest).await?;
+    assert!(
+        matches!(resolved_client(resolve, "denied").availability(digest).await, Err(error) if error.code == wire::ErrorCode::AccessDenied)
+    );
+    first.availability_source().restored(digest)?;
+    observation.changed().await?;
+    assert!(unauthorized.changed().now_or_never().is_none());
+    assert_eq!(
+        client.head(digest).await.unwrap_err().code,
+        wire::ErrorCode::NotFound,
+        "an event never certifies bytes"
+    );
+    granted.store(false, std::sync::atomic::Ordering::SeqCst);
+    first.availability_source().restored(digest)?;
+    assert_eq!(
+        observation.changed().await.unwrap_err().code,
+        wire::ErrorCode::AccessDenied
+    );
+    second.availability_source().fail();
+    assert_eq!(
+        unauthorized.changed().await.unwrap_err().code,
+        wire::ErrorCode::Unavailable
     );
     Ok(())
 }

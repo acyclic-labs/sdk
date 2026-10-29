@@ -26,7 +26,7 @@ test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-supp
 default = ["grpc"]
 grpc = ["acyclic-auth/grpc", "dep:tonic", "dep:tonic-prost", "dep:rustls", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
-http = ["json", "dep:reqwest"]
+http = ["json", "dep:reqwest", "reqwest/http2", "tokio/time"]
 local = ["dep:libc", "tokio/rt"]
 s3 = ["dep:object_store", "dep:reqwest-s3", "dep:quick-xml", "dep:rustls", "tokio/rt", "tokio/macros"]
 
@@ -71,6 +71,7 @@ tempfile = "3.27.0"
 workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 divan.workspace = true
 hyper-util.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }

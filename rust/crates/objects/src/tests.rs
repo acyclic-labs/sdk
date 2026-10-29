@@ -6,6 +6,8 @@ use acyclic_stream::OwnedBytes;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+pub(crate) mod availability;
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod read_admission;
 

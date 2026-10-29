@@ -97,6 +97,7 @@ impl<M> Clone for Store<M> {
 #[derive(Default)]
 struct State {
     gate: tokio::sync::RwLock<()>,
+    availability: crate::AvailabilitySource,
     /// This account's revisions, opened from the medium on first use.
     revisions: tokio::sync::OnceCell<Issued>,
     /// Over a volatile medium, the blob versions this process wrote and has
@@ -332,6 +333,14 @@ fn canonical(mut references: Vec<Digest>) -> Vec<Digest> {
 }
 
 impl<M> Account<M> {
+    /// The account's original physical availability producer. A repair service
+    /// that writes bytes outside this engine must publish completion here,
+    /// including same-reference repairs, and fail it on lost producer custody.
+    /// This capability belongs to trusted storage code, never a remote caller.
+    pub fn availability_source(&self) -> &crate::AvailabilitySource {
+        &self.state.availability
+    }
+
     /// This account's medium.
     pub(crate) fn shared_medium(&self) -> Arc<M> {
         Arc::clone(&self.medium)
@@ -1079,7 +1088,13 @@ impl<M: Medium> Account<M> {
     ) -> Result<Option<bool>, Error> {
         let key = self.payload_key(digest, &envelope.version);
         loop {
-            match self.medium.create(&key, payload.clone()).await {
+            match crate::availability::Restoration::write(
+                &self.state.availability,
+                *digest,
+                self.medium.create(&key, payload.clone()),
+            )
+            .await
+            {
                 Ok(true) => return Ok(Some(true)),
                 Ok(false) => {}
                 Err(MediumError::Ambiguous(_)) => return Ok(None),
@@ -1327,6 +1342,10 @@ impl<M: Medium> Account<M> {
 
 #[async_trait::async_trait]
 impl<M: Medium> crate::Blobs for Account<M> {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.state.availability.subscribe(digest)
+    }
+
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         self.put_inner(crate::Sealed::new(body), references).await
     }

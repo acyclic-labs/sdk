@@ -16,6 +16,8 @@ use tonic::{
     transport::{Channel, Endpoint, Identity},
 };
 
+mod availability;
+
 /// Request metadata: one minimum revision per authority, as the protobuf bytes
 /// of the shared `acyclic.stream.v1.Revision`.
 pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
@@ -359,6 +361,10 @@ macro_rules! call {
 
 #[async_trait::async_trait]
 impl Blobs for GrpcObjects {
+    async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
+        self.observe_availability(digest).await
+    }
+
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
         if let Some(context) = &self.context {
             context.check()?;
@@ -725,6 +731,29 @@ macro_rules! serve {
 
 #[tonic::async_trait]
 impl wire::blobs_service_server::BlobsService for BlobsServer {
+    type AvailabilityStream =
+        futures::stream::BoxStream<'static, Result<wire::AvailabilityCursor, tonic::Status>>;
+
+    async fn availability(
+        &self,
+        request: Request<wire::AvailabilityRequest>,
+    ) -> Reply<Self::AvailabilityStream> {
+        use futures::StreamExt as _;
+        let blobs = self.account(&request)?;
+        let (metadata, _, message) = request.into_parts();
+        let observation = crate::route::availability(&*blobs, message)
+            .await
+            .map_err(status)?;
+        let resolve = Arc::clone(&self.resolve);
+        let events = crate::route::availability_frames(observation).map(move |event| {
+            // The original verified account resolver also enforces current
+            // permission before each disclosure, including terminal frames.
+            resolve(&metadata).map_err(status)?;
+            event.map_err(status)
+        });
+        Ok(tonic::Response::new(Box::pin(events)))
+    }
+
     async fn put_blob(&self, request: Request<wire::PutBlobRequest>) -> Reply<wire::PutResponse> {
         serve!(self, request, put_blob, false)
     }

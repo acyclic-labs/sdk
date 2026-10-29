@@ -53,6 +53,7 @@ async fn s3_ranges_and_shared_conformance() -> Result<(), Box<dyn std::error::Er
     assert!(medium.read("absent", Some(0..0)).await?.is_none());
     assert!(medium.remove("range").await?);
     crate::conformance::verify_medium(&medium, "ranges").await?;
+    crate::tests::availability::verify(medium.clone()).await?;
     let store = Store::new(medium);
     crate::conformance::verify(
         &store.account(b"first")?,
