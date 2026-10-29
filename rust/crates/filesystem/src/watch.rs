@@ -3692,21 +3692,8 @@ impl NativeWatch {
             if shared.ready(&queued)? {
                 return Ok(());
             }
-            let tokens = original.with_original_leaf(|work| work.cancellation_tokens());
-            let first = tokens[0]
-                .prepare_cancelled_with_native_work(&original)
-                .map_err(crate::cancellation::CancellationWaitError::into_native)?;
-            let second = (!tokens[1].same_state(&tokens[0]))
-                .then(|| tokens[1].prepare_cancelled_with_native_work(&original))
-                .transpose()
-                .map_err(crate::cancellation::CancellationWaitError::into_native)?;
-            let mut first = std::pin::pin!(first);
-            let mut second = std::pin::pin!(async move {
-                match second {
-                    Some(second) => second.await,
-                    None => std::future::pending::<()>().await,
-                }
-            });
+            let cancelled = original.scope_cancellation_wait()?;
+            let mut cancelled = std::pin::pin!(cancelled);
             loop {
                 let changed = shared.changed.notified();
                 let mut changed = std::pin::pin!(changed);
@@ -3717,8 +3704,7 @@ impl NativeWatch {
                 }
                 tokio::select! {
                     () = changed.as_mut() => {},
-                    () = first.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
-                    () = second.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
+                    () = cancelled.as_mut() => return Err(NativeWatchError::Cancelled(CancellationError)),
                 }
             }
         }
