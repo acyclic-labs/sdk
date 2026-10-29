@@ -46,6 +46,34 @@ impl NativeMaterializationWork {
             .map_err(crate::cancellation::CancellationWaitError::into_native)
     }
 
+    /// Registers both the authority and invocation before entering a wait.
+    /// Identical scopes share one waiter on the original ledger.
+    pub(crate) fn scope_cancellation_wait(
+        &self,
+    ) -> Result<impl Future<Output = ()> + Send + use<>, NativeTreeMaterializationError> {
+        self.admit(WorkCounters::UNCHARGED)?;
+        let tokens = self.with_original_leaf(|work| work.cancellation_tokens());
+        let first = tokens[0]
+            .prepare_cancelled_with_native_work(self)
+            .map_err(crate::cancellation::CancellationWaitError::into_native)?;
+        let second = (!tokens[1].same_state(&tokens[0]))
+            .then(|| tokens[1].prepare_cancelled_with_native_work(self))
+            .transpose()
+            .map_err(crate::cancellation::CancellationWaitError::into_native)?;
+        Ok(async move {
+            let second = async move {
+                match second {
+                    Some(second) => second.await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                () = first => {},
+                () = second => {},
+            }
+        })
+    }
+
     /// Complete Arc allocation retained by the original shared ledger.
     pub const fn accounting_state_bytes() -> u64 {
         const {
@@ -405,8 +433,6 @@ impl NativeMaterializationWork {
             result.map_err(native_materialization_work_error),
         )
     }
-    /// Maximum complete builtin payload.
-    pub const MAXIMUM_BUILTIN_BYTES: usize = 262_144;
 }
 
 #[cfg(test)]

@@ -143,11 +143,7 @@ fn check_native_name(
             1 => NameEncoding::PosixBytes,
             _ => NameEncoding::WindowsUtf16Le,
         };
-        if let Ok(name) = LogicalName::new(
-            encoding,
-            bytes.clone(),
-            config.limits.maximum_component_bytes,
-        ) {
+        if let Ok(name) = LogicalName::new(encoding, bytes.clone()) {
             assert_eq!(name.as_bytes(), bytes);
             let decoded = match encoding {
                 NameEncoding::Utf8 | NameEncoding::PosixBytes => String::from_utf8(bytes).ok(),

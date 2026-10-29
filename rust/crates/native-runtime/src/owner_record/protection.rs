@@ -4,10 +4,10 @@ use std::io;
 #[cfg(unix)]
 pub fn unprotect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
-    maximum: u64,
+    maximum: Option<u64>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
-    if bytes.len() as u64 > maximum {
+    if maximum.is_some_and(|maximum| bytes.len() as u64 > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     copy(bytes)
@@ -16,10 +16,10 @@ pub fn unprotect_with_copy<T, E: From<io::Error>>(
 #[cfg(unix)]
 pub fn protect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
-    maximum: u64,
+    maximum: Option<u64>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
-    if bytes.len() as u64 > maximum {
+    if maximum.is_some_and(|maximum| bytes.len() as u64 > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     copy(bytes)
@@ -29,7 +29,7 @@ pub fn protect_with_copy<T, E: From<io::Error>>(
 #[cfg(windows)]
 pub fn unprotect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
-    maximum: u64,
+    maximum: Option<u64>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     windows_protect_with_copy(bytes, false, maximum, copy)
@@ -38,7 +38,7 @@ pub fn unprotect_with_copy<T, E: From<io::Error>>(
 #[cfg(windows)]
 pub fn protect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
-    maximum: u64,
+    maximum: Option<u64>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     windows_protect_with_copy(bytes, true, maximum, copy)
@@ -52,7 +52,7 @@ pub fn protect_with_copy<T, E: From<io::Error>>(
 fn windows_protect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8],
     protect: bool,
-    maximum: u64,
+    maximum: Option<u64>,
     copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     use std::{ptr, slice};
@@ -62,7 +62,7 @@ fn windows_protect_with_copy<T, E: From<io::Error>>(
             CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
         },
     };
-    if bytes.len() as u64 > maximum {
+    if maximum.is_some_and(|maximum| bytes.len() as u64 > maximum) {
         return Err(io::Error::from(io::ErrorKind::InvalidData).into());
     }
     let input = CRYPT_INTEGER_BLOB {
@@ -119,7 +119,10 @@ fn windows_protect_with_copy<T, E: From<io::Error>>(
     }
     let retained = ProtectedOutput(output);
     let output = &retained.0;
-    if output.cbData == 0 || output.pbData.is_null() || u64::from(output.cbData) > maximum {
+    if output.cbData == 0
+        || output.pbData.is_null()
+        || maximum.is_some_and(|maximum| u64::from(output.cbData) > maximum)
+    {
         Err(io::Error::other("invalid protected owner payload size").into())
     } else {
         // SAFETY: successful DPAPI returned an allocation of cbData bytes.

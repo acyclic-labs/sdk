@@ -15,6 +15,11 @@ pub use config::{McpConfig, McpServer, McpTransport};
     not(target_arch = "wasm32"),
     any(feature = "mcp-stdio", feature = "mcp-http")
 ))]
+mod deadline;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "mcp-stdio", feature = "mcp-http")
+))]
 mod install;
 mod layouts;
 #[cfg(all(

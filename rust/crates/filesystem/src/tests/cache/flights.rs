@@ -69,26 +69,25 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
         },
         options(4, 64),
     )?;
-    let (first, second) = async {
-        let first = object_work!(cached, read(object_id, 13), B, &cancellation);
-        let second = object_work!(cached, read(object_id, 13), B, &cancellation);
-        let release = async {
-            while reads.load(Ordering::Acquire) == 0 {
-                tokio::task::yield_now().await;
-            }
-            gate.release();
-        };
-        let (first, second, ()) = tokio::join!(first, second, release);
-        (first, second)
-    }
+    let mut pending: Vec<_> = (0..2_112)
+        .map(|_| Box::pin(object_work!(cached, read(object_id, 13), B, &cancellation)))
+        .collect();
+    // Poll each accepted read once while the real backend is held. Completion
+    // then wakes every follower; this test never polls for readiness.
+    std::future::poll_fn(|cx| {
+        for read in &mut pending {
+            assert!(read.as_mut().poll(cx).is_pending());
+        }
+        Poll::Ready(())
+    })
     .await;
-    let first = first?;
-    let second = second?;
-    assert_eq!(first.value.bytes, bytes);
-    assert_eq!(second.value.bytes, bytes);
     assert_eq!(reads.load(Ordering::Acquire), 1);
-
-    assert_eq!(cached.stats()?.coalesced_reads, 1);
+    gate.release();
+    for read in pending {
+        assert_eq!(read.await?.value.bytes, bytes);
+    }
+    assert_eq!(reads.load(Ordering::Acquire), 1);
+    assert_eq!(cached.stats()?.coalesced_reads, 2_111);
     Ok(())
 }
 
@@ -119,24 +118,21 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
             object_id: identity,
             maximum_bytes: u64::try_from(bytes.len())?,
         }];
-        let (scalar, batch) = async {
-            let scalar = object_work!(
-                cached,
-                read(identity, u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
-                B,
-                &cancellation
-            );
-            let batch = object_work!(cached, read_many(&requests), B, &cancellation);
-            let release = async {
-                while reads.load(Ordering::Acquire) == 0 {
-                    tokio::task::yield_now().await;
-                }
-                gate.release();
-            };
-            let (scalar, batch, ()) = tokio::join!(scalar, batch, release);
-            (scalar, batch)
-        }
+        let mut scalar = Box::pin(object_work!(
+            cached,
+            read(identity, u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+            B,
+            &cancellation
+        ));
+        let mut batch = Box::pin(object_work!(cached, read_many(&requests), B, &cancellation));
+        std::future::poll_fn(|cx| {
+            assert!(scalar.as_mut().poll(cx).is_pending());
+            assert!(batch.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
         .await;
+        gate.release();
+        let (scalar, batch) = tokio::join!(scalar, batch);
         if object_id == 0 {
             assert_eq!(scalar?.value.bytes, bytes);
             assert_eq!(batch?.value[0].bytes, bytes);

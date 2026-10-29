@@ -4,15 +4,11 @@ use acyclic_fs::{CaptureError, Checkout};
 
 type Candidate = Checkout<LocalAuthorityBackend, LocalObjectBackend>;
 
-// Bound repeated loss of continuity, rather than either publishing a stale
-// candidate or allowing an actively changing source to spin forever.
-pub(super) const MAXIMUM_RESCANS: usize = 4;
-
 impl Cursor {
     fn poll(&mut self, cancellation: &CancellationToken) -> Result<WatchBatch> {
         Ok(self
             .watcher
-            .poll(MAXIMUM_PATHS, WorkBudget::UNBOUNDED, cancellation)
+            .poll(1024, WorkBudget::UNBOUNDED, cancellation)
             .map_err(storage)?
             .value)
     }
@@ -85,16 +81,12 @@ pub(super) fn capture<'a>(
             #[cfg(all(test, not(loom)))]
             cursor.inject("fence")?;
         }
-        let mut rescans = 0;
+        let mut first_baseline = true;
         loop {
             cancellation.check().map_err(storage)?;
             if baseline {
-                if rescans == MAXIMUM_RESCANS {
-                    return Err(Error::Conflict(
-                        "checkout kept changing during capture; retry the command".into(),
-                    ));
-                }
-                rescans += 1;
+                let before_images = optional_before_images && first_baseline;
+                first_baseline = false;
                 // Discard private mutations while retaining the ORIGINAL expected
                 // publication head. Reopening Exact would silently refresh that
                 // fence and could overwrite a concurrent writer's generation.
@@ -104,12 +96,7 @@ pub(super) fn capture<'a>(
                     .map_err(storage)?;
                 initial = None;
                 let batch = cursor
-                    .baseline(
-                        checkout,
-                        configuration,
-                        cancellation,
-                        optional_before_images && rescans == 1,
-                    )?
+                    .baseline(checkout, configuration, cancellation, before_images)?
                     .await?;
                 if !replay(
                     cursor,
@@ -154,7 +141,6 @@ fn drain<'a>(
     cancellation: &'a CancellationToken,
 ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
-        let mut remaining = MAXIMUM_PATHS as usize;
         let mut pending = None;
         loop {
             // The batch retains its producer-owned vector through replay.
@@ -165,12 +151,7 @@ fn drain<'a>(
             #[cfg(all(test, not(loom)))]
             cursor.inject("poll")?;
             let empty = match &batch {
-                WatchBatch::Changes { changes, .. } => {
-                    remaining = remaining.checked_sub(changes.len()).ok_or_else(|| {
-                        Error::Conflict("checkout change batch exceeds capture bound".into())
-                    })?;
-                    changes.is_empty()
-                }
+                WatchBatch::Changes { changes, .. } => changes.is_empty(),
                 WatchBatch::RescanRequired { .. } => false,
             };
             if !replay(
@@ -214,7 +195,7 @@ pub(super) fn replay<'a>(
         }
         cursor
             .watcher
-            .watch_arrivals(&batch, policy, MAXIMUM_PATHS)
+            .watch_arrivals(&batch, policy, options.maximum_paths)
             .map_err(storage)?;
         #[cfg(all(test, not(loom)))]
         cursor.inject("register")?;

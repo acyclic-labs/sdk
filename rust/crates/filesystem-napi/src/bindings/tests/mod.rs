@@ -19,8 +19,6 @@ fn cache(maximum_entries: u32, maximum_bytes: BigInt) -> NativeObjectCacheOption
     NativeObjectCacheOptions {
         maximum_entries: NapiU32(maximum_entries),
         maximum_bytes,
-        maximum_in_flight: NapiU32(2),
-        maximum_waiters_per_object: NapiU32(2),
     }
 }
 
@@ -139,7 +137,7 @@ async fn workspace_transaction_statuses_cross_the_boundary()
         .await?;
     assert_eq!(winner.commit().await?.status, "committed");
     assert_eq!(loser.commit().await?.status, "conflict");
-    let rebased = loser.rebase(NapiU32(16)).await?;
+    let rebased = loser.rebase(Some(NapiU32(16))).await?;
     assert_eq!(rebased.status, "conflicted");
     assert!(!rebased.conflicts.is_empty());
     Ok(())
@@ -153,9 +151,8 @@ async fn attached_workspace_rescans_and_seals_one_source()
     std::fs::write(source.path().join("value.bin"), [1_u8, 2, 3])?;
     let options = NativeSourceOptions {
         mode: "tracking".to_owned(),
-        maximum_paths: NapiU32(128),
-        maximum_extent_spans: NapiU32(128),
-        maximum_queued_changes: NapiU32(128),
+        maximum_paths: Some(NapiU32(128)),
+        maximum_extent_spans: Some(NapiU32(128)),
         excluded_paths: None,
     };
     let source_path = source.path().to_string_lossy().into_owned();
@@ -230,7 +227,6 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
 
     let watch_options = NativeWatchOptions {
         limits: test_config().limits,
-        maximum_queued_changes: 64,
         recursive: true,
     };
     let watch =
@@ -245,7 +241,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         cancellation: CancellationToken::new(),
     };
     assert!(
-        Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(64)), Some(NapiU32(64))))
             .await
             .is_err()
     );
@@ -253,7 +249,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         .await
         .clear_retained_operation(unresolved);
     assert!(
-        Box::pin(watcher.reconcile(NapiU32(0), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(0)), Some(NapiU32(64))))
             .await
             .is_err()
     );
@@ -275,7 +271,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         ),
         "failed binding baseline retained scan custody: {polled:?}"
     );
-    Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
+    Box::pin(watcher.reconcile(Some(NapiU32(64)), Some(NapiU32(64)))).await?;
     Ok(())
 }
 
@@ -291,8 +287,6 @@ async fn materialization_writes_checkout_bytes()
         NativeObjectCacheOptions {
             maximum_entries: NapiU32(cache.maximum_entries),
             maximum_bytes: bigint(cache.maximum_bytes),
-            maximum_in_flight: NapiU32(cache.maximum_in_flight),
-            maximum_waiters_per_object: NapiU32(cache.maximum_waiters_per_object),
         },
     )
     .await?;
@@ -319,7 +313,7 @@ async fn materialization_writes_checkout_bytes()
         .materialize(NativeMaterializeOptions {
             destination: destination.path().to_string_lossy().into_owned(),
             maximum_directory_entries: NapiU32(64),
-            maximum_extent_spans: NapiU32(64),
+            maximum_extent_spans: Some(NapiU32(64)),
             transfer_bytes: bigint(4096),
         })
         .await?;
@@ -349,9 +343,8 @@ async fn attachment_never_invents_policy_for_an_existing_workspace()
             source.path().to_string_lossy().into_owned(),
             NativeSourceOptions {
                 mode: "pinned".into(),
-                maximum_paths: NapiU32(128),
-                maximum_extent_spans: NapiU32(128),
-                maximum_queued_changes: NapiU32(128),
+                maximum_paths: Some(NapiU32(128)),
+                maximum_extent_spans: Some(NapiU32(128)),
                 excluded_paths: None,
             },
         )

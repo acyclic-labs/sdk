@@ -3,6 +3,13 @@
 <meta charset="utf-8">
 <title>Harness agent turn through the guest artifact</title>
 <pre id="result" data-status="pending">initializing</pre>
+<script type="importmap">
+{"imports":{
+  "@bufbuild/protobuf":"/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+  "@bufbuild/protobuf/codegenv2":"/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+  "@bufbuild/protobuf/wkt":"/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+}}
+</script>
 <script type="module">
 import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
 const result = document.querySelector("#result");
@@ -25,14 +32,14 @@ try {
   const manifest = guest.manifest();
   assert(manifest instanceof Uint8Array && manifest.byteLength > 32, "guest manifest is empty");
   let deliveries = 0;
-  const counted = { manifest: () => manifest, onRecord: (delivery, signal) => { deliveries += 1; return guest.onRecord(delivery, signal); } };
+  const counted = { manifest: () => manifest, onRecord: (delivery, signal, interrupt) => { deliveries += 1; return guest.onRecord(delivery, signal, interrupt); } };
   agents = fixture.hosting(providers, counted);
   phase("one agent turn runs in the guest; the host publishes it");
   const a = await agents.create("agent-guest", "hello");
-  const entries = await until(() => agents.read(a, "conversation", 0n, 16), entries => entries.length === 1);
+  const entries = await until(agents, a, "conversation", entries => entries.length === 1);
   assert(await turnText(agents, a, entries[0]) === "guest:hello", "guest turn output differs");
   assert(deliveries >= 1, "the host published a turn without the guest");
-  await until(() => agents.read(a, "status", 0n, 64), records => records.at(-1)?.value.phase === "idle");
+  await until(agents, a, "status", records => records.at(-1)?.value.phase === "idle");
   assert(fixture.failures.length === 0, describe(fixture.failures));
   result.dataset.status = "passed";
   result.textContent = "one agent turn through the guest facade, published by its host";
@@ -40,7 +47,7 @@ try {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
 } finally {
-  agents?.free();
+  await fixture?.close(agents);
   guest?.free();
   providers?.free();
   fixture?.free();

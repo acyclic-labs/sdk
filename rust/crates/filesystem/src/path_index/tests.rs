@@ -12,18 +12,8 @@ fn fixture() -> (
     let limits = VolumeLimits::default();
     let path = NamespacePath::new(
         vec![
-            LogicalName::new(
-                NameEncoding::PosixBytes,
-                vec![0xff, b'x'],
-                limits.maximum_component_bytes,
-            )
-            .unwrap(),
-            LogicalName::new(
-                NameEncoding::WindowsUtf16Le,
-                vec![0, 0xd8],
-                limits.maximum_component_bytes,
-            )
-            .unwrap(),
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'x']).unwrap(),
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8]).unwrap(),
         ],
         limits,
     )
@@ -81,20 +71,6 @@ fn finite_codec_preserves_opaque_names_absence_and_candidate_identity() -> Resul
             GenerationId::new(Digest::from_bytes([8; 32])),
             &ids,
             VolumeLimits::default(),
-            &mut accounting
-        )?
-        .value
-        .is_none()
-    );
-    assert!(
-        decode(
-            &bytes,
-            generation,
-            &ids,
-            VolumeLimits {
-                maximum_path_depth: 1,
-                ..VolumeLimits::default()
-            },
             &mut accounting
         )?
         .value

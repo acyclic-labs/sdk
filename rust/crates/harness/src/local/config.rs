@@ -365,7 +365,7 @@ impl LocalHarnessConfig {
             self.web_tools = preset.web_tools;
         }
         if let Some(steps) = preset.max_steps {
-            self.limits.model_steps = steps;
+            self.limits.model_steps = Some(steps);
         }
         self.approval_policy = preset.approval_policy.clone();
         self
@@ -475,7 +475,7 @@ impl LocalHarnessConfig {
         self.run_limits = limits;
         self
     }
-    /// Selects the finite goal policy; `None` disables automatic continuations.
+    /// Selects the goal policy; `None` disables automatic continuations.
     #[must_use]
     pub fn goal_continuations(
         mut self,

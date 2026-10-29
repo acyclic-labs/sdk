@@ -25,9 +25,9 @@ impl BrowserVolume {
         &self,
         before: Vec<u8>,
         after: Vec<u8>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_changes: JsValue,
     ) -> Result<Ts<BrowserGenerationDiffResult>, JsValue> {
-        let maximum_changes = wasm_u32(&maximum_changes)?;
+        let maximum_changes = wasm_optional_u32(&maximum_changes)?;
 
         let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &before,
@@ -44,7 +44,7 @@ impl BrowserVolume {
                 before,
                 after,
                 maximum_changes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -63,7 +63,7 @@ impl BrowserVolume {
                 .checkout(
                     GenerationSelector::Head,
                     mode,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await

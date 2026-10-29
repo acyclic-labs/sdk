@@ -25,6 +25,17 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
             at_least: Default::default(),
         })
         .await?;
+    let mut records_only = provider
+        .follow(crate::FollowRequest {
+            when_absent: Default::default(),
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first),
+            filter: filter()?,
+            progress: false,
+            at_least: Default::default(),
+        })
+        .await?;
     assert!(futures::poll!(updates.next()).is_pending());
     let skipped = append(provider, record("z", "alice")?).await?;
     let update = updates.next().await.ok_or("missing idle progress")??;
@@ -32,9 +43,14 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
         matches!(update, FollowUpdate::Progress { next: 2, preceding } if preceding == skipped)
     );
     assert!(futures::poll!(updates.next()).is_pending());
+    assert!(futures::poll!(records_only.next()).is_pending());
     let matched = append(provider, record("b", "alice")?).await?;
     assert!(matches!(updates.next().await.ok_or("missing match")??,
         FollowUpdate::Record(Record { sequence: 2, commit_id, .. }) if commit_id == matched));
+    assert!(
+        matches!(records_only.next().await.ok_or("missing record-only match")??,
+        FollowUpdate::Record(Record { sequence: 2, commit_id, .. }) if commit_id == matched)
+    );
     let request = AppendRequest {
         path: path.clone(),
         records: vec![

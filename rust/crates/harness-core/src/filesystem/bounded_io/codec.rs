@@ -26,8 +26,8 @@ impl PreparationIo {
     ) -> Result<([u8; 32], Option<[u8; 32]>)> {
         let remaining = self.remaining()?;
         let bounds = JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined,
+            maximum_bytes: Some(remaining.bytes_encoded),
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let code = self
@@ -59,8 +59,8 @@ impl PreparationIo {
             })?;
         }
         let bounds = JsonBounds {
-            maximum_bytes: remaining.bytes_encoded,
-            maximum_items: remaining.items_examined,
+            maximum_bytes: Some(remaining.bytes_encoded),
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let code = self
@@ -89,8 +89,8 @@ impl PreparationIo {
 
     fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
-            maximum_bytes: bytes,
-            maximum_items: self.remaining()?.items_examined,
+            maximum_bytes: Some(bytes),
+            maximum_items: Some(self.remaining()?.items_examined),
             maximum_depth: depth,
         })
     }
@@ -110,8 +110,8 @@ impl PreparationIo {
             })?;
         }
         let bounds = JsonBounds {
-            maximum_bytes: maximum.min(remaining.bytes_encoded),
-            maximum_items: remaining.items_examined,
+            maximum_bytes: Some(maximum.min(remaining.bytes_encoded)),
+            maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
         let code = self

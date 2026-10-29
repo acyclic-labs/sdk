@@ -487,7 +487,9 @@ fn shared_worker_route_vectors_and_specificity() -> Result<(), Box<dyn std::erro
 fn route_ambiguity_only_applies_to_the_winning_specificity()
 -> Result<(), Box<dyn std::error::Error>> {
     let broad = RoutePattern::parse("example.com/*")?;
-    let narrow = RoutePattern::parse("example.com/api/*")?;
+    let prefix = format!("/api/{}", "segment/".repeat(1024));
+    let narrow = RoutePattern::parse(&format!("example.com{prefix}*"))?;
+    let request = format!("https://example.com{prefix}x");
     let routes = [
         WorkerRoute {
             pattern: broad.clone(),
@@ -515,10 +517,7 @@ fn route_ambiguity_only_applies_to_the_winning_specificity()
             .map(|index| routes.get(index).cloned().ok_or("missing route"))
             .into_iter()
             .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(
-            select_route(&reordered, "https://example.com/api/x")?,
-            Some(Some("api"))
-        );
+        assert_eq!(select_route(&reordered, &request)?, Some(Some("api")));
         assert_eq!(
             select_route(&reordered, "https://example.com/x"),
             Err(RouteError::Ambiguous)

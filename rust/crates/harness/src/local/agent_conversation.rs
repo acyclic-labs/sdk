@@ -30,9 +30,6 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// Bytes read back from one staged prompt or turn output.
-const MAXIMUM_TEXT: u64 = 16 * 1024 * 1024;
-
 fn failed(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
 }
@@ -347,7 +344,7 @@ impl Conversation {
             &self.connection,
             self.agent(),
             ReadTarget::File { file: file.clone() },
-            MAXIMUM_TEXT,
+            file.descriptor().byte_length().max(1),
         )
         .await?;
         String::from_utf8(bytes).map_err(failed)

@@ -2,6 +2,7 @@
 
 use super::{FileRecord, MetadataField, NamespacePath};
 use crate::foundation::{FileId, usize_to_u64};
+#[cfg(test)]
 use crate::model::VolumeLimits;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind};
@@ -343,12 +344,11 @@ impl MutationPlan {
     /// Compiles an ordered batch once before any immutable page is written.
     pub fn compile(
         operations: Vec<Mutation>,
-        limits: VolumeLimits,
         budget: WorkBudget,
     ) -> Result<Self, MutationPlanFailure> {
         let cancellation = crate::CancellationToken::new();
         let mut accounting = super::allocation::KernelAccounting::standalone(budget, &cancellation);
-        Self::compile_with_accounting(operations, limits, &mut accounting)
+        Self::compile_with_accounting(operations, &mut accounting)
             .map(|(plan, _)| plan)
             .map_err(|error| OperationFailure::new(plan_error(&error), accounting.spent()))
     }
@@ -359,7 +359,6 @@ impl MutationPlan {
     )]
     pub(crate) fn compile_with_accounting(
         operations: Vec<Mutation>,
-        limits: VolumeLimits,
         accounting: &mut super::allocation::KernelAccounting<'_>,
     ) -> Result<(Self, super::allocation::KernelOwnedAllocation), crate::FsError> {
         accounting.check()?;
@@ -372,10 +371,6 @@ impl MutationPlan {
         };
         if operations.is_empty() {
             return Err(error(MutationPlanError::Empty));
-        }
-        if u32::try_from(operations.len()).unwrap_or(u32::MAX) > limits.maximum_mutations_per_batch
-        {
-            return Err(error(MutationPlanError::TooManyMutations));
         }
         for operation in &operations {
             operation.validate().map_err(&error)?;
@@ -590,9 +585,6 @@ pub enum MutationPlanError {
     /// Atomic batches contain at least one operation.
     #[error("mutation batch is empty")]
     Empty,
-    /// Batch exceeds the volume's admitted operation bound.
-    #[error("mutation batch exceeds the volume limit")]
-    TooManyMutations,
     /// Initial create record violates canonical file-table invariants.
     #[error("created file record is invalid")]
     InvalidInitialRecord,
@@ -693,16 +685,13 @@ mod original_controls {
         accounting.record_completed(delta)?;
         let limits = VolumeLimits::default();
         components.values.push(
-            LogicalName::new(
-                NameEncoding::Utf8,
-                std::mem::take(&mut bytes.values),
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| {
-                crate::FsError::Path(super::super::PathLookupError::NamespacePath(
-                    super::super::NamespacePathError::Name(error),
-                ))
-            })?,
+            LogicalName::new(NameEncoding::Utf8, std::mem::take(&mut bytes.values)).map_err(
+                |error| {
+                    crate::FsError::Path(super::super::PathLookupError::NamespacePath(
+                        super::super::NamespacePathError::Name(error),
+                    ))
+                },
+            )?,
         );
         operations.values.push(Mutation::ValidateRegular {
             path: NamespacePath::new(std::mem::take(&mut components.values), limits).map_err(
@@ -727,13 +716,9 @@ mod original_controls {
         })?;
         let mut accounting = KernelAccounting::native(&limited, &cancellation);
         let before = original.receipt();
-        let error = MutationPlan::compile_with_accounting(
-            operations,
-            VolumeLimits::default(),
-            &mut accounting,
-        )
-        .err()
-        .ok_or("planner created an unaccounted path index")?;
+        let error = MutationPlan::compile_with_accounting(operations, &mut accounting)
+            .err()
+            .ok_or("planner created an unaccounted path index")?;
         assert!(matches!(
             error,
             crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
@@ -760,11 +745,8 @@ mod original_controls {
         let KernelOwnedAllocation::NativeOriginal(input_guard) = input_guard else {
             return Err("input guard is not original".into());
         };
-        let (plan, index_guard) = MutationPlan::compile_with_accounting(
-            operations,
-            VolumeLimits::default(),
-            &mut accounting,
-        )?;
+        let (plan, index_guard) =
+            MutationPlan::compile_with_accounting(operations, &mut accounting)?;
         let KernelOwnedAllocation::NativeOriginal(index_guard) = index_guard else {
             return Err("index guard is not original".into());
         };

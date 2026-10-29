@@ -26,7 +26,8 @@ pub trait MachinesProvider: Send + Sync {
         machine: MachineId,
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError>;
-    /// Reads 1..65536 live console bytes without treating empty data as EOF.
+    /// Reads one live console chunk, normalizing larger positive hints to its
+    /// physical width. Continue from the returned end; empty data is not EOF.
     async fn read_output(
         &self,
         machine: MachineId,

@@ -134,17 +134,18 @@ impl WasmAgentServer {
                 executors: Arc::new(Providers::executors(&options, registry)?),
                 limits: TurnLimits {
                     maximum_bytes: options.limits.file_bytes,
-                    max_steps: u32::try_from(options.limits.model_steps).map_err(|_| {
-                        js_error(Error::Invalid("model step limit exceeds u32".into()))
-                    })?,
-                    history_turns: HISTORY_TURNS,
+                    max_steps: options
+                        .limits
+                        .model_steps
+                        .map(|value| u32::try_from(value.get()))
+                        .transpose()
+                        .map_err(|_| {
+                            js_error(Error::Invalid("model step limit exceeds u32".into()))
+                        })?,
+                    history_turns: None,
                 },
-                actors: ActorLimits::new(
-                    options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
-                    1 << 20,
-                    1 << 16,
-                )
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+                actors: ActorLimits::new(options.handler_timeout_ms, None, None)
+                    .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
                 clock: Arc::new(SystemClock),
                 approval_policy: options.preset.approval_policy.clone(),
             },
@@ -397,6 +398,15 @@ impl WasmAgentServer {
             .await
     }
 
+    pub async fn follow(
+        &self,
+        agent: String,
+        stream: String,
+        from: u64,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        self.observation.follow(agent, stream, from).await
+    }
+
     #[wasm_bindgen(js_name = readFile)]
     pub async fn read_file(
         &self,
@@ -404,12 +414,13 @@ impl WasmAgentServer {
         file: JsValue,
     ) -> std::result::Result<Vec<u8>, JsValue> {
         self.owned(async {
+            let file: FileRef = from_js(file)?;
             self.bound
                 .read_file(
                     &AgentPath::try_from(agent).map_err(agent_error)?,
-                    &from_js(file)?,
+                    &file,
                     0,
-                    self.observation.maximum_bytes,
+                    file.descriptor().byte_length(),
                 )
                 .await
                 .map(|(bytes, _length)| bytes)
@@ -495,11 +506,7 @@ impl WasmAgentServer {
             .register_credential(0, credential)
             .map_err(stream_error)?;
         client
-            .actor_call(
-                &invocation,
-                0,
-                acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-            )
+            .actor_call(&invocation, 0, None)
             .await
             .map(|reply| Vec::from(reply.as_ref()))
             .map_err(stream_error)
