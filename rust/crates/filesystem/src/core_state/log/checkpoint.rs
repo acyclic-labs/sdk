@@ -271,7 +271,7 @@ impl CoreLog {
         // to rewind.
         let truncated = self
             .lease(work)
-            .and_then(|lease| lease.write(|file| acyclic_native_runtime::truncate_file(file, 0)));
+            .and_then(|mut lease| lease.discard_contents());
         let truncate_recorded = reset
             .as_mut()
             .map(|reset| {

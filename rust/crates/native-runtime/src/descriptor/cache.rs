@@ -253,6 +253,34 @@ pub(super) struct Lease<F: Files> {
     _settle: Settle<F>,
 }
 
+impl<F: Files> Lease<F> {
+    /// Discards every old byte. No other lease may write while the dirty
+    /// marker is retired; a competing lease refuses without running `discard`.
+    pub(super) fn discard(
+        &mut self,
+        discard: impl FnOnce(&F::File) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let _state = self
+            ._settle
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        check_lost(&self.handle.lost)?;
+        // The cache and this lease are the descriptor's only owners. New
+        // leases require the state lock held above; existing ones keep a count.
+        if crate::sync::Arc::strong_count(&self.handle) != 2 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "discard requires the only file lease",
+            ));
+        }
+        self.handle.unsynced.store(true, Ordering::Release);
+        discard(self.handle.file())?;
+        self.handle.unsynced.store(false, Ordering::Release);
+        Ok(())
+    }
+}
 impl<F: Files> std::ops::Deref for Lease<F> {
     type Target = Handle<F>;
 

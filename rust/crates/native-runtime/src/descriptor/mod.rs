@@ -296,6 +296,16 @@ impl FileLease {
         self.handle.write(write)
     }
 
+    /// Discards all file contents without a durability barrier.
+    ///
+    /// The caller must already have made any replacement state durable: after
+    /// a crash the discarded bytes may reappear. A later write and flush use
+    /// the same descriptor and retain their ordinary durability guarantees.
+    /// Fails without truncating if another lease is active, or a prior close
+    /// lost a write. A failed truncation retains the dirty marker.
+    pub fn discard_contents(&mut self) -> io::Result<()> {
+        self.handle.discard(|file| crate::truncate_file(file, 0))
+    }
     /// Runs `flush`, which makes every earlier write durable.
     pub fn flush<R>(&self, flush: impl FnOnce(&File) -> io::Result<R>) -> io::Result<R> {
         self.handle.flush(flush)
