@@ -15,7 +15,7 @@ impl LocalBackend {
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut owner = self.execution()?;
         let mut observed = owner.state.subscribe();
-        let mut wait = FileWait {
+        let mut wait = PhysicalWait {
             state: owner.state.clone(),
             control: owner.control.clone(),
             completed: false,
@@ -66,20 +66,6 @@ impl LocalBackend {
                 value
             }
             _ => Err(ProviderError::FileIndeterminate(self.machine.id)),
-        }
-    }
-}
-
-struct FileWait {
-    state: watch::Sender<PhysicalState>,
-    control: ProcessControl,
-    completed: bool,
-}
-impl Drop for FileWait {
-    fn drop(&mut self) {
-        if !self.completed {
-            self.control.stop();
-            self.state.send_replace(PhysicalState::Uncertain);
         }
     }
 }

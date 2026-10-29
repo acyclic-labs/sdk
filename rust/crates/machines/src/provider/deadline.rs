@@ -45,6 +45,10 @@ impl GuestDeadline {
             .saturating_duration_since(tokio::time::Instant::now())
     }
 
+    pub(crate) fn until(&self) -> std::time::Instant {
+        self.until.into_std()
+    }
+
     pub(crate) async fn run<T>(&self, future: impl std::future::Future<Output = T>) -> Option<T> {
         if self.expiry.is_some_and(|expiry| {
             std::time::SystemTime::now()

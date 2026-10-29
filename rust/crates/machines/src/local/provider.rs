@@ -109,6 +109,22 @@ struct Execution {
     state: watch::Sender<PhysicalState>,
 }
 
+// A disposable observer never releases the worker's physical lease. Losing
+// that observer stops its incarnation and preserves uncertain retirement.
+struct PhysicalWait {
+    state: watch::Sender<PhysicalState>,
+    control: ProcessControl,
+    completed: bool,
+}
+impl Drop for PhysicalWait {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.control.stop();
+            self.state.send_replace(PhysicalState::Uncertain);
+        }
+    }
+}
+
 impl CaptureHandler for Execution {
     fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
         Ok(Some(self.control.wake()).into())
@@ -137,9 +153,30 @@ impl Drop for Execution {
 
 #[async_trait]
 impl NativeMachine for LocalBackend {
-    async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError> {
+    async fn exec(
+        &self,
+        command: ExecCommand,
+        until: std::time::Instant,
+    ) -> Result<ExecStream, ProviderError> {
         let owner = self.execution()?;
-        Ok(Box::pin(self.machine.exec(command, owner).await))
+        let mut observed = owner.state.subscribe();
+        let mut wait = PhysicalWait {
+            state: owner.state.clone(),
+            control: owner.control.clone(),
+            completed: false,
+        };
+        tokio::select! {
+            biased;
+            _ = observed.wait_for(|state| *state != PhysicalState::Live) => {
+                Ok(Box::pin(futures::stream::iter([
+                    Err(ProviderError::CommandIndeterminate(self.machine.id)),
+                ])) as ExecStream)
+            }
+            execution = self.machine.exec(command, owner, until) => {
+                wait.completed = true;
+                Ok(Box::pin(execution) as ExecStream)
+            }
+        }
     }
     async fn stop(&self) -> Result<(), ProviderError> {
         let (live, state) = {

@@ -1,4 +1,5 @@
 //! Common public provider for an already admitted native workspace incarnation.
+use super::deadline::GuestDeadline;
 use super::journal::{Admission, Journal};
 use super::*;
 use acyclic_stream::{StreamPath, StreamProvider};
@@ -7,7 +8,11 @@ use acyclic_stream::{StreamPath, StreamProvider};
 /// retained observations belong to the shared provider above this boundary.
 #[async_trait]
 pub(crate) trait NativeMachine: Send + Sync + 'static {
-    async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError>;
+    async fn exec(
+        &self,
+        command: ExecCommand,
+        until: std::time::Instant,
+    ) -> Result<ExecStream, ProviderError>;
     async fn read(&self, access: FileAccess, limit: u32) -> Result<FileRead, ProviderError>;
     async fn write(
         &self,
@@ -125,23 +130,22 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             Admission::Original(head) => head,
         };
         if value.state != target {
-            value.state = match target {
-                MachineState::Running => MachineState::Waking,
-                MachineState::Suspended => MachineState::Suspending,
-                _ => MachineState::Destroying,
-            };
+            value.state = pending.state;
             let physical = if target == MachineState::Running {
                 self.backend.wake().await
             } else {
                 self.backend.stop().await
             };
             physical.map_err(|_| ProviderError::Indeterminate(key))?;
-            value.state = target;
-            value.changed_at_unix_ms = now()?;
+            pending.changed_at_unix_ms = now()?;
         }
-        self.journal
-            .finish(key, digest, admitted, &value, outcome)
-            .await
+        pending.state = target;
+        let result = self
+            .journal
+            .finish(key, digest, admitted, &pending, outcome)
+            .await?;
+        *value = pending;
+        Ok(result)
     }
 }
 
@@ -155,15 +159,22 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         machine: MachineId,
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
-        let value = self.observation.lock().await;
-        Self::select(&value, machine)?;
-        if value.state != MachineState::Running {
-            return Err(ProviderError::Conflict(
-                "Machine is not running; recovery: wake the original incarnation before executing"
-                    .into(),
-            ));
-        }
-        self.backend.exec(command).await
+        let deadline = GuestDeadline::new(
+            Duration::from_millis(u64::from(command.timeout_ms)),
+            command.expiry_unix_ms,
+        )?;
+        deadline.run(async {
+            let value = self.observation.lock().await;
+            Self::select(&value, machine)?;
+            if value.state != MachineState::Running {
+                return Err(ProviderError::Conflict(
+                    "Machine is not running; recovery: wake the original incarnation before executing"
+                        .into(),
+                ));
+            }
+            drop(value);
+            self.backend.exec(command, deadline.until()).await
+        }).await.unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))
     }
     async fn read_file(
         &self,

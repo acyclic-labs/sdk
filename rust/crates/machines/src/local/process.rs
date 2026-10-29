@@ -71,13 +71,16 @@ impl LocalMachine {
     /// and on every physical turn, including original expiry and owner wakes.
     /// Admission refusal is the first stream error; `finish` still returns the
     /// original callback custody. Physical owner loss returns uncertainty.
+    /// `deadline` is the original admission's absolute monotonic deadline;
+    /// queueing and worker setup never renew it.
     pub async fn exec<H: CaptureHandler>(
         &self,
         command: ExecCommand,
         mut handler: H,
+        deadline: std::time::Instant,
     ) -> LocalExecution<H> {
         let machine = self.id;
-        let (deadline, maximum, control) = match admit(&command) {
+        let (maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,
             Err(error) => {
                 handler.retired(true);
@@ -181,18 +184,14 @@ impl LocalMachine {
     }
 }
 
-fn admit(
-    command: &ExecCommand,
-) -> Result<(std::time::Instant, usize, ProcessControl), ProviderError> {
-    let deadline = std::time::Instant::now().checked_add(Duration::from_millis(u64::from(command.timeout_ms)))
-        .ok_or_else(|| ProviderError::Invalid("local command deadline overflow; recovery: supply a representable original timeout".into()))?;
+fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError> {
     let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),
         None => ProcessControl::unbounded(),
     }.map_err(|error| ProviderError::Rejected(format!("local control admission failed: {error}; recovery: restore native wake and expiry services before dispatch")))?;
-    Ok((deadline, maximum, control))
+    Ok((maximum, control))
 }
 
 enum StartFailure {
