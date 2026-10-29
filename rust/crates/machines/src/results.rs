@@ -140,7 +140,10 @@ impl SettledResults {
             .count
             .checked_sub(from)
             .ok_or_else(|| invalid("result cursor exceeds its original extent"))?;
-        let limit = u32::try_from(remaining.min(u64::from(credit.get())))
+        // Credit is an allowance, not a demand to exceed the shared read chunk.
+        let chunk = u32::try_from(acyclic_stream::MAX_ITEMS)
+            .map_err(|_| invalid("Streams read chunk cannot be represented"))?;
+        let limit = u32::try_from(remaining.min(u64::from(credit.get().min(chunk))))
             .map_err(|_| invalid("result page credit cannot be represented"))?;
         let end = from + u64::from(limit);
         let machines = if limit == 0 {

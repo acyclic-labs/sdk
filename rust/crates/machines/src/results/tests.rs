@@ -5,9 +5,9 @@ use crate::{
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, IdempotencyKey as StreamKey,
-    LocalStream, LocalStreamLimits, StreamProviderExt as _,
+    LocalStream, LocalStreamLimits,
 };
-use futures::{FutureExt as _, StreamExt as _};
+use futures::FutureExt as _;
 
 async fn append(
     streams: &LocalStream,
@@ -141,6 +141,29 @@ async fn settled_pages_pin_original_cut_across_source_changes_and_restart()
     let streams =
         Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?);
     let reader = SettledResults::open(streams.clone(), &root, operation, settlement, count).await?;
+    // The former direct-credit request fails on the actual Streams boundary.
+    assert!(matches!(
+        streams
+            .read(ReadRequest {
+                path: path(&root, operation)?,
+                from: 0,
+                limit: u32::MAX,
+                at_least: Default::default(),
+                key: None,
+            })
+            .await,
+        Err(acyclic_stream::StreamError::LimitExceeded)
+    ));
+    // More credit must still return a legal chunk and its exact continuation.
+    let wide = reader.page(0, NonZeroU32::new(u32::MAX).unwrap()).await?;
+    assert_eq!(wide.machines.len(), acyclic_stream::MAX_ITEMS);
+    assert_eq!(wide.next, Some(u64::try_from(acyclic_stream::MAX_ITEMS)?));
+    let rest = reader
+        .page(wide.next.unwrap(), NonZeroU32::new(u32::MAX).unwrap())
+        .await?;
+    assert_eq!(rest.machines.len(), 1);
+    assert_eq!(rest.machines[0].state, MachineState::Failed);
+    assert_eq!(rest.next, None);
     let last = reader.page(1024, NonZeroU32::new(64).unwrap()).await?;
     assert_eq!(last.operation, operation);
     assert_eq!(last.settlement, settlement);
