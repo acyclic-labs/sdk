@@ -83,12 +83,16 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
         let observer = observe_publication(&source)?;
         let entered = Arc::new(AtomicUsize::new(0));
         let calls = Arc::clone(&entered);
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = Arc::clone(&started);
         let mut guard = move |_: &crate::NativeMaterializationWork| {
             let calls = Arc::clone(&calls);
+            let signal = Arc::clone(&signal);
             async move {
                 // Preparation can compose an independent head privately. A
                 // rejected seal must not expose that unpublished composition.
                 calls.fetch_add(1, Ordering::AcqRel);
+                signal.notify_one();
                 if abandon {
                     std::future::pending::<()>().await;
                 }
@@ -109,15 +113,12 @@ fn rejected_private_composition_notifies_only_after_successful_retry()
                 &mut acknowledged,
             ));
             if abandon {
-                std::future::poll_fn(|cx| {
-                    assert!(std::future::Future::poll(publication.as_mut(), cx).is_pending());
-                    if entered.load(Ordering::Acquire) == 0 {
-                        std::task::Poll::Pending
-                    } else {
-                        std::task::Poll::Ready(())
+                tokio::select! {
+                    _ = started.notified() => {}
+                    result = publication.as_mut() => {
+                        panic!("publication completed before abandonment: {result:?}");
                     }
-                })
-                .await;
+                }
                 assert_eq!(entered.load(Ordering::Acquire), 1);
                 drop(publication);
             } else {
