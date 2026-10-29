@@ -286,10 +286,16 @@ impl Journal {
     ) -> Result<OperationStream, ProviderError> {
         let key = IdempotencyKey(operation.0);
         let path = self.operation(key)?;
-        // Pin producer selection across this head cut. Completion needs no
-        // lock; a subsequent transition cannot replace its live source before
-        // this observer retains it. No provider lock survives follow opening.
-        let active = self.producer.lock().await;
+        // Retain the original producer before reading its publication. A later
+        // transition can replace the slot, but cannot replace this handle.
+        // Storage observation must never hold up lifecycle admission.
+        let producer = {
+            let active = self.producer.lock().await;
+            active
+                .as_ref()
+                .filter(|(id, _)| *id == operation)
+                .map(|(_, receiver)| receiver.clone())
+        };
         let head = self.head(path.clone()).await?;
         let mut request = acyclic_stream::FollowRequest::new(path, head.tail);
         request.preceding = head.last.as_ref().map(|record| record.commit_id);
@@ -301,12 +307,7 @@ impl Journal {
         if initial.phase != OperationPhase::Pending {
             return Ok(stream::once(async move { Ok(initial) }).boxed());
         }
-        let mut producer = active
-            .as_ref()
-            .filter(|(id, _)| *id == operation)
-            .map(|(_, receiver)| receiver.clone())
-            .ok_or(ProviderError::Indeterminate(key))?;
-        drop(active);
+        let mut producer = producer.ok_or(ProviderError::Indeterminate(key))?;
         if !*producer.borrow() && producer.has_changed().is_err() {
             return Err(ProviderError::Indeterminate(key));
         }
