@@ -234,14 +234,20 @@ impl LocalWorkspace {
     }
 
     /// Binds commands to this workspace's existing serialized view owner.
+    ///
+    /// Its file publisher writes through the same checkout selection and
+    /// command lock, so a tool's file lands where its commands run.
     pub async fn executor(
         self: &Arc<Self>,
-        project: &VolumeRef,
+        (project, files, maximum): (&VolumeRef, &Arc<super::LocalFilesystem>, u64),
         clock: Arc<dyn acyclic_stream::UnixMillisClock>,
         signed: &Scope,
         verifier: &crate::core::AuthorityVerifier,
-    ) -> Result<Arc<dyn crate::tool::ToolExecutor>> {
-        Ok(Arc::new(
+    ) -> Result<(
+        Arc<dyn crate::tool::ToolExecutor>,
+        Arc<dyn crate::conversation::ContentPublisher>,
+    )> {
+        let tools = Arc::new(
             super::checkout_tools::CheckoutTools::new(
                 Arc::clone(self),
                 project,
@@ -250,7 +256,15 @@ impl LocalWorkspace {
                 verifier,
             )
             .await?,
-        ))
+        );
+        let publisher = super::checkout_tools::publisher::CheckoutPublisher::new(
+            Arc::clone(&tools),
+            Arc::clone(files),
+            project,
+            verifier,
+            maximum,
+        );
+        Ok((tools, Arc::new(publisher)))
     }
     pub(super) async fn checkout_selection(
         &self,

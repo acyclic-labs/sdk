@@ -22,6 +22,26 @@ pub async fn resolve_file_mentions(
     reader: &dyn ContentResidencyVerifier,
     maximum_bytes: u64,
 ) -> Result<Vec<FileMention>> {
+    let locate = |path: &str| {
+        if root.directory.is_empty() {
+            path.into()
+        } else {
+            format!("{}/{path}", root.directory)
+        }
+    };
+    resolve_file_mentions_at(input, root, generation, reader, maximum_bytes, locate).await
+}
+
+/// [`resolve_file_mentions`], reading each mentioned path where `locate`
+/// places it below `root`.
+pub(crate) async fn resolve_file_mentions_at(
+    input: &str,
+    root: &ContextRoot,
+    generation: &GenerationRef,
+    reader: &dyn ContentResidencyVerifier,
+    maximum_bytes: u64,
+    locate: impl Fn(&str) -> String,
+) -> Result<Vec<FileMention>> {
     if maximum_bytes == 0 || input.len() as u64 > maximum_bytes {
         return Err(Error::Invalid("mention input exceeds byte bound".into()));
     }
@@ -35,11 +55,7 @@ pub async fn resolve_file_mentions(
             let source = PinnedContextPath {
                 root: root.clone(),
                 generation: generation.clone(),
-                path: if root.directory.is_empty() {
-                    path.into()
-                } else {
-                    format!("{}/{path}", root.directory)
-                },
+                path: locate(path),
             };
             let (file, bytes) = source.read_remaining(reader, remaining).await?;
             remaining = remaining

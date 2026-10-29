@@ -1,9 +1,9 @@
 {
   "anthropic": {
-    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "source_main": "e5aa4b81b70f607a04e31f5eb4613c737175ee02",
     "platform": "linux",
     "case": "file-tools-anthropic",
-    "original_capture_sha256": "b1d61b1c01cd1f84960902d792e00f2eb826b937f6c566da6eaf89e5b703debc",
+    "original_capture_sha256": "c219180f75779ed98330fa504aac1e818b8d1116954aba76c9f9961f716afe06",
     "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
     "records": [
       {
@@ -29,7 +29,7 @@
             {
               "content": [
                 {
-                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"b569da4cc23c687dfd7232ea97ad15837a7f4bfc30599ddf7e4b265c78c39f03\",\"volume\":{\"class\":\"project\",\"id\":\"0b5f55bb-7d18-4b93-af33-af68a37cf300\",\"owner\":{\"id\":\"c2bd68e7-7d75-44f2-9f68-c939bc5c6d07\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
                   "tool_use_id": "write",
                   "type": "tool_result"
                 }
@@ -51,7 +51,7 @@
             {
               "content": [
                 {
-                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"b569da4cc23c687dfd7232ea97ad15837a7f4bfc30599ddf7e4b265c78c39f03\",\"volume\":{\"class\":\"project\",\"id\":\"0b5f55bb-7d18-4b93-af33-af68a37cf300\",\"owner\":{\"id\":\"c2bd68e7-7d75-44f2-9f68-c939bc5c6d07\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
                   "tool_use_id": "write",
                   "type": "tool_result"
                 }
@@ -61,7 +61,7 @@
             {
               "content": [
                 {
-                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"32369d4f2903c7de54547d0f9850bbd5f5e1271a0c36e5d01c6f5e4f92a5e8e4\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"050e8bdfb56293c4eb79416c7e5879da2ce2478a765772472e1c12cede98ca52\",\"volume\":{\"class\":\"project\",\"id\":\"0b5f55bb-7d18-4b93-af33-af68a37cf300\",\"owner\":{\"id\":\"c2bd68e7-7d75-44f2-9f68-c939bc5c6d07\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
                   "tool_use_id": "edit",
                   "type": "tool_result"
                 }
@@ -83,7 +83,7 @@
             {
               "content": [
                 {
-                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"b569da4cc23c687dfd7232ea97ad15837a7f4bfc30599ddf7e4b265c78c39f03\",\"volume\":{\"class\":\"project\",\"id\":\"0b5f55bb-7d18-4b93-af33-af68a37cf300\",\"owner\":{\"id\":\"c2bd68e7-7d75-44f2-9f68-c939bc5c6d07\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
                   "tool_use_id": "write",
                   "type": "tool_result"
                 }
@@ -93,7 +93,7 @@
             {
               "content": [
                 {
-                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"32369d4f2903c7de54547d0f9850bbd5f5e1271a0c36e5d01c6f5e4f92a5e8e4\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"050e8bdfb56293c4eb79416c7e5879da2ce2478a765772472e1c12cede98ca52\",\"volume\":{\"class\":\"project\",\"id\":\"0b5f55bb-7d18-4b93-af33-af68a37cf300\",\"owner\":{\"id\":\"c2bd68e7-7d75-44f2-9f68-c939bc5c6d07\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
                   "tool_use_id": "edit",
                   "type": "tool_result"
                 }
@@ -116,10 +116,10 @@
     ]
   },
   "chat": {
-    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "source_main": "e5aa4b81b70f607a04e31f5eb4613c737175ee02",
     "platform": "linux",
     "case": "file-tools-chat",
-    "original_capture_sha256": "87928c2181dd4cb9512d06c8e044041708a36117e9f2071af7616ff1406856bc",
+    "original_capture_sha256": "c169552b438b45a0cba35e455b849ea0aba348321bb02e71ed320c6f79d31df5",
     "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
     "records": [
       {
@@ -143,7 +143,7 @@
         "body": {
           "messages": [
             {
-              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"5075dfec6a13f59d39e8594b5728200a20e8b070549874927170ee3552734199\",\"volume\":{\"class\":\"project\",\"id\":\"ceb1ec1f-dc37-4d87-ba3a-59a8515b4f3b\",\"owner\":{\"id\":\"d3095dde-8070-42a2-b827-c7cf422d5866\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "role": "tool",
               "tool_call_id": "write"
             }
@@ -160,12 +160,12 @@
         "body": {
           "messages": [
             {
-              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"5075dfec6a13f59d39e8594b5728200a20e8b070549874927170ee3552734199\",\"volume\":{\"class\":\"project\",\"id\":\"ceb1ec1f-dc37-4d87-ba3a-59a8515b4f3b\",\"owner\":{\"id\":\"d3095dde-8070-42a2-b827-c7cf422d5866\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "role": "tool",
               "tool_call_id": "write"
             },
             {
-              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"2fc00f64a990e43e6b7c33c6cc92391a0aee5f908080310728327e608ff02142\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"e76e68cca4ba5ff424188c747674d95228a02acc1bf1c5e902528755185c780a\",\"volume\":{\"class\":\"project\",\"id\":\"ceb1ec1f-dc37-4d87-ba3a-59a8515b4f3b\",\"owner\":{\"id\":\"d3095dde-8070-42a2-b827-c7cf422d5866\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "role": "tool",
               "tool_call_id": "edit"
             }
@@ -182,12 +182,12 @@
         "body": {
           "messages": [
             {
-              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"5075dfec6a13f59d39e8594b5728200a20e8b070549874927170ee3552734199\",\"volume\":{\"class\":\"project\",\"id\":\"ceb1ec1f-dc37-4d87-ba3a-59a8515b4f3b\",\"owner\":{\"id\":\"d3095dde-8070-42a2-b827-c7cf422d5866\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "role": "tool",
               "tool_call_id": "write"
             },
             {
-              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"2fc00f64a990e43e6b7c33c6cc92391a0aee5f908080310728327e608ff02142\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"e76e68cca4ba5ff424188c747674d95228a02acc1bf1c5e902528755185c780a\",\"volume\":{\"class\":\"project\",\"id\":\"ceb1ec1f-dc37-4d87-ba3a-59a8515b4f3b\",\"owner\":{\"id\":\"d3095dde-8070-42a2-b827-c7cf422d5866\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "role": "tool",
               "tool_call_id": "edit"
             },
@@ -202,10 +202,10 @@
     ]
   },
   "responses": {
-    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "source_main": "e5aa4b81b70f607a04e31f5eb4613c737175ee02",
     "platform": "linux",
     "case": "file-tools-responses",
-    "original_capture_sha256": "bd01b2d493e8cd28d19940b437ff813236bad050396293978e195978fc8f8688",
+    "original_capture_sha256": "81a14647d900249589832f042e24357c721794db3534ca3451d379716bd6b35c",
     "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
     "records": [
       {
@@ -230,7 +230,7 @@
           "input": [
             {
               "call_id": "write",
-              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"52962be655fabceecbb576d5b27f39b20b55cd0418e4927edcd9c405e8127875\",\"volume\":{\"class\":\"project\",\"id\":\"38754268-a062-41a1-b373-72359062dce9\",\"owner\":{\"id\":\"409ec6f3-501d-4cd1-a575-4ccaa2433a7e\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "type": "function_call_output"
             }
           ]
@@ -247,12 +247,12 @@
           "input": [
             {
               "call_id": "write",
-              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"52962be655fabceecbb576d5b27f39b20b55cd0418e4927edcd9c405e8127875\",\"volume\":{\"class\":\"project\",\"id\":\"38754268-a062-41a1-b373-72359062dce9\",\"owner\":{\"id\":\"409ec6f3-501d-4cd1-a575-4ccaa2433a7e\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "type": "function_call_output"
             },
             {
               "call_id": "edit",
-              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"c4e1fa102c9fba6e2f14fda7e469818aa4556a1d39691b8fdadddbcfd7ad2f59\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"9eb961e09228e79ef2a385b0d793fb0c5c60fe5c9fa0541a5d829f9061dd04ec\",\"volume\":{\"class\":\"project\",\"id\":\"38754268-a062-41a1-b373-72359062dce9\",\"owner\":{\"id\":\"409ec6f3-501d-4cd1-a575-4ccaa2433a7e\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "type": "function_call_output"
             }
           ]
@@ -269,12 +269,12 @@
           "input": [
             {
               "call_id": "write",
-              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"52962be655fabceecbb576d5b27f39b20b55cd0418e4927edcd9c405e8127875\",\"volume\":{\"class\":\"project\",\"id\":\"38754268-a062-41a1-b373-72359062dce9\",\"owner\":{\"id\":\"409ec6f3-501d-4cd1-a575-4ccaa2433a7e\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "type": "function_call_output"
             },
             {
               "call_id": "edit",
-              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"c4e1fa102c9fba6e2f14fda7e469818aa4556a1d39691b8fdadddbcfd7ad2f59\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"9eb961e09228e79ef2a385b0d793fb0c5c60fe5c9fa0541a5d829f9061dd04ec\",\"volume\":{\"class\":\"project\",\"id\":\"38754268-a062-41a1-b373-72359062dce9\",\"owner\":{\"id\":\"409ec6f3-501d-4cd1-a575-4ccaa2433a7e\",\"kind\":\"project\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
               "type": "function_call_output"
             },
             {

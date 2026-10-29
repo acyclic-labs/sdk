@@ -174,7 +174,7 @@ impl TaskContext {
             self.authorize_file_read(source, scope, scope.grants(), io)?;
         }
         publication_destination(
-            self.content_binding(source.map(FileRef::volume)),
+            self.tool_content(source.map(FileRef::volume)),
             scope,
             source,
             path,

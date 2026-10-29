@@ -665,11 +665,15 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
         read,
         [
             (
-                "mention.txt".into(),
+                super::super::context::copy_name("mention.txt"),
                 "text/plain".into(),
                 b"MENTIONED\n".to_vec()
             ),
-            ("pixel.png".into(), "image/png".into(), PIXEL.to_vec()),
+            (
+                super::super::context::copy_name("pixel.png"),
+                "image/png".into(),
+                PIXEL.to_vec()
+            ),
         ]
     );
     // The model sees the prompt, then the text file as text and the image natively.
@@ -768,7 +772,7 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         };
         assert_eq!(
             file.path().rsplit('/').next(),
-            Some(format!("f{index}.txt").as_str())
+            Some(super::super::context::copy_name(&format!("m/f{index}.txt")).as_str())
         );
     }
     Ok(())
@@ -855,6 +859,86 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
     assert_eq!(parts.len(), MENTIONS + 1);
+    Ok(())
+}
+
+/// A copy's path has one length however long the mentioned path is, so a
+/// path at the path bound is mentioned like any other. The control: naming
+/// a copy by its path below the same directory exceeds the bound.
+#[tokio::test]
+async fn a_mention_at_the_path_bound_is_copied_under_a_fixed_length_name() -> Result<()> {
+    use crate::conversation::MAX_PATH_BYTES;
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let workspace = crate::filesystem::workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    // Nested 200-byte components, then a file name, to one byte under the bound.
+    let mut parents = Vec::new();
+    let mut long = String::new();
+    while MAX_PATH_BYTES - 1 - long.len() > 200 {
+        long.push_str(&format!("{}{}/", parents.len() % 10, "d".repeat(199)));
+        parents.push(format!("/{}", long.trim_end_matches('/')));
+    }
+    long.push_str(&"f".repeat(MAX_PATH_BYTES - 1 - long.len()));
+    assert_eq!(long.len() + 1, MAX_PATH_BYTES);
+    let mutations = parents
+        .into_iter()
+        .map(|path| crate::filesystem::WorkspaceMutation::CreateDirectory { path })
+        .chain(
+            [("short.txt", "short\n"), (long.as_str(), "long\n")].map(|(path, text)| {
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: format!("/{path}"),
+                    bytes: acyclic_stream::OwnedBytes::from(text.as_bytes().to_vec()),
+                }
+            }),
+        )
+        .collect::<Vec<_>>();
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &mutations,
+            &crate::contract::IdempotencyKey::new("project-files")?,
+        )
+        .await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    client.send("long", &format!("@short.txt @{long}")).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message {
+        attachments: Some(manifest),
+        ..
+    } = &entry.input
+    else {
+        return Err(Error::Conflict(
+            "the prompt started no attached message turn".into(),
+        ));
+    };
+    let listed = listed(&harness, manifest).await?;
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].path().len(), listed[1].path().len());
+    let reader = harness.client_reader()?;
+    for (file, text) in listed.iter().zip(["short\n", "long\n"]) {
+        let bytes = reader
+            .read(file, file.descriptor().byte_length(), None, None)?
+            .await?;
+        assert_eq!(bytes.as_ref(), text.as_bytes());
+    }
+    let (directory, _) = listed[1].path().rsplit_once('/').expect("copy directory");
+    assert!(format!("{directory}/{long}").len() > MAX_PATH_BYTES);
     Ok(())
 }
 

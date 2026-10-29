@@ -356,8 +356,25 @@ impl Opening {
             self.config.limits.file_bytes,
             None,
         )?;
-        // A checkout's writes go through its checkout tools; only a configured
-        // volume takes ordinary project content writes.
+        // A checkout's commands and file tools both write through its
+        // checkout tools; a configured volume takes ordinary content writes.
+        #[cfg(any(test, feature = "native-execution"))]
+        let (workspace_tools, checkout_writer) = match &workspace {
+            Some(workspace) => {
+                let (tools, writer) = workspace
+                    .executor(
+                        (&owner.project, &files, self.config.limits.file_bytes),
+                        self.config.clock.clone(),
+                        &signed,
+                        &verifier,
+                    )
+                    .await?;
+                (Some(tools), Some(writer))
+            }
+            None => (None, None),
+        };
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let (workspace_tools, checkout_writer) = (None, None);
         let writer: Option<Arc<dyn crate::conversation::ContentPublisher>> =
             match self.config.project {
                 LocalProject::Volume { .. } => Some(FilesystemContentPublisher::new(
@@ -368,25 +385,8 @@ impl Opening {
                     self.config.limits.file_bytes,
                     None,
                 )?),
-                LocalProject::Workspace(_) => None,
+                LocalProject::Workspace(_) => checkout_writer,
             };
-        // A checkout binds its shell and filesystem tools to the workspace.
-        #[cfg(any(test, feature = "native-execution"))]
-        let workspace_tools = match &workspace {
-            Some(workspace) => Some(
-                workspace
-                    .executor(
-                        &owner.project,
-                        self.config.clock.clone(),
-                        &signed,
-                        &verifier,
-                    )
-                    .await?,
-            ),
-            None => None,
-        };
-        #[cfg(not(any(test, feature = "native-execution")))]
-        let workspace_tools = None;
         let harness = crate::runtime::Bindings {
             scope,
             content: Some(crate::runtime::ContentBindings { reader, writer }),

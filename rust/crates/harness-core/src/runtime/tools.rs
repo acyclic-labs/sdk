@@ -384,18 +384,40 @@ impl ToolContext {
 }
 
 impl ToolContext {
-    /// Observes the original publication under the effective tool scope.
+    /// Observes the original private publication under the effective tool scope.
     pub async fn observe_staged_file_once(
         &self,
         operation_id: OperationId,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.task()
-            .observe_bound_file_once(operation_id, io, self.effective_scope())
+        self.observe_once(self.task().content_binding(None), operation_id, io)
             .await
     }
 
-    /// Publishes once under the effective tool scope and caller IO limits.
+    /// Observes the original publication of a file tool's write, which
+    /// lands where the task's commands write.
+    pub async fn observe_tool_file_once(
+        &self,
+        operation_id: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.observe_once(self.task().tool_content(None), operation_id, io)
+            .await
+    }
+
+    async fn observe_once(
+        &self,
+        binding: Option<&ContentBindings>,
+        operation_id: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(Option<FileRef>, u64)> {
+        self.task()
+            .observe_bound_file_once(binding, operation_id, io, self.effective_scope())
+            .await
+    }
+
+    /// Publishes once on the private volume under the effective tool scope
+    /// and caller IO limits.
     pub async fn stage_file_once(
         &self,
         operation_id: OperationId,
@@ -405,19 +427,70 @@ impl ToolContext {
         display_name: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, u64)> {
-        let task = self.task();
-        task.stage_bound_file(
-            task.content_binding(None),
+        let binding = self.task().content_binding(None);
+        self.stage_once(
+            binding,
             operation_id,
             path,
             bytes,
             media_type,
             display_name,
-            super::content_write::ContentPublication::OperationBound,
-            self.effective_scope(),
             io,
         )
         .await
+    }
+
+    /// Publishes a file tool's new file once where the task's commands
+    /// write, under the effective tool scope and caller IO limits.
+    pub async fn stage_tool_file_once(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        let binding = self.task().tool_content(None);
+        self.stage_once(
+            binding,
+            operation_id,
+            path,
+            bytes,
+            media_type,
+            display_name,
+            io,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one publication carries its binding, identity, bytes, metadata and IO"
+    )]
+    async fn stage_once(
+        &self,
+        binding: Option<&ContentBindings>,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, u64)> {
+        self.task()
+            .stage_bound_file(
+                binding,
+                operation_id,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                super::content_write::ContentPublication::OperationBound,
+                self.effective_scope(),
+                io,
+            )
+            .await
     }
 
     /// Replaces the pinned source under the effective tool scope and caller IO limits.

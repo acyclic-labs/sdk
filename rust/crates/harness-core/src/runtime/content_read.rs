@@ -80,6 +80,22 @@ impl ContentResidencyVerifier for TaskContext {
 }
 
 impl TaskContext {
+    /// Where a tool publishes into `volume`, or, unselected, its new files:
+    /// the harness's own project content when it has a writer, which is
+    /// where the project's commands write too; otherwise the agent's
+    /// private volume.
+    pub(crate) fn tool_content(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
+        match volume {
+            Some(_) => self.content_binding(volume),
+            None => self
+                .harness
+                .content
+                .as_ref()
+                .filter(|binding| binding.writer.is_some())
+                .or(Some(&self.output_content)),
+        }
+    }
+
     pub(crate) fn content_binding(&self, volume: Option<&VolumeRef>) -> Option<&ContentBindings> {
         let writes = |binding: &&ContentBindings| {
             binding
@@ -334,18 +350,19 @@ impl TaskContext {
         operation_id: OperationId,
         io: Option<&ContentIo>,
     ) -> Result<(Option<FileRef>, u64)> {
-        self.observe_bound_file_once(operation_id, io, &self.scope)
+        self.observe_bound_file_once(self.content_binding(None), operation_id, io, &self.scope)
             .await
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
     pub(super) async fn observe_bound_file_once(
         &self,
+        binding: Option<&ContentBindings>,
         operation_id: OperationId,
         io: Option<&ContentIo>,
         scope: &RuntimeScope,
     ) -> Result<(Option<FileRef>, u64)> {
-        let writer = super::content_write::content_writer(self.content_binding(None), io)?;
+        let writer = super::content_write::content_writer(binding, io)?;
         let (file, hold) = writer
             .observe_staged_once(
                 operation_id,
