@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, posix, relative, resolve, isAbsolute } from "node:path";
-import { packageClosure } from "./package-closure.mjs";
+import { join, posix } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import fc from "fast-check";
@@ -32,6 +31,10 @@ test("package closure follows declared workspaces and ignores leftover directori
   mkdirSync(`${root}/typescript/packages/z`, { recursive: true });
   writeFileSync(`${root}/typescript/packages/z/package.json`, "invalid undeclared manifest");
   assert.deepEqual([...packageClosure(root, "a")], ["b", "a"]);
+  assert.throws(() => packageClosure(root, "z"), { code: "ENOENT" });
+  writeFileSync(`${root}/typescript/packages/a/tsconfig.json`, JSON.stringify({ references: [{ path: "../missing" }] }));
+  assert.throws(() => packageClosure(root, "a"), { code: "ENOENT" });
+  writeFileSync(`${root}/typescript/packages/a/tsconfig.json`, JSON.stringify({}));
   writeFileSync(`${root}/typescript/packages/b/package.json`, "invalid declared manifest");
   assert.throws(() => packageClosure(root, "a"), SyntaxError);
 });
@@ -169,32 +172,4 @@ test("native source roots cover the generators' transitive script imports", () =
       assert.throws(() => check(sourceRoots, generators, changed), /uncovered computed import/);
     }
   `], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-});
-
-
-test("package discovery follows live manifests and preserves missing dependency refusals", t => {
-  const root = mkdtempSync(join(tmpdir(), "sdk-package-discovery-"));
-  t.after(() => {
-    const location = relative(resolve(tmpdir()), resolve(root));
-    assert.ok(location && !location.startsWith("..") && !isAbsolute(location));
-    rmSync(root, { recursive: true });
-  });
-  const packages = join(root, "typescript/packages");
-  for (const name of ["library", "app", "retired"]) mkdirSync(join(packages, name), { recursive: true });
-  for (const name of ["library", "app"]) {
-    writeFileSync(join(packages, name, "package.json"), JSON.stringify({
-      name: `@acyclic-labs/${name}`,
-      dependencies: name === "app" ? { "@acyclic-labs/library": "0.2.0" } : {},
-    }));
-    writeFileSync(join(packages, name, "tsconfig.json"), JSON.stringify({ references: [] }));
-  }
-  // Ordinary generated output is not a package, including a retired directory.
-  writeFileSync(join(packages, "retired", "output.js"), "export {};\n");
-  assert.deepEqual([...packageClosure(root, "app")], ["library", "app"]);
-  assert.throws(() => packageClosure(root, "retired"), { code: "ENOENT" });
-  writeFileSync(join(packages, "app", "tsconfig.json"), JSON.stringify({ references: [{ path: "../missing" }] }));
-  assert.throws(() => packageClosure(root, "app"), { code: "ENOENT" });
-  writeFileSync(join(packages, "app", "tsconfig.json"), JSON.stringify({ references: [] }));
-  writeFileSync(join(packages, "retired", "package.json"), "{broken");
-  assert.throws(() => packageClosure(root, "app"), SyntaxError);
 });
