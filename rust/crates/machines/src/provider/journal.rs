@@ -82,10 +82,8 @@ impl Journal {
     }
 
     pub(crate) async fn machine(&self) -> Result<MachineObservation, ProviderError> {
-        decode(
-            self.head(self.path(format_args!("machines/{}", self.machine))?)
-                .await?,
-        )
+        let path = self.path(format_args!("machines/{}", self.machine))?;
+        decode(self.head(path).await?)
     }
 
     pub(crate) async fn enroll(

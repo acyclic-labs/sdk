@@ -217,6 +217,106 @@ async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
 }
 
 #[tokio::test]
+async fn recovered_terminal_publication_reopens_only_its_original_admission()
+-> Result<(), Box<dyn std::error::Error>> {
+    for destroy in [false, true] {
+        let machine = MachineId::new();
+        let directory = tempfile::tempdir()?;
+        let streams = Arc::new(
+            acyclic_stream::LocalStream::open(
+                directory.path(),
+                acyclic_stream::LocalStreamLimits::default(),
+            )
+            .await?,
+        );
+        let root = StreamPath::new(format!("machine-tests/{machine}"))?;
+        let path = StreamPath::new(format!("{root}/machines/{machine}"))?;
+        let backend = LocalBackend {
+            machine: LocalMachine::new(machine, options())?,
+            generation: std::sync::Mutex::new(Generation::new()?),
+        };
+        let local =
+            AdmittedMachine::open(backend, enrollment(machine), streams.clone(), root).await?;
+        let key = IdempotencyKey::new();
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        let mut submitted = Box::pin(schedule.scope(async {
+            if destroy {
+                local.destroy_machine(machine, key).await
+            } else {
+                local.suspend(machine, key).await
+            }
+        }));
+        let mut admission = None;
+        let terminal = loop {
+            let boundary = tokio::select! {
+                result = &mut submitted => panic!("terminal publication completed before its original physical commit was released: {result:?}"),
+                boundary = boundaries.recv() => boundary.unwrap(),
+            };
+            if boundary.name == "native:submitted" && boundary.detail.starts_with("commit ") {
+                match &admission {
+                    None => admission = Some(boundary.detail.clone()),
+                    Some(original) if original != &boundary.detail => break boundary,
+                    Some(_) => {}
+                }
+            }
+            boundary.release();
+        };
+        // Lose the original observer after the real terminal commit was
+        // submitted. The original native owner still finishes that publication.
+        drop(submitted);
+        terminal.release();
+        let drained = schedule.drained();
+        tokio::pin!(drained);
+        loop {
+            tokio::select! {
+                biased;
+                () = &mut drained => break,
+                boundary = boundaries.recv() => boundary.unwrap().release(),
+            }
+        }
+        let settled = if destroy {
+            MachineState::Destroyed
+        } else {
+            MachineState::Suspended
+        };
+        let outcome = if destroy {
+            MutationOutcome::MachineDestroyed(machine)
+        } else {
+            MutationOutcome::Suspended(machine)
+        };
+        let head = streams.head(path.clone()).await?;
+        assert_eq!(head.tail, 3);
+        assert_ne!(local.inspect_machine(machine).await?.state, settled);
+        assert_eq!(local.recover(key).await?, outcome);
+        assert_eq!(
+            local.inspect_machine(machine).await?.state,
+            settled,
+            "retained terminal publication must reconcile resident admission"
+        );
+        assert_eq!(streams.head(path.clone()).await?, head);
+        let later = IdempotencyKey::new();
+        if destroy {
+            assert!(matches!(
+                local.wake(machine, later).await,
+                Err(ProviderError::Conflict(_))
+            ));
+        } else {
+            assert_eq!(
+                local.wake(machine, later).await?,
+                MutationOutcome::Woken(machine)
+            );
+            // Recovering an older key must not replace a later published state.
+            assert_eq!(local.recover(key).await?, outcome);
+            assert_eq!(
+                local.inspect_machine(machine).await?.state,
+                MachineState::Running
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_terminal_publication_preserves_pending_admission()
 -> Result<(), Box<dyn std::error::Error>> {
     let machine = MachineId::new();
