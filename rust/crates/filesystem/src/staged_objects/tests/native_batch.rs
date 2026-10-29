@@ -50,7 +50,16 @@ impl<S: AsyncObjectStore> AsyncObjectStore for Observed<S> {
         scope: crate::PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
-        self.0.flush_before_publish(scope, context).await
+        let original = context.original;
+        let before = original.map_or(0, |work| work.receipt().allocation_operations);
+        let result = self.0.flush_before_publish(scope, context).await;
+        if let Some(original) = original {
+            self.2.fetch_add(
+                original.receipt().allocation_operations - before,
+                Ordering::Relaxed,
+            );
+        }
+        result
     }
     async fn read(
         &self,
