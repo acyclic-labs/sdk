@@ -69,11 +69,7 @@ struct Encoded {
     awaiting: Vec<u8>,
 }
 
-/// Artifact state as checkpoint bytes, refused above [`MAX_CHECKPOINT_BYTES`].
-pub(crate) fn checkpoint(state: &AgentState) -> Result<Checkpoint, Error> {
-    from_encoded(encode(state)?)
-}
-
+/// Retains the exact encoding checked against the selected checkpoint limit.
 pub(super) fn from_encoded(bytes: Vec<u8>) -> Result<Checkpoint, Error> {
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(Error::Record(

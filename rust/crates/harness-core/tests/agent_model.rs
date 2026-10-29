@@ -586,7 +586,7 @@ async fn a_state_too_large_to_checkpoint_fails_the_agent_instead_of_wedging_it()
     );
     assert_eq!(stepped.state.turn, None);
     assert_eq!(stepped.state.conversation_tail, 1);
-    assert_eq!(stepped.state.status_tail, 1);
+    assert_eq!(stepped.state.status_tail, 2);
     assert!(stepped.state.reported);
     assert!(stepped.outs.iter().any(|out| matches!(
         out,

@@ -61,7 +61,7 @@ async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed
                 Out::Conversation(b"first".to_vec()),
                 Out::Conversation(b"second".to_vec()),
             ],
-            wait: Wait::Input,
+            wait: Wait::Approval(intent("decision")),
             drops: None,
         }]);
         let host = AgentHost::new(
