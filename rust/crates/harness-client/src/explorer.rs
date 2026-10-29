@@ -52,9 +52,7 @@ mod tests {
     use super::*;
     use crate::reader::{ListedChild, Listing, Op, Outcome};
     use acyclic_harness_core::agent::AgentId;
-    use acyclic_stream::{
-        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProvider,
-    };
+    use acyclic_stream::{AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream};
 
     /// Directory data comes from the actual provider. Only the first and
     /// late pages remain cached, as after scrolling through a large tree.

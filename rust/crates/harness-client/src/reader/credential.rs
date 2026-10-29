@@ -293,7 +293,9 @@ mod tests {
     use acyclic_auth::credential::{
         CredentialCache, CredentialRevision, CredentialSnapshot, CredentialValidity,
     };
-    use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProvider};
+    use acyclic_stream::{
+        AppendRequest, IdempotencyKey, MemoryStream, StreamPath, StreamProviderExt as _,
+    };
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},

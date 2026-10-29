@@ -506,6 +506,7 @@ impl Reader {
     ) {
         self.credentials = provider
             .credential_provider()
+            .cloned()
             .map(|provider| Credentials::new(provider, now, self.policy.timeout_ms));
         self.reset_source();
     }
