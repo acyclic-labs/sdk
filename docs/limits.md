@@ -1768,3 +1768,10 @@ The same job regenerates canonical descriptors and manifest from its source befo
 
 
 Qualification330 attempted input `c202e234266d8e6a4d6b15ae7ccdf3cebf603345`, fingerprint `aa6416e478ac6e31611152bc75bf69b9663a9f67`, content `c575d77a5daafd24618536437ab830ee4a4fddffc6593534d19e13df80fad682`. The dispatch wrapper ended2026-10-29T13:11:53Z with rc224 before returning an accepted job identity or any compiler/test output. WASM generation, TypeScript compilation, the complete Machines Node gRPC file and Windows cross-compilation therefore remain UNQUALIFIED, with remote completion unknown. This is not a source failure, test result or pass. No local fallback or additional concurrent producer.
+
+
+| ConPTY lifetime input/output1MiB and signed-int totals | `scripts/graphcoder-conpty.cs::Run` | 1 aggregate byte refusal | DELETE both accumulated totals and their errors. The existing input/output pumps already forward4096-byte chunks under OS pipe backpressure; no lifetime counter or whole-session buffer remains. Native suspended-child admission, original Job custody, exact EOF/exit/drain, write failures and parent-selected deadline remain. Windows compilation/runtime is pending; shared-terminal-launcher consolidation is separately OPEN. Boundary qualification must verify >1MiB each direction with exact bytes/digest and original containment/cancellation negatives. |
+
+
+| MAX_OUTPUT_READ_BYTES | `typescript/packages/machines/src/transport.ts:7` | 2 output/file chunk and console page size | KEEP65536-byte physical chunks/pages. The shared Machines transport normalizes one console page with canonical pageSize; callers continue by returned offset. Exec output accepts further frames without a cumulative total. Original malformed frame, offset overflow, cancellation and explicit output-capacity controls remain. |
+| MAX_OFFSET | `typescript/packages/machines/src/transport.ts:8` | 4 exact wire representation | KEEPuint64 offset encoding guard. Rejecting arithmetic outside the protocol representation cannot be replaced by truncation or lossy Number conversion. It adds no lifetime byte/command count policy. |
