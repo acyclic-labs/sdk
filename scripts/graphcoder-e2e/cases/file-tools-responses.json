@@ -74,9 +74,32 @@
   ],
   "assert": {
     "requests": 4,
-    "files": {
-      "result.txt": "after edit\n"
-    }
+    "absent_files": [
+      "result.txt"
+    ],
+    "tool_results": [
+      {
+        "file": {
+          "descriptor": {
+            "byte_length": 12
+          },
+          "volume": {
+            "class": "agent_private"
+          }
+        }
+      },
+      {
+        "file": {
+          "descriptor": {
+            "byte_length": 11
+          },
+          "volume": {
+            "class": "agent_private"
+          }
+        }
+      },
+      "after edit\n"
+    ]
   },
   "adapter": "responses"
 }

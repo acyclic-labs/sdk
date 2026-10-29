@@ -56,6 +56,7 @@ export function requests(test, records) {
   }
   // Auxiliary search/fetch requests have independent, non-conversation schemas.
   const outputs = toolResults(generations).map(value => { try { return JSON.parse(value); } catch { return value; } });
+  for (const expected of test.assert.tool_results ?? []) assert.ok(outputs.some(value => subset(value, expected)), `step=assert exact tool result; actual tool result missing exact value ${JSON.stringify(expected)}; recovery=node scripts/graphcoder-e2e/run.mjs GRAPHCODER MOCK_MODEL ${test.id}`);
   for (const text of test.assert.tool_contains ?? []) assert.ok(outputs.some(value => JSON.stringify(value).includes(text)), `actual tool result missing ${text}`);
   for (const value of outputs) {
     const error = value && typeof value === "object" ? value.error
