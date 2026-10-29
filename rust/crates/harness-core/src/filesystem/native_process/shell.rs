@@ -78,8 +78,16 @@ pub fn prepare<T>(
         mount.check(Action::List, &path, now)?;
     }
     invocation.cwd = cwd;
-    invocation.environment = mounts.environment()?;
-    invocation.inherit_environment = true;
+    invocation.inherit_environment = false;
+    // Mount discovery adds hints to the caller's prepared environment; it
+    // cannot authorize ambient inheritance or discard explicit selections.
+    for (name, value) in mounts.environment()? {
+        if invocation.environment.insert(name, value).is_some() {
+            return Err(Error::Invalid(
+                "volume discovery hint collides with the explicit process environment".into(),
+            ));
+        }
+    }
     invocation.timeout_ms = input.timeout_ms()?;
     let (command, standard_input) = match crate::tools::shell::PLATFORM.stdin_bootstrap {
         Some(bootstrap) => (bootstrap.to_owned(), Some(input.command.into_bytes())),
