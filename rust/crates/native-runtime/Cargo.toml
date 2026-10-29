@@ -32,7 +32,7 @@ zeroize.workspace = true
 serde.workspace = true
 # The owned-task API (`spawn`, `spawn_blocking`) is part of every build.
 tokio = { version = "1.48.0", default-features = false, features = ["rt", "sync"] }
-tokio-util = { workspace = true, features = ["codec"] }
+tokio-util = { workspace = true, features = ["codec", "rt"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-keyutils = { version = "0.2.5", features = ["std"] }
@@ -99,4 +99,9 @@ required-features = ["model-checking"]
 [[test]]
 name = "process_signal_loom"
 path = "tests/process_signal_loom.rs"
+required-features = ["model-checking"]
+
+[[test]]
+name = "coordination_health_loom"
+path = "tests/coordination_health_loom.rs"
 required-features = ["model-checking"]

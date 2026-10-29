@@ -460,7 +460,7 @@ enum Handle<T> {
 }
 
 impl<T> TaskHandle<T> {
-    pub(super) fn native(task: tokio::task::JoinHandle<T>) -> Self {
+    pub(crate) fn native(task: tokio::task::JoinHandle<T>) -> Self {
         Self(Handle::Tokio(task))
     }
 

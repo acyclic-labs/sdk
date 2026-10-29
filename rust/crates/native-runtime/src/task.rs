@@ -6,7 +6,11 @@
 //! is installed; every other build submits directly to Tokio. Both report a
 //! cancelled task as `ErrorKind::Interrupted`.
 #[cfg(feature = "test-support")]
+pub(crate) use crate::testing::spawn_on;
+#[cfg(feature = "test-support")]
 pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
+#[cfg(not(feature = "test-support"))]
+pub(crate) use native::spawn_on;
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
@@ -227,6 +231,14 @@ mod native {
         F::Output: Send + 'static,
     {
         TaskHandle(tokio::spawn(future))
+    }
+
+    pub(crate) fn spawn_on<F>(runtime: &tokio::runtime::Handle, future: F) -> TaskHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        TaskHandle(runtime.spawn(future))
     }
 
     /// Runs a blocking closure on Tokio's blocking pool, retaining ownership

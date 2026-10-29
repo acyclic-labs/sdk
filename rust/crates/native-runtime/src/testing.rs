@@ -345,18 +345,37 @@ where
     let Some(context) = Context::current() else {
         return TaskHandle::native(tokio::spawn(future));
     };
+    spawn_owned(&context, scoped_task(&context, future))
+}
+
+fn scoped_task<F>(context: &Context, future: F) -> impl Future<Output = F::Output> + Send + 'static
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
     let active = context.accept("task");
     let owned = active.0.clone();
-    spawn_owned(
-        &context,
-        CURRENT.scope(Some(owned.clone()), async move {
-            let _active = active;
-            owned.pause("task:submitted").await;
-            let result = future.await;
-            owned.pause("task:completed").await;
-            result
-        }),
-    )
+    CURRENT.scope(Some(owned.clone()), async move {
+        let _active = active;
+        owned.pause("task:submitted").await;
+        let result = future.await;
+        owned.pause("task:completed").await;
+        result
+    })
+}
+
+// Physical shard placement must survive instrumentation. Retain the same
+// original task gates and native-work context, without moving its polls onto
+// the simulation driver's coordination thread.
+pub(crate) fn spawn_on<F>(runtime: &tokio::runtime::Handle, future: F) -> TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    match Context::current() {
+        Some(context) => TaskHandle::native(runtime.spawn(scoped_task(&context, future))),
+        None => TaskHandle::native(runtime.spawn(future)),
+    }
 }
 
 pub(crate) fn spawn_in_context<F>(context: Option<Context>, future: F) -> TaskHandle<F::Output>
