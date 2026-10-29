@@ -20,8 +20,11 @@ class McpClient:
         self.pending = b""
         self.responses = {}
         self.ready = selectors.DefaultSelector()
-        self.ready.register(process.stdout, selectors.EVENT_READ)
         try:
+            try:
+                self.ready.register(process.stdout, selectors.EVENT_READ)
+            except (OSError, ValueError) as error:
+                raise McpFailure("observe MCP output", str(error), recovery) from error
             self.send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
                 "protocolVersion": self.protocol, "capabilities": {},
                 "clientInfo": {"name": "native-session-conformance", "version": "1"}}})
@@ -37,7 +40,7 @@ class McpClient:
         try:
             self.process.stdin.write((json.dumps(message) + "\n").encode())
             self.process.stdin.flush()
-        except OSError as error:
+        except (OSError, ValueError) as error:
             raise McpFailure("write MCP request", str(error), self.recovery) from error
 
     def submit(self, name, reference, prompt=None):
@@ -56,7 +59,10 @@ class McpClient:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not self.ready.select(remaining):
                     raise McpFailure("read MCP response", "response deadline expired", self.recovery)
-                chunk = os.read(self.process.stdout.fileno(), 65536)
+                try:
+                    chunk = os.read(self.process.stdout.fileno(), 65536)
+                except OSError as error:
+                    raise McpFailure("read MCP output", str(error), self.recovery) from error
                 if not chunk:
                     raise McpFailure("read MCP response", "producer closed before response", self.recovery)
                 self.pending += chunk
@@ -66,6 +72,8 @@ class McpClient:
                     message = json.loads(line)
                 except ValueError as error:
                     raise McpFailure("decode MCP response", str(error), self.recovery) from error
+                if not isinstance(message, dict):
+                    raise McpFailure("decode MCP response", "expected an object", self.recovery)
                 if "id" in message:
                     self.responses[message["id"]] = message
         message = self.responses.pop(identifier)

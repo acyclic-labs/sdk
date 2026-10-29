@@ -75,10 +75,7 @@ fn install_claude(args: &[String], executable: &Path, install: bool) -> Result<(
     let path = option(args, "--settings").map_or_else(
         || {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                env::var_os("CLAUDE_CONFIG_DIR")
-                    .map(PathBuf::from)
-                    .unwrap_or(home()?.join(".claude"))
-                    .join("settings.json"),
+                host_directory("CLAUDE_CONFIG_DIR", ".claude")?.join("settings.json"),
             )
         },
         Ok,
@@ -103,7 +100,7 @@ fn install_pi(args: &[String], package: &Path, executable: &Path, install: bool)
     let path = option(args, "--settings").map_or_else(
         || {
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(
-                home()?.join(".pi/agent/extensions/acyclic.ts"),
+                host_directory("PI_CODING_AGENT_DIR", ".pi/agent")?.join("extensions/acyclic.ts"),
             )
         },
         Ok,
@@ -139,6 +136,10 @@ fn home() -> Result<PathBuf> {
     env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .map(PathBuf::from)
         .ok_or_else(|| "host home is unset; provide --settings PATH".into())
+}
+
+fn host_directory(variable: &str, default: &str) -> Result<PathBuf> {
+    env::var_os(variable).map_or_else(|| Ok(home()?.join(default)), |path| Ok(path.into()))
 }
 
 fn check_codex() -> Result<()> {
