@@ -104,6 +104,37 @@ owns credentials, admission, flow control, calls and follows. There is no second
 agent protocol or background writer. Stream follows are available; filesystem
 resource follows require a platform resource provider.
 
+For standard gRPC bodies, import `serveGrpcSession` from
+`@acyclic-labs/harness/hosting` and pass the event host and original `Request`.
+It returns HTTP status, headers, a pull-based response body, terminal `trailers`
+and `close()`. The deployment runtime must publish those trailers through its
+public HTTP/2 primitive; a WHATWG `Response` alone cannot express them. The body
+is duplex: receiving the Welcome or an ActorCall reply does not wait for upload
+EOF. Disconnect and request cancellation close both directions.
+
+`EventAgentHost.grpcSession(next, signal)` and `WasmAgentServer.grpcSession(next)`
+use the same session engine with uncompressed five-byte gRPC envelopes. One
+shared decoder handles split headers, split bodies and coalesced frames. The
+session accepts `SessionSubscription.kind.actor_call` (field 14): canonical
+`acyclic.actors.v1.InvokeActorRequest` protobuf bytes. The response is canonical
+`InvokeActorResponse`, carried in `SessionData.item.actor_call` (field 14).
+Fragments have `after.next` starting at one and an immutable eight-byte
+little-endian total in `after.opaque`. Calls are never automatically replayed.
+
+The guest Session controls run against the shipping WASM host:
+
+```sh
+bun install --frozen-lockfile
+bun scripts/generate-proto.mjs
+bun scripts/build-wasm.mjs harness
+bun test typescript/packages/harness/test/host-liveness.test.ts typescript/packages/harness/test/host-session.test.ts
+```
+
+They exercise duplex replies and typed producer, owner and request loss. A
+cancelled opener cannot release the admission fence ahead of its predecessor.
+Framing adds no RPC or durability barrier: a complete contiguous message decodes
+from its input chunk; only an incomplete message is buffered. Output encodes
+directly into its final envelope, without an intermediate payload copy.
 Provider RPC cursors carry length-delimited protobuf session frames. The shared
 Rust decoder preserves messages when a byte transport splits or coalesces chunks;
 a partial frame at EOF is `InvalidResponse`, and an ended live follow is

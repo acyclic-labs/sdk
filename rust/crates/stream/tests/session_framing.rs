@@ -5,7 +5,7 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt as _;
 use prost::Message as _;
-use wire_codec::session::FrameDecoder;
+use wire_codec::session::{FrameDecoder, encode_grpc_frame};
 
 async fn frames() -> Result<Vec<wire::SessionFrame>, StreamError> {
     let provider = MemoryStream::default();
@@ -96,6 +96,49 @@ async fn producer_loss_and_malformed_lengths_never_accept_a_partial_frame()
         .map_err(|_| StreamError::InvalidArgument)?;
     assert_eq!(
         FrameDecoder::default().read(&mut excessive.as_slice()),
+        Err(StreamError::LimitExceeded)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn grpc_provider_frames_survive_transport_chunks_and_reject_lost_producers()
+-> Result<(), StreamError> {
+    let expected = frames().await?;
+    let mut bytes = Vec::new();
+    for frame in &expected {
+        bytes.extend(encode_grpc_frame(frame)?);
+    }
+    for size in [1, 2, 4, 5, 4096, bytes.len()] {
+        let mut decoder = FrameDecoder::grpc();
+        let mut observed = Vec::new();
+        for chunk in bytes.chunks(size) {
+            let mut remaining = chunk;
+            while let Some(frame) = decoder.read(&mut remaining)? {
+                observed.push(frame);
+            }
+            assert!(remaining.is_empty());
+        }
+        decoder.finish()?;
+        assert_eq!(observed, expected);
+    }
+    let first = encode_grpc_frame(&expected[0])?;
+    for end in [1, 4, 5, 4096, first.len() - 1] {
+        let mut decoder = FrameDecoder::grpc();
+        assert_eq!(decoder.read(&mut &first[..end])?, None);
+        assert_eq!(decoder.finish(), Err(StreamError::InvalidResponse));
+    }
+    for (flag, error) in [
+        (1, StreamError::Unsupported),
+        (2, StreamError::InvalidResponse),
+        (128, StreamError::InvalidResponse),
+    ] {
+        assert_eq!(FrameDecoder::grpc().read(&mut &[flag][..]), Err(error));
+    }
+    let mut excessive = vec![0];
+    excessive.extend_from_slice(&((acyclic_stream::MAX_COMMAND_BYTES + 1) as u32).to_be_bytes());
+    assert_eq!(
+        FrameDecoder::grpc().read(&mut excessive.as_slice()),
         Err(StreamError::LimitExceeded)
     );
     Ok(())

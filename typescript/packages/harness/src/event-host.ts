@@ -2,6 +2,7 @@ import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
   type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority, type WasmFileRefWire,
   type WasmHostingAdmission, type WasmSessionAuthority, type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+export { serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
 import { decodeMetadata, type EventStorage } from "./event-storage.js";
 
@@ -118,18 +119,20 @@ export class EventAgentHost {
     if (!identity) await this.retain(candidate, signal);
     return this.resume(identity ?? candidate, signal);
   }
-  private owned<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    return this.host.withLifetime(action);
+  private owned<T>(action: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    return this.host.withLifetime(action, signal);
   }
 
-  private command<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private command<T>(action: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
     const previous = this.commands;
     const next = this.owned(async signal => {
       await previous;
       signal.throwIfAborted();
       return action(signal);
-    });
-    this.commands = next.catch(() => undefined);
+    }, signal);
+    // A cancelled queued caller cannot let its successor overtake the command
+    // it was waiting behind. Errors retain that predecessor's ordering fence.
+    this.commands = next.catch(() => previous);
     return next;
   }
 
@@ -214,14 +217,23 @@ export class EventAgentHost {
    * Input returns complete protobuf frames; null is producer EOF. The binding
    * must cancel its pending read when signal aborts and close on disconnect. */
   async session(next: (signal: AbortSignal) => Promise<Uint8Array | null>): Promise<HostedSession> {
+    return this.openSession(next, false);
+  }
+
+  /** Standard gRPC request/response body, with arbitrary transport chunking. */
+  async grpcSession(next: (signal: AbortSignal) => Promise<Uint8Array | null>, signal?: AbortSignal): Promise<HostedSession> {
+    return this.openSession(next, true, signal);
+  }
+
+  private async openSession(next: (signal: AbortSignal) => Promise<Uint8Array | null>, grpc: boolean, signal?: AbortSignal): Promise<HostedSession> {
     await this.command(async signal => {
       const identity = this.identity();
       if (identity?.stage !== "ready") {
         throw new Error("STEP session-open failed; recovery: complete the original actor placement before opening a session");
       }
       await this.resume(identity, signal);
-    });
-    return this.host.session(next);
+    }, signal);
+    return grpc ? this.host.grpcSession(next) : this.host.session(next);
   }
 
   private path(): string {

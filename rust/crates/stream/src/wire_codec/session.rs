@@ -6,7 +6,7 @@ use prost::Message as _;
 mod resource;
 pub use resource::{stream_path, stream_resource, validate_resource};
 mod framing;
-pub use framing::FrameDecoder;
+pub use framing::{FrameDecoder, encode_grpc_frame};
 
 /// Finite canonical Actors response plus its enclosing product result. The
 /// same bound applies to every finite one-shot reply, including a children page.

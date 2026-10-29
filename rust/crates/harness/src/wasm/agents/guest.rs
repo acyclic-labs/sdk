@@ -130,13 +130,16 @@ impl AgentGuest {
 }
 
 /// An `abort` listener on a host's signal, removed when dropped.
-struct Listening {
+pub(super) struct Listening {
     signal: JsValue,
     listener: Closure<dyn FnMut()>,
 }
 
 impl Listening {
-    fn abort(signal: &JsValue, mut abort: impl FnMut() + 'static) -> Result<Option<Self>, JsValue> {
+    pub(super) fn abort(
+        signal: &JsValue,
+        mut abort: impl FnMut() + 'static,
+    ) -> Result<Option<Self>, JsValue> {
         if signal.is_undefined() {
             return Ok(None);
         }

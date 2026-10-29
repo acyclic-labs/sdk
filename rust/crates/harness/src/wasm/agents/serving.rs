@@ -335,22 +335,17 @@ impl WasmAgentServer {
         &self,
         next: Function,
     ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
-        let server = self.served()?;
-        acyclic_stream::serve_wasm_session(
-            self.bound.agents().provider().clone(),
-            self.authority.clone(),
-            None,
-            server,
-            "harness".into(),
-            acyclic_stream::session::Limits::default(),
-            next,
-            Some({
-                let mut lifetime = self.lifetime()?;
-                Box::pin(async move {
-                    let _ = lifetime.changed().await;
-                })
-            }),
-        )
+        self.session_body(next, false)
+    }
+
+    /// Ordinary deployment HTTP/2 body, using standard gRPC envelopes. The
+    /// platform publishes the returned status as terminal HTTP/2 trailers.
+    #[wasm_bindgen(js_name = grpcSession)]
+    pub fn grpc_session(
+        &self,
+        next: Function,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        self.session_body(next, true)
     }
 
     /// Stops this platform owner's sessions and commands permanently.
@@ -378,13 +373,17 @@ impl WasmAgentServer {
     pub async fn with_lifetime(
         &self,
         operation: Function,
+        #[wasm_bindgen(unchecked_param_type = "AbortSignal | undefined")] signal: JsValue,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.owned(async {
+        let (operation, handle) = futures::future::abortable(self.owned(async {
             let cancel = host::Cancel::new().map_err(|_| stream_error(StreamError::Unavailable))?;
             let result = operation.call1(&JsValue::UNDEFINED, &cancel.signal)?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result)).await
-        })
-        .await
+        }));
+        let _listening = guest::Listening::abort(&signal, move || handle.abort())?;
+        operation
+            .await
+            .map_err(|_| stream_error(StreamError::Unavailable))?
     }
 
     pub async fn read(
@@ -437,6 +436,34 @@ fn boundary_error(error: impl std::fmt::Display) -> JsValue {
 }
 
 impl WasmAgentServer {
+    fn session_body(
+        &self,
+        next: Function,
+        grpc: bool,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        let server = self.served()?;
+        let serve = if grpc {
+            acyclic_stream::serve_wasm_grpc_session
+        } else {
+            acyclic_stream::serve_wasm_session
+        };
+        serve(
+            self.bound.agents().provider().clone(),
+            self.authority.clone(),
+            None,
+            server,
+            "harness".into(),
+            acyclic_stream::session::Limits::default(),
+            next,
+            Some({
+                let mut lifetime = self.lifetime()?;
+                Box::pin(async move {
+                    let _ = lifetime.changed().await;
+                })
+            }),
+        )
+    }
+
     async fn owned<T>(
         &self,
         operation: impl std::future::Future<Output = std::result::Result<T, JsValue>>,

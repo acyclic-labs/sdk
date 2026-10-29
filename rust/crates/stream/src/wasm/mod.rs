@@ -38,5 +38,5 @@ mod socket;
 
 mod session_io;
 mod session_server;
-pub use session_server::serve_wasm_session;
+pub use session_server::{serve_wasm_grpc_session, serve_wasm_session};
 include!("wasm_session.rs");

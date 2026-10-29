@@ -113,7 +113,9 @@ mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::js_error as wasm_error;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::{WasmFollow, WasmSessionAuthority, WasmStream, serve_wasm_session};
+pub use wasm::{
+    WasmFollow, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session, serve_wasm_session,
+};
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 
