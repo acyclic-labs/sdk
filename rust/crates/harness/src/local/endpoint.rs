@@ -5,7 +5,9 @@
 //! [`super::agent_conversation::Conversation`].
 use super::{LocalHarness, storage};
 use crate::{Error, Result, agent::AgentPath};
-use acyclic_harness_client::{AgentCommand, AgentControls, AgentReply, PreparedCommand};
+use acyclic_harness_client::{
+    AgentCommand, AgentControls, AgentExchangeError, AgentReply, PreparedCommand,
+};
 use acyclic_stream::session::Client;
 use std::sync::Arc;
 
@@ -35,6 +37,17 @@ impl Connection {
     /// The session's failure or the host's refusal.
     pub async fn execute(&self, command: &AgentCommand) -> Result<AgentReply> {
         execute(&self.controls, command).await
+    }
+
+    /// Executes `command` once, keeping its exchange failure typed.
+    ///
+    /// # Errors
+    /// Only when `command` cannot be prepared, before anything is sent.
+    pub(super) async fn exchange(
+        &self,
+        command: &AgentCommand,
+    ) -> Result<std::result::Result<AgentReply, AgentExchangeError>> {
+        exchanged(&self.controls, command).await
     }
 
     /// The root this connection drives.
@@ -117,10 +130,19 @@ impl Connection {
 }
 
 async fn execute(controls: &AgentControls, command: &AgentCommand) -> Result<AgentReply> {
+    exchanged(controls, command).await?.map_err(exchange)
+}
+
+/// `command`'s exchange with its failure still typed: a decoded refusal, an
+/// unknown commit outcome, or a session failure. Only preparing it fails here.
+async fn exchanged(
+    controls: &AgentControls,
+    command: &AgentCommand,
+) -> Result<std::result::Result<AgentReply, AgentExchangeError>> {
     let prepared = controls
         .prepare(PreparedCommand::new(command).map_err(exchange)?)
         .map_err(exchange)?;
-    controls.execute(&prepared).await.map_err(exchange)
+    Ok(controls.execute(&prepared).await)
 }
 
 impl LocalHarness {

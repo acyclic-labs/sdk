@@ -22,7 +22,9 @@ use crate::{
     interaction::{ApprovalBinding, Interaction},
     model::ModelContent,
 };
-use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply, ReadTarget};
+use acyclic_harness_client::{
+    AgentCommand, AgentControlFailure, AgentExchangeError, AgentPageRequest, AgentReply, ReadTarget,
+};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -41,6 +43,38 @@ fn intent(id: &str) -> Result<IntentId> {
 
 fn unexpected() -> Error {
     Error::Conflict("the endpoint answered another command".into())
+}
+
+/// Where a sent message stands. Only a refusal is settled: an unknown
+/// outcome may have committed, so it is resent exactly, never reported.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Sent {
+    /// Committed at this inbox sequence.
+    Accepted(u64),
+    /// Definitively not committed, for this reason.
+    Refused(String),
+    /// Neither known to have committed nor refused: resending the same id
+    /// and prompt answers it, and never commits it twice.
+    Unknown,
+}
+
+/// A prompt's exchange as [`Sent`]: only the host's decoded refusal, or a
+/// closed conversation, is a refusal; any other failure after the request
+/// left may have committed it.
+fn sent(exchange: std::result::Result<AgentReply, AgentExchangeError>) -> Result<Sent> {
+    match exchange {
+        Ok(AgentReply::Delivered {
+            delivery: Delivered::Committed { inbox },
+        }) => Ok(Sent::Accepted(inbox)),
+        Ok(AgentReply::Delivered {
+            delivery: Delivered::Closed,
+        }) => Ok(Sent::Refused("conversation is archived".into())),
+        Ok(_) => Err(unexpected()),
+        Err(AgentExchangeError::Control(refused @ AgentControlFailure::Refused { .. })) => {
+            Ok(Sent::Refused(refused.to_string()))
+        }
+        Err(_) => Ok(Sent::Unknown),
+    }
 }
 
 /// One agent tree's root conversation, driven by its connection's principal.
@@ -134,20 +168,36 @@ impl Conversation {
         .await
     }
 
-    /// Send `prompt` as message `id`; returns its inbox sequence. The same id
-    /// and prompt replay exactly.
+    /// Send `prompt` as message `id`: accepted at its inbox sequence,
+    /// refused, or of unknown outcome. The same id and prompt replay exactly.
     ///
     /// # Errors
-    /// Session, host or decoding failures.
-    pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
+    /// When the prompt cannot be prepared, or the endpoint answers another
+    /// command.
+    pub async fn deliver(&self, id: &str, prompt: &str) -> Result<Sent> {
         let command = AgentCommand::Prompt {
             agent: self.agent().clone(),
             id: intent(id)?,
             body: ModelContent::Text(prompt.to_owned()),
         };
-        let inbox = self.committed(&command).await?;
-        tracing::debug!(id, inbox, "message committed");
-        Ok(inbox)
+        let sent = sent(self.connection.exchange(&command).await?)?;
+        tracing::debug!(id, ?sent, "message sent");
+        Ok(sent)
+    }
+
+    /// [`Self::deliver`] for a caller that treats every outcome but
+    /// acceptance as a failure; returns its inbox sequence.
+    ///
+    /// # Errors
+    /// A refusal with its reason, an unknown outcome, or as [`Self::deliver`].
+    pub async fn send(&self, id: &str, prompt: &str) -> Result<u64> {
+        match self.deliver(id, prompt).await? {
+            Sent::Accepted(inbox) => Ok(inbox),
+            Sent::Refused(reason) => Err(Error::Storage(reason)),
+            Sent::Unknown => Err(Error::Storage(
+                "the message's commit outcome is unknown; resend it".into(),
+            )),
+        }
     }
 
     /// Stop the running turn; the conversation stays open.
@@ -393,5 +443,47 @@ fn finished(phase: &Phase) -> Option<String> {
     match phase {
         Phase::Done { outcome } => Some(format!("conversation ended: {outcome:?}")),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acyclic_stream::{CommitRequest, IdempotencyKey, StreamError};
+
+    #[test]
+    fn only_a_host_refusal_settles_a_send() -> Result<()> {
+        let refused = AgentExchangeError::Control(AgentControlFailure::Refused {
+            code: "agent_turn_error".into(),
+            reason: "Unknown command: /gone".into(),
+        });
+        assert_eq!(
+            sent(Err(refused))?,
+            Sent::Refused("Unknown command: /gone".into())
+        );
+        assert_eq!(
+            sent(Ok(AgentReply::Delivered {
+                delivery: Delivered::Committed { inbox: 4 },
+            }))?,
+            Sent::Accepted(4)
+        );
+        // Negative controls: an unknown commit outcome, and a session that
+        // failed after the request left, may each have committed it.
+        let request = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: Vec::new(),
+            idempotency_key: IdempotencyKey::new(b"message".to_vec()).map_err(failed)?,
+        };
+        let unknown = AgentControlFailure::Unknown(Box::new(request));
+        assert_eq!(
+            sent(Err(AgentExchangeError::Control(unknown)))?,
+            Sent::Unknown
+        );
+        assert_eq!(
+            sent(Err(AgentExchangeError::Session(StreamError::Unavailable)))?,
+            Sent::Unknown
+        );
+        Ok(())
     }
 }
