@@ -48,11 +48,49 @@ fn credential_error(error: CredentialError) -> Status {
     status
 }
 
+fn stopped_status(reason: crate::operation::Stopped) -> Status {
+    let mut status = match reason {
+        crate::operation::Stopped::Deadline => {
+            Status::deadline_exceeded("operation deadline expired")
+        }
+        crate::operation::Stopped::Cancelled => Status::cancelled("operation wait cancelled"),
+    };
+    status.set_source(Arc::new(reason));
+    status
+}
+
+fn check_context(context: Option<&crate::operation::Context>) -> Result<(), Status> {
+    if let Some(context) = context {
+        context.check().map_err(stopped_status)?;
+    }
+    Ok(())
+}
+
 /// Reusable channel with a dispatch-boundary lease check. Local refusals remain
 /// typed service errors; an interceptor would serialize them as remote statuses.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct CredentialChannel {
     channel: Channel,
+    context: Option<crate::operation::Context>,
+}
+
+impl std::fmt::Debug for CredentialChannel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CredentialChannel")
+            .field("channel", &self.channel)
+            .field("operation", &self.context.is_some())
+            .finish()
+    }
+}
+
+impl CredentialChannel {
+    /// Check the original operation after a credential owner's admission,
+    /// immediately before handing the request to the maintained transport.
+    pub fn with_context(mut self, context: Option<crate::operation::Context>) -> Self {
+        self.context = context;
+        self
+    }
 }
 
 /// Dispatch adds no allocation to the maintained channel's future.
@@ -65,6 +103,7 @@ enum Dispatch {
         check: CredentialPending<()>,
         channel: Channel,
         request: Option<http::Request<Body>>,
+        context: Option<crate::operation::Context>,
     },
     Transport(<Channel as Service<http::Request<Body>>>::Future),
 }
@@ -82,12 +121,17 @@ impl Future for CredentialDispatch {
                     check,
                     channel,
                     request,
+                    context,
                 } => {
                     let result = futures::ready!(check.as_mut().poll(cx));
                     self.0 = match result {
-                        Ok(()) => Dispatch::Transport(
-                            channel.call(request.take().expect("admission owns request")),
-                        ),
+                        Ok(()) => {
+                            let request = request.take().expect("admission owns request");
+                            match check_context(context.as_ref()) {
+                                Ok(()) => Dispatch::Transport(channel.call(request)),
+                                Err(error) => Dispatch::Refused(std::future::ready(Err(error))),
+                            }
+                        }
                         Err(error) => {
                             Dispatch::Refused(std::future::ready(Err(credential_error(error))))
                         }
@@ -133,9 +177,13 @@ impl Service<http::Request<Body>> for CredentialChannel {
                         check,
                         channel,
                         request: Some(request),
+                        context: self.context.clone(),
                     });
                 }
             }
+        }
+        if let Err(error) = check_context(self.context.as_ref()) {
+            return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(error))));
         }
         CredentialDispatch(Dispatch::Transport(self.channel.call(request)))
     }
@@ -143,7 +191,10 @@ impl Service<http::Request<Body>> for CredentialChannel {
 
 /// Retain the same pooled connection while checking each request's exact lease.
 pub fn guard(channel: Channel) -> CredentialChannel {
-    CredentialChannel { channel }
+    CredentialChannel {
+        channel,
+        context: None,
+    }
 }
 
 /// Establish one reusable native channel. Configure the original connection
@@ -187,13 +238,52 @@ pub async fn connect(
     Ok(endpoint.connect().await?)
 }
 
+/// Local wait ownership for one physical call. A bound operation reuses its
+/// host's event and timer; an unbound call retains its monotonic deadline.
+#[derive(Clone, Copy)]
+pub enum Budget<'a> {
+    /// One monotonic deadline covering refresh, readiness and the response.
+    Deadline(tokio::time::Instant),
+    /// The original operation event and its projected wire deadline.
+    Operation {
+        /// Caller-owned stop event shared with every other stage.
+        context: &'a crate::operation::Context,
+        /// Original absolute deadline projected to the native clock.
+        deadline: tokio::time::Instant,
+    },
+}
+
+impl Budget<'_> {
+    fn deadline(self) -> tokio::time::Instant {
+        match self {
+            Self::Deadline(deadline) | Self::Operation { deadline, .. } => deadline,
+        }
+    }
+
+    /// Wait using exactly the selected primitive. A stop names its original
+    /// typed reason and establishes no remote mutation outcome.
+    pub async fn run<T>(self, work: impl Future<Output = Result<T, Status>>) -> Result<T, Status> {
+        match self {
+            Self::Deadline(deadline) => {
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Status::deadline_exceeded("operation deadline expired"));
+                }
+                tokio::time::timeout_at(deadline, work)
+                    .await
+                    .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?
+            }
+            Self::Operation { context, .. } => context.run(work).await.map_err(stopped_status)?,
+        }
+    }
+}
+
 /// Apply a source partition's exact lease under the operation's original
 /// monotonic deadline, including credential refresh, channel readiness and RPC.
 /// Dropping this future cancels its interest. No retries or renewed timeout.
 pub async fn call<T, U, F, Fut>(
     channel: Channel,
     credential: &CredentialProvider,
-    deadline: tokio::time::Instant,
+    budget: Budget<'_>,
     body: T,
     dispatch: F,
 ) -> Result<Response<U>, Status>
@@ -201,23 +291,31 @@ where
     F: FnOnce(CredentialChannel, Request<T>) -> Fut,
     Fut: Future<Output = Result<Response<U>, Status>>,
 {
-    tokio::time::timeout_at(deadline, async {
-        let lease = credential.resolve().await.map_err(credential_error)?;
-        let request = request(body, &lease, deadline)?;
-        let response = dispatch(guard(channel), request).await;
-        if response.as_ref().is_err_and(|error| {
-            error.code() == tonic::Code::Unauthenticated
-                && std::error::Error::source(error).is_none()
-        }) {
-            lease.reject().await.map_err(credential_error)?;
-        }
-        if response.is_ok() {
-            lease.check().await.map_err(credential_error)?;
-        }
-        response
-    })
-    .await
-    .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?
+    let deadline = budget.deadline();
+    budget
+        .run(async {
+            let lease = credential.resolve().await.map_err(credential_error)?;
+            if let Budget::Operation { context, .. } = budget {
+                context.check().map_err(stopped_status)?;
+            }
+            let request = request(body, &lease, deadline)?;
+            let context = match budget {
+                Budget::Operation { context, .. } => Some(context.clone()),
+                Budget::Deadline(_) => None,
+            };
+            let response = dispatch(guard(channel).with_context(context), request).await;
+            if response.as_ref().is_err_and(|error| {
+                error.code() == tonic::Code::Unauthenticated
+                    && std::error::Error::source(error).is_none()
+            }) {
+                lease.reject().await.map_err(credential_error)?;
+            }
+            if response.is_ok() {
+                lease.check().await.map_err(credential_error)?;
+            }
+            response
+        })
+        .await
 }
 
 /// Build metadata while retaining the exact lease in native request extensions.

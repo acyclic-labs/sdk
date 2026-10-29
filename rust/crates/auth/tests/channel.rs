@@ -104,7 +104,9 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
         let mut operation = Box::pin(channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            channel::Budget::Deadline(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            ),
             Empty {},
             |channel, request| async move {
                 let mut client = tonic::client::Grpc::new(channel);
@@ -158,6 +160,106 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
 #[derive(Clone, PartialEq, prost::Message)]
 struct Empty {}
 
+struct StopDuringAdmission {
+    lease: ResolvedCredential,
+    first: std::sync::atomic::AtomicBool,
+    cancel: Mutex<Option<oneshot::Sender<()>>>,
+    release: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl CredentialRequest for StopDuringAdmission {
+    fn token(&self) -> &str {
+        self.lease.as_str()
+    }
+    fn binding(&self) -> Option<CredentialBinding> {
+        self.lease.binding()
+    }
+    fn check(&self) -> CredentialAction<()> {
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return self.lease.check();
+        }
+        let cancel = self.cancel.lock().unwrap().take().unwrap();
+        let release = self.release.lock().unwrap().take();
+        let lease = self.lease.clone();
+        match release {
+            Some(release) => CredentialAction::Pending(Box::pin(async move {
+                release.await.map_err(|_| CredentialError::Invalid)?;
+                cancel.send(()).unwrap();
+                lease.check().await
+            })),
+            None => {
+                cancel.send(()).unwrap();
+                lease.check()
+            }
+        }
+    }
+    fn reject(&self) -> CredentialAction<bool> {
+        self.lease.reject()
+    }
+}
+
+#[tokio::test]
+async fn a_credential_owner_cannot_stop_then_admit_native_dispatch() {
+    use acyclic_auth::operation::{Context, Stopped};
+    use tonic::codegen::Service;
+    for deferred in [false, true] {
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("synthetic".into(), [1; 32].into(), 100) },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some([1; 32].into()),
+            },
+        );
+        let original = cache.resolve().await.unwrap();
+        let watch = cache.watch().unwrap();
+        let (cancel, cancelled) = oneshot::channel();
+        let context = Context::new(u64::MAX, std::future::pending(), async {
+            let _ = cancelled.await;
+        });
+        let (release, released) = oneshot::channel();
+        let lease = ResolvedCredential::from_custodian(StopDuringAdmission {
+            lease: CredentialProvider::from(cache.clone())
+                .resolve()
+                .await
+                .unwrap(),
+            first: std::sync::atomic::AtomicBool::new(true),
+            cancel: Mutex::new(Some(cancel)),
+            release: Mutex::new(deferred.then_some(released)),
+        })
+        .await
+        .unwrap();
+        let mut channel =
+            channel::guard(Endpoint::from_static("https://fixture.invalid").connect_lazy())
+                .with_context(Some(context));
+        futures::future::poll_fn(|cx| channel.poll_ready(cx))
+            .await
+            .unwrap();
+        let mut request = tonic::codegen::http::Request::new(tonic::body::Body::empty());
+        request.extensions_mut().insert(lease);
+        let mut dispatch = Box::pin(channel.call(request));
+        if deferred {
+            assert!(dispatch.as_mut().now_or_never().is_none());
+            release.send(()).unwrap();
+        }
+        let error = dispatch
+            .now_or_never()
+            .expect("owner stop must refuse before transport dispatch")
+            .unwrap_err();
+        assert_eq!(error.code(), Code::Cancelled);
+        assert_eq!(
+            std::error::Error::source(&error)
+                .unwrap()
+                .downcast_ref::<Stopped>(),
+            Some(&Stopped::Cancelled)
+        );
+        assert!(
+            watch.now_or_never().is_none(),
+            "local cancellation cannot reject a valid lease"
+        );
+        cache.check(&original).unwrap();
+    }
+}
+
 #[tokio::test]
 async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejection() {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -179,7 +281,7 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
     let result = channel::call(
         Endpoint::from_static("https://fixture.invalid").connect_lazy(),
         &provider,
-        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        channel::Budget::Deadline(tokio::time::Instant::now() + std::time::Duration::from_secs(30)),
         Empty {},
         move |channel, request| async move {
             // Expire after request preparation, before tonic service dispatch.
@@ -229,7 +331,9 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         let call = channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            channel::Budget::Deadline(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            ),
             (),
             move |_, _| async move {
                 entered.send(()).unwrap();

@@ -22,6 +22,8 @@ mod medium;
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_error;
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+mod operation;
 mod ownership;
 mod provider;
 #[cfg(objects_server)]
@@ -100,15 +102,33 @@ const MAX_PEM_BYTES: usize = 64 * 1024;
 /// Largest bearer credential, in bytes, that an SDK client accepts.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Canonical semantic failure; infrastructure diagnostics remain operator-only.
+/// Semantic service failure or the original local operation stop.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("Objects operation failed ({code:?})")]
 pub struct Error {
     /// Public semantic category, suitable for programmatic handling.
     pub code: wire::ErrorCode,
+    /// Original local stop, when the caller's operation budget ended. Neither
+    /// cancellation nor expiry proves that a remote mutation did not commit.
+    #[source]
+    pub stopped: Option<acyclic_auth::operation::Stopped>,
 }
 impl From<wire::ErrorCode> for Error {
     fn from(code: wire::ErrorCode) -> Self {
-        Self { code }
+        Self {
+            code,
+            stopped: None,
+        }
+    }
+}
+impl From<acyclic_auth::operation::Stopped> for Error {
+    fn from(stopped: acyclic_auth::operation::Stopped) -> Self {
+        Self {
+            code: match stopped {
+                acyclic_auth::operation::Stopped::Deadline => wire::ErrorCode::DeadlineElapsed,
+                acyclic_auth::operation::Stopped::Cancelled => wire::ErrorCode::OutcomeUnknown,
+            },
+            stopped: Some(stopped),
+        }
     }
 }

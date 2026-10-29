@@ -54,14 +54,27 @@ impl Context {
         self.deadline_unix_millis
     }
 
+    /// Observe the original stop before a synchronous admission boundary.
+    /// This polls only the existing host event and starts no work or timer.
+    pub fn check(&self) -> Result<(), Stopped> {
+        match self.stopped.clone().now_or_never() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
     /// Run a stage under the original budget. A ready stop is checked before
-    /// polling work, so a cancelled operation cannot begin another callback.
+    /// polling work and before accepting its result. A callback that stops its
+    /// own operation cannot publish success in the same poll.
     pub async fn run<T>(&self, work: impl Future<Output = T>) -> Result<T, Stopped> {
         let stopped = self.stopped.clone();
         futures::pin_mut!(stopped, work);
         match futures::future::select(stopped, work).await {
             futures::future::Either::Left((reason, _)) => Err(reason),
-            futures::future::Either::Right((value, _)) => Ok(value),
+            futures::future::Either::Right((value, stopped)) => match stopped.now_or_never() {
+                Some(reason) => Err(reason),
+                None => Ok(value),
+            },
         }
     }
 }
@@ -127,6 +140,52 @@ mod tests {
             assert_eq!(context.run(ready(7)).await, Ok(7));
             let _ = expire.send(());
             assert_eq!(context.run(pending::<()>()).await, Err(Stopped::Deadline));
+        });
+    }
+
+    #[test]
+    fn a_stop_produced_by_completing_work_refuses_its_result() {
+        block_on(async {
+            for lose_producer in [false, true] {
+                let (cancel, cancelled) = futures::channel::oneshot::channel();
+                let context = Context::new(10, pending(), async {
+                    let _ = cancelled.await;
+                });
+                let result = context
+                    .run(async {
+                        if lose_producer {
+                            drop(cancel);
+                        } else {
+                            cancel.send(()).unwrap();
+                        }
+                        7
+                    })
+                    .await;
+                assert_eq!(result, Err(Stopped::Cancelled));
+                assert_eq!(context.clone().run(ready(8)).await, Err(Stopped::Cancelled));
+            }
+            let (expire, expired) = futures::channel::oneshot::channel();
+            let context = Context::new(
+                10,
+                async {
+                    let _ = expired.await;
+                },
+                pending(),
+            );
+            assert_eq!(
+                context
+                    .run(async {
+                        expire.send(()).unwrap();
+                        7
+                    })
+                    .await,
+                Err(Stopped::Deadline)
+            );
+            // An unchanged owner still admits a ready completion.
+            assert_eq!(
+                Context::new(10, pending(), pending()).run(ready(7)).await,
+                Ok(7)
+            );
         });
     }
 }

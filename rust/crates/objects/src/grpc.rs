@@ -1,5 +1,6 @@
 //! Authenticated gRPC client and account-resolving service adapter.
 use crate::convert;
+use crate::operation::MAX_DEADLINE;
 use crate::{
     Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object, Page, Put,
     Retained, RootId, Usage, wire,
@@ -22,8 +23,6 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 pub const REVISION: &str = "acyclic-revision-bin";
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-/// The largest deadline `grpc-timeout` can carry: eight digits of hours.
-const MAX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(99_999_999 * 3600);
 
 /// Client configuration or connection failure.
 #[derive(Debug, thiserror::Error)]
@@ -45,11 +44,21 @@ pub enum ConnectError {
 pub struct GrpcObjects {
     channel: Channel,
     credential: CredentialProvider,
+    context: Option<acyclic_auth::operation::Context>,
     transfer_timeout: std::time::Duration,
     revisions: Arc<RevisionTracker>,
 }
 
 impl GrpcObjects {
+    /// Bind every stage, including hashing, credential resolution, connection
+    /// readiness and response admission, to the original operation budget.
+    /// Clones retain that same deadline and cancellation event.
+    /// This replaces relative transfer and control-call timeouts.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
     /// Selects a route's implicit authority using an authenticated receipt or
     /// observation. Cloned views still share every observed requirement; this
     /// selection never retires another account or changes authorization.
@@ -176,6 +185,7 @@ impl GrpcObjects {
         Self {
             channel,
             credential,
+            context: None,
             transfer_timeout: REQUEST_TIMEOUT,
             revisions: Arc::default(),
         }
@@ -231,6 +241,11 @@ impl GrpcObjects {
 
 /// Maps canonical service details, falling back to stable transport categories.
 fn error_from_status(status: &tonic::Status) -> Error {
+    if let Some(stopped) = std::error::Error::source(status)
+        .and_then(|source| source.downcast_ref::<acyclic_auth::operation::Stopped>())
+    {
+        return (*stopped).into();
+    }
     if let Ok(detail) = wire::ErrorDetail::decode(status.details())
         && let Ok(code) = wire::ErrorCode::try_from(detail.code)
         && code != wire::ErrorCode::Unspecified
@@ -322,11 +337,15 @@ macro_rules! call {
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
         let floor: Option<&RevisionCut> = $floor;
         let timeout = $timeout;
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = crate::operation::deadline($self.context.as_ref(), timeout)?;
+        let budget = match &$self.context {
+            Some(context) => acyclic_auth::channel::Budget::Operation { context, deadline },
+            None => acyclic_auth::channel::Budget::Deadline(deadline),
+        };
         let response = acyclic_auth::channel::call(
             $self.channel.clone(),
             &$self.credential,
-            deadline,
+            budget,
             $value,
             |channel, mut request| async move {
                 minimum(&mut request, floor);
@@ -334,11 +353,7 @@ macro_rules! call {
             },
         )
         .await;
-        if tokio::time::Instant::now() >= deadline && response.is_err() {
-            Err(wire::ErrorCode::DeadlineElapsed.into())
-        } else {
-            $self.observed(response, floor)
-        }
+        $self.observed(response, floor)
     }};
 }
 
@@ -349,39 +364,46 @@ impl Blobs for GrpcObjects {
     }
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let digest = Digest::sealed(&body);
-        let body = body.into_bytes();
-        let reply = call!(
-            self,
-            put_blob,
-            wire::PutBlobRequest {
-                digest: Some(digest.into()),
-                body: bytes::Bytes::from_owner(body.clone()),
-                references: convert::wire_digests(&references),
-            },
-            self.transfer_timeout
-        )?;
-        Ok(committed(
-            convert::verified_put(&reply.0, digest, body.len() as u64)?,
-            reply.1,
-        ))
+        crate::operation::admit(self.context.as_ref(), async {
+            let digest = Digest::sealed(&body);
+
+            let body = body.into_bytes();
+            let reply = call!(
+                self,
+                put_blob,
+                wire::PutBlobRequest {
+                    digest: Some(digest.into()),
+                    body: bytes::Bytes::from_owner(body.clone()),
+                    references: convert::wire_digests(&references),
+                },
+                self.transfer_timeout
+            )?;
+            Ok(committed(
+                convert::verified_put(&reply.0, digest, body.len() as u64)?,
+                reply.1,
+            ))
+        })
+        .await
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        let digest = Digest::of(&manifest.encode());
-        let length = manifest.length()?;
-        let reply = call!(
-            self,
-            put_manifest,
-            wire::PutManifestRequest {
-                manifest: Some(convert::manifest(&manifest)),
-            },
-            REQUEST_TIMEOUT
-        )?;
-        Ok(committed(
-            convert::verified_put(&reply.0, digest, length)?,
-            reply.1,
-        ))
+        crate::operation::admit(self.context.as_ref(), async {
+            let digest = Digest::of(&manifest.encode());
+            let length = manifest.length()?;
+            let reply = call!(
+                self,
+                put_manifest,
+                wire::PutManifestRequest {
+                    manifest: Some(convert::manifest(&manifest)),
+                },
+                REQUEST_TIMEOUT
+            )?;
+            Ok(committed(
+                convert::verified_put(&reply.0, digest, length)?,
+                reply.1,
+            ))
+        })
+        .await
     }
 
     async fn get(
@@ -390,116 +412,140 @@ impl Blobs for GrpcObjects {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        let reply = call!(
-            self,
-            get_blob,
-            wire::GetBlobRequest {
-                digest: Some(digest.into()),
-                range: Some(convert::range(range)),
-                maximum_bytes,
-            },
-            self.transfer_timeout,
-            read
-        )?;
-        Ok(convert::object(reply.0, digest, range, maximum_bytes)?.served_at(reply.1))
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                get_blob,
+                wire::GetBlobRequest {
+                    digest: Some(digest.into()),
+                    range: Some(convert::range(range)),
+                    maximum_bytes,
+                },
+                self.transfer_timeout,
+                read
+            )?;
+            Ok(convert::object(reply.0, digest, range, maximum_bytes)?.served_at(reply.1))
+        })
+        .await
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        let reply = call!(
-            self,
-            head_blob,
-            wire::HeadBlobRequest {
-                digest: Some(digest.into()),
-            },
-            REQUEST_TIMEOUT,
-            read
-        )?;
-        let mut head = convert::headed(&reply.0, digest)?;
-        head.revision = reply.1;
-        Ok(head)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                head_blob,
+                wire::HeadBlobRequest {
+                    digest: Some(digest.into()),
+                },
+                REQUEST_TIMEOUT,
+                read
+            )?;
+            let mut head = convert::headed(&reply.0, digest)?;
+            head.revision = reply.1;
+            Ok(head)
+        })
+        .await
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
-        let reply = call!(
-            self,
-            delete_blob,
-            wire::DeleteBlobRequest {
-                digest: Some(digest.into()),
-            },
-            REQUEST_TIMEOUT
-        )?;
-        Ok(Deletion {
-            outcome: convert::delete(&reply.0)?,
-            revision: reply.1,
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                delete_blob,
+                wire::DeleteBlobRequest {
+                    digest: Some(digest.into()),
+                },
+                REQUEST_TIMEOUT
+            )?;
+            Ok(Deletion {
+                outcome: convert::delete(&reply.0)?,
+                revision: reply.1,
+            })
         })
+        .await
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
-        let reply = call!(
-            self,
-            list_blobs,
-            wire::ListBlobsRequest {
-                after: after.map(Into::into),
-                limit,
-            },
-            REQUEST_TIMEOUT,
-            read
-        )?;
-        let mut page = convert::listed(&reply.0, after, limit)?;
-        page.revision = reply.1;
-        Ok(page)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                list_blobs,
+                wire::ListBlobsRequest {
+                    after: after.map(Into::into),
+                    limit,
+                },
+                REQUEST_TIMEOUT,
+                read
+            )?;
+            let mut page = convert::listed(&reply.0, after, limit)?;
+            page.revision = reply.1;
+            Ok(page)
+        })
+        .await
     }
 
     /// The server acknowledges a put only once it is durable.
     async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
-        Ok(())
+        crate::operation::admit(self.context.as_ref(), async { Ok(()) }).await
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        let reply = call!(
-            self,
-            retain,
-            wire::RetainRequest {
-                root: root.as_bytes().to_vec(),
-                references: convert::wire_digests(&references),
-            },
-            REQUEST_TIMEOUT
-        )?;
-        let mut retained = convert::retained(&reply.0);
-        retained.revision = reply.1;
-        Ok(retained)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                retain,
+                wire::RetainRequest {
+                    root: root.as_bytes().to_vec(),
+                    references: convert::wire_digests(&references),
+                },
+                REQUEST_TIMEOUT
+            )?;
+            let mut retained = convert::retained(&reply.0);
+            retained.revision = reply.1;
+            Ok(retained)
+        })
+        .await
     }
 
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
-        let reply = call!(
-            self,
-            release,
-            wire::ReleaseRequest {
-                root: root.as_bytes().to_vec(),
-            },
-            REQUEST_TIMEOUT
-        )?;
-        Ok(crate::Released {
-            existed: reply.0.existed,
-            revision: reply.1,
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                release,
+                wire::ReleaseRequest {
+                    root: root.as_bytes().to_vec(),
+                },
+                REQUEST_TIMEOUT
+            )?;
+            Ok(crate::Released {
+                existed: reply.0.existed,
+                revision: reply.1,
+            })
         })
+        .await
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let reply = call!(
-            self,
-            collect,
-            wire::CollectRequest {},
-            self.transfer_timeout
-        )?;
-        let mut collection = convert::collection(&reply.0);
-        collection.revision = reply.1;
-        Ok(collection)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(
+                self,
+                collect,
+                wire::CollectRequest {},
+                self.transfer_timeout
+            )?;
+            let mut collection = convert::collection(&reply.0);
+            collection.revision = reply.1;
+            Ok(collection)
+        })
+        .await
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        let reply = call!(self, usage, wire::UsageRequest {}, REQUEST_TIMEOUT)?;
-        Ok(convert::usage(&reply.0))
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply = call!(self, usage, wire::UsageRequest {}, REQUEST_TIMEOUT)?;
+            Ok(convert::usage(&reply.0))
+        })
+        .await
     }
 }
 

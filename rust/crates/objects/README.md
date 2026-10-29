@@ -26,3 +26,18 @@ read-only medium returns the selected bytes without a local revision token;
 it retains any causal minimum it cannot prove. `revisions()` reports only an
 already established writer authority. A mutation or explicit `flush` opens
 that authority; an embedding server retains its own applied-cut admission.
+
+Both native remote clients accept `with_context(acyclic_auth::operation::Context)`.
+Bind a view to the caller's original absolute deadline and cancellation event;
+clones keep that same budget through credential resolution, connection readiness,
+response reading, conversion and final admission. Use `Context::run` around an
+explicit initial connection before adopting its channel with `from_channel`.
+An operation-bound view uses the host's existing stop event and timer instead of
+starting a relative transport timeout. An unbound view retains its configured
+transport timeout.
+
+Local expiry and cancellation retain `Error::stopped`, including cancellation
+producer loss when the host maps it to cancellation. Expiry has the semantic
+code `DeadlineElapsed`; cancellation has `OutcomeUnknown`. Neither stop proves
+that a remote mutation did not commit. A stopped view cannot start another
+credential callback; start a new operation with its own Context to proceed.
