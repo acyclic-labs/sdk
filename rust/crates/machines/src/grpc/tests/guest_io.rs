@@ -128,6 +128,21 @@ async fn fixture() -> (
     ServerTask,
 ) {
     let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+    let (provider, io, shutdown, task) = rpc_fixture().await;
+    (
+        Machine::new(Machines::new(Arc::new(provider)), machine),
+        io,
+        shutdown,
+        task,
+    )
+}
+
+async fn rpc_fixture() -> (
+    GrpcProvider,
+    Arc<GuestIo>,
+    tokio::sync::oneshot::Sender<()>,
+    ServerTask,
+) {
     let io = Arc::new(GuestIo::default());
     let service = OperationService {
         guest: Some(io.clone()),
@@ -138,13 +153,71 @@ async fn fixture() -> (
         cancelled: wire::OperationState::default(),
         watch: WatchReply::Items(vec![]),
     };
-    let (machines, shutdown, task) = serve_operation_service(service).await.unwrap();
-    (
-        Machine::new(Machines::new(Arc::new(machines)), machine),
-        io,
-        shutdown,
-        task,
-    )
+    let (provider, shutdown, task) = serve_operation_service(service).await.unwrap();
+    (provider, io, shutdown, task)
+}
+
+#[tokio::test]
+async fn file_stream_receipts_progress_before_input_eof_and_drop_releases_input() {
+    let (provider, io, shutdown, task) = rpc_fixture().await;
+    let machine = MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+    let access = wire::FileAccess {
+        machine: Some(encode_machine(machine)),
+        path: "/workspace/file".into(),
+        offset: 0,
+        deadline_unix_ms: 4_102_444_800_000,
+    };
+    *io.file_read.lock().unwrap() = wire::ReadFileResponse {
+        machine: access.machine.clone(),
+        offset: 0,
+        result: Some(wire::read_file_response::Result::Data(vec![0, 255])),
+    };
+    *io.file_write.lock().unwrap() = wire::WriteFileResponse {
+        machine: access.machine.clone(),
+        offset: 0,
+        result: Some(wire::write_file_response::Result::Written(2)),
+    };
+    let client = provider.client().await.unwrap();
+    macro_rules! exchange {
+        ($method:ident, $query:expr, $expected:expr) => {{
+            let (sender, input) = mpsc::channel(1);
+            let mut output = client
+                .clone()
+                .$method(ReceiverStream::new(input))
+                .await
+                .unwrap()
+                .into_inner();
+            for _ in 0..2 {
+                sender.send($query).await.unwrap();
+                assert_eq!(output.message().await.unwrap().unwrap(), $expected);
+            }
+            // The response must not depend on closing the still-live producer.
+            drop(output);
+            sender.closed().await;
+        }};
+    }
+    exchange!(
+        read_file,
+        wire::ReadFileRequest {
+            protocol: Some(protocol()),
+            access: Some(access.clone()),
+            limit: 2,
+        },
+        io.file_read.lock().unwrap().clone()
+    );
+    exchange!(
+        write_file,
+        wire::WriteFileRequest {
+            protocol: Some(protocol()),
+            access: Some(access.clone()),
+            data: vec![0, 255],
+            truncate: false,
+        },
+        io.file_write.lock().unwrap().clone()
+    );
+    assert_eq!(io.file_reads.lock().unwrap().len(), 2);
+    assert_eq!(io.file_writes.lock().unwrap().len(), 2);
+    stop(shutdown, task).await;
 }
 
 async fn stop(shutdown: tokio::sync::oneshot::Sender<()>, task: ServerTask) {
