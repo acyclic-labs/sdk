@@ -77,7 +77,8 @@ export class Processes {
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    this.children.set(child, { kill, reaped, report });
+    this.children.set(child, { kill, reaped, report,
+      cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
     return { child, exited, closed, reportReady: report?.ready,
       requestReport: report ? deadline => report.request(deadline) : undefined,
       killExecutable: () => child.kill("SIGKILL") };
@@ -128,9 +129,11 @@ export class Processes {
       let force;
       const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
       const deadline = Date.now() + 500;
-      try { await Promise.race([Promise.all(reporting.map(child => child.report.request(deadline))), forced]); }
-      finally { clearTimeout(force); }
-      for (const child of reporting) child.report.expire();
+      try {
+        await Promise.race([Promise.all(reporting.map(child => child.report.request(deadline))), forced]);
+        for (const child of reporting) { child.report.expire(); child.cancel?.(); }
+        await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]);
+      } finally { clearTimeout(force); }
     }
     for (const child of children) child.kill();
     await Promise.all(children.map(child => child.reaped));
