@@ -148,7 +148,7 @@ use participant::ObservedAuthority;
 enum TrackedRevisions {
     All(crate::query_sync::SyncMutex<ObservedRevisions>),
     Selected {
-        source: crate::query_sync::Arc<RevisionTracker>,
+        source: std::sync::Arc<RevisionTracker>,
         authority: crate::query_sync::Arc<ObservedAuthority>,
     },
 }
@@ -216,16 +216,13 @@ impl RevisionTracker {
     /// construction performs one indexed lookup and allocates one view; the
     /// participant is allocated once per scope. Views never form a chain.
     #[must_use]
-    pub fn scoped(
-        self: &crate::query_sync::Arc<Self>,
-        scope: RevisionScope,
-    ) -> crate::query_sync::Arc<Self> {
+    pub fn scoped(self: &std::sync::Arc<Self>, scope: RevisionScope) -> std::sync::Arc<Self> {
         let source = match &self.0 {
             TrackedRevisions::All(_) => self,
             TrackedRevisions::Selected { source, .. } => source,
         };
-        crate::query_sync::Arc::new(Self(TrackedRevisions::Selected {
-            source: crate::query_sync::Arc::clone(source),
+        std::sync::Arc::new(Self(TrackedRevisions::Selected {
+            source: std::sync::Arc::clone(source),
             authority: source.authority(&scope),
         }))
     }

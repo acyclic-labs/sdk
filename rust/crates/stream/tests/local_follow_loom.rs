@@ -2,6 +2,25 @@
 #![cfg(loom)]
 
 #[test]
+fn pending_publication_preserves_reads_and_owned_writer_order() {
+    for cancel in [false, true] {
+        acyclic_stream::verification::pending_publication(false, false, cancel);
+    }
+}
+
+#[test]
+#[should_panic(expected = "pending storage blocked accepted read")]
+fn negative_control_pending_storage_retains_visible_state() {
+    acyclic_stream::verification::pending_publication(true, false, false);
+}
+
+#[test]
+#[should_panic(expected = "pending publication lost writer ownership")]
+fn negative_control_pending_storage_releases_writer_order() {
+    acyclic_stream::verification::pending_publication(false, true, false);
+}
+
+#[test]
 fn executor_shutdown_returns_unpolled_snapshot_ownership() {
     for checked in [false, true] {
         acyclic_stream::verification::snapshot_executor_shutdown(false, checked, false, false);

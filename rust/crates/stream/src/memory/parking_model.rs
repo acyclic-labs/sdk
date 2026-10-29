@@ -6,6 +6,87 @@ use std::{
     task::{Context, Waker},
 };
 
+pub(crate) fn publication(retain_state: bool, release_order: bool, cancel: bool) {
+    use crate::verification::{Fault, set_fault};
+    use futures::FutureExt as _;
+    loom::model(move || {
+        let provider = MemoryStream::default();
+        let path = StreamPath::new("publication").unwrap();
+        let request = |tail| AppendRequest {
+            path: path.clone(),
+            records: vec![Bytes::from_static(b"value").into()],
+            if_tail: Some(tail),
+            idempotency_key: crate::IdempotencyKey::unique(),
+        };
+        let AppendOutcome::Committed(seed) = block_on(provider.append(request(0))).unwrap() else {
+            unreachable!()
+        };
+        let command = provider
+            .canonicalize(crate::WriteRequest::Append(request(1)))
+            .unwrap();
+        let (started, entered) = loom::sync::mpsc::channel();
+        let (finish, mut finished) = crate::query_sync::watch::channel(());
+        let publishing = provider.clone();
+        let writer = loom::thread::spawn(move || {
+            if retain_state {
+                set_fault(Fault::HoldStateDuringDurability);
+            } else if release_order {
+                set_fault(Fault::ReleasePendingPublication);
+            }
+            let mut first = true;
+            let persist = async {
+                std::future::poll_fn(move |cx| {
+                    if first {
+                        first = false;
+                        cx.waker().wake_by_ref();
+                        std::task::Poll::Pending
+                    } else {
+                        started.send(()).unwrap();
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                finished
+                    .changed()
+                    .await
+                    .map_err(|_| StreamError::Unavailable)
+            };
+            block_on(publishing.apply_durable(&command, None, persist))
+        });
+        entered.recv().unwrap();
+        let read_ready = provider
+            .read_commit(seed.commit_id)
+            .now_or_never()
+            .is_some();
+        let (writer_pending, registration_ready) = {
+            let mut queued = Box::pin(provider.append(request(2)));
+            let writer_pending = queued
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending();
+            let follow = provider.follow(crate::FollowRequest::new(path.clone(), 1));
+            (writer_pending, follow.now_or_never().is_some())
+        };
+        if cancel {
+            drop(finish);
+            assert!(matches!(
+                writer.join().unwrap(),
+                Err(StreamError::Unavailable)
+            ));
+        } else {
+            finish.send_replace(());
+            assert!(writer.join().unwrap().is_ok());
+        }
+        assert_eq!(
+            block_on(provider.tail(path)).unwrap(),
+            if cancel { 1 } else { 2 }
+        );
+        assert!(read_ready, "pending storage blocked accepted read");
+        assert!(writer_pending, "pending publication lost writer ownership");
+        assert!(registration_ready, "pending storage blocked registration");
+    });
+}
+
 // Lock order: state -> path watch. Stop polling the real returned stream before
 // handoff, then require a real append to finish before polling that stream again.
 pub(crate) fn verify(retain_pending: bool, checked: bool) {

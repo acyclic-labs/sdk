@@ -223,6 +223,18 @@ impl<T> Mutex<T> {
             _permit: permit,
         }
     }
+    /// Attempts immediate exclusive ownership without registering a waiter.
+    pub fn try_lock(&self) -> Result<Guard<'_, tokio::sync::MutexGuard<'_, T>>, ()> {
+        let permit = self.gate.take(true).ok_or(())?;
+        let data = self
+            .data
+            .try_lock()
+            .unwrap_or_else(|_| unreachable!("modeled mutex ownership disagrees"));
+        Ok(Guard {
+            data,
+            _permit: permit,
+        })
+    }
     /// Consumes an unborrowed mutex.
     pub fn into_inner(self) -> T {
         self.data.into_inner()

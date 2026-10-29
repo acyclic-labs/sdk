@@ -273,9 +273,10 @@ impl StreamProvider for MemoryStream {
                     .map(|(outcome, _)| crate::WriteOutcome::Append(outcome))
             }),
             crate::WriteRequest::Fork(request) => Box::pin(async move {
+                let _publication = self.publication.lock().await;
                 let mut state = self.state.write().await;
                 self.plan_fork_locked(&mut state, &request)?
-                    .install(self, &mut state)
+                    .install(self, &mut state, false)
                     .map(crate::WriteOutcome::Fork)
             }),
             crate::WriteRequest::Commit(request) => Box::pin(async move {
@@ -617,6 +618,10 @@ impl MemoryStream {
                         }
                     }
                     before().await?;
+                    let Ok(_publication) = provider.publication.try_lock() else {
+                        drop(provider.publication.lock().await);
+                        continue;
+                    };
                     let Ok(mut state) = provider.state.try_write() else {
                         drop(provider.state.write().await);
                         continue;

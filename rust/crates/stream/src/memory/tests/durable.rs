@@ -1,7 +1,7 @@
 use super::super::*;
 use super::TestClock;
 use crate::{WriteOutcome, WriteRequest};
-use futures::TryFutureExt as _;
+use futures::{FutureExt as _, TryFutureExt as _};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 async fn apply(
@@ -117,8 +117,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         let mut prepared = std::pin::pin!(prepared);
         assert!(futures::poll!(prepared.as_mut()).is_pending());
         let read = core.tail(append.path.clone());
-        let mut read = std::pin::pin!(read);
-        assert!(futures::poll!(read.as_mut()).is_pending());
+        assert_eq!(read.now_or_never(), Some(Ok(1)));
     }
     assert!(
         core.inspect_idempotency(append.idempotency_key.clone())
@@ -139,6 +138,78 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
             .sequence,
         1
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_durability_preserves_reads_registration_and_writer_order()
+-> Result<(), StreamError> {
+    let core = MemoryStream::default();
+    let mut initial = request(0)?;
+    initial.idempotency_key = IdempotencyKey::unique();
+    let AppendOutcome::Committed(initial) = core.append(initial).await? else {
+        return Err(StreamError::InvalidResponse);
+    };
+    let next = request(1)?;
+    let path = next.path.clone();
+    let (send, receive) = tokio::sync::oneshot::channel();
+    let pending = apply(&core, WriteRequest::Append(next), None, async {
+        receive.await.map_err(|_| StreamError::Unavailable)?
+    });
+    let mut pending = std::pin::pin!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    let envelope = core
+        .read_commit(initial.commit_id)
+        .now_or_never()
+        .ok_or(StreamError::Unavailable)??;
+    assert_eq!(envelope.commit_id, initial.commit_id);
+    assert_eq!(core.tail(path.clone()).now_or_never(), Some(Ok(1)));
+    let mut later = request(2)?;
+    later.idempotency_key = IdempotencyKey::unique();
+    let later = apply(&core, WriteRequest::Append(later), None, async { Ok(()) });
+    let mut later = std::pin::pin!(later);
+    assert!(futures::poll!(later.as_mut()).is_pending());
+    // A queued writer must not turn the visible-state lock into a read barrier.
+    let follow = core
+        .follow(crate::FollowRequest::new(path.clone(), 1))
+        .now_or_never()
+        .ok_or(StreamError::Unavailable)??;
+    let mut follow = crate::records_only(follow);
+    assert!(futures::poll!(follow.next()).is_pending());
+    send.send(Ok(())).map_err(|_| StreamError::Unavailable)?;
+    assert!(matches!(
+        pending.await?,
+        WriteOutcome::Append(AppendOutcome::Committed(_))
+    ));
+    assert!(matches!(
+        later.await?,
+        WriteOutcome::Append(AppendOutcome::Committed(_))
+    ));
+    for sequence in [1, 2] {
+        assert_eq!(
+            follow
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)??
+                .sequence,
+            sequence
+        );
+    }
+    // The acknowledgement producer disappearing ends the wait without publishing.
+    let mut refused = request(3)?;
+    refused.idempotency_key = IdempotencyKey::unique();
+    let key = refused.idempotency_key.clone();
+    let (send, receive) = tokio::sync::oneshot::channel::<Result<(), StreamError>>();
+    let pending = apply(&core, WriteRequest::Append(refused), None, async {
+        receive.await.map_err(|_| StreamError::Unavailable)?
+    });
+    let mut pending = std::pin::pin!(pending);
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    drop(send);
+    assert!(matches!(pending.await, Err(StreamError::Unavailable)));
+    assert_eq!(core.tail(path).await?, 3);
+    assert!(core.inspect_idempotency(key).await?.is_none());
+    assert!(futures::poll!(follow.next()).is_pending());
     Ok(())
 }
 

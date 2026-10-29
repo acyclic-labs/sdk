@@ -435,7 +435,7 @@ impl MemoryStream {
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         self.plan_commit_locked(state, &request, digest, deadline)?
-            .install(self, state)
+            .install(self, state, false)
     }
 
     fn plan_commit_locked<'a>(

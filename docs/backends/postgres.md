@@ -83,6 +83,21 @@ returning absence. These paths check replica health and introduce no receipt or
 negative cache. Mutable observations retain authoritative refresh. Delayed NOTIFY
 alone never establishes freshness or permits returning an uncovered revision.
 
+The canonical core separates publication ordering from access to visible state.
+Once a storage acknowledgement is pending, readers and follow registration can
+observe the last accepted state while the original decision retains writer
+ownership. Competing mutations wait on that owner, rather than blocking new
+readers behind a state writer. Installation and notifications follow successful
+acknowledgement; failure leaves the decision uninstalled. An immediately ready
+acknowledgement uses the original state guard without reacquiring it.
+
+Local immutable `read_commit` hits also bypass the publication fence, checking
+provider health and using the same retained envelope index. Missing envelopes
+still join publication before reporting absence. This adds no receipt cache,
+storage read or durability barrier and does not change mutable read freshness.
+Snapshot encoding still traverses retained state under its read guard; cold
+recovery and snapshot traversal are not constant-time operations.
+
 The shared Streams replica owns catch-up and stale-CAS replanning. The physical
 port has no condition evaluator, retry cache or private connection protocol.
 Two stages do not establish the one-round-trip target, bounded contention

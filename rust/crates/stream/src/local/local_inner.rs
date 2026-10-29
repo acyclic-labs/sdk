@@ -104,12 +104,13 @@ impl LocalInner {
         #[cfg(test)]
         {
             let journal_identity = Arc::as_ptr(&self.journal) as usize;
-            if let Ok(mut hook) = JOURNAL_PERSIST_BLOCKER.lock()
-                && hook
-                    .as_ref()
+            let blocker = JOURNAL_PERSIST_BLOCKER.lock().ok().and_then(|mut hook| {
+                hook.as_ref()
                     .is_some_and(|(expected_journal, _, _)| *expected_journal == journal_identity)
-                && let Some((_, started, release)) = hook.take()
-            {
+                    .then(|| hook.take())
+                    .flatten()
+            });
+            if let Some((_, started, release)) = blocker {
                 let _ = started.send(());
                 let _ = release.recv();
             }
