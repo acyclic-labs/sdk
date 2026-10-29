@@ -1,5 +1,5 @@
 use super::*;
-use crate::availability::client::{Credential, observe};
+use crate::availability::client::{Credential, observe, open};
 use acyclic_stream::wire_codec::session::FrameDecoder;
 use futures::stream;
 
@@ -15,8 +15,11 @@ impl HttpObjects {
         &self,
         digest: Digest,
     ) -> Result<crate::Availability, Error> {
-        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        open(self.context.as_ref(), async {
             let credential = Credential::resolve(self.credential.as_ref()).await?;
+            if let Some(context) = &self.context {
+                context.check()?;
+            }
             let authorization = match &credential.lease {
                 Some(lease) => credential_header(lease)
                     .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?,
@@ -91,9 +94,8 @@ impl HttpObjects {
                     }
                 }
             });
-            observe(frames, credential).await
+            observe(frames, credential, self.context.clone()).await
         })
         .await
-        .map_err(|_| Error::from(wire::ErrorCode::DeadlineElapsed))?
     }
 }

@@ -1,7 +1,12 @@
 //! Original credential custody shared by both availability transports.
 use super::*;
 use acyclic_auth::credential::{CredentialProvider, ResolvedCredential};
+use acyclic_auth::operation::Context;
 use futures::future::{self, BoxFuture, Either};
+use std::future::Future;
+
+#[cfg(test)]
+pub(crate) mod context_tests;
 
 fn denied() -> Error {
     ErrorCode::AccessDenied.into()
@@ -82,17 +87,38 @@ impl Credential {
 pub(crate) async fn observe(
     source: impl Stream<Item = Result<crate::wire::AvailabilityCursor, Error>> + Send + 'static,
     mut credential: Credential,
+    context: Option<Context>,
 ) -> Result<Availability, Error> {
     let mut source = Box::pin(source);
     let initial = credential.next(&mut source).await?.try_into()?;
     let changes = stream::try_unfold(
-        (source, credential),
-        |(mut source, mut credential)| async move {
-            let next = credential.next(&mut source).await?.try_into()?;
-            Ok(Some((next, (source, credential))))
+        (source, credential, context),
+        |(mut source, mut credential, context)| async move {
+            let next = crate::operation::run(context.as_ref(), credential.next(&mut source))
+                .await?
+                .try_into()?;
+            Ok(Some((next, (source, credential, context))))
         },
     );
     Ok(Availability::new(initial, changes))
+}
+
+/// Opening and delivery retain the same caller-owned stop. Only callers with
+/// no Context use the default finite opening budget; idle waits add no timer.
+pub(crate) async fn open(
+    context: Option<&Context>,
+    work: impl Future<Output = Result<Availability, Error>>,
+) -> Result<Availability, Error> {
+    crate::operation::run(context, async {
+        if context.is_some() {
+            work.await
+        } else {
+            tokio::time::timeout(std::time::Duration::from_secs(30), work)
+                .await
+                .map_err(|_| Error::from(ErrorCode::DeadlineElapsed))?
+        }
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -126,10 +152,13 @@ mod tests {
             let registered = source.subscribe(key).unwrap();
             // Opening delay cannot extend the original absolute expiry.
             tokio::time::advance(std::time::Duration::from_secs(7)).await;
-            let mut observation =
-                observe(crate::route::availability_frames(registered), credential)
-                    .await
-                    .unwrap();
+            let mut observation = observe(
+                crate::route::availability_frames(registered),
+                credential,
+                None,
+            )
+            .await
+            .unwrap();
             if revoke {
                 cache.invalidate().unwrap();
             } else {

@@ -268,9 +268,15 @@ impl Budget<'_> {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(Status::deadline_exceeded("operation deadline expired"));
                 }
-                tokio::time::timeout_at(deadline, work)
+                let result = tokio::time::timeout_at(deadline, work)
                     .await
-                    .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?
+                    .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?;
+                // The transport can complete with its own timeout in the same
+                // poll. The original deadline still owns result admission.
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(Status::deadline_exceeded("operation deadline expired"));
+                }
+                result
             }
             Self::Operation { context, .. } => context.run(work).await.map_err(stopped_status)?,
         }

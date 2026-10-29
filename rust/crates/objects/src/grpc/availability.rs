@@ -1,5 +1,5 @@
 use super::*;
-use crate::availability::client::{Credential, observe};
+use crate::availability::client::{Credential, observe, open};
 use futures::StreamExt as _;
 
 impl GrpcObjects {
@@ -7,9 +7,11 @@ impl GrpcObjects {
         &self,
         digest: Digest,
     ) -> Result<crate::Availability, Error> {
-        // Only opening is finite. An idle observation has no reconnect timer.
-        tokio::time::timeout(REQUEST_TIMEOUT, async {
+        open(self.context.as_ref(), async {
             let credential = Credential::resolve(Some(&self.credential)).await?;
+            if let Some(context) = &self.context {
+                context.check()?;
+            }
             let message = wire::AvailabilityRequest {
                 digest: Some(digest.into()),
             };
@@ -19,9 +21,12 @@ impl GrpcObjects {
                 .ok_or(Error::from(wire::ErrorCode::AccessDenied))?;
             let request = acyclic_auth::channel::retained_request(message, lease)
                 .map_err(|status| error_from_status(&status))?;
-            let response = Self::client(acyclic_auth::channel::guard(self.channel.clone()))
-                .availability(request)
-                .await;
+            let response = Self::client(
+                acyclic_auth::channel::guard(self.channel.clone())
+                    .with_context(self.context.clone()),
+            )
+            .availability(request)
+            .await;
             if response.as_ref().is_err_and(|status| {
                 status.code() == tonic::Code::Unauthenticated
                     && std::error::Error::source(status).is_none()
@@ -38,10 +43,10 @@ impl GrpcObjects {
                     .into_inner()
                     .map(|event| event.map_err(|status| error_from_status(&status))),
                 credential,
+                self.context.clone(),
             )
             .await
         })
         .await
-        .map_err(|_| Error::from(wire::ErrorCode::DeadlineElapsed))?
     }
 }

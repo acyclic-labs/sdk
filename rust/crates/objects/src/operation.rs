@@ -9,7 +9,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[cfg(feature = "grpc")]
 pub(super) const MAX_DEADLINE: Duration = Duration::from_secs(99_999_999 * 3600);
 
-#[cfg(feature = "http")]
 pub(crate) async fn run<T>(
     context: Option<&Context>,
     work: impl Future<Output = Result<T, Error>>,

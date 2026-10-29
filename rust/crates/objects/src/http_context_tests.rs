@@ -132,24 +132,31 @@ async fn original_context_owns_http_body_progress_and_clones() -> TestResult {
 
 #[tokio::test]
 async fn a_credential_callback_cannot_cancel_then_dispatch_http() -> TestResult {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("http://{}/", listener.local_addr()?);
-    let (cancel, cancelled) = oneshot::channel();
-    let cancel = std::sync::Mutex::new(Some(cancel));
-    let provider = CredentialProvider::new(move || {
-        cancel.lock().unwrap().take().unwrap().send(()).unwrap();
-        std::future::ready(Ok("fixture".into()))
-    });
-    let objects = HttpObjects::with_credential_provider(&endpoint, provider, 4096, None)?
-        .with_context(Context::new(u64::MAX, pending(), async {
-            let _ = cancelled.await;
-        }));
-    assert_eq!(
-        objects.usage().await.unwrap_err().stopped,
-        Some(Stopped::Cancelled)
-    );
-    assert!(
-        matches!(listener.into_std()?.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-    );
+    for availability in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}/", listener.local_addr()?);
+        let (cancel, cancelled) = oneshot::channel();
+        let cancel = std::sync::Mutex::new(Some(cancel));
+        let provider = CredentialProvider::new(move || {
+            cancel.lock().unwrap().take().unwrap().send(()).unwrap();
+            std::future::ready(Ok("fixture".into()))
+        });
+        let objects = HttpObjects::with_credential_provider(&endpoint, provider, 4096, None)?
+            .with_context(Context::new(u64::MAX, pending(), async {
+                let _ = cancelled.await;
+            }));
+        let result = if availability {
+            objects
+                .availability(Digest::of(b"stopped callback"))
+                .await
+                .map(|_| ())
+        } else {
+            objects.usage().await.map(|_| ())
+        };
+        assert_eq!(result.unwrap_err().stopped, Some(Stopped::Cancelled));
+        assert!(
+            matches!(listener.into_std()?.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
     Ok(())
 }

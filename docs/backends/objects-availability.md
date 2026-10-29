@@ -35,6 +35,9 @@ canonical length-delimited Protobuf stream at `blobs/availability`; gateways
 use `route::invoke_stream` after authentication and retain their original grant
 through each disclosure. Both clients retain the original credential and end
 idle observations on custodian-provided change events or absolute expiry.
+With `with_context`, opening and later waits share the caller's original
+deadline and cancellation event, including its typed stop reason. Only an
+opening without a caller context uses the default finite timeout.
 An idle observation has no reconnect timer. Producer/transport EOF and
 malformed cursors fail closed. gRPC and HTTP/2 multiplex observations over the
 client's shared transport; deploy HTTP/2 for HTTP subscription fanout.

@@ -183,6 +183,37 @@ fn resolved_client(resolve: AccountResolver, token: &'static str) -> GrpcObjects
     )
 }
 
+#[tokio::test(start_paused = true)]
+async fn grpc_availability_retains_original_context_at_open_and_delivery() -> TestResult {
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"context")?);
+    let source = account.availability_source().clone();
+    let resolve: AccountResolver = Arc::new(move |_| Ok(account.clone()));
+    crate::availability::client::context_tests::verify(
+        |context, credential| {
+            Box::new(client_over(resolve.clone(), credential).with_context(context))
+        },
+        source,
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+#[should_panic(expected = "original stop must settle availability opening")]
+async fn negative_control_availability_ignoring_context_keeps_opening() {
+    let store = crate::Store::new(crate::MemoryMedium::default());
+    let account = Arc::new(store.account(b"ignored-context").unwrap());
+    let source = account.availability_source().clone();
+    let resolve: AccountResolver = Arc::new(move |_| Ok(account.clone()));
+    crate::availability::client::context_tests::verify(
+        |_context, credential| Box::new(client_over(resolve.clone(), credential)),
+        source,
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn grpc_availability_runs_shared_accounts_and_retains_source_failure() -> TestResult {
     use futures::FutureExt as _;

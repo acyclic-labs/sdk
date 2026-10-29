@@ -145,3 +145,42 @@ async fn http_availability_uses_shared_accounts_framing_and_terminal_failure() -
     );
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn http_availability_retains_original_context_at_open_and_delivery() -> TestResult {
+    let service = Service {
+        store: crate::Store::new(crate::MemoryMedium::default()),
+        granted: Arc::new(AtomicBool::new(true)),
+    };
+    let source = service
+        .store
+        .account(b"first")?
+        .availability_source()
+        .clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:15442").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let router = axum::Router::new().fallback(dispatch).with_state(service);
+    let (stop, stopped) = futures::channel::oneshot::channel();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async {
+                let _ = stopped.await;
+            })
+            .await
+    });
+    let result = crate::availability::client::context_tests::verify(
+        |context, credential| {
+            Box::new(
+                HttpObjects::with_credential_provider(&endpoint, credential, 1024 * 1024, None)
+                    .unwrap()
+                    .with_context(context),
+            )
+        },
+        source,
+    )
+    .await;
+    stop.send(()).unwrap();
+    server.await??;
+    result?;
+    Ok(())
+}
