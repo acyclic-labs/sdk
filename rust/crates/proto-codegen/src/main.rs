@@ -9,6 +9,21 @@ mod service;
 
 fn main() -> io::Result<()> {
     let generator = std::env::args().nth(1);
+    if generator.as_deref() == Some("canonicalize") {
+        let args = std::env::args().skip(2).collect::<Vec<_>>();
+        let [family, input, output] = args.as_slice() else {
+            return Err(io::Error::other(
+                "canonicalize expects family, input and output",
+            ));
+        };
+        let (_, _, roots) = acyclic_proto_build::FAMILIES
+            .iter()
+            .find(|(name, _, _)| *name == family)
+            .ok_or_else(|| io::Error::other("unknown descriptor family"))?;
+        let bytes = acyclic_proto_build::canonicalize(&std::fs::read(input)?, roots)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        return std::fs::write(output, bytes);
+    }
     if generator.as_deref() == Some("descriptors") {
         let args = std::env::args().skip(2).collect::<Vec<_>>();
         let [root, output] = args.as_slice() else {
@@ -57,6 +72,6 @@ fn main() -> io::Result<()> {
         return serde_json::to_writer(io::stdout(), &facts).map_err(io::Error::other);
     }
     Err(io::Error::other(
-        "expected descriptors, readonly, native-absence, service or native-family generator",
+        "expected descriptors, canonicalize, readonly, native-absence, service or native-family generator",
     ))
 }

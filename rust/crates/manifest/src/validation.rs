@@ -74,19 +74,7 @@ fn label(value: &str) -> bool {
     acyclic_auth::addressing::validate_dns_label(value.as_bytes()).is_ok()
 }
 pub(crate) fn hostname(value: &str) -> bool {
-    value.len() <= 253
-        && value.contains('.')
-        && value.split('.').all(label)
-        && value
-            .rsplit('.')
-            .next()
-            .is_some_and(|tail| !tail.bytes().all(|b| b.is_ascii_digit()))
-        && !value.split('.').any(|part| {
-            part.strip_prefix("0x")
-                .is_some_and(|digits| digits.bytes().all(|b| b.is_ascii_hexdigit()))
-        })
-        && !value.ends_with(".localhost")
-        && !value.ends_with(".local")
+    acyclic_actors::domain::EgressRule::valid_host(value)
 }
 fn digest(value: &str) -> bool {
     value.len() == 64
@@ -431,18 +419,8 @@ fn validate_entries<'a>(
                 &ep,
                 "fetch-binding-name",
             )?;
-            let mut destinations = HashSet::new();
-            require(!fetch.egress.is_empty(), &ep, "fetch-egress-required")?;
-            for rule in &fetch.egress {
-                require(
-                    hostname(&rule.host)
-                        && rule.port != 0
-                        && destinations.insert((&rule.host, rule.port)),
-                    &ep,
-                    "https-authority",
-                )?;
-                *work += 1;
-            }
+            deployment_fetch(entry)?;
+            *work += fetch.egress.len();
         }
         match &entry.runtime {
             EntryRuntime::ActorNamespace { subscriptions, .. } => {
@@ -593,6 +571,7 @@ fn lower_actor_unchecked(
     };
     let (digest, selected) = deployment_parts(bindings, entry)?;
     let selected_secrets = deployment_secrets(secrets, entry)?;
+    let selected_fetch = deployment_fetch(entry)?;
     DeploymentRequest::new(
         acyclic_actors::domain::ActorNamespace::new(entry.name.clone())
             .map_err(|_| ManifestError::invalid("entry.name", "namespace"))?,
@@ -604,6 +583,7 @@ fn lower_actor_unchecked(
     )
     .and_then(|request| request.with_jurisdiction(jurisdiction.clone()))
     .and_then(|request| request.with_secrets(selected_secrets))
+    .and_then(|request| request.with_fetch(selected_fetch))
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
@@ -794,6 +774,7 @@ fn lower_worker_unchecked(
         .map_err(|_| ManifestError::invalid("entry.name", "worker-label"))?;
     let (digest, selected) = deployment_parts(bindings, entry)?;
     let selected_secrets = deployment_secrets(secrets, entry)?;
+    let selected_fetch = deployment_fetch(entry)?;
     let limits = WorkerLimits::new(
         limits.cpu_millis,
         limits.memory_bytes,
@@ -809,8 +790,30 @@ fn lower_worker_unchecked(
         idempotency_key.into(),
     )
     .and_then(|request| request.with_secrets(selected_secrets))
+    .and_then(|request| request.with_fetch(selected_fetch))
     .map_err(|_| ManifestError::invalid("entry.runtime", "workers-admission"))
 }
+fn deployment_fetch(
+    entry: &Entry,
+) -> Result<Option<acyclic_actors::domain::FetchBinding>, ManifestError> {
+    entry
+        .fetch
+        .as_ref()
+        .map(|fetch| {
+            let rules = fetch
+                .egress
+                .iter()
+                .map(|rule| {
+                    acyclic_actors::domain::EgressRule::new(rule.host.clone(), u32::from(rule.port))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))?;
+            acyclic_actors::domain::FetchBinding::new(fetch.name.clone(), rules)
+                .map_err(|_| ManifestError::invalid("entry.fetch", "https-authority"))
+        })
+        .transpose()
+}
+
 fn deployment_parts(
     bindings: &HashMap<&str, &Contract<Binding>>,
     entry: &Entry,

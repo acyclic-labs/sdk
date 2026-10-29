@@ -1,3 +1,13 @@
+/** A host-installed, deployment-selected HTTPS capability.
+ * The host retains the original invocation and Request signal through header
+ * disclosure and every lazy body pull. Cancelling either lifetime cancels both
+ * directions. Destinations come only from the committed manifest selection;
+ * redirects never widen that authority. No response body is eagerly buffered.
+ */
+export interface Fetch {
+  fetch(request: Request): Promise<Response>;
+}
+
 export async function readBindingRequestBody(request: Request, signal: AbortSignal): Promise<Uint8Array> {
   if (!request.body) { signal.throwIfAborted(); return new Uint8Array(); }
   const reader = request.body.getReader(), chunks: Uint8Array[] = [];

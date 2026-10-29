@@ -9,4 +9,4 @@ export { credentialProvider, type CredentialProvider, type CredentialOptions } f
 export * from "./namespace.js";
 export * from "./durable.js";
 
-export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody } from "./binding-fetch.js";
+export { bindingRequest, bindingResponse, bindingSignal, readBindingRequestBody, type Fetch } from "./binding-fetch.js";

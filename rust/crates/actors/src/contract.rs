@@ -118,6 +118,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         }
     }
     validate_secret_selections(&request.secrets, &request.bindings)?;
+    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
     Ok(())
 }
 
@@ -149,6 +150,24 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
         }
     }
     validate_secret_selections(&request.secrets, &request.bindings)?;
+    validate_fetch_selection(request.fetch.as_ref(), &request.secrets, &request.bindings)?;
+    Ok(())
+}
+
+fn validate_fetch_selection(
+    fetch: Option<&wire::FetchBinding>,
+    secrets: &[wire::SecretSelection],
+    bindings: &[wire::Binding],
+) -> Result<(), ContractError> {
+    if let Some(fetch) = fetch {
+        domain::FetchBinding::try_from(fetch.clone())
+            .map_err(|_| ContractError::InvalidArgument)?;
+        if secrets.iter().any(|secret| secret.name == fetch.name)
+            || bindings.iter().any(|binding| binding.name == fetch.name)
+        {
+            return Err(ContractError::DuplicateName);
+        }
+    }
     Ok(())
 }
 
@@ -254,8 +273,8 @@ pub use generated::{
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
     CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
     DeleteWorkerRequestProto, DeleteWorkerResponseProto, DeploymentObservationProto,
-    DeploymentRequestProto, DeploymentResponseProto, ErrorCode, HeaderProto,
-    InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
+    DeploymentRequestProto, DeploymentResponseProto, EgressRuleProto, ErrorCode, FetchBindingProto,
+    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
     InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
     RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SecretSelectionProto,

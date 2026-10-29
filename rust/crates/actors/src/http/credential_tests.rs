@@ -37,6 +37,7 @@ async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
     ));
     let namespace = wire::DeploymentRequest {
         secrets: Vec::new(),
+        fetch: None,
         worker_limits: None,
         limits: Some(wire::ActorLimits {
             handler_timeout_millis: 1,

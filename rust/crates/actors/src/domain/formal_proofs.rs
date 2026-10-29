@@ -292,6 +292,7 @@ fn update_expected_configuration_revision_is_lossless() {
     let revision: u64 = kani::any();
     let value = super::UpdateNamespaceRequest::try_from(crate::wire::UpdateNamespaceRequest {
         secrets: Vec::new(),
+        fetch: None,
         account_id: Vec::new(),
         namespace_id: "a".into(),
         code_sha256: vec![1; 32].into(),

@@ -124,15 +124,26 @@ message DeploymentRequest {
   uint64 expected_revision = 10;
   WorkerLimits worker_limits = 11;
   repeated SecretSelection secrets = 12;
+  FetchBinding fetch = 13;
 }
 
 message DeploymentResponse {
   DeploymentObservation deployment = 1;
 }
 
+message EgressRule {
+  string host = 1;
+  uint32 port = 2;
+}
+
 message Error {
   ErrorCode code = 1;
   string message = 2;
+}
+
+message FetchBinding {
+  string name = 1;
+  repeated EgressRule egress = 2;
 }
 
 message Header {
@@ -251,6 +262,7 @@ message UpdateNamespaceRequest {
   string idempotency_key = 6;
   bytes account_id = 91;
   repeated SecretSelection secrets = 7;
+  FetchBinding fetch = 8;
 }
 
 message UpdateNamespaceResponse {

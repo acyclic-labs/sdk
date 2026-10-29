@@ -32,6 +32,9 @@ pub struct DeploymentRequest {
     worker_limits: Option<WorkerLimits>,
     #[wire(tag = 12, message)]
     secrets: Vec<SecretSelection>,
+    #[wire(tag = 13, message)]
+    #[ts(optional)]
+    fetch: Option<FetchBinding>,
 }
 
 impl DeploymentRequest {
@@ -53,6 +56,7 @@ impl DeploymentRequest {
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             secrets: Vec::new(),
+            fetch: None,
             limits: Some(limits.into()),
             subscriptions: subscriptions.into_iter().map(Into::into).collect(),
             idempotency_key,
@@ -74,6 +78,7 @@ impl DeploymentRequest {
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             secrets: Vec::new(),
+            fetch: None,
             limits: None,
             worker_limits: Some(limits.into()),
             subscriptions: vec![],
@@ -139,6 +144,16 @@ impl DeploymentRequest {
     pub fn secrets(&self) -> &[SecretSelection] {
         &self.secrets
     }
+    /// Full replacement of outbound HTTPS authority; None revokes the handle.
+    pub fn with_fetch(mut self, fetch: Option<FetchBinding>) -> Result<Self, DomainError> {
+        self.fetch = fetch;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
+    /// The explicitly selected outbound HTTPS handle.
+    pub fn fetch(&self) -> Option<&FetchBinding> {
+        self.fetch.as_ref()
+    }
     /// Returns bindings in their request order.
     pub fn bindings(&self) -> &[Binding] {
         &self.bindings
@@ -186,6 +201,9 @@ pub struct UpdateNamespaceRequest {
     pub(super) account_id: Vec<u8>,
     #[wire(tag = 7, message)]
     secrets: Vec<SecretSelection>,
+    #[wire(tag = 8, message)]
+    #[ts(optional)]
+    fetch: Option<FetchBinding>,
 }
 
 impl UpdateNamespaceRequest {
@@ -204,6 +222,7 @@ impl UpdateNamespaceRequest {
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             secrets: Vec::new(),
+            fetch: None,
             limits: Some(limits.into()),
             expected_configuration_revision,
             idempotency_key,
@@ -234,6 +253,16 @@ impl UpdateNamespaceRequest {
     /// Ordered reference selections, never credential values.
     pub fn secrets(&self) -> &[SecretSelection] {
         &self.secrets
+    }
+    /// Full replacement of outbound HTTPS authority; None revokes the handle.
+    pub fn with_fetch(mut self, fetch: Option<FetchBinding>) -> Result<Self, DomainError> {
+        self.fetch = fetch;
+        self.validate_from_proto()?;
+        Ok(self)
+    }
+    /// The explicitly selected outbound HTTPS handle.
+    pub fn fetch(&self) -> Option<&FetchBinding> {
+        self.fetch.as_ref()
     }
     /// Returns bindings in their request order.
     pub fn bindings(&self) -> &[Binding] {
