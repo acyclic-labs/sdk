@@ -28,8 +28,6 @@ macro_rules! ceiling {
         }
     };
 }
-ceiling!(effect_status, EffectStatus, 24);
-ceiling!(effect_state, EffectState, 712);
 ceiling!(extension_binding, registry::ExtensionBinding, 192);
 ceiling!(extension_admission, ExtensionAdmission, 88);
 ceiling!(scope, Scope, 160);

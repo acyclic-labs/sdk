@@ -3,7 +3,7 @@
 use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
 use crate::{
-    AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId, Result,
+    AgentId, Capabilities, Error, Result,
     conversation::{
         ConversationMessage, FileRef, ModelContextSelection, VolumeOperation, VolumeOwner,
         is_internal_path,
@@ -18,14 +18,12 @@ use std::sync::Arc;
 mod authority;
 mod capability_bytes;
 mod copying;
-mod effects;
 #[cfg(test)]
 mod element_sizes;
 mod extension_types;
 mod filesystem_access;
 pub(crate) use filesystem_access::{
-    ReadGrant, contains_content_grant_with_work, directory_read_grant,
-    directory_read_granted_with_work, file_read_grant, filesystem_scope_label,
+    ReadGrant, directory_read_granted_with_work, file_read_grant, filesystem_scope_label,
     volume_write_granted_with_work,
 };
 pub(crate) mod ownership;
@@ -44,8 +42,6 @@ pub use authority::{
     AUTHORITY_ID_FORBIDDEN_EXACT, AUTHORITY_ID_FORBIDDEN_SEPARATORS, AggregateKind, Authority,
     AuthorityIssuer, AuthorityRoot, AuthorityVerifier, Scope,
 };
-
-pub use effects::{EffectAttestation, EffectGuarantee, EffectState, EffectStatus};
 
 pub use records::EventReference;
 

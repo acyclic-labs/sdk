@@ -127,27 +127,13 @@ proptest! {
     #[test]
     fn json_storage_is_counted(value in json_values()) { covers(value).map_err(|error| TestCaseError::fail(error.to_string()))?; }
     #[test]
-    fn typed_dto_storage_is_counted(payload in json_values(), spare in 0..128usize) {
-        for value in dto_corpus(payload, spare).map_err(|error| TestCaseError::fail(error.to_string()))? { covers(value).map_err(|error| TestCaseError::fail(error.to_string()))?; }
+    fn typed_dto_storage_is_counted(payload in json_values()) {
+        for value in dto_corpus(payload).map_err(|error| TestCaseError::fail(error.to_string()))? { covers(value).map_err(|error| TestCaseError::fail(error.to_string()))?; }
     }
 }
 
-fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> {
-    let file = fixture!(FileRef, "file-ref")?;
-    let effect = EffectState {
-        provider: "provider".into(),
-        guarantee: EffectGuarantee::ExactlyOnce,
-        effect_kind: "send".into(),
-        request: Box::new(file.clone()),
-        request_digest: [0; 32],
-        result_schema: file,
-        result_schema_digest: [0; 32],
-        status: EffectStatus::Planned,
-        planning: None,
-        attempts: Vec::with_capacity(spare),
-    };
+fn dto_corpus(payload: Value) -> Result<Vec<Box<dyn OwnedBytes>>> {
     let output: Vec<Box<dyn OwnedBytes>> = vec![
-        Box::new(effect),
         Box::new(payload),
         Box::new(fixture!(ConversationMessage, "conversation-message")?),
         Box::new(fixture!(InteractionResolution, "interaction-resolution")?),
