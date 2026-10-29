@@ -205,7 +205,7 @@ pub fn fingerprint(bytes: &[u8]) -> Result<String> {
 fn retained_review(
     bytes: Option<&[u8]>,
     expected: &ApprovalReviewFile,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 ) -> Result<Option<ApprovalReviewFile>> {
     bytes
         .map(|bytes| {
