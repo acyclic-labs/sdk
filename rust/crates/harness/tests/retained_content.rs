@@ -158,7 +158,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &attached_directory,
             "messages/current.txt",
             Some(&listed_generation),
-            64,
+            Some(64),
             acyclic_harness::conversation::ContentAccess::default(),
         )
         .await?
@@ -341,7 +341,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 Some(&listed_generation),
-                64,
+                Some(64),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?
@@ -356,7 +356,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
                 &attached_directory,
                 "messages/current.txt",
                 None,
-                64,
+                Some(64),
                 acyclic_harness::conversation::ContentAccess::default(),
             )
             .await?

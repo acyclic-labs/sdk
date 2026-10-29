@@ -229,10 +229,11 @@ impl NativeSkills {
         volume: &'a VolumeRef,
         generation: &'a crate::resources::GenerationRef,
         path: &'a str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<acyclic_stream::OwnedBytes>>>
     {
+        let maximum = maximum.into();
         crate::conversation::BoundedContentFuture::new(io, || {
             self.read_retained(volume, generation, path, maximum, io)
         })
@@ -243,7 +244,7 @@ impl NativeSkills {
         volume: &VolumeRef,
         generation: &crate::resources::GenerationRef,
         path: &str,
-        maximum: u64,
+        maximum: Option<u64>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if !self.matches(volume, generation, path) {
@@ -279,7 +280,7 @@ impl NativeSkills {
         &self,
         volume: &VolumeRef,
         record: &ShadowSource,
-        maximum: u64,
+        maximum: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if &record.volume != volume {
@@ -324,7 +325,7 @@ impl NativeSkills {
     async fn read_native(
         volume: &VolumeRef,
         record: &Source,
-        maximum: u64,
+        maximum: Option<u64>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         if record.volume != *volume {
@@ -336,7 +337,7 @@ impl NativeSkills {
             .node
             .logical_bytes
             .ok_or_else(|| Error::Invalid("skill length is absent".into()))?;
-        if length > maximum {
+        if maximum.is_some_and(|maximum| length > maximum) {
             return Err(Error::Invalid("skill body exceeds byte bound".into()));
         }
         let cancellation = work.cancellation();

@@ -321,7 +321,7 @@ pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
         _granted_prefix: &'a str,
         _path: &'a str,
         _expected_generation: Option<&'a GenerationRef>,
-        _maximum_bytes: u64,
+        _maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<
@@ -684,7 +684,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'io>,
     ) -> Result<
         BoundedContentFuture<

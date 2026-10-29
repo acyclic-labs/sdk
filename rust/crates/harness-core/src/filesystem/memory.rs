@@ -489,7 +489,7 @@ impl<
                 granted_prefix,
                 path,
                 expected_generation,
-                u64::MAX,
+                Some(u64::MAX),
                 crate::conversation::ContentAccess::default(),
             )?
             .await
