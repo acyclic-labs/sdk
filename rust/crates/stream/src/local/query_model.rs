@@ -31,11 +31,10 @@ pub(super) async fn submit_file<C, T, E>(
     operation: impl FnOnce(&acyclic_native_runtime::FileLease, &mut C) -> std::result::Result<T, E>,
 ) -> std::result::Result<std::result::Result<T, E>, tokio::task::JoinError> {
     spawn_blocking(move || {
-        let (lease, mut custody) = acquire()?;
-        let result = operation(&lease, &mut custody);
-        drop(lease);
-        drop(custody);
-        result
+        // Fields drop in order even when the operation unwinds, matching the
+        // production owner: the lease retires before its original custody.
+        let mut owned = acquire()?;
+        operation(&owned.0, &mut owned.1)
     })
     .await
 }
