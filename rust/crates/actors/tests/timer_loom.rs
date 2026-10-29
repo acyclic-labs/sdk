@@ -32,11 +32,36 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
     let inbox = StreamPath::new("inbox")?;
     let retained = MemoryStream::default();
     // Delivery commits, but its caller crashes before acknowledging the receipt.
-    let first = block_on(fire(&retained, &timer, inbox.clone(), 1))?;
+    let original = block_on(fire(&retained, &timer, inbox.clone(), 1))?;
     let restarted = MemoryStream::default();
     // Production recovery releases the source read lock before taking the target
     // write lock. A reopened handle is published only after recovery completes.
     block_on(acyclic_stream::verification::recover(&restarted, &retained))?;
+    // A new provider owns a new revision authority. Immutable publication facts
+    // survive recovery; subsequent retries within that authority keep its token.
+    let first = block_on(fire(&restarted, &timer, inbox.clone(), 1))?;
+    let (
+        Some(acyclic_stream::AppendOutcome::Committed(before)),
+        Some(acyclic_stream::AppendOutcome::Committed(after)),
+    ) = (&original, &first)
+    else {
+        return Err("timer publication was not committed".into());
+    };
+    assert_eq!(
+        (before.start, before.end, before.tail, before.commit_id),
+        (after.start, after.end, after.tail, after.commit_id),
+        "recovery changed immutable timer receipt"
+    );
+    assert_ne!(
+        (&before.revision.scope, before.revision.incarnation),
+        (&after.revision.scope, after.revision.incarnation),
+        "a replacement provider must not reuse the old revision authority"
+    );
+    assert_eq!(
+        block_on(retained.read_commit(before.commit_id))?,
+        block_on(restarted.read_commit(after.commit_id))?,
+        "recovery changed the timer's immutable envelope"
+    );
     drop(retained);
     let mut follow = acyclic_stream::records_only(block_on(
         restarted.follow(acyclic_stream::FollowRequest::new(inbox.clone(), 1)),
