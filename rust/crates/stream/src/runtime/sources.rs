@@ -330,10 +330,12 @@ impl<S: Stream + Unpin> ReadySources<S> {
                     // Register the parent before yielding a provider's Pending.
                     // Otherwise a last source can lose its producer while the
                     // only parent wake still names an earlier cooperative turn.
-                    match self.signal.poll(cx) {
-                        Poll::Ready(Ok(identity)) => self.wake(identity),
-                        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-                        Poll::Pending => {}
+                    loop {
+                        match self.signal.poll(cx) {
+                            Poll::Ready(Ok(identity)) => self.wake(identity),
+                            Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                            Poll::Pending => break,
+                        }
                     }
                     if self
                         .queues
