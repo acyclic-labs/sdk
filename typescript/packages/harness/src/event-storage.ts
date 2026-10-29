@@ -16,7 +16,7 @@ export interface EventStorage {
 export type StreamChange = readonly [path: string, subtree: boolean];
 /** Definitive placement decisions; rejected transport/durability promises are unknown. */
 export type Placement = { admitted: true } | { refused: "invalid_argument" | "conflict" | "capacity" };
-interface Registration { paths: string[]; generation: number; pending: boolean }
+interface Registration { paths: string[]; generation: number; pending: boolean; change: string }
 const PAGE_SIZE = 256;
 
 // Fixed-width code units preserve every JavaScript string and its prefixes.
@@ -46,7 +46,8 @@ export class WakeIndex {
       || row.paths.length !== 2 || row.paths.some(path => typeof path !== "string" || !path)
       || new Set(row.paths).size !== 2
       || !("generation" in row) || typeof row.generation !== "number" || !Number.isSafeInteger(row.generation)
-      || row.generation < 0 || !("pending" in row) || typeof row.pending !== "boolean") {
+      || row.generation < 0 || !("pending" in row) || typeof row.pending !== "boolean"
+      || !("change" in row) || typeof row.change !== "string" || !/^(0|[1-9][0-9]*)$/.test(row.change)) {
       throw new Error("STEP actor-wake-read failed; recovery: restore host metadata from a verified backup");
     }
     return row as Registration;
@@ -99,7 +100,7 @@ export class WakeIndex {
         return { refused: "capacity" };
       }
       if (!existing) {
-        this.storage.put(key, JSON.stringify({ paths, generation: 0, pending: false }));
+        this.storage.put(key, JSON.stringify({ paths, generation: 0, pending: false, change: "0" }));
         for (const path of paths) this.storage.put(`path/${indexKey(path)}`, actor);
         this.adjust("count/actors", 1);
       }
@@ -111,17 +112,26 @@ export class WakeIndex {
 
   /** Called inside the journal append's storage transaction. */
   changed(source: string, changes: readonly StreamChange[]): void {
-    const changed = new Set<string>();
+    if (changes.length === 0) return;
+    // Deduplicate in durable owner rows rather than retaining every affected
+    // actor in this transaction. Only the current index page stays resident.
+    const previous = this.storage.get("change");
+    const serial = previous === undefined ? "0" : decodeMetadata(previous);
+    if (typeof serial !== "string" || !/^(0|[1-9][0-9]*)$/.test(serial)) {
+      throw new Error("STEP actor-wake-read failed: invalid change; recovery: restore host metadata from a verified backup");
+    }
+    const change = (BigInt(serial) + 1n).toString();
+    this.storage.put("change", JSON.stringify(change));
     const mark = (actor: string) => {
-      if (actor === source || changed.has(actor)) return;
-      changed.add(actor);
+      if (actor === source) return;
       const value = this.storage.get(`actor/${indexKey(actor)}`);
       if (value === undefined) throw new Error("STEP actor-wake-read failed: missing owner; recovery: restore host metadata from a verified backup");
       const row = this.decode(value);
+      if (row.change === change) return;
       if (!Number.isSafeInteger(row.generation + 1)) {
         throw new Error("STEP actor-wake failed: generation exhausted; recovery: move actors to a new consistency domain");
       }
-      this.storage.put(`actor/${indexKey(actor)}`, JSON.stringify({ ...row, generation: row.generation + 1, pending: true }));
+      this.storage.put(`actor/${indexKey(actor)}`, JSON.stringify({ ...row, generation: row.generation + 1, pending: true, change }));
       this.storage.put(`pending/${indexKey(actor)}`, actor);
       if (!row.pending) this.adjust("count/pending", 1);
     };
