@@ -14,10 +14,12 @@ import time
 from native_fixture import fixture_environment
 from native_mcp import McpClient, McpFailure
 
+CASES = ("framed", "oversized-open", "oversized-delimited", "initialized",
+         "uninitialized", "invalid-frame", "closed-producer")
 options = argparse.ArgumentParser(description=__doc__)
 options.add_argument("binary")
 options.add_argument("--host", choices=("codex", "claude-code", "pi"))
-options.add_argument("--case", choices=("framed", "oversized-open", "oversized-delimited", "initialized", "uninitialized", "invalid-frame", "closed-producer"))
+options.add_argument("--case", choices=CASES)
 args = options.parse_args()
 binary = str(Path(args.binary).resolve())
 started = time.monotonic()
@@ -26,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
     root = Path(temporary)
     env = fixture_environment(root)
     for host in ([args.host] if args.host else ("codex", "claude-code", "pi")):
-        for case in ([args.case] if args.case else ("framed", "oversized-open", "oversized-delimited")):
+        for case in ([args.case] if args.case else CASES):
             process = subprocess.Popen([binary, "__mcp", host], cwd=root, env=env,
                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                        stderr=subprocess.PIPE)

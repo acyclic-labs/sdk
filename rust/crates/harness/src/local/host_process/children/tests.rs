@@ -183,9 +183,16 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
             .is_err(),
         "a competitor cannot claim the handed-off input"
     );
+    // The Pi adapter must retain the native assistant refusal even when its
+    // process reports success and another writer still holds stderr open.
+    let (events, exit) = if host == "pi" {
+        (include_str!("../fixtures/pi-assistant-error.jsonl"), "0")
+    } else {
+        ("", "17")
+    };
     let mut command = std::process::Command::new("/bin/sh");
-    command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf native-diagnostic >&2; exit 17", "fixture"])
-        .arg(state).current_dir(&view).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf '%s' \"$2\"; printf native-diagnostic >&2; exit \"$3\"", "fixture"])
+        .arg(state).arg(events).arg(exit).current_dir(&view).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
     let pid = loop {
@@ -220,6 +227,12 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
     let failure = completed["results"][0]["outcome"]["Failed"]["message"]
         .as_str()
         .ok_or("failed result absent")?;
+    if host == "pi" {
+        assert!(
+            failure.starts_with("No API key for provider: fixture"),
+            "native semantic refusal was lost: {failure}"
+        );
+    }
     assert!(failure.ends_with("native-diagnostic"), "{failure}");
     host_files::request(
         cwd,
