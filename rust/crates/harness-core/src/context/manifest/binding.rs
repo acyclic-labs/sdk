@@ -72,7 +72,7 @@ impl ContextManifest {
         let mut remaining = limits
             .render_bytes
             .checked_sub(crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&messages, limits.render_bytes, work)
+                crate::executor::json::json_byte_length(&messages, Some(limits.render_bytes), work)
             })?)
             .ok_or_else(|| {
                 stock_boundary(
@@ -99,7 +99,7 @@ impl ContextManifest {
                 .invoke_observed(reader, limits.file_bytes.min(remaining), io)
                 .await?;
             let size = crate::executor::with_history_io(io, |work| {
-                crate::executor::json::json_byte_length(&message, remaining, work)
+                crate::executor::json::json_byte_length(&message, Some(remaining), work)
             })?;
             remaining = remaining.checked_sub(size).ok_or_else(|| {
                 stock_boundary(

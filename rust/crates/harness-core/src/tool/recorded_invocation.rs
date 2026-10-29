@@ -110,7 +110,7 @@ fn validate<I: Serialize>(
                 metadata,
                 target: None,
             },
-            limits.file_bytes.min(limits.render_bytes),
+            Some(limits.file_bytes.min(limits.render_bytes)),
             crate::executor::json::RECORD_MAXIMUM_DEPTH,
             work,
         )?;
