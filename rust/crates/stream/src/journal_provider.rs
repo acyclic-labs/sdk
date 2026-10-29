@@ -253,19 +253,8 @@ impl StreamProvider for JournalStream {
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
         }
-        self.query(async move |provider| {
-            let projection = request.projection;
-            let mut view = provider.capture_heads(&request).await?;
-            for head in view.heads.iter_mut().flatten() {
-                head.durable = if projection == crate::HeadProjection::Tail {
-                    0
-                } else {
-                    head.tail
-                };
-            }
-            Ok(view)
-        })
-        .await
+        self.query(async move |provider| provider.capture_heads(&request, true).await)
+            .await
     }
 
     fn write(

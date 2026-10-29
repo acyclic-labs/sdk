@@ -1,9 +1,12 @@
 impl MemoryStream {
     /// Captures an already validated request whose minimum cut was awaited
     /// outside any adapter publication lock. There is no boxed inner dispatch.
+    /// `durable` confirms this captured state was durably published; deferred
+    /// providers instead fill their independently captured durability cut.
     pub(crate) async fn capture_heads(
         &self,
         request: &crate::HeadsRequest,
+        durable: bool,
     ) -> Result<crate::Heads, StreamError> {
         let state = self.state.read().await;
         let retained = request
@@ -35,7 +38,15 @@ impl MemoryStream {
         let heads = request
             .paths
             .iter()
-            .map(|path| head_at(&state, path, request.projection, request.durable_through))
+            .map(|path| {
+                head_at(
+                    &state,
+                    path,
+                    request.projection,
+                    request.durable_through,
+                    durable,
+                )
+            })
             .collect::<Result<_, _>>()?;
         let mut children = request.children.clone();
         if let Some(children) = &mut children {
@@ -64,6 +75,7 @@ fn head_at(
     path: &StreamPath,
     projection: crate::HeadProjection,
     through: Option<u64>,
+    durable: bool,
 ) -> Result<Option<crate::PathHead>, StreamError> {
     state
         .paths
@@ -75,7 +87,11 @@ fn head_at(
                 last: (projection == crate::HeadProjection::History)
                     .then(|| last_record(stream))
                     .flatten(),
-                durable: 0,
+                durable: if durable && projection != crate::HeadProjection::Tail {
+                    stream.tail
+                } else {
+                    0
+                },
                 origin: if projection == crate::HeadProjection::History {
                     state.paths.origin(path)?
                 } else {
@@ -242,7 +258,7 @@ impl StreamProvider for MemoryStream {
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let view = self.capture_heads(&request).await?;
+        let view = self.capture_heads(&request, false).await?;
         Ok(view)
     }
 
