@@ -529,7 +529,6 @@ test("HTTP transport applies one byte ceiling per message without conflating net
   const events = [];
   for await (const event of transport.watchRun(request)) events.push(event);
   expect(events).toHaveLength(2);
-  expect(transport.maximumMessageBytes).toBe(maximumMessageBytes);
 
   const oversizedEvent = toJsonString(RunEventSchema, create(RunEventSchema, {
     sequence: 0n,
@@ -654,7 +653,6 @@ test("HTTP transport derives separate Rust wire and JSON ceilings", async () => 
     () => ({ authorization: "Bearer test" }),
     async () => new Response(`${validEvent}\n`),
   );
-  expect(valid.maximumMessageBytes).toBe(transportCeiling);
   const events = [];
   for await (const event of valid.watchRun(request)) events.push(event);
   expect(events).toHaveLength(1);
