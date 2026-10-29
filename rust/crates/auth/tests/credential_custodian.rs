@@ -73,7 +73,10 @@ fn deferred_owner_requires_its_event_and_preserves_exact_rejection_after_replace
             "admit" => {
                 complete.send(()).unwrap();
                 let admitted = block_on(admission).unwrap();
-                assert!(admitted.retained_access().is_none(), "an async-only owner acquired a fabricated synchronous guard");
+                assert!(
+                    admitted.retained_access().is_none(),
+                    "an async-only owner acquired a fabricated synchronous guard"
+                );
             }
             "producer-loss" => {
                 drop(complete);
