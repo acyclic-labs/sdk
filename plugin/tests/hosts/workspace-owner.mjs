@@ -30,8 +30,10 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   await withOwnedCase({processes:scope,run:async()=>{
    const owner=await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env});
    console.log(JSON.stringify({event:'workspace-owner-ready'}));
-   const input=new Promise((yes,no)=>{process.stdin.once('end',yes);process.stdin.once('error',no);process.stdin.resume();});
-   await Promise.race([input,owner.closed.then(()=>{throw new Error('workspace owner ended before input closure');})]);
+   let ended,failed;
+   const input=new Promise((yes,no)=>{ended=yes;failed=no;process.stdin.once('end',ended);process.stdin.once('error',failed);process.stdin.resume();});
+   try {await Promise.race([input,owner.closed.then(()=>{throw new Error('workspace owner ended before input closure');})]);}
+   finally {process.stdin.pause();process.stdin.off('end',ended);process.stdin.off('error',failed);}
   }});
  }catch(error){
   console.error('step=workspace owner readiness: '+error.message+'; recovery='+JSON.stringify(process.argv));process.exitCode=1;
