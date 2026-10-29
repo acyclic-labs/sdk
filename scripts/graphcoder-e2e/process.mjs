@@ -60,7 +60,7 @@ export class Processes {
   // Windows Job custody kills the whole tree with its host; POSIX custody
   // kills only the executable on SIGUSR1 and still drains and reports it.
   startOwned(program, args, options = {}) {
-    const { scopeMountRoot, scopeInheritInput = false, scopePty = false, ...spawnOptions } = options;
+    const { scopeMountRoot, scopeInheritInput = false, scopePty = false, scopeRows = 24, scopeCols = 80, ...spawnOptions } = options;
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
@@ -70,17 +70,21 @@ export class Processes {
     const mountLease = process.platform === "linux" && scopeMountRoot
       ? ["--mount-root", scopeMountRoot, "--"] : [];
     const owned = this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
-      ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
+      ...(scopePty ? ["--pty", String(scopeRows), String(scopeCols)] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
     return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1"), get stdout() { return owned.stdout; } };
   }
   // The one real-terminal transport: ConPTY inside native Job custody on
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
   startTerminal(binary, args, options = {}) {
-    const env = { ...(options.env ?? process.env), TERM: "xterm-256color" };
-    if (process.platform !== "win32") return this.startOwned(binary, args, { scopeReportSignal: "SIGTERM", ...options, env, scopePty: true });
+    const { rows = 24, cols = 80, ...spawnOptions } = options;
+    const env = { ...(spawnOptions.env ?? process.env), TERM: "xterm-256color" };
+    if (process.platform !== "win32") {
+      terminalSize(rows, cols);
+      return this.startOwned(binary, args, { scopeReportSignal: "SIGTERM", ...spawnOptions, env, scopePty: true, scopeRows: rows, scopeCols: cols });
+    }
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
-    return this.startOwned(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    return this.startOwned(host, conptyArgs(binary, args, { rows, cols }), { ...spawnOptions, env, scopeInheritInput: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
@@ -107,7 +111,8 @@ export class Processes {
 }
 
 // The ConPTY host admits the launch paths plus typed options; the case owner holds the only deadline.
-export function conptyArgs(binary, args) {
+export function conptyArgs(binary, args, { rows = 24, cols = 80 } = {}) {
+  terminalSize(rows, cols);
   const flags = new Map();
   let resume = false;
   for (let index = 0; index < args.length; index++) {
@@ -120,7 +125,14 @@ export function conptyArgs(binary, args) {
   assert.ok(workspace && catalog && settings && model, "ConPTY host requires --workspace, --settings-root, --catalog and --model");
   const operation = flags.get("--operation");
   return [binary, workspace, catalog, settings, model, ...(resume ? ["--resume"] : []),
-    ...(operation === undefined ? [] : ["--operation", operation])];
+    ...(operation === undefined ? [] : ["--operation", operation]), "--rows", String(rows), "--cols", String(cols)];
+}
+
+function terminalSize(rows, cols) {
+  for (const [name, value] of [["rows", rows], ["cols", cols]]) {
+    assert.ok(Number.isInteger(value) && value > 0 && value <= 32767,
+      `step=conpty-arguments; invalid ${name}; recovery=use a ${name} integer in 1..32767`);
+  }
 }
 
 export class Events {

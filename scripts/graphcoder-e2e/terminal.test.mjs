@@ -16,8 +16,12 @@ const shown = (running, text) => new Promise((resolve, reject) => {
 
 test("ConPTY launch contract carries the shared terminal arguments and refuses others", () => {
   const args = ["--workspace", "W", "--settings-root", "S", "--catalog", "C", "--model", "m/x"];
-  assert.deepEqual(conptyArgs("B", args), ["B", "W", "C", "S", "m/x"]);
-  assert.deepEqual(conptyArgs("B", ["--operation", "id", ...args, "--resume"]).slice(5), ["--resume", "--operation", "id"]);
+  assert.deepEqual(conptyArgs("B", args), ["B", "W", "C", "S", "m/x", "--rows", "24", "--cols", "80"]);
+  assert.deepEqual(conptyArgs("B", ["--operation", "id", ...args, "--resume"], { rows: 31, cols: 101 }).slice(5),
+    ["--resume", "--operation", "id", "--rows", "31", "--cols", "101"]);
+  for (const options of [{ rows: 0 }, { cols: 32768 }, { rows: 1.5 }, { cols: "80" }]) {
+    assert.throws(() => conptyArgs("B", args, options), /step=conpty-arguments;.*recovery=/);
+  }
   // Negative controls: the native host has no channel for these.
   assert.throws(() => conptyArgs("B", [...args, "--operation", "a", "--operation", "b"]), /cannot launch argument --operation/);
   assert.throws(() => conptyArgs("B", [...args, "--operation"]), /cannot launch argument --operation/);
@@ -74,10 +78,10 @@ const bounded = (t, promise) => Promise.race([promise, new Promise((_, reject) =
 test("terminal root leads a sized session, takes raw input and drains output after exit", posix, async t => {
   const processes = new Processes();
   try {
-    const running = processes.startTerminal("python3", [fixture, "probe"]);
+    const running = processes.startTerminal("python3", [fixture, "probe"], { rows: 31, cols: 101 });
     const probe = await new Events(running.child.stdout, running.closed).wait(event => "tty" in event);
     // Owner budget: exactly one owner process between the test and the executable.
-    assert.deepEqual(probe, { tty: true, size: [80, 24], leader: true, foreground: true, parent: running.child.pid });
+    assert.deepEqual(probe, { tty: true, size: [101, 31], leader: true, foreground: true, parent: running.child.pid });
     // The interrupt reaches the root's foreground group, not its owner.
     running.child.stdin.write("\x03");
     await shown(running, "interrupted");

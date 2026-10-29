@@ -1,7 +1,7 @@
 """Own an external acceptance command until its services have stopped.
 
 Control stdin belongs only to this host: EOF cancels the command. With --pty
-the command runs on a new 24x80 terminal: control bytes become its input and
+the command runs on a sized terminal: control bytes become its input and
 its output is copied to stdout until every terminal holder has exited. Linux adopts
 orphaned descendants as a subreaper. macOS owns a new session, including service
 launchers' separate process groups. Neither boundary wraps the shipping orphan
@@ -225,10 +225,13 @@ def main():
     command = sys.argv[1:]
     terminal = None
     if command[0] == "--pty":
+        rows, columns = int(command[1]), int(command[2])
+        if not (0 < rows <= 32767 and 0 < columns <= 32767):
+            raise ValueError("step=terminal-size; recovery=use rows and columns in 1..32767")
         # Opened before setsid, so this owner never acquires it as a terminal.
         terminal = os.openpty()
-        fcntl.ioctl(terminal[1], termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
-        command = command[1:]
+        fcntl.ioctl(terminal[1], termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+        command = command[3:]
     lease = None
     if command[0] == "--mount-root":
         if not linux or len(command) < 4 or command[2] != "--":

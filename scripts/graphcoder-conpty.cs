@@ -8,6 +8,31 @@ using System.Text;
 using System.Threading;
 
 public static class GraphcoderConPty {
+    public sealed class TerminalOptions {
+        public short Rows = 24, Columns = 80;
+        public string Arguments;
+        public static TerminalOptions Parse(string[] args) {
+            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID] [--rows ROWS] [--cols COLS]";
+            if (args.Length < 5) throw new ArgumentException(usage);
+            var options = new TerminalOptions();
+            var arguments = new StringBuilder(); int seen = 0;
+            for (int index = 5; index < args.Length; index++) {
+                string flag = args[index];
+                int bit = flag == "--resume" ? 1 : flag == "--operation" ? 2 : flag == "--rows" ? 4 : flag == "--cols" ? 8 : 0;
+                if (bit == 0 || (seen & bit) != 0) throw new ArgumentException(usage);
+                seen |= bit;
+                if (bit == 1) { arguments.Append(" --resume"); continue; }
+                if (++index == args.Length || args[index].Length == 0) throw new ArgumentException(usage);
+                if (bit == 2) { arguments.Append(" --operation ").Append(Quote(args[index])); continue; }
+                short dimension;
+                if (!Int16.TryParse(args[index], out dimension) || dimension <= 0)
+                    throw new ArgumentException(flag + " must be in 1..32767");
+                if (bit == 4) options.Rows = dimension; else options.Columns = dimension;
+            }
+            options.Arguments = arguments.ToString();
+            return options;
+        }
+    }
     static string recovery;
     static void Refuse(string step, Exception error) {
         Console.Error.WriteLine("step=conpty-" + step + "; error=" + error + "; recovery=" + recovery);
@@ -23,17 +48,9 @@ public static class GraphcoderConPty {
             RequireNativeCustody();
             step = "arguments";
             // Typed options only; the caller's owner holds the one deadline.
-            const string usage = "usage: conpty BINARY WORKSPACE CATALOG SETTINGS MODEL [--resume] [--operation ID]";
-            if (args.Length < 5) throw new ArgumentException(usage);
-            var options = new StringBuilder(); bool resume = false, operation = false;
-            for (int index = 5; index < args.Length; index++) {
-                if (args[index] == "--resume" && !resume) { resume = true; options.Append(" --resume"); }
-                else if (args[index] == "--operation" && !operation && index + 1 < args.Length && args[index + 1].Length != 0) {
-                    operation = true; options.Append(" --operation " + Quote(args[++index]));
-                } else throw new ArgumentException(usage);
-            }
+            TerminalOptions options = TerminalOptions.Parse(args);
             step = "terminal";
-            return Run(args[0], args[1], args[2], args[3], args[4], options.ToString());
+            return Run(args[0], args[1], args[2], args[3], args[4], options);
         } catch (Exception error) { Refuse(step, error); return 125; }
     }
     [StructLayout(LayoutKind.Sequential)] struct Coord { public short X, Y; }
@@ -102,7 +119,7 @@ public static class GraphcoderConPty {
             }
         }
     }
-    static int Run(string binary, string workspace, string catalog, string settings, string model, string options) {
+    static int Run(string binary, string workspace, string catalog, string settings, string model, TerminalOptions options) {
         if (!Path.IsPathRooted(binary) || !Path.IsPathRooted(workspace) || !Path.IsPathRooted(catalog) || !Path.IsPathRooted(settings))
             throw new ArgumentException("ConPTY paths must be absolute");
         IntPtr inRead = IntPtr.Zero, inWrite = IntPtr.Zero, outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
@@ -113,7 +130,7 @@ public static class GraphcoderConPty {
         try {
             Require(CreatePipe(out inRead, out inWrite, IntPtr.Zero, 0), "CreatePipe input");
             Require(CreatePipe(out outRead, out outWrite, IntPtr.Zero, 0), "CreatePipe output");
-            int hr = CreatePseudoConsole(new Coord { X = 80, Y = 24 }, inRead, outWrite, 0, out console);
+            int hr = CreatePseudoConsole(new Coord { X = options.Columns, Y = options.Rows }, inRead, outWrite, 0, out console);
             if (hr != 0) throw new COMException("CreatePseudoConsole unavailable; real Windows ConPTY is mandatory", hr);
             IntPtr size = IntPtr.Zero;
             InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
@@ -130,7 +147,7 @@ public static class GraphcoderConPty {
                 Require(SetStdHandle(-10, IntPtr.Zero), "clear inherited input");
                 Require(SetStdHandle(-11, IntPtr.Zero), "clear inherited output");
                 Require(SetStdHandle(-12, IntPtr.Zero), "clear inherited error");
-                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + options),IntPtr.Zero, IntPtr.Zero, false,
+                Require(CreateProcessW(binary, new StringBuilder(Quote(binary) + " --workspace " + Quote(workspace) + " --settings-root " + Quote(settings) + " --catalog " + Quote(catalog) + " --model " + Quote(model) + options.Arguments),IntPtr.Zero, IntPtr.Zero, false,
                     0x00080004, IntPtr.Zero, workspace, ref startup, out process), "CreateProcessW with real ConPTY");
             } finally {
                 bool restoredInput = SetStdHandle(-10, parentInput);
