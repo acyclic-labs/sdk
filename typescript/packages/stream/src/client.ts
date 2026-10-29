@@ -1,6 +1,5 @@
 import { DefaultStreamProvider } from "./default.js";
 import { MemoryStreamProvider } from "./memory.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
@@ -187,8 +186,8 @@ export class Stream<Value = Uint8Array> {
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
   append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {
-    if (values.length < 1 || values.length > StreamLimit.MAX_ITEMS) {
-      return Promise.reject(new StreamError("limit_exceeded", `append requires 1..${StreamLimit.MAX_ITEMS} records`));
+    if (values.length < 1) {
+      return Promise.reject(new StreamError("limit_exceeded", "append requires at least one record"));
     }
     if (options?.ifTail !== undefined) validateSequenceValue(options.ifTail);
     const authored = structuredClone(options);
