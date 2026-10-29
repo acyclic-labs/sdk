@@ -113,20 +113,28 @@ impl CallbackRuntime {
         }
     }
 
-    fn enter<T>(&self, poll: impl FnOnce() -> T) -> T {
+    fn enter<T>(&self, poll: impl FnOnce() -> T) -> std::io::Result<T> {
+        let current = tokio::runtime::Handle::try_current();
+        if current.as_ref().is_ok_and(|current| {
+            current.runtime_flavor() == tokio::runtime::RuntimeFlavor::CurrentThread
+        }) {
+            // Entering another handle cannot run siblings on this executor.
+            // Refuse before constructing work that could depend on them.
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
         let poll = || {
             let _runtime = self.handle.enter();
             let _inline = acyclic_native_runtime::InlineBlocking::enter();
             poll()
         };
-        match tokio::runtime::Handle::try_current() {
+        Ok(match current {
             Ok(current)
                 if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
             {
                 tokio::task::block_in_place(poll)
             }
             _ => poll(),
-        }
+        })
     }
 
     pub(in crate::native_mount) fn wait_prepared<T, E, F>(
@@ -140,8 +148,9 @@ impl CallbackRuntime {
     {
         // Admit the actual future before its constructor can run. Its box dies
         // before the allocation guard, including on cancellation and unwind.
-        let mut future =
-            self.enter(|| native_future(&prepared.work, || tokio::task::unconstrained(create())))?;
+        let mut future = self
+            .enter(|| native_future(&prepared.work, || tokio::task::unconstrained(create())))
+            .map_err(crate::NativeTreeMaterializationError::Io)??;
         self.poll_prepared(prepared, Pin::new(&mut future))
     }
 
@@ -149,13 +158,18 @@ impl CallbackRuntime {
     // The lease callback keeps its small future in its own measured stack frame;
     // large callback state uses the admitted box above. Neither is constructed
     // inside the polling frame.
-    pub(super) fn poll_prepared<F: Future>(
+    pub(super) fn poll_prepared<T, E, F>(
         &self,
         prepared: PreparedCallbackWait,
         future: Pin<&mut F>,
-    ) -> F::Output {
+    ) -> Result<T, E>
+    where
+        F: Future<Output = Result<T, E>>,
+        E: From<crate::NativeTreeMaterializationError>,
+    {
         let PreparedCallbackWait { parked, .. } = prepared;
         self.enter(|| Self::poll(future, &parked))
+            .map_err(crate::NativeTreeMaterializationError::Io)?
     }
 
     pub(in crate::native_mount) fn prepare_native_wait(
@@ -218,7 +232,7 @@ impl CallbackRuntime {
                 _allocation: None,
             });
             Ok(Self::poll(future, &parked))
-        })
+        })?
     }
 
     fn poll<F: Future + Unpin>(mut future: F, parked: &Arc<ParkedCallback>) -> F::Output {
