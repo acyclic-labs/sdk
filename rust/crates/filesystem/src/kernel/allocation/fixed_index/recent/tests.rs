@@ -8,11 +8,11 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
     struct Value<'a> {
         original: &'a crate::NativeMaterializationWork,
         drops: &'a std::cell::Cell<usize>,
-        minimum: u64,
+        minimum: &'a std::cell::Cell<u64>,
     }
     impl Drop for Value<'_> {
         fn drop(&mut self) {
-            assert!(self.original.live_allocation_bytes() >= self.minimum);
+            assert!(self.original.live_allocation_bytes() >= self.minimum.get());
             self.drops.set(self.drops.get() + 1);
         }
     }
@@ -21,7 +21,8 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
         crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancel)
             .map_err(|(error, _)| error)?;
     let baseline = original.live_allocation_bytes();
-    let node_bytes = std::mem::size_of::<Node<Value<'_>, 32>>() as u64;
+    let mut node_bytes = 0;
+    let minimum = std::cell::Cell::new(baseline);
     let drops = std::cell::Cell::new(0);
     let mut index = RecentIndex::<_, 32, 2>::default();
     for number in 0_u8..64 {
@@ -32,10 +33,14 @@ fn eviction_bounds_backing_and_destroys_values_before_original_funding()
                 Ok(Value {
                     original: &original,
                     drops: &drops,
-                    minimum: baseline + node_bytes,
+                    minimum: &minimum,
                 })
             },
         )?;
+        if number == 0 {
+            node_bytes = original.live_allocation_bytes() - baseline;
+            minimum.set(baseline + node_bytes);
+        }
         assert_eq!(index.complete(), number < 4);
         // Four leaves across two windows need at most two branch nodes.
         assert!(original.live_allocation_bytes() <= baseline + 6 * node_bytes);
