@@ -32,6 +32,7 @@
     "rust/crates/grpc-observability",
     "rust/crates/host-platform",
     "rust/crates/native-runtime",
+    "rust/crates/objects",
     "rust/crates/proto-codegen",
     "rust/crates/protobuf-json",
     "rust/crates/stream",
