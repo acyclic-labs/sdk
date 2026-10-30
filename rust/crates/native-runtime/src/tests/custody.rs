@@ -20,7 +20,7 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
     let maximum = 16 * 1024;
     let failure = tree
         .wait_with_output(
-            Duration::from_secs(1),
+            CaptureSchedule::Unbounded,
             maximum,
             Some(CaptureInput::Literal(b"refused input")),
             || Ok(()),
@@ -67,7 +67,7 @@ fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage()
     let maximum = 512 * 1024;
     let output = tree
         .wait_with_output(
-            Duration::from_secs(3),
+            CaptureSchedule::Unbounded,
             maximum,
             Some(CaptureInput::Literal(&input)),
             || Ok(()),
@@ -247,7 +247,7 @@ fn ownership_release_waits_for_physical_cleanup_and_retained_fences()
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {
     let mut command = std::process::Command::new("/bin/sh");
     command
-        .args(["-c", "printf out; printf err >&2; sleep 60"])
+        .args(["-c", "printf out; printf err >&2; exec cat >/dev/null"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -257,7 +257,7 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
     meter.allocation_limit = 0;
     let failure = tree
         .wait_with_output(
-            std::time::Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             16,
             Some(CaptureInput::Exchange {
                 initial: b"",
@@ -297,7 +297,7 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
 fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<()> {
     let mut command = std::process::Command::new("/bin/sh");
     command
-        .args(["-c", "printf out; sleep 60"])
+        .args(["-c", "printf out; exec cat >/dev/null"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -307,7 +307,7 @@ fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<(
     meter.allocation_limit = 0;
     let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         tree.wait_with_output(
-            std::time::Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             16,
             Some(CaptureInput::Exchange {
                 initial: b"",
@@ -409,7 +409,12 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
         (true, 3, 0, 8),
         (true, 0, 0, 0),
     ] {
-        let meter = Arc::new(ReadBudgetMeter::new(8, 8));
+        let owner = OwnershipAnchor::new(());
+        let retired = owner.release_barrier();
+        let meter = Arc::new(ReadBudgetMeter {
+            _retirement: Some(owner),
+            ..ReadBudgetMeter::new(8, 8)
+        });
         let storage = vec![0x55; 8];
         let identity = storage.as_ptr();
         let (storage, filled) = {
@@ -458,7 +463,8 @@ fn prepared_read_returns_same_owner_short_prefix_and_eof_without_header() -> io:
         );
         let weak = Arc::downgrade(&meter);
         drop(meter);
-        wait_until(|| weak.upgrade().is_none());
+        retired.wait();
+        assert!(weak.upgrade().is_none());
         drop(storage);
     }
     Ok(())
@@ -544,7 +550,7 @@ fn prepared_read_exact_eof_and_late_cancel_preserve_physical_work() -> io::Resul
             }
         );
         assert_eq!(meter.read.load(Ordering::Acquire), 3);
-        wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
+        meter.wait_for_memory_retirement()?;
     }
     Ok(())
 }
@@ -569,7 +575,7 @@ fn prepared_read_panic_preserves_original_payload_and_actual_work() -> io::Resul
     assert_eq!(meter.read.load(Ordering::Acquire), 3);
     drop(payload);
     drop(read);
-    wait_until(|| meter.memory.load(Ordering::Acquire) == 0);
+    meter.wait_for_memory_retirement()?;
     assert!(
         file.health
             .tail
