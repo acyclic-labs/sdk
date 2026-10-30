@@ -2,7 +2,8 @@ import { credentialProvider, resolveCredential, type CredentialOptions, type Cre
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
-import { ObjectsV1Error, ObjectsV1Provider } from "./v1.js";
+import { ObjectsV1Error, ObjectsV1Provider, objectsRequest, type ObjectsV1Request } from "./v1.js";
+import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
 export interface ObjectsV1HttpOptions extends CredentialOptions {
@@ -42,14 +43,17 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     // setTimeout carries at most a signed 32-bit millisecond delay.
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
   }
-  protected invoke(route: string, input: Uint8Array): Promise<Uint8Array> {
-    return observed(this.observer, "objects", route, sizes => this.send(route, input, sizes));
+  open(route: string, input: Uint8Array): ObjectsV1Request {
+    return objectsRequest(input, async (bytes, controller) => {
+      await ensureObjectsWasm(controller.signal);
+      return observed(this.observer, "objects", route,
+        sizes => this.send(route, bytes, controller, sizes));
+    });
   }
-  private async send(route: string, input: Uint8Array, sizes?: OperationSizes): Promise<Uint8Array> {
+  private async send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): Promise<Uint8Array> {
     const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, Number.MAX_SAFE_INTEGER);
     if (sizes) sizes.requestBytes = request.byteLength;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), this.timeoutMs);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let admitted: CredentialRequest | undefined;
     try {
@@ -87,8 +91,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       admitted = lease;
       return decoded;
     } catch (error) {
-      // The caller's deadline, whichever layer reported the abort.
-      throw controller.signal.aborted ? new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED) : error;
+      throw controller.signal.aborted ? controller.signal.reason : error;
     } finally {
       clearTimeout(timeout);
       await reader?.cancel().catch(() => {});

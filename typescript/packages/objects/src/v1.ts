@@ -2,7 +2,10 @@
 import { create, fromBinary, toBinary, type DescMessage, type MessageInitShape, type MessageShape } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { ObjectsV1Memory, objects_v1_digest, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
+import type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
+export type { ObjectsV1BinaryReply } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
+import { snapshotBytes } from "@acyclic-labs/auth";
 export * from "../generated/proto/objects/v1/objects_pb.js";
 
 export class ObjectsV1Error extends Error {
@@ -23,20 +26,60 @@ export async function blobDigest(bytes: Uint8Array): Promise<wire.Digest> {
   return create(wire.DigestSchema, { blake3: objects_v1_digest(bytes) });
 }
 
+/** One original unary operation. Closing it settles a pending pull and releases its owner. */
+export interface ObjectsV1Request {
+  next(): Promise<ObjectsV1BinaryReply | null>;
+  close(): void;
+}
+
+/** Canonical binary messages over the caller's existing account and credential owner. */
+export interface ObjectsV1BinaryPort {
+  /** Own the input before returning; later caller mutations cannot change this request. */
+  open(route: string, input: Uint8Array): ObjectsV1Request;
+}
+
+/** One transport's original abort controller, shared by its pull and cancellation. */
+export function objectsRequest(input: Uint8Array, start: (input: Uint8Array, controller: AbortController) => Promise<Uint8Array>): ObjectsV1Request {
+  let bytes: Uint8Array;
+  try { bytes = snapshotBytes(input); }
+  catch { throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT); }
+  const controller = new AbortController();
+  let pulled = false;
+  let closed = false;
+  let settled = false;
+  return {
+    async next() {
+      if (pulled || closed) return null;
+      pulled = true;
+      try { return { body: await start(bytes, controller) }; }
+      finally { settled = true; }
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      if (pulled && !settled) controller.abort(new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE));
+    },
+  };
+}
+
 /**
  * One canonical route per call. Every reply is checked against its request by
  * the same Rust rules the Rust clients use before it is returned.
  */
-export abstract class ObjectsV1Provider {
-  /** Sends one route's binary input message and returns its binary output message. */
-  protected abstract invoke(route: string, input: Uint8Array): Promise<Uint8Array>;
+export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
+  /** Own one lazy request through this provider's original transport. */
+  abstract open(route: string, input: Uint8Array): ObjectsV1Request;
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageInitShape<I>): Promise<MessageShape<O>> {
     await ensureObjectsWasm();
     try {
       const bytes = toBinary(input, create(input, value));
-      const reply = await this.invoke(route, bytes);
-      verify_objects_v1(route, bytes, reply);
-      return fromBinary(output, reply);
+      const request = this.open(route, bytes);
+      try {
+        const reply = await request.next();
+        if (reply === null) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+        verify_objects_v1(route, bytes, reply.body);
+        return fromBinary(output, reply.body);
+      } finally { request.close(); }
     } catch (error) { throw objectsV1Error(error); }
   }
   /** Publishes `body` under its own digest; `references` must already exist. */
@@ -67,7 +110,24 @@ export class MemoryObjectsV1 extends ObjectsV1Provider {
     await ensureObjectsWasm();
     return new MemoryObjectsV1(new ObjectsV1Memory());
   }
-  protected invoke(route: string, input: Uint8Array): Promise<Uint8Array> {
-    return this.memory.invoke(route, input);
+  open(route: string, input: Uint8Array): ObjectsV1Request {
+    const request = this.memory.open(route, input);
+    let closed = false;
+    let pulled = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      request.close();
+      if (!pulled) request.free();
+    };
+    return {
+      async next() {
+        if (closed || pulled) return null;
+        pulled = true;
+        try { return await request.next(); }
+        finally { close(); request.free(); }
+      },
+      close,
+    };
   }
 }

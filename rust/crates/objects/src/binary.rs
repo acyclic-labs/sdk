@@ -8,6 +8,9 @@ use bytes::Bytes;
 use prost::Message;
 use std::future::Future;
 
+#[cfg(all(feature = "javascript", target_arch = "wasm32"))]
+pub mod javascript;
+
 /// One admitted response and the original account revision serving it.
 pub type Reply = (Bytes, Option<Revision>);
 

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { spawn } from "node:child_process";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
 import { MemoryObjectsV1, blobDigest, verified } from "@acyclic-labs/objects";
@@ -15,7 +16,7 @@ const fail = (code) => error => error.code === code;
 const json = (name, schema, value) => Buffer.from(encode_objects_v1_json(name, toBinary(schema, create(schema, value)), 1 << 20));
 const replying = payload => async () => new Response(payload, { headers: { "content-type": "application/json" } });
 
-async function fixture() {
+async function fixture(beforeReply) {
   await MemoryObjectsV1.create(); // initialize the shared WASM runtime
   const memory = new ObjectsV1Memory();
   const seen = new Set();
@@ -30,6 +31,7 @@ async function fixture() {
       for await (const chunk of request) chunks.push(chunk);
       const input = decode_objects_v1_json(objects_v1_http_type(route, false), Buffer.concat(chunks), 1 << 30);
       const payload = Buffer.from(encode_objects_v1_json(objects_v1_http_type(route, true), await memory.invoke(route, input), 1 << 30));
+      if (beforeReply && !await beforeReply(response)) return;
       response.writeHead(200, { "content-type": "application/json" });
       for (let offset = 0; offset < payload.length; offset += 4099) response.write(payload.subarray(offset, offset + 4099));
       response.end();
@@ -46,6 +48,120 @@ async function fixture() {
     return { endpoint: `http://127.0.0.1:${server.address().port}`, seen, close };
   } catch (error) { await close(); throw error; }
 }
+
+test("Objects original request boundary initializes and owns bytes before a fresh HTTP pull", async () => {
+  const server = await fixture();
+  try {
+    // The server's runtime cannot initialize this independent client's module.
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { create, toBinary } from "@bufbuild/protobuf";
+      import * as wire from "@acyclic-labs/objects/proto";
+      import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
+      import { snapshotBytes } from "@acyclic-labs/auth";
+      const client = new HttpObjectsV1({endpoint: process.argv[1], token: "fixture"});
+      const expected = new Uint8Array(32).fill(61);
+      const encoded = toBinary(wire.HeadBlobRequestSchema, create(wire.HeadBlobRequestSchema, {
+        digest: {blake3: expected}
+      }));
+      const backing = new Uint8Array(2 * 1024 * 1024);
+      const input = backing.subarray(17, 17 + encoded.byteLength);
+      input.set(encoded);
+      for (const name of ["buffer", "length", "byteLength", "constructor", Symbol.iterator]) {
+        Object.defineProperty(input, name, {get() { throw new Error("caller getter invoked"); }});
+      }
+      const owned = snapshotBytes(input);
+      assert.equal(owned.buffer.byteLength, encoded.byteLength);
+      assert.deepEqual(owned, encoded);
+      const request = client.open("blobs/head", input);
+      input.fill(0);
+      try {
+        await assert.rejects(request.next(), error => error.code === wire.ErrorCode.NOT_FOUND);
+      } finally { request.close(); }
+      assert.throws(() => client.open("blobs/usage", new Uint8Array(new SharedArrayBuffer(0))),
+        error => error.code === wire.ErrorCode.INVALID_ARGUMENT);
+      assert.equal((await client.usage()).blobs, 0n);
+    `, server.endpoint], { cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", chunk => { output += chunk; });
+    child.stderr.on("data", chunk => { output += chunk; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 0, output);
+    assert.deepEqual([...server.seen].sort(), ["blobs/head", "blobs/usage"]);
+  } finally { await server.close(); }
+});
+
+test("Objects original request cancellation settles shared initialization before its real file completes", async () => {
+  const server = await fixture();
+  try {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { promises as fs } from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      const original = fs.readFile;
+      const reached = Promise.withResolvers(), release = Promise.withResolvers();
+      let reads = 0;
+      // Pause the real module file at its original I/O boundary; its bytes and
+      // completion still come from the original filesystem producer.
+      fs.readFile = async (...args) => {
+        if (String(args[0]).endsWith("acyclic_objects_wasm_bg.wasm")) {
+          reads++;
+          reached.resolve();
+          await release.promise;
+        }
+        return original(...args);
+      };
+      syncBuiltinESMExports();
+      assert.equal((await import("node:fs/promises")).readFile, fs.readFile);
+      const { HttpObjectsV1 } = await import("@acyclic-labs/objects/http");
+      const wire = await import("@acyclic-labs/objects/proto");
+      const client = new HttpObjectsV1({endpoint: process.argv[1], token: "fixture"});
+      const request = client.open("blobs/usage", new Uint8Array());
+      const pending = request.next();
+      try {
+        await reached.promise;
+        request.close();
+        await assert.rejects(pending, error => error.code === wire.ErrorCode.UNAVAILABLE);
+      } finally { release.resolve(); }
+      assert.equal((await client.usage()).blobs, 0n);
+      assert.equal(reads, 1);
+    `, server.endpoint], { cwd: new URL("../", import.meta.url), stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    child.stdout.on("data", chunk => { output += chunk; });
+    child.stderr.on("data", chunk => { output += chunk; });
+    const [code] = await once(child, "close");
+    assert.equal(code, 0, output);
+    assert.deepEqual([...server.seen], ["blobs/usage"]);
+  } finally { await server.close(); }
+});
+
+test("Objects original request cancellation settles a stalled real response", async () => {
+  const reached = Promise.withResolvers();
+  const disconnected = Promise.withResolvers();
+  let replies = 0;
+  const server = await fixture(async response => {
+    if (++replies !== 1) return true;
+    const closed = once(response, "close");
+    reached.resolve();
+    await closed;
+    disconnected.resolve();
+    return false;
+  });
+  try {
+    const client = new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" });
+    const request = client.open("blobs/usage", new Uint8Array());
+    assert.equal(server.seen.size, 0); // Opening creates no transport work.
+    const pending = request.next();
+    await reached.promise;
+    request.close();
+    await assert.rejects(pending, fail(wire.ErrorCode.UNAVAILABLE));
+    await disconnected.promise;
+    assert.equal(await request.next(), null);
+    // Cancellation closes that request, leaving the same admitted account live.
+    assert.equal((await client.usage()).blobs, 0n);
+    assert.equal(replies, 2);
+  } finally { await server.close(); }
+});
 
 test("Objects v1 Rust WASM memory provider serves the whole blob lifecycle", async () => {
   await lifecycle(await MemoryObjectsV1.create());

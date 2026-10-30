@@ -7,7 +7,7 @@ import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-no
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
-import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error } from "./v1.js";
+import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, type ObjectsV1Request } from "./v1.js";
 
 /** Node/Bun transport configuration for the Objects service. */
 export interface ObjectsV1GrpcOptions extends CredentialOptions {
@@ -54,21 +54,24 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
   }
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
   close(): void { this.clients.close(); }
-  protected async invoke(route: string, input: Uint8Array): Promise<Uint8Array> {
+  open(route: string, input: Uint8Array): ObjectsV1Request {
+    return objectsRequest(input, (bytes, controller) => this.send(route, bytes, controller.signal));
+  }
+  private async send(route: string, input: Uint8Array, signal: AbortSignal): Promise<Uint8Array> {
     const blobs = this.clients.blobs;
     const unary = async <I extends DescMessage, O extends DescMessage>(request: I, response: O, call: (value: MessageShape<I>) => Promise<MessageShape<O>>) => toBinary(response, await call(fromBinary(request, input)));
     try {
       switch (route) {
-        case "blobs/put": return await unary(wire.PutBlobRequestSchema, wire.PutResponseSchema, value => blobs.putBlob(value));
-        case "blobs/put-manifest": return await unary(wire.PutManifestRequestSchema, wire.PutResponseSchema, value => blobs.putManifest(value));
-        case "blobs/get": return await unary(wire.GetBlobRequestSchema, wire.GetBlobResponseSchema, value => blobs.getBlob(value));
-        case "blobs/head": return await unary(wire.HeadBlobRequestSchema, wire.BlobInfoSchema, value => blobs.headBlob(value));
-        case "blobs/delete": return await unary(wire.DeleteBlobRequestSchema, wire.DeleteBlobResponseSchema, value => blobs.deleteBlob(value));
-        case "blobs/list": return await unary(wire.ListBlobsRequestSchema, wire.ListBlobsResponseSchema, value => blobs.listBlobs(value));
-        case "blobs/retain": return await unary(wire.RetainRequestSchema, wire.RetainResponseSchema, value => blobs.retain(value));
-        case "blobs/release": return await unary(wire.ReleaseRequestSchema, wire.ReleaseResponseSchema, value => blobs.release(value));
-        case "blobs/collect": return await unary(wire.CollectRequestSchema, wire.CollectResponseSchema, value => blobs.collect(value));
-        case "blobs/usage": return await unary(wire.UsageRequestSchema, wire.UsageResponseSchema, value => blobs.usage(value));
+        case "blobs/put": return await unary(wire.PutBlobRequestSchema, wire.PutResponseSchema, value => blobs.putBlob(value, { signal }));
+        case "blobs/put-manifest": return await unary(wire.PutManifestRequestSchema, wire.PutResponseSchema, value => blobs.putManifest(value, { signal }));
+        case "blobs/get": return await unary(wire.GetBlobRequestSchema, wire.GetBlobResponseSchema, value => blobs.getBlob(value, { signal }));
+        case "blobs/head": return await unary(wire.HeadBlobRequestSchema, wire.BlobInfoSchema, value => blobs.headBlob(value, { signal }));
+        case "blobs/delete": return await unary(wire.DeleteBlobRequestSchema, wire.DeleteBlobResponseSchema, value => blobs.deleteBlob(value, { signal }));
+        case "blobs/list": return await unary(wire.ListBlobsRequestSchema, wire.ListBlobsResponseSchema, value => blobs.listBlobs(value, { signal }));
+        case "blobs/retain": return await unary(wire.RetainRequestSchema, wire.RetainResponseSchema, value => blobs.retain(value, { signal }));
+        case "blobs/release": return await unary(wire.ReleaseRequestSchema, wire.ReleaseResponseSchema, value => blobs.release(value, { signal }));
+        case "blobs/collect": return await unary(wire.CollectRequestSchema, wire.CollectResponseSchema, value => blobs.collect(value, { signal }));
+        case "blobs/usage": return await unary(wire.UsageRequestSchema, wire.UsageResponseSchema, value => blobs.usage(value, { signal }));
         default: throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);
       }
     } catch (error) {

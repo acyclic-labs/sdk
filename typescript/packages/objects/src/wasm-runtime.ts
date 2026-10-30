@@ -1,8 +1,10 @@
 import initObjectsWasm from "../generated/wasm/acyclic_objects_wasm.js";
+import { awaitSignal } from "@acyclic-labs/auth/credential";
 
 let ready: Promise<void> | undefined;
 
-export async function ensureObjectsWasm(): Promise<void> {
+export async function ensureObjectsWasm(signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
   if (ready === undefined) {
     const attempt = (async () => {
       const url = new URL("../generated/wasm/acyclic_objects_wasm_bg.wasm", import.meta.url);
@@ -16,5 +18,5 @@ export async function ensureObjectsWasm(): Promise<void> {
     ready = attempt;
     void attempt.catch(() => { if (ready === attempt) ready = undefined; });
   }
-  await ready;
+  await (signal === undefined ? ready : awaitSignal(ready, signal));
 }

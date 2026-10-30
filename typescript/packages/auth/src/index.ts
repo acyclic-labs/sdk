@@ -1,4 +1,5 @@
 export type * from "./contract.js";
+export { snapshotBytes } from "./owned-bytes.js";
 export { materializeGuestAdmission } from "./guest-admission.js";
 export type { GuestAdmissionHost } from "./guest-admission.js";
 export { CredentialCache, CredentialSnapshot, credentialProvider, credentialStream, resolveCredential, validateCredential, watchCredential } from "./credential.js";
