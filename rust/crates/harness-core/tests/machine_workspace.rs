@@ -9,8 +9,8 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
         core::{AggregateKind, Authority, AuthorityRoot},
     };
     use acyclic_machines::{
-        Budgets, CompatibilityPolicy, ExpirationPolicy, ImageDigest, MachineContract, MachineState,
-        SuspensionPolicy,
+        Budgets, CompatibilityPolicy, DeviceKind, ExpirationPolicy, ImageDigest, LifecycleClass,
+        MachineContract, MachineState, Platform, SuspensionPolicy,
     };
     let issuer = AuthorityRoot::new(
         "local-machine-tools",
@@ -48,6 +48,9 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [2; 32],
             budgets: Budgets::default(),
+            platform: Platform::host(DeviceKind::Desktop)
+                .ok_or_else(|| Error::Storage("local shell test has no host platform".into()))?,
+            lifecycle: LifecycleClass::Provisioned,
         },
         endpoints: Vec::new(),
         last_checkpoint: None,

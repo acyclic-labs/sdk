@@ -3,7 +3,8 @@ use super::deadline::GuestDeadline;
 use super::journal::{Admission, Journal};
 use super::*;
 use acyclic_stream::{StreamPath, StreamProvider};
-use tokio::sync::MutexGuard;
+use std::sync::Weak;
+use tokio::sync::{MutexGuard, watch};
 
 /// Physical primitives. Authentication, selection, keyed settlement and
 /// retained observations belong to the shared provider above this boundary.
@@ -35,6 +36,39 @@ pub(crate) struct AdmittedMachine<B> {
     backend: B,
     observation: Mutex<(MachineObservation, Option<IdempotencyKey>)>,
     journal: Journal,
+    /// Present only under an AfterIdle policy, which enrollment fixes.
+    idle: Option<(Duration, watch::Sender<Activity>)>,
+    /// This shared provider, so a transition it starts outlives its caller.
+    this: Weak<Self>,
+}
+
+type Admitted<'a> = MutexGuard<'a, (MachineObservation, Option<IdempotencyKey>)>;
+
+/// Guest work in flight, and a counter that changes whenever work begins or ends.
+#[derive(Clone, Copy, Default)]
+struct Activity {
+    busy: usize,
+    epoch: u64,
+}
+
+/// Holds a Machine busy, so its idle deadline cannot pass, until dropped.
+struct Busy(watch::Sender<Activity>);
+impl Busy {
+    fn new(activity: &watch::Sender<Activity>) -> Self {
+        activity.send_modify(|value| {
+            value.busy += 1;
+            value.epoch = value.epoch.wrapping_add(1);
+        });
+        Self(activity.clone())
+    }
+}
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.send_modify(|value| {
+            value.busy -= 1;
+            value.epoch = value.epoch.wrapping_add(1);
+        });
+    }
 }
 
 #[derive(Serialize)]
@@ -53,17 +87,104 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         observation: MachineObservation,
         streams: Arc<dyn StreamProvider>,
         root: StreamPath,
-    ) -> Result<Self, ProviderError> {
+    ) -> Result<Arc<Self>, ProviderError> {
         let journal = Journal::new(streams, root, observation.id);
         let observation = journal.enroll(observation).await?;
         if observation.state != MachineState::Running {
             backend.stop().await?;
         }
-        Ok(Self {
+        let idle = match observation.contract.suspension {
+            SuspensionPolicy::AfterIdle(idle) if observation.contract.wakes_on_demand() => {
+                Some((idle, watch::Sender::new(Activity::default())))
+            }
+            _ => None,
+        };
+        // The provider is shared from birth, so the transitions it owns (an
+        // implicit wake, an idle suspension) can outlive any one caller. Its
+        // AfterIdle producer is one parked task per Machine, woken only by its
+        // own activity or idle deadline.
+        let machine = Arc::new_cyclic(|this| Self {
             backend,
             observation: Mutex::new((observation, None)),
             journal,
-        })
+            idle,
+            this: this.clone(),
+        });
+        if let Some((idle, activity)) = &machine.idle {
+            let id = machine.journal.machine_id();
+            tokio::spawn(suspend_when_idle(
+                Arc::downgrade(&machine),
+                id,
+                *idle,
+                activity.subscribe(),
+            ));
+        }
+        Ok(machine)
+    }
+
+    fn busy(&self) -> Option<Busy> {
+        self.idle.as_ref().map(|(_, activity)| Busy::new(activity))
+    }
+
+    /// The one lifecycle admission. Every keyed lifecycle intent, explicit or
+    /// implicit, takes the incarnation lock here; an attached device admits
+    /// only its detach.
+    async fn admit(&self, intent: &Intent<'_>) -> Result<Admitted<'_>, ProviderError> {
+        let admitted = self.observation.lock().await;
+        if !matches!(intent, Intent::Destroy(_)) {
+            admitted.0.contract.provisioned()?;
+        }
+        Ok(admitted)
+    }
+
+    /// Admits guest work on a running incarnation. An idle-suspended Machine is
+    /// woken first. The wake is the provider's own transition: it runs to
+    /// completion even when the caller's deadline ends its wait.
+    async fn running(&self, machine: MachineId) -> Result<(), ProviderError> {
+        let (state, wakes) = {
+            let admitted = self.observation.lock().await;
+            Self::select(&admitted.0, machine)?;
+            (admitted.0.state, admitted.0.contract.wakes_on_demand())
+        };
+        if state == MachineState::Suspended && wakes {
+            let owner = self.this.upgrade().ok_or(ProviderError::Unavailable)?;
+            tokio::spawn(async move { owner.wake_idle(machine).await })
+                .await
+                .map_err(|_| ProviderError::Unavailable)??;
+        }
+        if self.observation.lock().await.0.state == MachineState::Running {
+            return Ok(());
+        }
+        Err(ProviderError::Conflict(
+            "Machine is not running; recovery: wake the original incarnation first".into(),
+        ))
+    }
+
+    /// Wakes an idle-suspended Machine, unless another caller already did.
+    async fn wake_idle(&self, machine: MachineId) -> Result<(), ProviderError> {
+        let admitted = self.admit(&Intent::Wake(machine)).await?;
+        if admitted.0.state != MachineState::Suspended || !admitted.0.contract.wakes_on_demand() {
+            return Ok(());
+        }
+        let key = self.journal.implicit_key(b"wake").await?;
+        self.change_locked(admitted, machine, key, MachineState::Running)
+            .await
+            .map(drop)
+    }
+
+    /// Suspends after idle without guest work, unless work began since quiet.
+    async fn suspend_idle(&self, machine: MachineId, quiet: u64) -> Result<(), ProviderError> {
+        let admitted = self.admit(&Intent::Suspend(machine)).await?;
+        let current = self.idle.as_ref().map(|(_, activity)| *activity.borrow());
+        if admitted.0.state != MachineState::Running
+            || current.is_none_or(|value| value.busy != 0 || value.epoch != quiet)
+        {
+            return Ok(());
+        }
+        let key = self.journal.implicit_key(b"suspend").await?;
+        self.change_locked(admitted, machine, key, MachineState::Suspended)
+            .await
+            .map(drop)
     }
 
     fn select(value: &MachineObservation, machine: MachineId) -> Result<(), ProviderError> {
@@ -80,7 +201,32 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         key: IdempotencyKey,
         target: MachineState,
     ) -> Result<MutationOutcome, ProviderError> {
-        let mut admission = self.observation.lock().await;
+        let intent = match target {
+            MachineState::Suspended => Intent::Suspend(machine),
+            MachineState::Running => Intent::Wake(machine),
+            MachineState::Destroyed => Intent::Destroy(machine),
+            _ => {
+                return Err(ProviderError::Invalid(
+                    "unknown native transition; recovery: use suspend, wake or destroy".into(),
+                ));
+            }
+        };
+        let admission = self.admit(&intent).await?;
+        let outcome = self.change_locked(admission, machine, key, target).await?;
+        // An explicit wake restarts the idle deadline, exactly like guest work.
+        if let (MachineState::Running, Some((_, activity))) = (target, &self.idle) {
+            activity.send_modify(|value| value.epoch = value.epoch.wrapping_add(1));
+        }
+        Ok(outcome)
+    }
+
+    async fn change_locked(
+        &self,
+        mut admission: Admitted<'_>,
+        machine: MachineId,
+        key: IdempotencyKey,
+        target: MachineState,
+    ) -> Result<MutationOutcome, ProviderError> {
         let (value, pending_key) = &mut *admission;
         Self::select(value, machine)?;
         let (intent, outcome) = match target {
@@ -166,7 +312,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         &self,
         key: IdempotencyKey,
         outcome: MutationOutcome,
-        admission: MutexGuard<'_, (MachineObservation, Option<IdempotencyKey>)>,
+        admission: Admitted<'_>,
     ) -> Result<MutationOutcome, ProviderError> {
         if admission.1 != Some(key) {
             return Ok(outcome);
@@ -200,22 +346,25 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
         let deadline = GuestDeadline::new(
-            Duration::from_millis(u64::from(command.timeout_ms)),
+            Duration::from_millis(command.timeout_ms),
             command.expiry_unix_ms,
         )?;
-        deadline.run(async {
-            let admitted = self.observation.lock().await;
-            let value = &admitted.0;
-            Self::select(value, machine)?;
-            if value.state != MachineState::Running {
-                return Err(ProviderError::Conflict(
-                    "Machine is not running; recovery: wake the original incarnation before executing"
-                        .into(),
-                ));
-            }
-            drop(admitted);
-            self.backend.exec(command, deadline.until()).await
-        }).await.unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))
+        let busy = self.busy();
+        let output = deadline
+            .run(async {
+                self.running(machine).await?;
+                self.backend.exec(command, deadline.until()).await
+            })
+            .await
+            .unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))?;
+        Ok(match busy {
+            None => output,
+            // The Machine stays busy for as long as its output is observable.
+            Some(busy) => Box::pin(output.map(move |frame| {
+                let _busy = &busy;
+                frame
+            })) as ExecStream,
+        })
     }
     async fn read_file(
         &self,
@@ -224,16 +373,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         limit: u32,
     ) -> Result<FileRead, ProviderError> {
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let admitted = deadline
-            .run(self.observation.lock())
+        let _busy = self.busy();
+        deadline
+            .run(self.running(machine))
             .await
-            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
-        let value = &admitted.0;
-        Self::select(value, machine)?;
-        if value.state == MachineState::Destroyed {
-            return Err(ProviderError::NotFound(machine.to_string()));
-        }
-        drop(admitted);
+            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
         self.backend.read(access, limit, &deadline).await
     }
     async fn write_file(
@@ -244,19 +388,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let admitted = deadline
-            .run(self.observation.lock())
+        let _busy = self.busy();
+        deadline
+            .run(self.running(machine))
             .await
-            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
-        let value = &admitted.0;
-        Self::select(value, machine)?;
-        if value.state != MachineState::Running {
-            return Err(ProviderError::Conflict(
-                "Machine is not running; recovery: wake the original incarnation before writing"
-                    .into(),
-            ));
-        }
-        drop(admitted);
+            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
         self.backend.write(access, data, truncate, &deadline).await
     }
     async fn inspect_machine(
@@ -299,7 +435,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         })
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Create(&request)).await?;
+        let (value, _) = &*admitted;
         let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
         // The local factory enrolls an existing workspace. It never fabricates
         // another filesystem view or an immutable image capture.
@@ -343,7 +480,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         volume: wire::selection::VolumeRef,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Attach(machine, &volume)).await?;
+        let (value, _) = &*admitted;
         Self::select(value, machine)?;
         if value.contract.selected_volume_ref.as_ref() != Some(&volume) {
             return Err(unsupported("replace the admitted selected volume"));
@@ -395,7 +533,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Policy(machine, policy)).await?;
+        let (value, _) = &*admitted;
         Self::select(value, machine)?;
         if policy != value.contract.suspension {
             return Err(unsupported("install an automatic suspension producer"));
@@ -521,4 +660,41 @@ fn now() -> Result<u64, ProviderError> {
             .as_millis(),
     )
     .map_err(|_| ProviderError::Unavailable)
+}
+
+/// The AfterIdle producer. It waits for quiescence, then for idle without a
+/// new begin or end, then suspends once; a suspended Machine has no deadline
+/// until it is used again. It ends with its Machine.
+async fn suspend_when_idle<B: NativeMachine>(
+    owner: Weak<AdmittedMachine<B>>,
+    machine: MachineId,
+    idle: Duration,
+    mut activity: watch::Receiver<Activity>,
+) {
+    loop {
+        let Ok(quiet) = activity
+            .wait_for(|value| value.busy == 0)
+            .await
+            .map(|value| value.epoch)
+        else {
+            return;
+        };
+        match tokio::time::timeout(idle, activity.changed()).await {
+            Ok(Ok(())) => continue,
+            Ok(Err(_)) => return,
+            Err(_) => {}
+        }
+        let Some(provider) = owner.upgrade() else {
+            return;
+        };
+        // An uncertain suspension stays pending in the journal under its own
+        // key, exactly like a caller's; this producer never repeats it.
+        if provider.suspend_idle(machine, quiet).await.is_err() {
+            return;
+        }
+        drop(provider);
+        if activity.changed().await.is_err() {
+            return;
+        }
+    }
 }

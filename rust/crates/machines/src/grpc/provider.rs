@@ -61,7 +61,7 @@ machine_mutations! {
         obs::finish(
             async {
                 let timeout =
-                    Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
+                    Duration::from_millis(command.timeout_ms) + Duration::from_secs(1);
                 let deadline = self.endpoint.deadline(timeout, command.expiry_unix_ms)?;
                 let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;

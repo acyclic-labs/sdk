@@ -108,7 +108,7 @@ impl MachinesWorkspace {
         let expiry = self.verifier.expiry(&self.signed)?.checked_mul(1000)
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
         let expiry = task_deadline.map_or(expiry, |deadline| deadline.min(expiry));
-        let timeout = input.timeout_ms()?;
+        let timeout = u64::from(input.timeout_ms()?);
         let (source, stdin) = match self.shell.stdin_bootstrap {
             Some(bootstrap) => (bootstrap.to_owned(), input.command.into_bytes()),
             None => (input.command, Vec::new()),

@@ -51,7 +51,7 @@ identity in the machine contract. An explicit image must match that returned ide
 distribution is hardcoded in the SDK. The simulator has no installed default and
 refuses omitted-image creation before changing its state.
 
-Protocol 1.3 carries the existing canonical `acyclic.harness.v2.VolumeRef` in
+Protocol 1.3 and later carry the existing canonical `acyclic.harness.v2.VolumeRef` in
 `Create.selected_volume_ref` and `AttachVolume.selected_volume_ref`. The admitted
 and settled `MachineContract` must retain that exact selection. `MachinesHost::create`
 takes the canonical domain volume directly; `attach_volume` enrolls it on an
@@ -73,7 +73,7 @@ to be joined; closing the transport alone does not establish it. Hosted
 filesystem composition and physical revocation require service validation.
 
 `MachinesHost` creates and inspects machines, dispatches streamed exec, reads and
-writes guest files, suspends and deletes machines. Native `ReadFile`/`WriteFile`
+writes guest files, suspends, wakes, live-forks and deletes machines. Native `ReadFile`/`WriteFile`
 carry exact binary chunks, an absolute guest path and offset, and one absolute
 deadline. Both canonical RPCs are bidirectional chunk streams: one native receipt
 per requested chunk, with the first path/machine/deadline binding the session.

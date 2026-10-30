@@ -19,6 +19,8 @@ pub(super) fn enrollment(machine: MachineId) -> MachineObservation {
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [2; 32],
             budgets: Budgets::default(),
+            platform: Platform::host(DeviceKind::Desktop).unwrap(),
+            lifecycle: LifecycleClass::Provisioned,
         },
         endpoints: Vec::new(),
         last_checkpoint: None,
@@ -260,5 +262,228 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
         local.exec(machine, child()).await,
         Err(ProviderError::Conflict(_))
     ));
+    Ok(())
+}
+
+async fn enrolled(
+    observation: MachineObservation,
+) -> Result<Arc<dyn MachinesProvider>, ProviderError> {
+    let root = StreamPath::new(format!("machine-tests/{}", observation.id))
+        .map_err(|error| ProviderError::Invalid(error.to_string()))?;
+    provider(
+        observation,
+        options(),
+        Arc::new(MemoryStream::default()),
+        root,
+    )
+    .await
+}
+
+fn last_state(page: &EventPage) -> Option<MachineState> {
+    page.events.iter().rev().find_map(|event| match event.fact {
+        EventFact::State(state) => Some(state),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn idle_suspended_machine_wakes_for_exec_and_attached_devices_only_detach()
+-> Result<(), Box<dyn std::error::Error>> {
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(3_600));
+    let local = enrolled(observation).await?;
+    local.suspend(machine, IdempotencyKey::new()).await?;
+    // The manual-policy refusal is the negative control in the public factory
+    // test above: the same exec on a Manual Machine returns Conflict.
+    let mut output = local.exec(machine, child().with_stdin(vec![0])).await?;
+    let mut exit = None;
+    while let Some(frame) = output.next().await {
+        if let ExecOutput::ExitCode(code) = frame? {
+            exit = Some(code);
+        }
+    }
+    assert_eq!(exit, Some(9));
+    assert_eq!(
+        local.inspect_machine(machine).await?.state,
+        MachineState::Running
+    );
+    // The implicit wake is retained like an explicit one.
+    let page = local.events(machine, None, 100).await?;
+    assert_eq!(last_state(&page), Some(MachineState::Running));
+    assert!(
+        page.events
+            .iter()
+            .any(|event| event.fact == EventFact::State(MachineState::Suspended))
+    );
+
+    let device = MachineId::new();
+    let mut attached = enrollment(device);
+    attached.contract.lifecycle = LifecycleClass::Attached;
+    let mut idle = attached.clone();
+    idle.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(1));
+    assert!(matches!(
+        enrolled(idle).await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    let mut foreign = attached.clone();
+    foreign.contract.platform.path_style = match foreign.contract.platform.path_style {
+        PathStyle::Posix => PathStyle::Windows,
+        PathStyle::Windows => PathStyle::Posix,
+    };
+    assert!(matches!(
+        enrolled(foreign).await,
+        Err(ProviderError::Invalid(_))
+    ));
+    let mut matching = CreateMachine::new(
+        IdempotencyKey::new(),
+        None,
+        attached.contract.network_policy_digest,
+    );
+    matching.suspension = SuspensionPolicy::Manual;
+    let local = enrolled(attached).await?;
+    // Every lifecycle intent passes the one admission, so even requests that
+    // match the enrolled contract exactly are refused on an attached device.
+    for refused in [
+        local.create(matching).await,
+        local
+            .set_suspension_policy(device, SuspensionPolicy::Manual, IdempotencyKey::new())
+            .await,
+        local.suspend(device, IdempotencyKey::new()).await,
+        local.wake(device, IdempotencyKey::new()).await,
+    ] {
+        assert!(matches!(refused, Err(ProviderError::Unsupported(_))));
+    }
+
+    // Detach stops exactly the commands this binding dispatched. A process the
+    // device runs outside the binding keeps running and exits on its own.
+    let mut bystander = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "local::tests::child", "--nocapture"])
+        .env("ACYCLIC_TEST_MACHINE_PROCESS", "input")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut output = local.exec(device, child()).await?;
+    assert!(matches!(output.next().await, Some(Ok(ExecOutput::Data(_)))));
+    assert_eq!(
+        local.destroy_machine(device, IdempotencyKey::new()).await?,
+        MutationOutcome::MachineDestroyed(device)
+    );
+    let mut stopped = false;
+    while let Some(frame) = output.next().await {
+        if let ExecOutput::Stopped(stop) = frame? {
+            stopped = stop.cleanup_completed;
+        }
+    }
+    assert!(stopped);
+    assert!(bystander.try_wait()?.is_none());
+    std::io::Write::write_all(
+        bystander.stdin.as_mut().ok_or("bystander stdin")?,
+        &[0, 255, 7, 0],
+    )?;
+    assert_eq!(bystander.wait()?.code(), Some(9));
+    Ok(())
+}
+
+/// The implicit wake is the provider's transition, not its caller's: an exec
+/// whose deadline ends mid-wake leaves the wake to complete, and the next exec
+/// runs instead of finding the Machine stranded in Waking.
+#[tokio::test(start_paused = true)]
+async fn deadline_during_implicit_wake_never_strands_the_machine()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct GatedWake {
+        gate: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait]
+    impl crate::provider::admitted::NativeMachine for GatedWake {
+        async fn exec(
+            &self,
+            _: ExecCommand,
+            _: std::time::Instant,
+        ) -> Result<ExecStream, ProviderError> {
+            Ok(Box::pin(futures::stream::iter([Ok(ExecOutput::ExitCode(
+                0,
+            ))])))
+        }
+        async fn read(
+            &self,
+            _: FileAccess,
+            _: u32,
+            _: &crate::provider::deadline::GuestDeadline,
+        ) -> Result<FileRead, ProviderError> {
+            Err(ProviderError::Unsupported("no files".into()))
+        }
+        async fn write(
+            &self,
+            _: FileAccess,
+            _: Vec<u8>,
+            _: bool,
+            _: &crate::provider::deadline::GuestDeadline,
+        ) -> Result<FileWrite, ProviderError> {
+            Err(ProviderError::Unsupported("no files".into()))
+        }
+        async fn stop(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        async fn wake(&self) -> Result<(), ProviderError> {
+            self.gate.notified().await;
+            Ok(())
+        }
+    }
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(3_600));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let local = crate::provider::admitted::AdmittedMachine::open(
+        GatedWake { gate: gate.clone() },
+        observation,
+        Arc::new(MemoryStream::default()),
+        StreamPath::new(format!("machine-tests/{machine}"))?,
+    )
+    .await?;
+    local.suspend(machine, IdempotencyKey::new()).await?;
+    let command = |timeout| ExecCommand::new(vec!["noop".into()], timeout);
+    // The physical wake is held, so this caller's deadline passes mid-wake.
+    assert!(matches!(
+        local.exec(machine, command(50)?).await,
+        Err(ProviderError::CommandIndeterminate(_))
+    ));
+    gate.notify_one();
+    let mut output = local.exec(machine, command(60_000)?).await?;
+    assert!(matches!(
+        output.next().await,
+        Some(Ok(ExecOutput::ExitCode(0)))
+    ));
+    assert_eq!(
+        local.inspect_machine(machine).await?.state,
+        MachineState::Running
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_producer_suspends_after_quiet_and_an_explicit_wake_rearms_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let idle = Duration::from_secs(60);
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(idle);
+    let local = enrolled(observation).await?;
+    let state = || async {
+        local
+            .inspect_machine(machine)
+            .await
+            .map(|value| value.state)
+    };
+    tokio::time::sleep(idle / 2).await;
+    assert_eq!(state().await?, MachineState::Running);
+    tokio::time::sleep(idle).await;
+    assert_eq!(state().await?, MachineState::Suspended);
+    local.wake(machine, IdempotencyKey::new()).await?;
+    tokio::time::sleep(idle / 2).await;
+    assert_eq!(state().await?, MachineState::Running);
+    tokio::time::sleep(idle).await;
+    assert_eq!(state().await?, MachineState::Suspended);
     Ok(())
 }

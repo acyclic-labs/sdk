@@ -27,11 +27,33 @@ impl MachinesProvider for SimulatedMachines {
             "the simulator has no guest filesystem".into(),
         ))
     }
+    /// Admits like a physical provider, including the implicit wake of an
+    /// idle-suspended Machine, then refuses: no command result is fabricated.
     async fn exec(
         &self,
-        _machine: MachineId,
+        machine: MachineId,
         _command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
+        let mut state = self.state.lock().await;
+        let value = state
+            .machines
+            .get(&machine)
+            .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+        match (value.state, value.contract.wakes_on_demand()) {
+            (MachineState::Running, _) => {}
+            (MachineState::Suspended, true) => change_state(
+                &mut state,
+                machine,
+                MachineState::Suspended,
+                MachineState::Running,
+            )?,
+            (MachineState::Offline, _) => return Err(ProviderError::Unavailable),
+            _ => {
+                return Err(ProviderError::Conflict(
+                    "machine is not running; recovery: wake it before executing".into(),
+                ));
+            }
+        }
         Err(ProviderError::Unsupported(
             "the simulator does not execute a guest operating system".into(),
         ))
@@ -72,6 +94,7 @@ impl MachinesProvider for SimulatedMachines {
         let key = request.idempotency_key;
         let intent = MemoryIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();
+        let platform = SIMULATED_PLATFORM;
         self.apply(key, intent, move |state| {
             let image = request.image.clone().ok_or_else(|| ProviderError::Unsupported(
                 "the simulator has no installed default image; recovery: supply an explicit immutable image".into(),
@@ -90,7 +113,7 @@ impl MachinesProvider for SimulatedMachines {
             }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
-            let contract = Self::contract(&request, image, capabilities);
+            let contract = Self::contract(&request, image, capabilities, platform);
             let observation = MachineObservation {
                 id,
                 state: MachineState::Running,
@@ -168,6 +191,7 @@ impl MachinesProvider for SimulatedMachines {
                 .get(&machine)
                 .cloned()
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+            source.contract.provisioned()?;
             if !matches!(
                 source.state,
                 MachineState::Running | MachineState::Suspended
@@ -370,6 +394,7 @@ impl MachinesProvider for SimulatedMachines {
                 .machines
                 .get(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+            value.contract.provisioned()?;
             if value.state == MachineState::Destroyed {
                 return Err(ProviderError::Conflict(
                     "destroyed machine cannot change policy".into(),

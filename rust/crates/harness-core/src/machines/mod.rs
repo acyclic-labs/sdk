@@ -13,9 +13,10 @@ use crate::{
     resources::{ArtifactRef, CheckpointRef, ProviderRef, SandboxRef},
 };
 use acyclic_machines::{
-    CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey as MachinesKey, Image,
-    ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome,
-    OperationId as MachinesOperationId, OperationObservation, ProviderError,
+    CheckpointId, CheckpointObservation, CreateMachine, ForkFidelity,
+    IdempotencyKey as MachinesKey, Image, ImageQualification, MachineId, MachineObservation,
+    MachinesProvider, MutationOutcome, OperationId as MachinesOperationId, OperationObservation,
+    ProviderError,
 };
 use std::{num::NonZeroU32, sync::Arc};
 

@@ -134,12 +134,133 @@ pub struct MachineContract {
     pub network_policy_digest: [u8; 32],
     /// Cost and concurrency limits.
     pub budgets: Budgets,
+    /// Where commands run, declared by the provider.
+    pub platform: Platform,
+    /// Whether the provider or the device owner owns this Machine's existence.
+    pub lifecycle: LifecycleClass,
 }
 
 impl MachineContract {
     /// The fidelity [`MachinesProvider::fork_machine`] offers for a machine under this contract; `None` means live fork is unsupported for it.
     pub fn fork_fidelity(&self) -> Option<ForkFidelity> {
         ForkFidelity::for_capabilities(&self.capabilities)
+            .filter(|_| self.lifecycle == LifecycleClass::Provisioned)
+    }
+
+    /// Whether exec and guest writes wake this Machine from `Suspended` themselves,
+    /// inside their own deadline: a provisioned Machine under [`SuspensionPolicy::AfterIdle`].
+    pub fn wakes_on_demand(&self) -> bool {
+        self.lifecycle == LifecycleClass::Provisioned
+            && matches!(self.suspension, SuspensionPolicy::AfterIdle(_))
+    }
+
+    /// Refuses a lifecycle mutation an attached device does not offer.
+    pub fn provisioned(&self) -> Result<(), ProviderError> {
+        match self.lifecycle {
+            LifecycleClass::Provisioned => Ok(()),
+            LifecycleClass::Attached => Err(ProviderError::Unsupported(
+                "an attached device has no provider lifecycle; recovery: exec on it, or destroy it to detach".into(),
+            )),
+        }
+    }
+}
+
+/// Who owns a Machine's existence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum LifecycleClass {
+    /// The provider creates, suspends, wakes, checkpoints, forks and destroys it.
+    Provisioned,
+    /// A device its owner attached. Only exec, guest IO and observation apply.
+    /// [`MachinesProvider::destroy_machine`] detaches it: commands dispatched
+    /// through this Machine binding are stopped, because their authority ends
+    /// with the binding, and nothing else on the device is touched.
+    Attached,
+}
+
+/// Operating system commands run on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum OperatingSystem {
+    Linux,
+    Macos,
+    Windows,
+}
+
+/// Processor architecture commands run on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum Architecture {
+    X64,
+    Arm64,
+}
+
+/// What kind of computer a Machine is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum DeviceKind {
+    VirtualMachine,
+    Container,
+    Desktop,
+    Server,
+}
+
+/// The command language a shell caller writes for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum Shell {
+    Bash,
+    PowerShell,
+}
+
+/// How guest paths are spelled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PathStyle {
+    Posix,
+    Windows,
+}
+
+/// Where a Machine's commands run.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Platform {
+    pub os: OperatingSystem,
+    pub arch: Architecture,
+    pub device_kind: DeviceKind,
+    pub shell: Shell,
+    pub path_style: PathStyle,
+}
+
+impl Platform {
+    /// The compiling host's OS, architecture, native shell and path style, or
+    /// `None` on a target outside the public platform set.
+    pub const fn host(device_kind: DeviceKind) -> Option<Self> {
+        let os = if cfg!(target_os = "linux") {
+            OperatingSystem::Linux
+        } else if cfg!(target_os = "macos") {
+            OperatingSystem::Macos
+        } else if cfg!(windows) {
+            OperatingSystem::Windows
+        } else {
+            return None;
+        };
+        let arch = if cfg!(target_arch = "x86_64") {
+            Architecture::X64
+        } else if cfg!(target_arch = "aarch64") {
+            Architecture::Arm64
+        } else {
+            return None;
+        };
+        let windows = matches!(os, OperatingSystem::Windows);
+        Some(Self {
+            os,
+            arch,
+            device_kind,
+            shell: if windows {
+                Shell::PowerShell
+            } else {
+                Shell::Bash
+            },
+            path_style: if windows {
+                PathStyle::Windows
+            } else {
+                PathStyle::Posix
+            },
+        })
     }
 }
 

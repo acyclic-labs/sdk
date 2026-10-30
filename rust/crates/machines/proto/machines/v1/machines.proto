@@ -102,6 +102,59 @@ message MachineContract {
   Budgets budgets = 9;
   // Exact selected volume admitted under the original caller's hosted scope.
   acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
+  // Where commands run. The provider declares it; a caller never selects it.
+  Platform platform = 11;
+  LifecycleClass lifecycle = 12;
+}
+
+enum OperatingSystem {
+  OPERATING_SYSTEM_UNSPECIFIED = 0;
+  OPERATING_SYSTEM_LINUX = 1;
+  OPERATING_SYSTEM_MACOS = 2;
+  OPERATING_SYSTEM_WINDOWS = 3;
+}
+enum Architecture {
+  ARCHITECTURE_UNSPECIFIED = 0;
+  ARCHITECTURE_X64 = 1;
+  ARCHITECTURE_ARM64 = 2;
+}
+enum DeviceKind {
+  DEVICE_KIND_UNSPECIFIED = 0;
+  DEVICE_KIND_VIRTUAL_MACHINE = 1;
+  DEVICE_KIND_CONTAINER = 2;
+  DEVICE_KIND_DESKTOP = 3;
+  DEVICE_KIND_SERVER = 4;
+}
+// The command language a shell caller writes for on this Machine.
+enum Shell {
+  SHELL_UNSPECIFIED = 0;
+  SHELL_BASH = 1;
+  SHELL_POWERSHELL = 2;
+}
+enum PathStyle {
+  PATH_STYLE_UNSPECIFIED = 0;
+  PATH_STYLE_POSIX = 1;
+  PATH_STYLE_WINDOWS = 2;
+}
+message Platform {
+  OperatingSystem os = 1;
+  Architecture arch = 2;
+  DeviceKind device_kind = 3;
+  Shell shell = 4;
+  PathStyle path_style = 5;
+}
+// Who owns a Machine's existence.
+enum LifecycleClass {
+  LIFECYCLE_CLASS_UNSPECIFIED = 0;
+  // The provider creates, suspends, wakes, checkpoints, forks and destroys it.
+  LIFECYCLE_CLASS_PROVISIONED = 1;
+  // A device its owner attached. Only Exec, guest IO and observation apply:
+  // Checkpoint, ForkMachine, Suspend, Wake and SetSuspensionPolicy are
+  // UNIMPLEMENTED, and Create never yields one. DestroyMachine detaches it: it
+  // stops the commands dispatched through this Machine binding, whose authority
+  // ends with the binding, and touches nothing else on the device. Its
+  // suspension is manual and it never expires.
+  LIFECYCLE_CLASS_ATTACHED = 2;
 }
 message QualifyImageRequest {
   ProtocolVersion protocol = 1;
@@ -221,6 +274,9 @@ enum MachineStatus {
   MACHINE_STATUS_DESTROYED = 7;
   MACHINE_STATUS_FAILED = 8;
   MACHINE_STATUS_INDETERMINATE = 9;
+  // Unreachable until its own device or guest reconnects. Unlike SUSPENDED, the
+  // provider cannot bring it back: Wake and Exec return UNAVAILABLE.
+  MACHINE_STATUS_OFFLINE = 10;
 }
 message Endpoint {
   string name = 1;
@@ -389,14 +445,19 @@ message UsageReceipt {
 
 // Executes once in the current admitted guest. A lost reply, cancellation or
 // timeout does not prove the command did not run; clients must not redispatch.
+// On a SUSPENDED PROVISIONED Machine whose policy is after_idle_ms, Exec first
+// wakes it within this same RPC and deadline; a manual-policy Machine is refused
+// with FAILED_PRECONDITION instead. An OFFLINE Machine returns UNAVAILABLE.
 message ExecStart {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
   reserved 3, 8;
   reserved "argv", "stdin";
-  // Positive command deadline in milliseconds. The caller authority's expiry
-  // remains an independent upper bound, even while no output is produced.
-  uint32 timeout_ms = 4;
+  // Positive command deadline in milliseconds, covering any implicit wake. The
+  // caller authority's expiry remains an independent upper bound, even while no
+  // output is produced. A deadline the server cannot represent is rejected,
+  // never shortened.
+  uint64 timeout_ms = 4;
   optional uint64 expiry_unix_ms = 5;
   // Combined stdout/stderr allowance; absent is unbounded, zero allows no bytes.
   optional uint64 maximum_output_bytes = 6;

@@ -3,6 +3,7 @@ use super::*;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 enum MemoryIntent {
     Create(CreateMachine),
+    Attach(Platform),
     Checkpoint(MachineId),
     Fork(CheckpointId, u32),
     ForkMachine(MachineId, u32),
@@ -46,6 +47,15 @@ pub struct SimulatedMachines {
     capabilities: BTreeSet<Capability>,
 }
 
+/// Platform of every simulated provisioned Machine.
+pub const SIMULATED_PLATFORM: Platform = Platform {
+    os: OperatingSystem::Linux,
+    arch: Architecture::X64,
+    device_kind: DeviceKind::VirtualMachine,
+    shell: Shell::Bash,
+    path_style: PathStyle::Posix,
+};
+
 impl Default for SimulatedMachines {
     /// Declares every capability.
     fn default() -> Self {
@@ -69,6 +79,66 @@ impl SimulatedMachines {
             capabilities,
         }
     }
+
+    /// Enrolls a simulated attached device, as its owner's runner would. Create
+    /// never yields one; replaying key returns the original observation.
+    pub async fn attach(
+        &self,
+        key: IdempotencyKey,
+        platform: Platform,
+    ) -> Result<MachineObservation, ProviderError> {
+        let outcome = self
+            .apply(key, MemoryIntent::Attach(platform), move |state| {
+                let id = Self::machine(key, 0);
+                let now = tick(state)?;
+                let observation = MachineObservation {
+                    id,
+                    state: MachineState::Running,
+                    contract: MachineContract {
+                        image: Image::Custom(ImageDigest::new(Self::revision())?),
+                        selected_volume_ref: None,
+                        capabilities: BTreeSet::new(),
+                        compatibility: CompatibilityPolicy::BestEffort,
+                        compatibility_revision: Self::revision(),
+                        suspension: SuspensionPolicy::Manual,
+                        expiration: ExpirationPolicy::Never,
+                        network_policy_digest: Self::revision(),
+                        budgets: Budgets::default(),
+                        platform,
+                        lifecycle: LifecycleClass::Attached,
+                    },
+                    endpoints: vec![Endpoint {
+                        name: "default".into(),
+                        uri: format!("memory://{id}"),
+                    }],
+                    last_checkpoint: None,
+                    created_at_unix_ms: now,
+                    changed_at_unix_ms: now,
+                };
+                state.machines.insert(id, observation.clone());
+                event(state, id, EventFact::State(MachineState::Running), now)?;
+                Ok(MutationOutcome::Created(observation))
+            })
+            .await?;
+        match outcome {
+            MutationOutcome::Created(observation) => Ok(observation),
+            _ => Err(ProviderError::Conflict(
+                "attach key names another intent".into(),
+            )),
+        }
+    }
+
+    /// Simulates a device or guest connection opening or closing: Running
+    /// becomes Offline, and Offline becomes Running again.
+    pub async fn set_online(&self, machine: MachineId, online: bool) -> Result<(), ProviderError> {
+        let (from, to) = if online {
+            (MachineState::Offline, MachineState::Running)
+        } else {
+            (MachineState::Running, MachineState::Offline)
+        };
+        let mut state = self.state.lock().await;
+        change_state(&mut state, machine, from, to)
+    }
     fn revision() -> [u8; 32] {
         Sha256::digest(b"acyclic-machines-memory-v1").into()
     }
@@ -85,6 +155,7 @@ impl SimulatedMachines {
         request: &CreateMachine,
         image: Image,
         capabilities: BTreeSet<Capability>,
+        platform: Platform,
     ) -> MachineContract {
         MachineContract {
             image,
@@ -96,6 +167,8 @@ impl SimulatedMachines {
             expiration: request.expiration,
             network_policy_digest: request.network_policy_digest,
             budgets: request.budgets,
+            platform,
+            lifecycle: LifecycleClass::Provisioned,
         }
     }
 
@@ -183,14 +256,33 @@ fn transition(
     target: MachineState,
     outcome: MutationOutcome,
 ) -> Result<MutationOutcome, ProviderError> {
+    let value = state
+        .machines
+        .get(&machine)
+        .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
+    let current = value.state;
+    // Only the device can bring an Offline Machine back.
+    if current == MachineState::Offline {
+        return Err(ProviderError::Unavailable);
+    }
+    value.contract.provisioned()?;
+    if current == target {
+        return Ok(outcome);
+    }
+    change_state(state, machine, required, target).map(|()| outcome)
+}
+
+fn change_state(
+    state: &mut MemoryState,
+    machine: MachineId,
+    required: MachineState,
+    target: MachineState,
+) -> Result<(), ProviderError> {
     let current = state
         .machines
         .get(&machine)
         .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?
         .state;
-    if current == target {
-        return Ok(outcome);
-    }
     if current != required {
         return Err(ProviderError::Conflict(
             "machine cannot perform that transition".into(),
@@ -203,8 +295,7 @@ fn transition(
         .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
     value.state = target;
     value.changed_at_unix_ms = now;
-    event(state, machine, EventFact::State(target), now)?;
-    Ok(outcome)
+    event(state, machine, EventFact::State(target), now)
 }
 
 mod backend;

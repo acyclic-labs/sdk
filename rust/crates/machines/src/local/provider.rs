@@ -17,25 +17,41 @@ mod tests;
 /// The canonical journal admits one physical owner. Share its returned Arc;
 /// reopening a live incarnation refuses rather than inventing a replacement.
 /// No checkpoint, memory-resume, billing or tenant-isolation guarantee is made.
+///
+/// The contract's platform must be this host's. A provisioned enrollment may
+/// suspend after idle: suspension then stops its process generation, and the
+/// next exec or file operation starts a fresh one within its own deadline. An
+/// attached enrollment is the owner's device: destroy detaches it, stopping
+/// only the commands this binding dispatched, and nothing suspends it.
 pub async fn provider(
     observation: MachineObservation,
     options: LocalOptions,
     streams: Arc<dyn StreamProvider>,
     journal: StreamPath,
 ) -> Result<Arc<dyn MachinesProvider>, ProviderError> {
-    if !observation.contract.capabilities.is_empty()
-        || observation.contract.suspension != SuspensionPolicy::Manual
-        || observation.contract.expiration != ExpirationPolicy::Never
+    let contract = &observation.contract;
+    let host = Platform::host(contract.platform.device_kind);
+    if host.is_none_or(|host| {
+        (host.os, host.arch, host.path_style)
+            != (
+                contract.platform.os,
+                contract.platform.arch,
+                contract.platform.path_style,
+            )
+    }) {
+        return Err(ProviderError::Invalid("native enrollment declares another platform; recovery: enroll this host's OS, architecture and path style".into()));
+    }
+    if !contract.capabilities.is_empty()
+        || contract.expiration != ExpirationPolicy::Never
+        || (contract.suspension != SuspensionPolicy::Manual && !contract.wakes_on_demand())
     {
-        return Err(ProviderError::Unsupported("native enrollment claims an absent lifecycle producer; recovery: enroll manual suspension, no automatic expiry and no snapshot/VM capabilities".into()));
+        return Err(ProviderError::Unsupported("native enrollment claims an absent lifecycle producer; recovery: enroll no automatic expiry, no snapshot/VM capabilities, and manual suspension unless provisioned".into()));
     }
     let backend = LocalBackend {
         machine: LocalMachine::new(observation.id, options)?,
         generation: std::sync::Mutex::new(Generation::new()?),
     };
-    Ok(Arc::new(
-        AdmittedMachine::open(backend, observation, streams, journal).await?,
-    ))
+    Ok(AdmittedMachine::open(backend, observation, streams, journal).await?)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
