@@ -6,6 +6,7 @@ mod attribute;
 mod attribute_access;
 mod attribute_list;
 mod attribute_mutation;
+mod bindings;
 mod blob;
 mod checkpoint;
 pub(crate) mod closure;

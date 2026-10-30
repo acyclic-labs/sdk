@@ -354,12 +354,15 @@ pub fn tree_page_id(page: &TreePage, maximum_items: u32) -> Result<ObjectId, Can
     })
 }
 
-fn encode_name(encoder: &mut Encoder, name: &LogicalName) -> Result<(), CanonicalDecodeError> {
+pub(super) fn encode_name(
+    encoder: &mut Encoder,
+    name: &LogicalName,
+) -> Result<(), CanonicalDecodeError> {
     encoder.u8(name.encoding().tag());
     encoder.bounded_bytes(name.as_bytes())
 }
 
-fn decode_name<E: From<CanonicalDecodeError>>(
+pub(super) fn decode_name<E: From<CanonicalDecodeError>>(
     decoder: &mut Decoder<'_>,
     maximum_name_bytes: u32,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,

@@ -95,6 +95,18 @@ pub(crate) fn visit_object_references(
                 Ok(())
             })
         }
+        ObjectKind::BindingPage => decode!(
+            bindings::decode_binding_page,
+            |page: &bindings::BindingPage,
+             visit: &mut dyn FnMut(ObjectId) -> Result<(), FsError>| {
+                if let persistent_btree::Page::Internal(children) = page {
+                    for child in children {
+                        visit(child.page)?;
+                    }
+                }
+                Ok(())
+            }
+        ),
         ObjectKind::ExtentPage => decode!(
             extent::decode_extent_page,
             |page: &ExtentPage, visit: &mut dyn FnMut(ObjectId) -> Result<(), FsError>| {
