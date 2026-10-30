@@ -62,45 +62,51 @@ impl CommandJournal for LocalPort {
         let entries = if from == head {
             Vec::new()
         } else {
-            spawn_blocking(move || {
-                let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
-                if journal.bytes != head {
-                    return Err(StreamError::InvalidResponse);
-                }
-                let lease = journal.file.lease().map_err(|error| {
-                    stream
-                        .inner
-                        .fail(LocalStreamFailure::io("lease_read", &error))
-                })?;
-                let mut file = lease.file();
-                file.seek(SeekFrom::Start(from))
-                    .map_err(|error| stream.inner.fail(LocalStreamFailure::io("seek", &error)))?;
-                let mut cursor = from;
-                let mut entries = Vec::new();
-                while cursor < head && entries.len() < page {
-                    let frame = read_frame(file, head - cursor)
-                        .map_err(|error| {
-                            stream.inner.fail(LocalStreamFailure::local(
-                                "read_frame",
-                                &error,
-                                stream.work.as_deref(),
-                            ))
-                        })?
-                        .ok_or(StreamError::InvalidResponse)?;
-                    let time = frame
-                        .command
-                        .first_chunk::<8>()
-                        .ok_or(StreamError::InvalidResponse)?;
-                    let at_millis = u64::from_le_bytes(*time);
-                    cursor += frame_bytes(&frame.length);
-                    entries.push(JournalEntry {
-                        sequence: cursor,
-                        at_millis,
-                        command: crate::OwnedBytes::from(frame.command).slice(8..),
-                    });
-                }
-                Ok(entries)
-            })
+            spawn_blocking(
+                "streams",
+                "read-page",
+                &format_args!("{:p}/{from}", Arc::as_ptr(&journal)),
+                move || {
+                    let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
+                    if journal.bytes != head {
+                        return Err(StreamError::InvalidResponse);
+                    }
+                    let lease = journal.file.lease().map_err(|error| {
+                        stream
+                            .inner
+                            .fail(LocalStreamFailure::io("lease_read", &error))
+                    })?;
+                    let mut file = lease.file();
+                    file.seek(SeekFrom::Start(from)).map_err(|error| {
+                        stream.inner.fail(LocalStreamFailure::io("seek", &error))
+                    })?;
+                    let mut cursor = from;
+                    let mut entries = Vec::new();
+                    while cursor < head && entries.len() < page {
+                        let frame = read_frame(file, head - cursor)
+                            .map_err(|error| {
+                                stream.inner.fail(LocalStreamFailure::local(
+                                    "read_frame",
+                                    &error,
+                                    stream.work.as_deref(),
+                                ))
+                            })?
+                            .ok_or(StreamError::InvalidResponse)?;
+                        let time = frame
+                            .command
+                            .first_chunk::<8>()
+                            .ok_or(StreamError::InvalidResponse)?;
+                        let at_millis = u64::from_le_bytes(*time);
+                        cursor += frame_bytes(&frame.length);
+                        entries.push(JournalEntry {
+                            sequence: cursor,
+                            at_millis,
+                            command: crate::OwnedBytes::from(frame.command).slice(8..),
+                        });
+                    }
+                    Ok(entries)
+                },
+            )
             .await
             .map_err(|_| StreamError::Unavailable)??
         };

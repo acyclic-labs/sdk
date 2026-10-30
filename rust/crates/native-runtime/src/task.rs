@@ -26,27 +26,154 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// Submission is eager: a replay reader may await records produced by the
 /// closure before it awaits this result. Once admitted, the service retains
 /// the closure through physical completion if the caller disappears. Closures
-/// must not wait for work submitted to this same service.
+/// must not wait for work submitted to this same service: reentrant submission
+/// returns [`std::io::ErrorKind::WouldBlock`] before entering its queue. Polling
+/// an accepted result from this service returns the same refusal and detaches
+/// its observer; the original job retains physical completion custody.
+/// `medium`, `operation` and the opaque `key` identify the original producer in
+/// wait reports. Never include credentials, user content or paths in the key.
 pub fn spawn_persistence<F, T>(
+    medium: &'static str,
+    operation: &'static str,
+    key: &dyn std::fmt::Display,
     work: F,
-) -> impl std::future::Future<Output = std::io::Result<T>> + Send
+) -> impl std::future::Future<Output = std::io::Result<T>> + Send + use<F, T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let completion = crate::task_completion(
-        move || Ok(work()),
-        None,
-        None,
-        None,
-        &crate::workers::PERSISTENCE_WORKERS,
-    );
-    let task = spawn(crate::obs::waiting(
-        "persistence-completion",
-        "durable-storage",
-        async move { completion?.await },
-    ));
-    async move { task.await? }
+    let task = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+        Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
+    } else {
+        let waiting = crate::obs::waiting(
+            "persistence-completion",
+            format_args!("{medium}/{operation}/{key}"),
+            std::future::pending::<()>(),
+        );
+        let progress = waiting.context().clone();
+        progress
+            .in_scope(|| {
+                crate::task_completion(
+                    move || Ok(work()),
+                    None,
+                    None,
+                    None,
+                    &crate::workers::PERSISTENCE_WORKERS,
+                )
+            })
+            .map(|completion| {
+                spawn(async move {
+                    let _waiting = waiting;
+                    completion.await
+                })
+            })
+    };
+    PersistenceTask(task)
+}
+
+struct PersistenceTask<T>(Result<TaskHandle<std::io::Result<T>>, std::io::Error>);
+
+impl<T> std::future::Future for PersistenceTask<T> {
+    type Output = std::io::Result<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+            // Detaching the observer cannot cancel an accepted physical job.
+            this.0 = Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        match &mut this.0 {
+            Ok(task) => std::future::Future::poll(std::pin::Pin::new(task), context)
+                .map(|result| result.and_then(std::convert::identity)),
+            Err(error) => std::task::Poll::Ready(Err(std::mem::replace(
+                error,
+                std::io::ErrorKind::WouldBlock.into(),
+            ))),
+        }
+    }
+}
+
+thread_local! {
+    static PERSISTENCE_JOB: std::cell::RefCell<Option<PersistenceJob>> = const { std::cell::RefCell::new(None) };
+}
+
+struct PersistenceJob {
+    progress: crate::obs::OperationSpan,
+    stage: u64,
+    predecessor: u64,
+}
+
+impl PersistenceJob {
+    fn observe(&mut self, stage: u64, predecessor: u64) {
+        if self.predecessor != predecessor {
+            self.predecessor = predecessor;
+            self.progress.record("predecessor", predecessor);
+        }
+        if self.stage != stage {
+            self.stage = stage;
+            self.progress.record("stage", stage);
+        }
+    }
+}
+
+pub(crate) struct PersistenceTurn(Option<Option<PersistenceJob>>);
+
+impl PersistenceTurn {
+    pub(crate) fn enter(progress: Option<crate::obs::OperationSpan>) -> Self {
+        Self(progress.map(|progress| {
+            PERSISTENCE_JOB.with(|job| {
+                job.replace(Some(PersistenceJob {
+                    progress,
+                    stage: 2,
+                    predecessor: 0,
+                }))
+            })
+        }))
+    }
+}
+
+impl Drop for PersistenceTurn {
+    fn drop(&mut self) {
+        if let Some(previous) = self.0.take() {
+            PERSISTENCE_JOB.with(|job| job.replace(previous));
+        }
+    }
+}
+
+/// Marks a physical call in the original persistence job, without submitting work.
+pub fn persistence_syscall<T>(call: impl FnOnce() -> T) -> T {
+    persistence_stage(3, 0, call)
+}
+
+pub(crate) fn persistence_predecessor<T>(key: usize, wait: impl FnOnce() -> T) -> T {
+    persistence_stage(5, key as u64, wait)
+}
+
+fn persistence_stage<T>(stage: u64, predecessor: u64, call: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(u64, u64)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PERSISTENCE_JOB.with(|job| {
+                if let Some(job) = job.borrow_mut().as_mut()
+                    && let Some((stage, predecessor)) = self.0
+                {
+                    job.observe(stage, predecessor);
+                }
+            });
+        }
+    }
+    let previous = PERSISTENCE_JOB.with(|job| {
+        job.borrow_mut().as_mut().map(|job| {
+            let previous = (job.stage, job.predecessor);
+            job.observe(stage, predecessor);
+            previous
+        })
+    });
+    let _restore = Restore(previous);
+    call()
 }
 
 /// The caller's task submission context, retained across a native worker turn.
@@ -247,13 +374,129 @@ mod tests {
     }
 
     #[test]
+    fn persistence_reports_the_original_job_and_refuses_same_service_dependencies()
+    -> std::io::Result<()> {
+        if crate::tests::passed_in_exclusive_process(
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+        )? {
+            return Ok(());
+        }
+        use tracing_subscriber::layer::SubscriberExt as _;
+        fn refuses_reentry() {
+            struct RejectedKey;
+            impl std::fmt::Display for RejectedKey {
+                fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    panic!("rejected persistence key was formatted")
+                }
+            }
+            let nested = super::spawn_persistence("local", "nested", &RejectedKey, || {
+                panic!("reentrant persistence body ran")
+            });
+            let mut nested = std::pin::pin!(nested);
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                matches!(std::future::Future::poll(nested.as_mut(), &mut context),
+                std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
+        let report = crate::obs::WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let _dispatch = tracing::dispatcher::set_default(&dispatch);
+        let runtime = super::coordination_runtime().unwrap();
+        runtime.block_on(async {
+            let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
+            let retained = custody.clone();
+            let (accepted_started, accepted_starting) = tokio::sync::oneshot::channel();
+            let (accepted_release, accepted_held) = std::sync::mpsc::channel::<()>();
+            let (accepted_finished, accepted_finishing) = tokio::sync::oneshot::channel();
+            let mut accepted = Box::pin(super::spawn_persistence(
+                "local",
+                "retained",
+                &16,
+                move || {
+                    let guard = retained.lock().unwrap();
+                    accepted_started.send(()).unwrap();
+                    let result = accepted_held.recv();
+                    drop(guard);
+                    accepted_finished.send(result).unwrap();
+                },
+            ));
+            accepted_starting.await.unwrap();
+            let (started, starting) = tokio::sync::oneshot::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let job = super::spawn_persistence("local", "write", &17, move || {
+                super::persistence_syscall(|| {
+                    started.send(()).unwrap();
+                    held.recv().unwrap();
+                });
+                // The negative control attempts to wait on its own service.
+                // Its body must never enter that service, even with free workers.
+                refuses_reentry();
+                // An inline native adapter retains the same physical owner.
+                let _inline = crate::InlineBlocking::enter();
+                let mut adapter = crate::run_blocking_io(refuses_reentry, None).unwrap();
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(matches!(
+                    std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut context),
+                    std::task::Poll::Ready(Ok(()))
+                ));
+                // An observer accepted earlier cannot wait on this service
+                // from one of its own workers, even without new submission.
+                assert!(matches!(
+                    std::future::Future::poll(accepted.as_mut(), &mut context),
+                    std::task::Poll::Ready(Err(error))
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                ));
+            });
+            starting.await.unwrap();
+            let mut bytes = Vec::new();
+            report.report(&mut bytes).unwrap();
+            let observed = String::from_utf8(bytes).unwrap();
+            assert!(observed.contains("local/write/17"), "{observed}");
+            assert!(observed.contains("stage=syscall"), "{observed}");
+            release.send(()).unwrap();
+            job.await.unwrap();
+            let mut bytes = Vec::new();
+            report.report(&mut bytes).unwrap();
+            let observed = String::from_utf8(bytes).unwrap();
+            assert!(!observed.contains("local/write/17"), "{observed}");
+            assert!(observed.contains("local/retained/16"), "{observed}");
+            assert!(custody.try_lock().is_err());
+            // Loss of the original release producer terminates the job. A
+            // refused observer has no authority to release its held storage.
+            drop(accepted_release);
+            assert!(accepted_finishing.await.unwrap().is_err());
+            assert!(custody.try_lock().is_ok());
+        });
+        Ok(())
+    }
+
+    #[test]
+    fn persistence_worker_panic_terminates_its_original_wait() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let report = crate::obs::WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let _dispatch = tracing::dispatcher::set_default(&dispatch);
+        let runtime = super::coordination_runtime().unwrap();
+        let error = runtime
+            .block_on(super::spawn_persistence("local", "panic", &19, || {
+                panic!("original persistence failure")
+            }))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        let mut bytes = Vec::new();
+        report.report(&mut bytes).unwrap();
+        assert!(bytes.is_empty(), "a failed producer retained its wait");
+    }
+
+    #[test]
     fn persistence_retains_accepted_work_after_caller_drop() {
         let runtime = super::coordination_runtime().unwrap();
         runtime.block_on(async {
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel::<()>();
             let (finished, mut finishing) = tokio::sync::oneshot::channel();
-            let submitted = super::spawn_persistence(move || {
+            let submitted = super::spawn_persistence("test", "retained", &"held", move || {
                 let _ = started.send(());
                 let error = held.recv().unwrap_err();
                 let result = std::io::Error::new(std::io::ErrorKind::Interrupted, error);

@@ -148,6 +148,8 @@ pub(crate) fn task_completion<T: Send + 'static>(
             admission,
             health,
             completion: None,
+            progress: std::ptr::eq(pool, &crate::workers::PERSISTENCE_WORKERS)
+                .then(|| obs::OperationSpan::new(tracing::Span::current())),
         },
         state,
         pool,

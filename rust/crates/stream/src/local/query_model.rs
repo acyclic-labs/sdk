@@ -19,24 +19,34 @@ where
     async move { received.await.map_err(|_| StreamError::Unavailable) }
 }
 
-pub(super) async fn spawn_blocking<T>(
-    work: impl FnOnce() -> T,
-) -> std::result::Result<T, tokio::task::JoinError> {
-    Ok(work())
+pub(super) fn spawn_blocking<T, F: FnOnce() -> T>(
+    _medium: &'static str,
+    _operation: &'static str,
+    _key: &dyn std::fmt::Display,
+    work: F,
+) -> impl Future<Output = std::result::Result<T, tokio::task::JoinError>> + use<T, F> {
+    async move { Ok(work()) }
 }
 
 // The same owned lease boundary, executed by the existing model worker.
-pub(super) async fn submit_file<C, T, E>(
-    acquire: impl FnOnce() -> std::result::Result<(acyclic_native_runtime::FileLease, C), E>,
-    operation: impl FnOnce(&acyclic_native_runtime::FileLease, &mut C) -> std::result::Result<T, E>,
-) -> std::result::Result<std::result::Result<T, E>, tokio::task::JoinError> {
-    spawn_blocking(move || {
+pub(super) fn submit_file<C, T, E, A, F>(
+    medium: &'static str,
+    kind: &'static str,
+    key: &dyn std::fmt::Display,
+    acquire: A,
+    operation: F,
+) -> impl Future<Output = std::result::Result<std::result::Result<T, E>, tokio::task::JoinError>>
++ use<C, T, E, A, F>
+where
+    A: FnOnce() -> std::result::Result<(acyclic_native_runtime::FileLease, C), E>,
+    F: FnOnce(&acyclic_native_runtime::FileLease, &mut C) -> std::result::Result<T, E>,
+{
+    spawn_blocking(medium, kind, key, move || {
         // Fields drop in order even when the operation unwinds, matching the
         // production owner: the lease retires before its original custody.
         let mut owned = acquire()?;
         operation(&owned.0, &mut owned.1)
     })
-    .await
 }
 
 pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {

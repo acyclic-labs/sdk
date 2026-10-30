@@ -22,6 +22,8 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 /// history or other waits. Reporting visits the live waits once and releases
 /// the registry lock before writing. Keys are opaque operation identities;
 /// callers must never supply prompts or credentials.
+/// Persistence jobs include their creating span as the causal origin. A file
+/// predecessor identifies the exact native fence currently blocking that job.
 #[derive(Clone, Default)]
 pub struct WaitReport(Arc<Mutex<Chain>>);
 
@@ -33,6 +35,10 @@ struct Chain {
 
 struct Node {
     fields: Fields,
+    stage: std::sync::atomic::AtomicU64,
+    job: u64,
+    origin: Option<u64>,
+    predecessor: std::sync::atomic::AtomicU64,
     started: SystemTime,
     elapsed: Instant,
     links: Mutex<Links>,
@@ -84,6 +90,10 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         attributes.record(&mut fields);
         let node = Arc::new(Node {
             fields,
+            stage: std::sync::atomic::AtomicU64::new(0),
+            job: id.clone().into_u64(),
+            origin: span.parent().map(|parent| parent.id().into_u64()),
+            predecessor: std::sync::atomic::AtomicU64::new(0),
             started: SystemTime::now(),
             elapsed: Instant::now(),
             links: Mutex::default(),
@@ -111,19 +121,43 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
 
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
         #[derive(Default)]
-        struct Finished(bool);
+        struct Finished {
+            finished: bool,
+            stage: Option<u64>,
+            predecessor: Option<u64>,
+        }
         impl Visit for Finished {
             fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
                 if field.name() == "finished" {
-                    self.0 = value;
+                    self.finished = value;
                 }
             }
             fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn fmt::Debug) {}
+            fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+                if field.name() == "stage" {
+                    self.stage = Some(value);
+                } else if field.name() == "predecessor" {
+                    self.predecessor = Some(value);
+                }
+            }
         }
         let mut finished = Finished::default();
         values.record(&mut finished);
-        if finished.0 {
+        if finished.finished {
             self.retire(id, context);
+            return;
+        }
+        if let Some(span) = context.span(id)
+            && let Some(SpanWait(node)) = span.extensions().get::<SpanWait>()
+        {
+            if let Some(stage) = finished.stage {
+                node.stage
+                    .store(stage, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(predecessor) = finished.predecessor {
+                node.predecessor
+                    .store(predecessor, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 }
@@ -182,13 +216,34 @@ impl WaitReport {
         };
         for node in nodes {
             let since = node.started.duration_since(UNIX_EPOCH).unwrap_or_default();
+            write!(
+                output,
+                "waiting: {} {}",
+                node.fields.primitive, node.fields.key
+            )?;
+            if node.fields.primitive == "persistence-completion" {
+                let stage = match node.stage.load(std::sync::atomic::Ordering::Relaxed) {
+                    0 => "admitted",
+                    1 => "queued",
+                    2 => "running",
+                    3 => "syscall",
+                    4 => "published",
+                    5 => "file-predecessor",
+                    _ => "invalid",
+                };
+                write!(
+                    output,
+                    " job={} origin={:?} predecessor={:#x} stage={stage}",
+                    node.job,
+                    node.origin,
+                    node.predecessor.load(std::sync::atomic::Ordering::Relaxed)
+                )?;
+            }
             writeln!(
                 output,
-                "waiting: {} {} since {:.3} ({:.3}s elapsed)",
-                node.fields.primitive,
-                node.fields.key,
+                " since {:.3} ({:.3}s elapsed)",
                 since.as_secs_f64(),
-                node.elapsed.elapsed().as_secs_f64(),
+                node.elapsed.elapsed().as_secs_f64()
             )?;
         }
         output.flush()

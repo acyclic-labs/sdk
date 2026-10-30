@@ -15,16 +15,21 @@ impl FileLease {
     /// service retains the lease and custody through terminal I/O even if the
     /// caller drops the result. Acquisition and operation errors are returned
     /// unchanged; loss of the completion producer is an outer I/O error.
-    pub fn submit<C, T, E>(
-        acquire: impl FnOnce() -> Result<(Self, C), E> + Send + 'static,
-        operation: impl FnOnce(&Self, &mut C) -> Result<T, E> + Send + 'static,
-    ) -> impl Future<Output = io::Result<Result<T, E>>> + Send
+    pub fn submit<C, T, E, A, F>(
+        medium: &'static str,
+        kind: &'static str,
+        key: &dyn std::fmt::Display,
+        acquire: A,
+        operation: F,
+    ) -> impl Future<Output = io::Result<Result<T, E>>> + Send + use<C, T, E, A, F>
     where
+        A: FnOnce() -> Result<(Self, C), E> + Send + 'static,
+        F: FnOnce(&Self, &mut C) -> Result<T, E> + Send + 'static,
         C: Send + 'static,
         T: Send + 'static,
         E: Send + 'static,
     {
-        crate::spawn_persistence(move || {
+        crate::spawn_persistence(medium, kind, key, move || {
             let (lease, custody) = acquire()?;
             let mut owned = Owned { lease, custody };
             operation(&owned.lease, &mut owned.custody)

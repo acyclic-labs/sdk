@@ -14,6 +14,7 @@
 //! flushed whole before any write and reported [`Medium::recovered`] until
 //! settled: a close before then leaves the root marked unclean.
 use crate::{Medium, MediumError, Store};
+use acyclic_native_runtime::spawn_persistence;
 use acyclic_stream::OwnedBytes;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read as _, Seek as _, Write as _};
@@ -89,11 +90,21 @@ impl crate::Account<LocalMedium> {
 }
 
 /// Submits `work` at once, so callers collecting several submit them
-/// together and await them after.
-fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
-) -> impl Future<Output = std::io::Result<T>> {
-    let submitted = acyclic_native_runtime::spawn_persistence(work);
+/// together and await them after. The key is an opaque address in the original
+/// invocation, never the caller's object name or prefix. The runtime job identity
+/// distinguishes concurrent invocations even when an address is reused.
+fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'static>(
+    medium: &LocalMedium,
+    operation: &'static str,
+    key: usize,
+    work: F,
+) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
+    let submitted = spawn_persistence(
+        "objects",
+        operation,
+        &format_args!("{:p}/{key:x}", Arc::as_ptr(&medium.unflushed)),
+        work,
+    );
     async move { submitted.await? }
 }
 
@@ -314,7 +325,7 @@ impl LocalMedium {
         }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
-        let (root, lock, recovered) = acyclic_native_runtime::spawn_persistence(move || {
+        let (root, lock, recovered) = spawn_persistence("objects", "open", &"root", move || {
             // Every key lives below `keys`, created here and made durable
             // with the root below, so no flush need reach above it.
             std::fs::create_dir_all(root.join("tmp"))?;
@@ -338,7 +349,9 @@ impl LocalMedium {
                 .open(root.join("LOCK"))?;
             match lock.try_lock() {
                 Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => return Err(LocalOpenError::AlreadyOwned),
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    return Err(LocalOpenError::AlreadyOwned);
+                }
                 Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
             }
             // Crash-left temporaries never became visible.
@@ -452,14 +465,14 @@ impl Medium for LocalMedium {
         getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
         let temporary = self.root.join("tmp").join(hex::encode(name));
         let unflushed = self.unflushed.clone();
-        blocking(move || {
+        blocking(self, "create", key.as_ptr() as usize, move || {
             if target.exists() {
                 return Ok(false);
             }
             let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
             create_directories(parent, &unflushed)?;
             let mut file = std::fs::File::create_new(&temporary)?;
-            file.write_all(&bytes)?;
+            acyclic_native_runtime::persistence_syscall(|| file.write_all(&bytes))?;
             drop(file);
             let published = unflushed.changed(&target, || {
                 acyclic_native_runtime::publish_new(&temporary, &target, None)
@@ -481,7 +494,7 @@ impl Medium for LocalMedium {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         let path = self.path(key);
-        blocking(move || {
+        blocking(self, "read", key.as_ptr() as usize, move || {
             let mut file = match std::fs::File::open(&path) {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -498,7 +511,7 @@ impl Medium for LocalMedium {
             if range.start != 0 {
                 file.seek(std::io::SeekFrom::Start(range.start))?;
             }
-            file.read_exact(&mut bytes)?;
+            acyclic_native_runtime::persistence_syscall(|| file.read_exact(&mut bytes))?;
             Ok(Some(OwnedBytes::from(bytes)))
         })
         .await
@@ -509,6 +522,9 @@ impl Medium for LocalMedium {
         let path = self.path(key);
         let unflushed = self.unflushed.clone();
         blocking(
+            self,
+            "remove",
+            key.as_ptr() as usize,
             move || match unflushed.changed(&path, || std::fs::remove_file(&path)) {
                 Ok(()) => Ok(true),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -531,13 +547,13 @@ impl Medium for LocalMedium {
         let temporary = self.root.join("tmp").join(hex::encode(name));
         let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
         let durability = self.durability;
-        blocking(move || {
+        blocking(self, "replace", key.as_ptr() as usize, move || {
             let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
             if !holds(&target, &expected)? {
                 return Ok(false);
             }
             let mut file = std::fs::File::create_new(&temporary)?;
-            file.write_all(&bytes)?;
+            acyclic_native_runtime::persistence_syscall(|| file.write_all(&bytes))?;
             // The bytes land before the rename can: a crash keeps the old
             // value or the new one, never a torn rewrite of a committed key.
             sync_contents(&file, durability)?;
@@ -556,7 +572,7 @@ impl Medium for LocalMedium {
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
         let (path, expected) = (self.path(key), expected.to_vec());
         let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
-        blocking(move || {
+        blocking(self, "remove-if", key.as_ptr() as usize, move || {
             let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
             if !holds(&path, &expected)? {
                 return Ok(false);
@@ -580,22 +596,36 @@ impl Medium for LocalMedium {
         let files: Vec<_> = paths
             .iter()
             .cloned()
-            .map(|path| blocking(move || sync_member(&path, durability)))
+            .zip(keys)
+            .map(|(path, key)| {
+                blocking(self, "flush-content", key.as_ptr() as usize, move || {
+                    sync_member(&path, durability)
+                })
+            })
             .collect();
         for file in files {
             file.await.map_err(failed)?;
         }
         let directories: Vec<_> = directories
             .into_iter()
-            .map(|directory| blocking(move || sync_member_directory(&directory, durability)))
+            .map(|directory| {
+                blocking(
+                    self,
+                    "flush-directory",
+                    directory.as_os_str().as_encoded_bytes().as_ptr() as usize,
+                    move || sync_member_directory(&directory, durability),
+                )
+            })
             .collect();
         for directory in directories {
             directory.await.map_err(failed)?;
         }
         let root = self.root.clone();
-        blocking(move || finish_batch(&root, durability))
-            .await
-            .map_err(failed)?;
+        blocking(self, "flush-batch", 0, move || {
+            finish_batch(&root, durability)
+        })
+        .await
+        .map_err(failed)?;
         self.unflushed.forget(covered);
         Ok(())
     }
@@ -622,9 +652,10 @@ impl Medium for LocalMedium {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
         let directory = self.path(prefix.trim_end_matches('/'));
+        let key = prefix;
         let prefix = prefix.to_owned();
         let after = after.map(str::to_owned);
-        blocking(move || {
+        blocking(self, "list", key.as_ptr() as usize, move || {
             let mut out = Vec::new();
             walk(&directory, &prefix, after.as_deref(), limit, &mut out)?;
             Ok(out)
