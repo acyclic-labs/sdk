@@ -379,6 +379,7 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
     use crate::NativeTreeMaterializationError as E;
     match error {
         E::InvalidLayout => Code::DataLoss,
+        E::UnsupportedFormat => Code::FailedPrecondition,
         E::MissingEntry => Code::NotFound,
         E::ExternalMutation | E::PreimageConflict | E::AllocationChanged { .. } => Code::Aborted,
         E::UnexpectedBackup => Code::FailedPrecondition,

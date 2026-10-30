@@ -34,3 +34,17 @@ These harnesses establish properties only when their Kani run succeeds. They
 do not establish that unrelated consumers use the codecs: that is a separate
 whole-source boundary audit. In particular, a correct GenerationId codec alone
 cannot detect a caller that reconstructs a generation from a digest.
+
+The filesystem crate also keeps two bounded harnesses beside the production
+native witness codec. From the repository root, run them individually:
+
+```sh
+cargo kani -p acyclic-fs --harness native_witness_header_preserves_all_fingerprint_bits
+cargo kani -p acyclic-fs --harness native_witness_header_is_canonical_and_refuses_before_fields
+```
+
+These call the actual 67-byte header writer and decoder, covering every optional
+fingerprint bit, accepted-byte uniqueness, noncanonical absent fields, truncated
+current headers and unsupported versions without fields. They perform no IO,
+allocation or waits. They are separate from the ID proofs: a fingerprint is not
+an ObjectId. Their presence does not establish an executed proof.

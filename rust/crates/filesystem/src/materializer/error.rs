@@ -6,6 +6,9 @@ pub enum NativeTreeMaterializationError {
     /// Invalid operation layout or persisted payload.
     #[error("invalid native materialization layout")]
     InvalidLayout,
+    /// Persisted bytes use an unsupported codec version.
+    #[error("unsupported native materialization format")]
+    UnsupportedFormat,
     /// Required entry is absent.
     #[error("required native entry is missing")]
     MissingEntry,
