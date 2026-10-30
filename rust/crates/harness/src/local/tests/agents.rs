@@ -274,8 +274,8 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         .is_empty()
     );
     assert!(
-        matches!(harness.connect().await, Err(Error::Storage(_))),
-        "late clients observe the already closed runtime"
+        matches!(harness.connect().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+        "late clients observe the original retained runtime failure"
     );
     Ok(())
 }
