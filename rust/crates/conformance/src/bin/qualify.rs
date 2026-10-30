@@ -1,4 +1,4 @@
-//! One bounded, machine-readable local qualification entry point.
+//! One machine-readable local qualification entry point.
 
 #[path = "qualify/tools/mod.rs"]
 #[allow(
@@ -47,22 +47,23 @@ struct Report {
     os: &'static str,
     arch: &'static str,
     seed: String,
-    budget_seconds: u64,
+    budget_seconds: Option<u64>,
     elapsed_ms: u128,
     passed: bool,
     cases: Vec<Case>,
 }
 
-async fn run_case<F>(name: &'static str, started: Instant, budget: Duration, future: F) -> Case
+async fn run_case<F>(name: &'static str, deadline: Option<Instant>, future: F) -> Case
 where
     F: Future<Output = Result<(), String>>,
 {
     let case_started = Instant::now();
-    let result = match budget.checked_sub(started.elapsed()) {
-        Some(remaining) => tokio::time::timeout(remaining, future)
+    let result = match deadline {
+        Some(until) if until <= case_started => Err("qualification deadline expired".into()),
+        Some(until) => tokio::time::timeout_at(until.into(), future)
             .await
-            .unwrap_or_else(|_| Err("qualification time budget exceeded".into())),
-        None => Err("qualification time budget exceeded".into()),
+            .unwrap_or_else(|_| Err("qualification deadline expired".into())),
+        None => future.await,
     };
     Case {
         name,
@@ -103,18 +104,12 @@ async fn qualify_filesystem_local(root: PathBuf) -> Result<(), String> {
     acyclic_conformance::filesystem_smoke(&provider).await
 }
 
-async fn qualify_stream_objects(
-    root: &Path,
-    started: Instant,
-    budget: Duration,
-    seed: u64,
-) -> Vec<Case> {
+async fn qualify_stream_objects(root: &Path, deadline: Option<Instant>, seed: u64) -> Vec<Case> {
     let mut cases = Vec::new();
     cases.push(
         run_case(
             "stream/local",
-            started,
-            budget,
+            deadline,
             Box::pin(qualify_stream_local(root.join("stream"))),
         )
         .await,
@@ -122,8 +117,7 @@ async fn qualify_stream_objects(
     cases.push(
         run_case(
             "objects/local",
-            started,
-            budget,
+            deadline,
             Box::pin(qualify_objects_local(root.join("objects"))),
         )
         .await,
@@ -132,8 +126,7 @@ async fn qualify_stream_objects(
     cases.push(
         run_case(
             "objects/sparse-first-put",
-            started,
-            budget,
+            deadline,
             objects_sparse_first_put(&sparse),
         )
         .await,
@@ -142,8 +135,7 @@ async fn qualify_stream_objects(
         cases.push(
             run_case(
                 "objects/sparse-reopen-gc",
-                started,
-                budget,
+                deadline,
                 objects_sparse_reopen_gc(&sparse),
             )
             .await,
@@ -152,8 +144,7 @@ async fn qualify_stream_objects(
     cases.push(
         run_case(
             "stream/model-recovery",
-            started,
-            budget,
+            deadline,
             Box::pin(stream_history(&root.join("stream-history"), seed)),
         )
         .await,
@@ -161,8 +152,7 @@ async fn qualify_stream_objects(
     cases.push(
         run_case(
             "objects/model-recovery",
-            started,
-            budget,
+            deadline,
             Box::pin(objects_history(&root.join("objects-history"), seed)),
         )
         .await,
@@ -171,8 +161,7 @@ async fn qualify_stream_objects(
     cases.push(
         run_case(
             "objects/reopen-many-chunks/setup",
-            started,
-            budget,
+            deadline,
             objects_many_chunks_setup(&chunks),
         )
         .await,
@@ -181,8 +170,7 @@ async fn qualify_stream_objects(
         cases.push(
             run_case(
                 "objects/reopen-many-chunks/startup",
-                started,
-                budget,
+                deadline,
                 objects_many_chunks_startup(&chunks),
             )
             .await,
@@ -191,44 +179,35 @@ async fn qualify_stream_objects(
     cases
 }
 
-async fn qualify_filesystem_cases(
-    root: &Path,
-    started: Instant,
-    budget: Duration,
-    seed: u64,
-) -> Vec<Case> {
+async fn qualify_filesystem_cases(root: &Path, deadline: Option<Instant>, seed: u64) -> Vec<Case> {
     vec![
         run_case(
             "filesystem/local-smoke",
-            started,
-            budget,
+            deadline,
             Box::pin(qualify_filesystem_local(root.join("filesystem"))),
         )
         .await,
         run_case(
             "filesystem/model-recovery",
-            started,
-            budget,
+            deadline,
             Box::pin(filesystem_history(root.join("filesystem-history"), seed)),
         )
         .await,
         run_case(
             "filesystem/demand-local",
-            started,
-            budget,
+            deadline,
             Box::pin(filesystem_demand(root.join("filesystem-demand"))),
         )
         .await,
     ]
 }
 
-async fn qualify_native_case(root: &Path, started: Instant, budget: Duration) -> Case {
+async fn qualify_native_case(root: &Path, deadline: Option<Instant>) -> Case {
     let capability = probe_native_mount();
     if capability.available() && capability.kind != Some(NativeMountKind::MacOsNfs) {
         let mut case = run_case(
             "filesystem/sqlite-wal-mount",
-            started,
-            budget,
+            deadline,
             filesystem_sqlite_wal(root.join("sqlite-wal")),
         )
         .await;
@@ -289,10 +268,13 @@ fn main() {
     qualify_main(&runtime);
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "one linear bounded qualification sequence"
-)]
+fn refuse_deadline(reason: &str) -> ! {
+    eprintln!(
+        "step=qualification-deadline {reason}; recovery command: cargo run -p acyclic-conformance --features local-runner --bin qualify --"
+    );
+    std::process::exit(2);
+}
+
 fn qualify_main(runtime: &tokio::runtime::Runtime) {
     let mut arguments = std::env::args_os();
     let child_mode = arguments.nth(1);
@@ -315,16 +297,26 @@ fn qualify_main(runtime: &tokio::runtime::Runtime) {
         }
         return;
     }
-    let budget_seconds = std::env::args()
-        .skip(1)
-        .find_map(|argument| argument.strip_prefix("--max-seconds=").map(str::to_owned))
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(300);
-    let budget = Duration::from_secs(budget_seconds);
+    let budget_seconds = child_mode.map(|argument| {
+        if arguments.next().is_some() {
+            refuse_deadline("expected at most one --max-seconds=<integer> argument");
+        }
+        argument
+            .to_str()
+            .and_then(|value| value.strip_prefix("--max-seconds="))
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or_else(|| refuse_deadline("expected --max-seconds=<non-negative integer>"))
+    });
     let seed = std::env::var("ACYCLIC_QUAL_SEED").unwrap_or_else(|_| "0".into());
     let numeric_seed = seed.parse::<u64>().unwrap_or(0);
     let started = Instant::now();
+    let deadline = budget_seconds.map(|seconds| {
+        started
+            .checked_add(Duration::from_secs(seconds))
+            .unwrap_or_else(|| {
+                refuse_deadline("--max-seconds cannot be represented by the monotonic clock")
+            })
+    });
     let mut cases = Vec::new();
 
     let root = match tempfile::tempdir() {
@@ -334,19 +326,13 @@ fn qualify_main(runtime: &tokio::runtime::Runtime) {
             std::process::exit(2);
         }
     };
-    cases.extend(runtime.block_on(qualify_stream_objects(
-        root.path(),
-        started,
-        budget,
-        numeric_seed,
-    )));
+    cases.extend(runtime.block_on(qualify_stream_objects(root.path(), deadline, numeric_seed)));
     cases.extend(runtime.block_on(qualify_filesystem_cases(
         root.path(),
-        started,
-        budget,
+        deadline,
         numeric_seed,
     )));
-    cases.push(runtime.block_on(Box::pin(qualify_native_case(root.path(), started, budget))));
+    cases.push(runtime.block_on(Box::pin(qualify_native_case(root.path(), deadline))));
     let report = Report {
         schema: 1,
         os: std::env::consts::OS,
