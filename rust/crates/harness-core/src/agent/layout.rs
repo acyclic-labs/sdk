@@ -81,6 +81,19 @@ impl AgentId {
         Self::from_bytes(bytes)
     }
 
+    /// The root a portable (event or browser) host creates for `intent`, so a
+    /// retried create names the same agent. An Actor-hosted agent's intent is
+    /// its actor id: the platform derives that actor's agent here, too.
+    #[must_use]
+    pub fn hosted_root(intent: &str) -> Self {
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.browser.agent.v1");
+        hasher.update(intent.as_bytes());
+        hasher.update(&[0]);
+        let mut bytes = [0; 16];
+        hasher.finalize_xof().fill(&mut bytes);
+        Self::from_bytes(bytes)
+    }
+
     /// Canonical text.
     #[must_use]
     pub fn as_str(&self) -> &str {

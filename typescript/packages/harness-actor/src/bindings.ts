@@ -12,6 +12,9 @@ export const HARNESS_BINDINGS = {
 /** The entry's protected model egress handle, declared as `entry.fetch.name`. */
 export const MODEL_FETCH = "modelFetch";
 
+/** The entry's host-only Machines endpoint, declared as `entry.hostFetch[0].name`. */
+export const MACHINES_ENDPOINT = "machinesEndpoint";
+
 /** The bundled module file and its logical manifest module identifier. */
 export const HARNESS_MODULE = { file: "harness-actor.mjs", id: "harness_actor" } as const;
 
