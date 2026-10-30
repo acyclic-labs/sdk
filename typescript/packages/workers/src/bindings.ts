@@ -23,9 +23,9 @@ function kind(binding: semantic.Binding) {
   if (binding.guestAdmission === "platformAuthority" || binding.guestAdmission === "hostAccess") return binding.guestAdmission;
   if (binding.actorNamespace !== undefined) return "namespace";
   if (binding.workerService !== undefined) return "service";
-  if (binding.resource === "objects:/") return "immutableObjects";
-  if (binding.resource === "machines:/") return "machinesWorkspace";
-  if (binding.resource === "streams:/") return "streams";
+  if (binding.resource.startsWith("objects:/")) return "immutableObjects";
+  if (binding.resource.startsWith("machines:/")) return "machinesWorkspace";
+  if (binding.resource.startsWith("streams:/")) return "streams";
   throw new TypeError("binding materialization: unsupported kind; recovery: select a supported deployment binding kind");
 }
 
