@@ -610,7 +610,8 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     create(&a, 1).await?;
     let foreign = b.agents().actor(&root_b)?;
     assert!(a.agents().runtime().track(foreign).is_err());
-    let runners: Vec<_> = [a.agents(), b.agents()]
+    use futures::StreamExt as _;
+    let mut runners: futures::stream::FuturesUnordered<_> = [a.agents(), b.agents()]
         .into_iter()
         .map(|agents| {
             let agents = Arc::clone(agents);
@@ -626,7 +627,7 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     // Arm the committed state streams before observing their checkpoints.
     // Processing each tree's last adoption proves that its earlier activation
     // entries were claimed, including when publication precedes this wait.
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let adoption = async {
         use futures::TryStreamExt as _;
         for (bound, agent) in [(&a, &last_a), (&b, &last_b)] {
             let actor = bound.agents().actor(agent)?;
@@ -651,12 +652,16 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
             }
         }
         Result::Ok(())
-    })
-    .await??;
-    assert_eq!((resident(&a), resident(&b)), (2, 3));
+    };
+    let observed: Result = tokio::select! {
+        observed = adoption => observed,
+        stopped = runners.next() => Err(format!("agent runtime stopped before adoption: {stopped:?}").into()),
+    };
     for runner in runners {
         runner.abort();
         assert!(runner.await.is_err_and(|error| error.is_cancelled()));
     }
+    observed?;
+    assert_eq!((resident(&a), resident(&b)), (2, 3));
     Ok(())
 }
