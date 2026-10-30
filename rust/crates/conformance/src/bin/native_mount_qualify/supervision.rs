@@ -48,24 +48,137 @@ pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), F
     }
 }
 
-pub(super) struct CapturedChild {
-    pub(super) process: ProcessTree,
-    pub(super) stdout: File,
-    pub(super) stderr: File,
+struct CapturedOutput;
+
+impl acyclic_native_runtime::CaptureHandler for CapturedOutput {
+    fn check(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn observe(
+        &mut self,
+        _chunk: acyclic_native_runtime::ProcessOutput<'_>,
+    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+        Ok(acyclic_native_runtime::ProcessInput::default())
+    }
 }
 
-pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChild, Failure> {
-    let stdout = tempfile::tempfile()?;
-    let stderr = tempfile::tempfile()?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout.try_clone()?))
-        .stderr(Stdio::from(stderr.try_clone()?));
-    Ok(CapturedChild {
-        process: ProcessTree::spawn(command)?,
-        stdout,
-        stderr,
-    })
+/// Publication and exit share the original native pipe/capture owner.
+pub(super) struct CapturedChild {
+    output: Option<acyclic_native_runtime::ProcessCaptureStream<CapturedOutput>>,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    status: Option<std::process::ExitStatus>,
+}
+
+impl CapturedChild {
+    pub(super) fn spawn(command: &mut Command) -> Result<Self, Failure> {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = ProcessTree::spawn(command)?;
+        let stdin = process.take_stdin();
+        let output = process.stream_capture(
+            &acyclic_native_runtime::TaskSpawner::current(),
+            acyclic_native_runtime::CaptureSchedule::Unbounded,
+            usize::MAX,
+            None,
+            CapturedOutput,
+        );
+        Ok(Self {
+            output: Some(output),
+            stdin,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: None,
+        })
+    }
+
+    async fn receive(&mut self) -> std::io::Result<bool> {
+        let Some(output) = self.output.as_mut() else {
+            return Ok(false);
+        };
+        if let Some(chunk) = output.recv().await {
+            self.stdout.extend(chunk.stdout);
+            self.stderr.extend(chunk.stderr);
+            return Ok(true);
+        }
+        let completed = self
+            .output
+            .take()
+            .ok_or_else(|| std::io::Error::other("child capture owner disappeared"))?
+            .finish()
+            .await?;
+        self.status = Some(completed.result.map_err(std::io::Error::other)?.status);
+        Ok(false)
+    }
+
+    pub(super) async fn receipt(&mut self, expected: &[u8]) -> Result<(), Failure> {
+        if expected.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "empty child receipt",
+            )
+            .into());
+        }
+        let mut scanned = 0;
+        loop {
+            if self.stdout[scanned..]
+                .windows(expected.len())
+                .any(|bytes| bytes == expected)
+            {
+                return Ok(());
+            }
+            scanned = self.stdout.len().saturating_sub(expected.len() - 1);
+            if !self.receive().await? {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "captured child exited {:?} before publication: {}{}",
+                        self.status,
+                        String::from_utf8_lossy(&self.stdout),
+                        String::from_utf8_lossy(&self.stderr),
+                    ),
+                )
+                .into());
+            }
+        }
+    }
+
+    pub(super) fn release(&mut self, bytes: &[u8]) -> Result<(), Failure> {
+        self.stdin
+            .take()
+            .ok_or("captured child input was already closed")?
+            .write_all(bytes)?;
+        Ok(())
+    }
+
+    pub(super) async fn finish(mut self) -> Result<std::process::Output, Failure> {
+        self.stdin.take();
+        while self.receive().await? {}
+        Ok(std::process::Output {
+            status: self.status.ok_or("child capture omitted its exit status")?,
+            stdout: self.stdout,
+            stderr: self.stderr,
+        })
+    }
+
+    pub(super) async fn stop(mut self) -> Result<(), Failure> {
+        // Keep input open until forced cleanup joins, so cancellation cannot
+        // turn an intended crash into the child's orderly EOF teardown.
+        let _stdin = self.stdin.take();
+        if let Some(output) = self.output.take() {
+            let outcome = output.finish().await?;
+            if let Err(failure) = outcome.result
+                && !failure.cleanup_completed
+            {
+                return Err(failure.into());
+            }
+        }
+        Ok(())
+    }
 }
 
 pub(super) fn capture_child(
@@ -97,45 +210,6 @@ pub(super) fn capture_child(
             )
             .into()
         })
-}
-
-pub(super) fn captured_child_output(
-    status: std::process::ExitStatus,
-    stdout: &mut File,
-    stderr: &mut File,
-) -> Result<std::process::Output, Failure> {
-    if stdout
-        .metadata()?
-        .len()
-        .saturating_add(stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES
-    {
-        return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-    }
-    fn read(file: &mut File) -> Result<Vec<u8>, Failure> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_CHILD_OUTPUT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CHILD_OUTPUT_BYTES {
-            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-        }
-        Ok(bytes)
-    }
-    Ok(std::process::Output {
-        status,
-        stdout: read(stdout)?,
-        stderr: read(stderr)?,
-    })
-}
-
-pub(super) fn captured_child_output_exceeds_limit(child: &CapturedChild) -> Result<bool, Failure> {
-    Ok(child
-        .stdout
-        .metadata()?
-        .len()
-        .saturating_add(child.stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES)
 }
 
 fn append_child_failure(
