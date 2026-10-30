@@ -265,3 +265,11 @@ the same caller URL. Duplicate identical targets preserve a decision; equally
 specific different targets refuse, and exclusions remain explicit. Eight SDK
 hostname/pattern producers retain their caller context and await capture and
 execution. These are grammar/codec checks, with no network or authorization.
+
+Filesystem wire metadata reaches the public parser shared by native/hosted
+bindings. Equivalent unavailable spellings preserve facts; each false
+unavailable marker and opaque-presence flag without its separate body refuses.
+Seven actual metadata writer outputs add fourteen pending binary/JSON inputs,
+covering unavailable, zero, extrema, mixed scalars and refused opaque bodies.
+A bounded Kani harness specifies every optional scalar value and each missing
+opaque-body refusal through the same writer/parser. All await execution.

@@ -1,5 +1,57 @@
 //! Bounded proofs call the owning types' actual codecs, including seal custody.
 #[cfg(kani)]
+mod wire_metadata {
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies() {
+        use acyclic_fs::{WorkspaceMetadata, binding_contract::*, kernel::MetadataField};
+        let input = WorkspaceMetadata {
+            posix_mode: kani::any(),
+            posix_uid: kani::any(),
+            posix_gid: kani::any(),
+            posix_flags: kani::any(),
+            windows_attributes: kani::any(),
+            created_ns: kani::any(),
+            modified_ns: kani::any(),
+            accessed_ns: kani::any(),
+            changed_ns: kani::any(),
+            has_named_attributes: false,
+            has_acl: false,
+            has_security_descriptor: false,
+        };
+        let actual = metadata_from_proto(Some(metadata_to_proto(input))).unwrap();
+        macro_rules! fact {
+            ($($field:ident),+ $(,)?) => {$(
+                assert_eq!(actual.$field, input.$field.map_or(MetadataField::Unavailable, MetadataField::Value));
+            )+};
+        }
+        fact!(
+            posix_mode,
+            posix_uid,
+            posix_gid,
+            posix_flags,
+            windows_attributes,
+            created_ns,
+            modified_ns,
+            accessed_ns,
+            changed_ns
+        );
+        assert_eq!(actual.named_attributes, MetadataField::Unavailable);
+        assert_eq!(actual.acl, MetadataField::Unavailable);
+        assert_eq!(actual.security_descriptor, MetadataField::Unavailable);
+        for field in 0..3 {
+            let mut missing = input;
+            match field {
+                0 => missing.has_named_attributes = true,
+                1 => missing.has_acl = true,
+                _ => missing.has_security_descriptor = true,
+            }
+            assert!(metadata_from_proto(Some(metadata_to_proto(missing))).is_err());
+        }
+    }
+}
+
+#[cfg(kani)]
 mod resource_component {
     #[kani::proof]
     #[kani::unwind(32)]
