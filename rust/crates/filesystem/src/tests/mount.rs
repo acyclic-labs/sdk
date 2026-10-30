@@ -218,7 +218,7 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
     let mut empty: MountedView<crate::MemoryAuthorityStore, crate::MemoryObjectStore> =
         MountedView {
             bindings: Vec::new(),
-            by_path: std::collections::HashMap::new(),
+            by_path: PathPrefixIndex::default(),
         };
     assert!(matches!(
         empty.route_mut(&path),

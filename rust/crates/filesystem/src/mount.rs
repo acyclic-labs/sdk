@@ -5,8 +5,9 @@ use crate::facade::Checkout;
 use crate::foundation::{GenerationId, MountId, VolumeId};
 use crate::kernel::{NamespacePath, NamespacePathError};
 use crate::model::{AccessMode, ConsistencyMode};
+use crate::path::prefix::PathPrefixIndex;
 use crate::path::{PathError, PortablePath};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 /// One independently configured checkout mounted into a composed view.
@@ -61,7 +62,7 @@ pub struct RoutedCheckout<'a, A: 'static, O: 'static> {
 /// Deterministic longest-prefix router that owns independently configured checkouts.
 pub struct MountedView<A: 'static, O: 'static> {
     bindings: Vec<MountedCheckout<A, O>>,
-    by_path: HashMap<PortablePath, usize>,
+    by_path: PathPrefixIndex<usize>,
 }
 
 impl<A: 'static, O: 'static> MountedView<A, O> {
@@ -77,12 +78,10 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         self.bindings.get(self.selected_index(path)?)
     }
 
-    // Lookup visits only the supplied path's component ancestors. Unrelated
-    // mounts do not add routing probes, and mutable routing need not clone a key.
-    // The ordered snapshot vector is independent of this direct lookup index.
+    // The shared index consumes each path byte once, independently of unrelated
+    // mounts. Mutable routing and lookup both borrow the same dense owner slot.
     fn selected_index(&self, path: &PortablePath) -> Option<usize> {
-        path.ancestors()
-            .find_map(|ancestor| self.by_path.get(ancestor).copied())
+        self.by_path.longest_prefix(path).copied()
     }
 
     /// Resolves and mutably borrows one checkout with a volume-relative path.
@@ -204,7 +203,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedVie
             return Err(MountError::MissingRoot);
         }
         let mut bindings = Vec::with_capacity(self.bindings.len());
-        let mut by_path = HashMap::with_capacity(self.bindings.len());
+        let mut by_path = PathPrefixIndex::default();
         // Consume the builder's sorted entries. Each checkout has one dense
         // position and the existing path owner moves into its lookup slot.
         for (path, binding) in self.bindings {

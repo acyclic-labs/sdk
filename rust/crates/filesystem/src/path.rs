@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use thiserror::Error;
 
+pub(crate) mod prefix;
+
 /// Canonical absolute path with `/` separators and no relative components.
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -109,16 +111,6 @@ impl PortablePath {
             .unwrap_or_default()
             .split('/')
             .filter(|component| !component.is_empty())
-    }
-
-    /// Borrows this path and its component ancestors, nearest first.
-    pub(crate) fn ancestors(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.as_str()).chain(
-            self.0
-                .rmatch_indices('/')
-                .filter(move |(end, _)| *end != 0 || self.0 != Self::ROOT)
-                .map(move |(end, _)| &self.0[..end.max(1)]),
-        )
     }
 }
 
