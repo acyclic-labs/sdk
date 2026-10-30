@@ -68,6 +68,10 @@ pub enum NativeExchangeError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+mod codec;
+#[cfg(feature = "test-support")]
+/// On-demand checks of the durable exchange journal's actual byte codec.
+pub mod codec_fuzz;
 mod tree;
 #[cfg(test)]
 use tree::*;
