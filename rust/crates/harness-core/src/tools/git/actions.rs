@@ -191,15 +191,15 @@ where
             .await
             .map_err(Error::from)?;
             json!({
-                "from": hex::encode(from.id().digest().as_bytes()),
-                "to": hex::encode(to.id().digest().as_bytes()),
+                "from": hex::encode(from.id().to_bytes().as_slice()),
+                "to": hex::encode(to.id().to_bytes().as_slice()),
                 "fileChanges": diff.file_changes,
                 "bindingChanges": diff.binding_changes
             })
         } else {
             json!({
                 "from": null,
-                "to": hex::encode(to.id().digest().as_bytes()),
+                "to": hex::encode(to.id().to_bytes().as_slice()),
                 "unborn": true
             })
         };
@@ -363,8 +363,8 @@ where
         Ok(GitFilesystemResult::Data {
             kind: "archive".to_owned(),
             value: json!({
-                "format": "acyclic-fs-manifest-v1",
-                "generation": hex::encode(generation.id().digest().as_bytes()),
+                "format": "acyclic-fs-manifest-v2",
+                "generation": hex::encode(generation.id().to_bytes().as_slice()),
                 "entries": entries
             }),
         })

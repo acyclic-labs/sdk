@@ -134,6 +134,36 @@ async fn run_reserving(
     ))
 }
 
+async fn read_reported_generation(
+    fs: &LocalFs,
+    store: &LocalCoreStateStore,
+    config: VolumeConfig,
+    reference: &serde_json::Value,
+) -> Result<Vec<u8>> {
+    let bytes = hex::decode(reference.as_str().ok_or("missing generation reference")?)?;
+    let generation = acyclic_fs::GenerationId::from_bytes(&bytes)
+        .ok_or("invalid canonical generation reference")?;
+    let stop = CancellationToken::new();
+    let owner = fs
+        .generation_workspace_id(generation, config, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    let workspace = acyclic_fs::WorkspaceResolver::resolve(
+        &(fs.clone(), acyclic_fs::WorkspaceGraph::new(store.clone())),
+        owner,
+    )
+    .await?;
+    let retained = workspace
+        .generation(generation, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value;
+    Ok(retained
+        .read("/file.txt", 64, WorkBudget::UNBOUNDED, &stop)
+        .await?
+        .value
+        .to_vec())
+}
+
 #[tokio::test]
 async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<()> {
     let (_temp, _root, fs, store, main) = fixture().await?;
@@ -199,6 +229,16 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
     };
     assert_eq!(kind, "diff");
     assert_eq!(value["fileChanges"], 2);
+    for (field, expected) in [
+        ("from", b"base\n".as_slice()),
+        ("to", b"child\n".as_slice()),
+    ] {
+        assert_eq!(
+            read_reported_generation(&fs, &store, main.workspace().volume_config(), &value[field])
+                .await?,
+            expected
+        );
+    }
     assert_eq!(
         main.read("/file.txt", 64, &mut work).await?.bytes.as_ref(),
         b"base\n"
@@ -258,17 +298,29 @@ async fn facade_commits_branches_merges_and_inspects_managed_files() -> Result<(
             assert!(matches!(error, acyclic_harness_core::Error::Unsupported(_)));
         }
     }
-    for args in [
-        &["diff"][..],
-        &["grep", "child"],
-        &["archive"],
-        &["blame", "file.txt"],
-    ] {
+    for args in [&["diff"][..], &["grep", "child"], &["blame", "file.txt"]] {
         assert!(matches!(
             run(&fs, &store, &main, repo, args).await?.0,
             GitCommandOutput::Filesystem(_)
         ));
     }
+    let GitCommandOutput::Filesystem(acyclic_fs::GitFilesystemResult::Data { kind, value }) =
+        run(&fs, &store, &main, repo, &["archive"]).await?.0
+    else {
+        return Err("expected a generation archive".into());
+    };
+    assert_eq!(kind, "archive");
+    assert_eq!(value["format"], "acyclic-fs-manifest-v2");
+    assert_eq!(
+        read_reported_generation(
+            &fs,
+            &store,
+            main.workspace().volume_config(),
+            &value["generation"]
+        )
+        .await?,
+        b"child\n"
+    );
     let missing = run(&fs, &store, &main, repo, &["apply", "missing.patch"]).await;
     let error = missing
         .err()
