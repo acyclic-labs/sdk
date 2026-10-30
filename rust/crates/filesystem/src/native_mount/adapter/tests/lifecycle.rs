@@ -413,7 +413,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     let first_name = "written-α.bin";
     let second_name = "renamed-β.bin";
     let linked_name = "linked-γ.bin";
-    let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
+    let write_status = acyclic_native_runtime::process_status(acyclic_native_runtime::ProcessCommand::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -428,7 +428,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
     let rename_status = acyclic_native_runtime::process_status(
-        std::process::Command::new("powershell.exe")
+        acyclic_native_runtime::ProcessCommand::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -445,7 +445,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     assert_eq!(source.lookup(&first)?, None);
     assert!(source.lookup(&second)?.is_some());
 
-    let link_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
+    let link_status = acyclic_native_runtime::process_status(acyclic_native_runtime::ProcessCommand::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -472,7 +472,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
     );
 
     let delete_status = acyclic_native_runtime::process_status(
-        std::process::Command::new("powershell.exe")
+        acyclic_native_runtime::ProcessCommand::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",

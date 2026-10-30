@@ -12,7 +12,7 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
         .await
         .map_err(stop_failed_mount)?;
     let child_result = capture_child(
-        Command::new(std::env::current_exe()?)
+        ProcessCommand::new(std::env::current_exe()?)
             .arg("--rename-hydration-child")
             .arg(&mount_path),
         Duration::from_secs(10),

@@ -2,7 +2,7 @@
 //! No provider, native tool replacement, or agent loop: the native host runs
 //! those under the policy arguments it was launched with.
 use super::*;
-use std::process::{Command, Stdio};
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
@@ -130,15 +130,21 @@ pub fn parent_flags(host: &str, args: &[String], cwd: &Path) -> Result<Vec<Strin
 
 /// The non-interactive child command for one turn in `cwd`, resuming the
 /// native `session` reference when one is held.
-pub fn child(host: &str, args: &[String], cwd: &Path, session: Option<&str>) -> Result<Command> {
+pub fn child(
+    host: &str,
+    args: &[String],
+    cwd: &Path,
+    session: Option<&str>,
+) -> Result<ProcessCommand> {
     let arguments = child_arguments(host, args, cwd, session)?;
-    let mut command = acyclic_native_runtime::host_command(program(host)?).map_err(storage)?;
+    let resolved = acyclic_native_runtime::host_command(program(host)?).map_err(storage)?;
+    let mut command = ProcessCommand::new(resolved.get_program());
     command
         .args(arguments)
         .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     Ok(command)
 }
 

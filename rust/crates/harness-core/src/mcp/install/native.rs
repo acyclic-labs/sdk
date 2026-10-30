@@ -128,7 +128,10 @@ fn hash_part(hasher: &mut blake3::Hasher, value: &[u8]) {
 }
 
 #[cfg(feature = "mcp-stdio")]
-pub(super) fn command_binding(command: &std::process::Command, server: &McpServer) -> [u8; 32] {
+pub(super) fn command_binding(
+    command: &acyclic_native_runtime::ProcessCommand,
+    server: &McpServer,
+) -> [u8; 32] {
     let McpTransport::Stdio { env, env_vars, .. } = &server.transport else {
         unreachable!("stdio binding")
     };
@@ -310,7 +313,7 @@ pub(super) fn command_for(
     workspace: &Path,
     environment: impl Fn(&str) -> Option<std::ffi::OsString>,
     credentials: &Credentials,
-) -> Result<std::process::Command> {
+) -> Result<acyclic_native_runtime::ProcessCommand> {
     let McpTransport::Stdio {
         command,
         args,
@@ -355,9 +358,10 @@ pub(super) fn command_for(
             search_extensions.clone()
         }
     });
-    let mut child = search.command(command.as_ref()).map_err(|error| {
+    let program = search.resolve(command.as_ref()).map_err(|error| {
         Error::process_io(std::io::Error::new(error.kind(), format!("MCP {error}")))
     })?;
+    let mut child = acyclic_native_runtime::ProcessCommand::new(program);
     if server.dialect == Dialect::Codex {
         child.env_clear();
         for name in [

@@ -5,7 +5,9 @@
 //! There is no adapter journal or caller-supplied quiescence assertion.
 use super::*;
 use crate::agent::AgentPath;
-use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTreeStorage};
+use acyclic_native_runtime::{
+    FileLock, FileLockMode, ProcessCommand, ProcessCustody, ProcessTreeStorage,
+};
 
 pub mod children;
 pub mod launch;
@@ -282,7 +284,7 @@ fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
 impl HostSessionProcess {
     /// Starts the process of turn `claim` in the exact admitted view. Hosts
     /// retain their tools and policy.
-    pub fn spawn(&mut self, command: &mut std::process::Command, claim: OperationId) -> Result<()> {
+    pub fn spawn(&mut self, command: &mut ProcessCommand, claim: OperationId) -> Result<()> {
         let lease = self.lease.as_ref().ok_or_else(|| Error::Conflict(
             "step=spawn native session: process already released; recovery: reopen the task through acyclic host".into()
         ))?;
@@ -459,12 +461,12 @@ mod tests {
         let view = root.path().canonicalize().map_err(storage)?;
         let work = polling_work()?;
         let mut process = HostProcessLease::acquire(&view, &test_agent(), &view)?.process(&work)?;
-        let mut command = std::process::Command::new(std::env::current_exe().map_err(storage)?);
+        let mut command = ProcessCommand::new(std::env::current_exe().map_err(storage)?);
         command
             .arg("--list")
             .current_dir(&view)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stdout(acyclic_native_runtime::ProcessStdio::piped())
+            .stderr(acyclic_native_runtime::ProcessStdio::piped());
         process.spawn(&mut command, OperationId::new())?;
         let before = work.remaining().map_err(storage)?;
         let live = work.live_allocation_bytes();
@@ -513,7 +515,7 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
-        let mut command = std::process::Command::new(view.join("absent-native-program"));
+        let mut command = ProcessCommand::new(view.join("absent-native-program"));
         command.current_dir(&view);
         assert!(process.spawn(&mut command, OperationId::new()).is_err());
         assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
@@ -541,7 +543,7 @@ mod tests {
         )
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
-        let mut command = std::process::Command::new("must-not-execute");
+        let mut command = ProcessCommand::new("must-not-execute");
         command.current_dir(outside.path());
         let error = process
             .spawn(&mut command, OperationId::new())

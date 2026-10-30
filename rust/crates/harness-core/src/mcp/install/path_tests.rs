@@ -34,9 +34,9 @@ fn both_mcp_dialects_pin_batch_launchers_from_the_configured_search_environment(
             )?;
             assert_eq!(Path::new(command.get_program()), path);
             command
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+                .stdin(acyclic_native_runtime::ProcessStdio::null())
+                .stdout(acyclic_native_runtime::ProcessStdio::piped())
+                .stderr(acyclic_native_runtime::ProcessStdio::piped());
             let mut tree = acyclic_native_runtime::ProcessTree::spawn(&mut command)
                 .map_err(Error::process_io)?;
             let output = tree
@@ -130,7 +130,12 @@ fn symlinked_launchers_preserve_invocation_path_and_binding() -> Result<()> {
         &Default::default(),
     )?;
     assert_eq!(Path::new(command.get_program()), launcher);
-    let output = command.output().map_err(Error::process_io)?;
+    let output = acyclic_native_runtime::process_output(
+        &mut command,
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .map_err(Error::process_io)?;
     assert!(output.status.success());
     assert_eq!(
         output.stdout,

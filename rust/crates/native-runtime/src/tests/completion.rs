@@ -2,7 +2,7 @@ use super::*;
 
 fn failed_child(test: &str, marker: &str, message: &str) -> io::Result<()> {
     let output = crate::process_output(
-        std::process::Command::new(std::env::current_exe()?)
+        crate::ProcessCommand::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
             .env(marker, "1"),
         Duration::from_secs(120),

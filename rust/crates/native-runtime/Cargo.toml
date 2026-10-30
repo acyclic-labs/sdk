@@ -62,6 +62,7 @@ windows-sys = { version = "0.61.2", features = [
   "Wdk_Storage_FileSystem",
   "Wdk_System_Threading",
   "Win32_Foundation",
+  "Win32_Globalization",
   "Win32_Security",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
@@ -73,6 +74,7 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_System_Pipes",
   "Win32_System_Power",
   "Win32_System_ProcessStatus",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_WindowsAndMessaging",
 ] }

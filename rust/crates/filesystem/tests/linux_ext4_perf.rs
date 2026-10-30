@@ -6,7 +6,6 @@
 mod native_access;
 
 use std::path::Path;
-use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -56,7 +55,7 @@ fn run_workflow(
 ) -> Result<u128, Box<dyn std::error::Error>> {
     let started = Instant::now();
     let output = acyclic_native_runtime::process_output(
-        Command::new(program)
+        acyclic_native_runtime::ProcessCommand::new(program)
             .args(args)
             .current_dir(root)
             .env_remove("CARGO_TARGET_DIR"),
@@ -791,7 +790,7 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     let copied = tempfile::tempdir()?;
     let started = Instant::now();
     let status = acyclic_native_runtime::process_status(
-        std::process::Command::new("cp")
+        acyclic_native_runtime::ProcessCommand::new("cp")
             .arg("-a")
             .arg(source.path().join("hot"))
             .arg(copied.path()),
@@ -1085,7 +1084,7 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
         let native_destination = tempfile::tempdir()?;
         let started = Instant::now();
         let status = acyclic_native_runtime::process_status(
-            std::process::Command::new("cp")
+            acyclic_native_runtime::ProcessCommand::new("cp")
                 .arg("-a")
                 .arg(source.path().join("hot"))
                 .arg(native_destination.path()),

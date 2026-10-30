@@ -1,15 +1,11 @@
 //! One spawn using the original host workspace and native process owner.
 use super::*;
 use acyclic_native_runtime::{
-    CaptureSchedule, ControlledCapture, OwnedCaptureInput, ProcessControl, ProcessCustody,
-    ProcessTree, TaskSpawner,
+    CaptureSchedule, ControlledCapture, OwnedCaptureInput, ProcessCommand, ProcessControl,
+    ProcessCustody, ProcessStdio, ProcessTree, TaskSpawner,
 };
 use futures::FutureExt;
-use std::{
-    io,
-    path::PathBuf,
-    process::{Command, Stdio},
-};
+use std::{io, path::PathBuf};
 
 /// Host-owned execution configuration, derived from its admitted workspace.
 /// This is not a filesystem authority or a serialized guest enrollment.
@@ -107,7 +103,7 @@ impl LocalMachine {
                     let executable = argv
                         .next()
                         .ok_or_else(|| StartFailure::Refused(io::ErrorKind::InvalidInput.into()))?;
-                    let mut process = Command::new(executable);
+                    let mut process = ProcessCommand::new(executable);
                     process
                         .env_clear()
                         .args(argv)
@@ -120,12 +116,12 @@ impl LocalMachine {
                         )
                         .envs(&options.environment)
                         .stdin(if command.stdin.is_empty() {
-                            Stdio::null()
+                            ProcessStdio::null()
                         } else {
-                            Stdio::piped()
+                            ProcessStdio::piped()
                         })
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped());
+                        .stdout(ProcessStdio::piped())
+                        .stderr(ProcessStdio::piped());
                     let tree = match &options.process_custody {
                         Some(custody) => ProcessTree::spawn_in_custody(&mut process, custody),
                         None => ProcessTree::spawn(&mut process),

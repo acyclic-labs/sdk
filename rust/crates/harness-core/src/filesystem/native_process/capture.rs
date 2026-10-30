@@ -1,8 +1,6 @@
 use super::*;
-use std::{
-    process::{Command, Stdio},
-    time::Duration,
-};
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio};
+use std::time::Duration;
 
 /// Observes borrowed output without copying it or changing the captured result.
 pub type NativeProcessObserver =
@@ -192,7 +190,7 @@ fn start<T>(
         impl Fn() -> std::io::Result<()>,
     >,
 ) -> std::io::Result<Spawned> {
-    let mut command = Command::new(&invocation.executable);
+    let mut command = ProcessCommand::new(&invocation.executable);
     if !invocation.inherit_environment {
         command.env_clear();
     }
@@ -201,12 +199,12 @@ fn start<T>(
         .current_dir(&invocation.cwd)
         .envs(&invocation.environment)
         .stdin(if invocation.standard_input.is_some() {
-            Stdio::piped()
+            ProcessStdio::piped()
         } else {
-            Stdio::null()
+            ProcessStdio::null()
         })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     (handler.check)()?;
     #[cfg(feature = "test-support")]
     {

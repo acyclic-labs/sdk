@@ -9,7 +9,6 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -19,7 +18,7 @@ use acyclic_fs::{
     Fs, LocalOptions, MountOptions, NativeMountKind, TransactionCommit,
     native_mount::NativeMountRecoveryOwner, probe_native_mount,
 };
-use acyclic_native_runtime::ProcessTree;
+use acyclic_native_runtime::{ProcessCommand, ProcessStdio, ProcessTree};
 use bytes::Bytes;
 use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
@@ -359,6 +358,6 @@ fn emit_report(report: &Report, output: Option<&Path>) -> Result<(), Failure> {
 }
 
 /// Qualification tool policy; process ownership and capture live in native-runtime.
-fn tool_output(command: &mut Command) -> std::io::Result<std::process::Output> {
+fn tool_output(command: &mut ProcessCommand) -> std::io::Result<std::process::Output> {
     acyclic_native_runtime::process_output(command, Duration::from_secs(120), 8 * 1024 * 1024)
 }

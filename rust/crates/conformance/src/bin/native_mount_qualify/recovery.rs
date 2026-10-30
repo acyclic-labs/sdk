@@ -26,7 +26,7 @@ pub(super) fn crash_recovery() -> Result<(), Failure> {
 
 fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result<(), Failure> {
     let mut child = spawn_captured_child(
-        Command::new(std::env::current_exe()?)
+        ProcessCommand::new(std::env::current_exe()?)
             .arg("--crash-child")
             .arg(crash_root)
             .arg(mount)

@@ -77,8 +77,8 @@ fn wait_helper() -> io::Result<()> {
 }
 
 /// This test binary re-run as `wait_helper`, which waits on the named event.
-fn helper_command(name: &str) -> io::Result<Command> {
-    let mut command = Command::new(std::env::current_exe()?);
+fn helper_command(name: &str) -> io::Result<ProcessCommand> {
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -87,8 +87,8 @@ fn helper_command(name: &str) -> io::Result<Command> {
         ])
         .env_clear()
         .env(EVENT, name)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped());
     Ok(command)
 }
 

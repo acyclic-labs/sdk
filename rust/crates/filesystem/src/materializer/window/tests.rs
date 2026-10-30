@@ -34,8 +34,9 @@ fn window_prompt_child() -> std::io::Result<()> {
 #[cfg(windows)]
 #[tokio::test]
 async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io::Result<()> {
-    use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTreeStorage};
-    use std::process::{Command, Stdio};
+    use acyclic_native_runtime::{
+        CaptureInput, ProcessCommand, ProcessInput, ProcessStdio, ProcessTreeStorage,
+    };
     use std::time::Duration;
 
     let prompt = b"original window prompt";
@@ -54,7 +55,7 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
         // owner deliberately excludes the current operation window.
         assert!(meter.allocation_owner().is_none());
         let mut process = ProcessTreeStorage::new(&meter)?;
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = ProcessCommand::new(std::env::current_exe()?);
         command
             .args([
                 "--exact",
@@ -62,9 +63,9 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
                 "--nocapture",
             ])
             .env("ACYCLIC_TEST_WINDOW_PROMPT", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::piped())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         process.spawn(&mut command, None)?;
         let before = work.receipt().output_bytes;
         if queued {

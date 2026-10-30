@@ -12,10 +12,9 @@ use acyclic_harness::{
     local::host_owner::HostWorkspaceOwner,
     resources::ProviderRef,
 };
-use acyclic_native_runtime::{ProcessInput, ProcessTree};
+use acyclic_native_runtime::{ProcessCommand, ProcessInput, ProcessStdio, ProcessTree};
 use std::{
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -114,7 +113,7 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
         let socket = temporary.path().join("fs.sock");
         // Exercise the review's permissive-umask trigger in the child only;
         // changing the test process's umask would race parallel tests.
-        let mut daemon_command = Command::new("sh");
+        let mut daemon_command = ProcessCommand::new("sh");
         daemon_command.args(["-c", "umask 000; exec \"$@\"", "acyclic-daemon-test"]);
         daemon_command.arg(env!("CARGO_BIN_EXE_acyclic-virtiofsd"));
         daemon_command
@@ -122,9 +121,9 @@ fn standalone_daemon_qemu_and_cloud_hypervisor_read_write_delete() -> Result {
             .arg(&socket)
             .arg("--config")
             .arg(config)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let mut daemon = ProcessTree::spawn(&mut daemon_command)?;
         let result = (|| {
             let start = Instant::now();
@@ -179,9 +178,9 @@ fn capture(process: &mut ProcessTree, duration: Duration) -> Result<std::process
         .map_err(|failure| format!("step=capture owned VMM/daemon; cleanup_completed={}; error={}; stdout={}; stderr={}; recovery: cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,test-support --test virtiofs -- --include-ignored --nocapture", failure.cleanup_completed, failure.error, String::from_utf8_lossy(&failure.stdout), String::from_utf8_lossy(&failure.stderr)).into())
 }
 
-fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
+fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> ProcessCommand {
     let mut command = if vmm == "qemu" {
-        let mut command = Command::new("qemu-system-x86_64");
+        let mut command = ProcessCommand::new("qemu-system-x86_64");
         command
             .args([
                 "-enable-kvm",
@@ -214,7 +213,7 @@ fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
             .arg(format!("socket,id=fs,path={}", socket.display()));
         command
     } else {
-        let mut command = Command::new(artifacts.join("cloud-hypervisor"));
+        let mut command = ProcessCommand::new(artifacts.join("cloud-hypervisor"));
         command
             .args([
                 "--cpus",
@@ -240,8 +239,8 @@ fn frontend(vmm: &str, artifacts: &Path, socket: &Path) -> Command {
         command
     };
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     command
 }

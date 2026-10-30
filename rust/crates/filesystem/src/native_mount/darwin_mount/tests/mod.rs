@@ -11,9 +11,9 @@ use super::file_ops::{
 use super::namespace_ops::{acyclic_fs_darwin_mount_mkdir, acyclic_fs_darwin_mount_rename};
 use super::*;
 use crate::native_mount::MountPublication;
+use acyclic_native_runtime::ProcessCommand;
 use bytes::Bytes;
 use std::path::PathBuf;
-use std::process::Command;
 
 unsafe extern "C" {
     fn nfs4_test_read_reply() -> c_int;
@@ -717,7 +717,7 @@ fn macos_locks_exclude_other_processes() -> TestResult {
     std::fs::write(&path, b"")?;
     // The NFS client keys locks by process, so another process contends.
     let contender = |operation: &str| {
-        acyclic_native_runtime::process_status(Command::new("/usr/bin/perl")
+        acyclic_native_runtime::process_status(ProcessCommand::new("/usr/bin/perl")
                 .arg("-e")
                 .arg(format!(
                     "use Fcntl qw(:flock :DEFAULT); open(F, '+<', $ARGV[0]) or die;                      exit({operation} ? 0 : 1)"
@@ -778,7 +778,7 @@ fn macos_mode_bits_deny_access() -> TestResult {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644))?;
     assert_eq!(
         acyclic_native_runtime::process_status(
-            &mut Command::new(&script),
+            &mut ProcessCommand::new(&script),
             std::time::Duration::from_secs(120)
         )
         .err()
@@ -788,7 +788,7 @@ fn macos_mode_bits_deny_access() -> TestResult {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
     assert!(
         acyclic_native_runtime::process_status(
-            &mut Command::new(&script),
+            &mut ProcessCommand::new(&script),
             std::time::Duration::from_secs(120)
         )?
         .success()

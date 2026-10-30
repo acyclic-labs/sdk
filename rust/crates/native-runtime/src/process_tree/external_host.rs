@@ -3,11 +3,13 @@
 //! This module owns no Job, process-group enumeration or reaper. Both ordinary
 //! external commands and `ConPTY` transports enter through `ProcessCustody`.
 
-use super::{ProcessCustody, ProcessCustodyLease, ProcessTree};
+use super::{
+    Child, ProcessCommand, ProcessCustody, ProcessCustodyLease, ProcessStdio, ProcessTree,
+};
 use std::ffi::OsString;
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 
 struct State {
@@ -188,16 +190,16 @@ pub fn run_external_process_host(arguments: impl IntoIterator<Item = OsString>) 
         .map(ProcessCustodyLease::custody)
         .or(custody.as_deref())
         .ok_or_else(invalid_arguments)?;
-    let mut command = Command::new(invocation.executable);
+    let mut command = ProcessCommand::new(invocation.executable);
     command
         .args(invocation.arguments)
         .stdin(if invocation.inherit_input {
-            Stdio::inherit()
+            ProcessStdio::inherit()
         } else {
-            Stdio::null()
+            ProcessStdio::null()
         })
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(ProcessStdio::inherit())
+        .stderr(ProcessStdio::inherit());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, custody)?;
     // The sole waiter owns the actual Child. Cancellation only asks the same
     // tree's containment owner to terminate; it never substitutes PID polling.

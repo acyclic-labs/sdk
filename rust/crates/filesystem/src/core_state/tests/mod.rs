@@ -158,8 +158,10 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std::io::Error> {
-    let mut child = std::process::Command::new(std::env::current_exe()?);
+pub(super) fn ownership_child(
+    root: &Path,
+) -> Result<acyclic_native_runtime::ProcessCommand, std::io::Error> {
+    let mut child = acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?);
     child
         .args([
             "--exact",
@@ -167,7 +169,7 @@ pub(super) fn ownership_child(root: &Path) -> Result<std::process::Command, std:
             "--nocapture",
         ])
         .env("ACYCLIC_CORE_STATE_CHILD_ROOT", root)
-        .stdout(std::process::Stdio::null());
+        .stdout(acyclic_native_runtime::ProcessStdio::null());
     Ok(child)
 }
 pub(super) fn rewrite_intact_frame(

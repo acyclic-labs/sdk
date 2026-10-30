@@ -5,7 +5,6 @@
 //! waits can finish.
 use super::*;
 use crate::tests::passed_in_exclusive_process;
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,17 +28,17 @@ struct Blocked {
 fn blocked() -> io::Result<Blocked> {
     let (reader, release) = std::io::pipe()?;
     #[cfg(unix)]
-    let mut command = Command::new("cat");
+    let mut command = ProcessCommand::new("cat");
     #[cfg(windows)]
-    let mut command = Command::new(
+    let mut command = ProcessCommand::new(
         std::path::Path::new(&std::env::var_os("SystemRoot").ok_or(io::ErrorKind::NotFound)?)
             .join("System32")
             .join("sort.exe"),
     );
     command
-        .stdin(Stdio::from(reader))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::from(reader))
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     Ok(Blocked {
         tree: ProcessTree::spawn(&mut command)?,
         release,

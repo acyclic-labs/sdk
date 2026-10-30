@@ -291,7 +291,7 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                 "rustc_compiles_inside_a_linux_mount" => {
                     std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
                     let output = acyclic_native_runtime::process_output(
-                        std::process::Command::new("rustc")
+                        acyclic_native_runtime::ProcessCommand::new("rustc")
                             .current_dir(temporary.path())
                             .args(["--edition", "2021", "main.rs", "-o", "main"]),
                         std::time::Duration::from_secs(120),
@@ -306,7 +306,9 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
                     assert!(temporary.path().join("main").is_file());
                     assert!(
                         acyclic_native_runtime::process_status(
-                            &mut std::process::Command::new(temporary.path().join("main")),
+                            &mut acyclic_native_runtime::ProcessCommand::new(
+                                temporary.path().join("main")
+                            ),
                             std::time::Duration::from_secs(120)
                         )?
                         .success(),
@@ -390,7 +392,7 @@ fn unix_mounts_in_distinct_processes_remain_independent() -> Result<(), Box<dyn 
     for (id, mount, ready) in &mounts {
         std::fs::create_dir(mount)?;
         children.push(acyclic_native_runtime::ProcessTree::spawn(
-            std::process::Command::new(&executable)
+            acyclic_native_runtime::ProcessCommand::new(&executable)
                 .args(["--ignored", "--exact", worker, "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", mount)
                 .env("ACYCLIC_FS_UNIX_CHILD_READY", ready)

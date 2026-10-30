@@ -20,15 +20,15 @@ pub(super) fn run(
         .strip_suffix("::client")
         .expect("client is nested beneath its metadata tests");
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
-        std::process::Command::new(std::env::current_exe()?)
+        acyclic_native_runtime::ProcessCommand::new(std::env::current_exe()?)
             .arg(format!(
                 "{module}::external_metadata_only_change_survives_remount"
             ))
             .args(["--exact", "--ignored", "--nocapture"])
             .env(MODE, mode)
             .env(PATH, path)
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped()),
+            .stdin(acyclic_native_runtime::ProcessStdio::piped())
+            .stdout(acyclic_native_runtime::ProcessStdio::piped()),
     )?;
     let stdout = child.take_stdout().ok_or("client stdout missing")?;
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);

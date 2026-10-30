@@ -30,7 +30,7 @@ pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
 
 pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), Failure> {
     let output = capture_child(
-        Command::new(std::env::current_exe()?)
+        ProcessCommand::new(std::env::current_exe()?)
             .arg("--qualification-case-worker")
             .arg(case),
         timeout,
@@ -54,13 +54,13 @@ pub(super) struct CapturedChild {
     pub(super) stderr: File,
 }
 
-pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChild, Failure> {
+pub(super) fn spawn_captured_child(command: &mut ProcessCommand) -> Result<CapturedChild, Failure> {
     let stdout = tempfile::tempfile()?;
     let stderr = tempfile::tempfile()?;
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout.try_clone()?))
-        .stderr(Stdio::from(stderr.try_clone()?));
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::from(stdout.try_clone()?))
+        .stderr(ProcessStdio::from(stderr.try_clone()?));
     Ok(CapturedChild {
         process: ProcessTree::spawn(command)?,
         stdout,
@@ -69,13 +69,13 @@ pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChil
 }
 
 pub(super) fn capture_child(
-    command: &mut Command,
+    command: &mut ProcessCommand,
     timeout: Duration,
 ) -> Result<std::process::Output, Failure> {
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     ProcessTree::spawn(command)?
         .wait_with_output(
             timeout,
@@ -192,7 +192,7 @@ pub(super) fn finish_mounted_child(
 }
 
 pub(super) fn release_identity(executable: &Path) -> Result<(String, String), Failure> {
-    let output = tool_output(Command::new(executable).arg("--version"))?;
+    let output = tool_output(ProcessCommand::new(executable).arg("--version"))?;
     if !output.status.success() {
         return Err("release executable did not report its version".into());
     }
