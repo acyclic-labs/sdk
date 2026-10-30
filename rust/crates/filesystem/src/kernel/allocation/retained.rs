@@ -63,6 +63,38 @@ impl OwnedAccounting {
                 cancellation: lifetime.cancellation().clone(),
             });
         }
+        Ok(Self {
+            state: Self::take_standalone(accounting)?,
+            cancellation: lifetime.cancellation().clone(),
+        })
+    }
+
+    /// An immutable reader keeps the caller's cancellation and original work.
+    /// Unlike sealed authority publication, reading never detaches its lifetime.
+    pub(crate) fn take_read_branch(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, crate::FsError> {
+        accounting.check()?;
+        let cancellation = match accounting {
+            KernelAccounting::Standalone { cancellation, .. }
+            | KernelAccounting::BorrowedStandalone { cancellation, .. } => (*cancellation).clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, cancellation } => {
+                return Ok(Self {
+                    state: OwnedAccountingState::Native((*work).clone()),
+                    cancellation: (*cancellation).clone(),
+                });
+            }
+        };
+        Ok(Self {
+            state: Self::take_standalone(accounting)?,
+            cancellation,
+        })
+    }
+
+    fn take_standalone(
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<OwnedAccountingState, crate::FsError> {
         let allocation = RetainedAllocation::claim(
             std::mem::size_of::<StandaloneAccounting>() as u64,
             1,
@@ -77,13 +109,10 @@ impl OwnedAccounting {
             budget,
             baseline: *work,
         };
-        Ok(Self {
-            state: OwnedAccountingState::Standalone(Retained {
-                value: Box::new(state),
-                allocation,
-            }),
-            cancellation: lifetime.cancellation().clone(),
-        })
+        Ok(OwnedAccountingState::Standalone(Retained {
+            value: Box::new(state),
+            allocation,
+        }))
     }
 
     pub(crate) fn borrow(&mut self) -> KernelAccounting<'_> {
@@ -249,6 +278,78 @@ impl<T> Retained<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn owned_reader_keeps_original_budget_cancellation_and_native_invocation()
+    -> Result<(), crate::FsError> {
+        let cancel = crate::CancellationToken::new();
+        let mut caller = KernelAccounting::standalone(
+            WorkBudget {
+                items_examined: 2,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        );
+        caller.charge_items(1)?;
+        let mut reader = OwnedAccounting::take_read_branch(&mut caller)?;
+        assert!(matches!(
+            caller.remaining(),
+            Err(crate::FsError::AccountingHandoffActive)
+        ));
+        reader.borrow().charge_items(1)?;
+        assert!(matches!(
+            reader.borrow().charge_items(1),
+            Err(crate::FsError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }))
+        ));
+        cancel.cancel();
+        assert!(matches!(
+            reader.borrow().check(),
+            Err(crate::FsError::Cancelled(_))
+        ));
+        reader.restore(&mut caller)?;
+        assert_eq!(caller.spent().items_examined, 2);
+        assert!(matches!(caller.check(), Err(crate::FsError::Cancelled(_))));
+
+        #[cfg(not(target_arch = "wasm32"))]
+        for invocation_cancelled in [false, true] {
+            let invocation = crate::CancellationToken::new();
+            let caller_cancel = crate::CancellationToken::new();
+            let original =
+                crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &invocation)
+                    .map_err(|(error, _)| crate::FsError::from(error))?;
+            let mut caller = KernelAccounting::native(&original, &caller_cancel);
+            let before = original.receipt();
+            let mut reader = OwnedAccounting::take_read_branch(&mut caller)?;
+            assert_eq!(
+                original.receipt(),
+                before,
+                "an owned native read allocated another invocation"
+            );
+            reader.borrow().charge_items(1)?;
+            assert_eq!(original.receipt().items_examined, before.items_examined + 1);
+            if invocation_cancelled {
+                invocation.cancel()
+            } else {
+                caller_cancel.cancel()
+            }
+            assert!(matches!(
+                reader.borrow().check(),
+                Err(crate::FsError::Cancelled(_))
+                    | Err(crate::FsError::NativeKernel(
+                        crate::NativeTreeMaterializationError::Cancelled
+                    ))
+            ));
+            reader.restore(&mut caller)?;
+            assert!(
+                caller.check().is_err(),
+                "restoration replaced the original cancellation source"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn owned_accounting_handoff_fences_the_caller_and_returns_the_same_budget()
