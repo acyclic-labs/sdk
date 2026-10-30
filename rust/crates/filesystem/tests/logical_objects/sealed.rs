@@ -541,13 +541,15 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_fs::{
         CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
-        MemoryAuthorityStore, PublicationPermit, TransactionCommit, VolumeConfig,
+        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
         VolumeInitialization, WorkspaceError,
     };
 
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = Arc::new(acyclic_objects::MemoryObjects::memory());
-    let authority = Arc::new(MemoryAuthorityStore::default());
+    let authority = Arc::new(MemoryAuthorityBackend::new(Arc::new(
+        acyclic_stream::MemoryStream::default(),
+    )));
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -572,7 +574,7 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
                 config: VolumeConfig::portable(Lifecycle::Ephemeral),
                 access_policy: None,
             },
-            CreationOperation::populated(IdempotencyKey::new().operation_id(), &files),
+            CreationOperation::populated(OperationId::new(), &files),
             &original,
             &cancellation,
             None,
