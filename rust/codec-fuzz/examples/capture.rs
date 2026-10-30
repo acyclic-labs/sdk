@@ -11,21 +11,42 @@ fn save(
     producer: &str,
     manifest: &mut String,
 ) -> Result<(), Box<dyn Error>> {
-    acyclic_codec_fuzz::exercise(target, bytes)?;
+    if !std::env::args().any(|arg| arg == "--accept-goldens") {
+        let name = format!("corpus/{target}/{name}");
+        let golden = acyclic_proto_build::golden::frame(&name)
+            .map_err(|error| format!("golden {name}: {error}"))?;
+        if golden != bytes {
+            return Err(format!("encoder changed golden {name}; recovery after reviewing the format change: cargo run --example capture -- --accept-goldens").into());
+        }
+    }
     let directory = Path::new("corpus").join(target);
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join(name), bytes)?;
+    match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, bytes)) {
+        Ok(result) => result?,
+        Err(_) => return Err(format!(
+            "decoder oracle {target}/{name} panicked; recovery: cargo +nightly fuzz run {target} corpus/{target}/{name}"
+        ).into()),
+    }
     manifest.push_str(&format!(
-        "{target}/{name}\t{}\t{:x}\t{producer}\n",
+        "{target}/{name}\t{}\t{}\t{producer}\n",
         bytes.len(),
-        Sha256::digest(bytes)
+        hex::encode(Sha256::digest(bytes))
     ));
     Ok(())
 }
 
-async fn capture() -> Result<(), Box<dyn Error>> {
+fn capture() -> Result<(), Box<dyn Error>> {
+    capture_identity_vectors()?;
     let mut manifest =
         String::from("# Captured SDK encoder output\n# path\tbytes\tsha256\tproducer\n");
+    save(
+        "session_protocol",
+        "admission",
+        &acyclic_stream::codec_fuzz::session_seed(),
+        "codec_fuzz::session_seed from SessionHello encoder and test credential issuer",
+        &mut manifest,
+    )?;
     for (index, decoder) in DECODERS.iter().enumerate() {
         let mut bytes = u64::try_from(index)?.to_le_bytes().to_vec();
         bytes.extend_from_slice(&(decoder.seed)());
@@ -52,7 +73,7 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in acyclic_stream::codec_fuzz::seeds().await? {
+    for (name, bytes) in futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())? {
         save(
             "stream_persistence",
             &name,
@@ -71,6 +92,40 @@ async fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     capture_semantic(&mut manifest)?;
+    for (name, bytes) in acyclic_fs::distributed::state_record::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "AuthorityWork::encode_state",
+            &mut manifest,
+        )?;
+    }
+    for (name, bytes) in acyclic_fs::core_state::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "core_state production checkpoint and checksum frame writers",
+            &mut manifest,
+        )?;
+    }
+    save(
+        "filesystem_codecs",
+        "usn-checkpoint",
+        &acyclic_fs::windows_usn_codec::seed(),
+        "WindowsUsnCheckpoint::to_bytes",
+        &mut manifest,
+    )?;
+    for (name, bytes) in acyclic_machines::codec_fuzz::seeds()? {
+        save(
+            "machine_journal",
+            name,
+            &bytes,
+            "machines::provider::journal production envelope encoder",
+            &mut manifest,
+        )?;
+    }
     for (name, bytes) in acyclic_codec_fuzz::filesystem_pages::seeds()? {
         save(
             "filesystem_pages",
@@ -167,7 +222,53 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    if std::env::args().any(|arg| arg == "--accept-goldens") {
+        let path = Path::new("../../compatibility/frames/golden.hex");
+        let previous = std::fs::read_to_string(path)?;
+        let mut frames = previous
+            .lines()
+            .filter(|line| !line.starts_with("corpus/"))
+            .map(|line| format!("{line}\n"))
+            .collect::<String>();
+        for line in manifest.lines().filter(|line| !line.starts_with('#')) {
+            let name = line.split('\t').next().ok_or("missing capture name")?;
+            let bytes = std::fs::read(Path::new("corpus").join(name))?;
+            frames.push_str(&format!("corpus/{name} {}\n", hex::encode(bytes)));
+        }
+        std::fs::write(path, frames)?;
+    }
     std::fs::write("corpus/SOURCES.tsv", manifest)?;
+    Ok(())
+}
+
+fn capture_identity_vectors() -> Result<(), Box<dyn Error>> {
+    fn bytes(row: &serde_json::Value, key: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+        let value = row
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing identity field")?;
+        Ok(hex::decode(value)?)
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/auth/tests/fixtures/resource-identity-v1.json");
+    let mut vectors: serde_json::Value = serde_json::from_slice(&std::fs::read(source)?)?;
+    let rows = vectors
+        .get_mut("pairs")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("missing identity vectors")?;
+    for row in rows {
+        let value = acyclic_auth::addressing::ResourceIdentity::new(
+            &bytes(row, "account_hex")?,
+            &bytes(row, "id_hex")?,
+        )?;
+        row["encoded_hex"] = hex::encode(value.encode()).into();
+    }
+    vectors["encoding"] = "acyclic.resource-v1-u64be-length-account-u64be-length-id".into();
+    std::fs::create_dir_all("corpus")?;
+    let mut output = serde_json::to_vec_pretty(&vectors)?;
+    output.push(b'\n');
+    std::fs::write("corpus/resource-identity-v1.json", output)?;
+    std::fs::write("corpus/actor-guest.ts", acyclic_actors::guest::typescript())?;
     Ok(())
 }
 
@@ -193,6 +294,49 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         "resource",
         &ResourceIdentity::new(b"account", b"resource")?.encode(),
         "ResourceIdentity::encode",
+        manifest,
+    )?;
+    let invocation = acyclic_actors::invocation::Invocation::new(
+        actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"operation"),
+        Bytes::from_static(b"request"),
+    )?;
+    let encoded = invocation.record(&StreamPath::new("codec/actors/state")?)?;
+    let record = acyclic_stream::Record {
+        sequence: 0,
+        value: encoded.value,
+        headers: encoded.headers,
+        commit_id: CommitId::from_bytes([1; 32]),
+        committed_at_micros: 42,
+    };
+    save(
+        "actor_codecs",
+        "invocation",
+        &acyclic_stream::wire_codec::record_wire(record).encode_to_vec(),
+        "Invocation::record and wire_codec::record_wire",
+        manifest,
+    )?;
+    for (name, bytes) in acyclic_actors::reservation::codec_fuzz::seeds()? {
+        save(
+            "actor_codecs",
+            name,
+            &bytes,
+            "actors::reservation canonical request/decision/checkpoint encoder",
+            manifest,
+        )?;
+    }
+    save(
+        "actor_codecs",
+        "artifact-checkpoint",
+        &serde_json::to_vec(&guest::Checkpoint {
+            codec: guest::CodecIdentity {
+                name: "codec".into(),
+                version: "1".into(),
+            },
+            bytes: Bytes::from_static(b"checkpoint"),
+        })?,
+        "serde_json::to_vec(guest::Checkpoint) with current artifact codec identity",
         manifest,
     )?;
     let package = acyclic_actors::reservation::Package::new(
@@ -319,7 +463,7 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-    match std::panic::catch_unwind(|| futures::executor::block_on(capture())) {
+    match std::panic::catch_unwind(capture) {
         Ok(Ok(())) => {}
         Ok(Err(error)) => {
             eprintln!("corpus capture failed: {error}; recovery: cargo run --example capture");

@@ -19,12 +19,20 @@ fn replay() -> Result<usize, Box<dyn Error>> {
         }
         let (target, _) = name.split_once('/').ok_or("captured name has no target")?;
         let bytes = std::fs::read(Path::new("corpus").join(name))?;
-        if bytes.len() != length.parse::<usize>()?
-            || format!("{:x}", Sha256::digest(&bytes)) != *digest
+        if bytes.len() != length.parse::<usize>()? || hex::encode(Sha256::digest(&bytes)) != *digest
         {
             return Err(format!("captured bytes differ from provenance: {name}").into());
         }
-        acyclic_codec_fuzz::exercise(target, &bytes)?;
+        let golden = acyclic_proto_build::golden::frame(&format!("corpus/{name}"))?;
+        if bytes != golden {
+            return Err(format!("captured bytes differ from shared golden: {name}").into());
+        }
+        match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, &bytes)) {
+            Ok(result) => result?,
+            Err(_) => return Err(format!(
+                "decoder oracle {name} panicked; recovery: cargo +nightly fuzz run {target} corpus/{name}"
+            ).into()),
+        }
         count += 1;
     }
     if count == 0 {

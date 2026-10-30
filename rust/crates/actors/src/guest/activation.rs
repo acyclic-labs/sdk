@@ -21,6 +21,7 @@ impl<State: Send + 'static, Bindings: Send + Sync + 'static> GuestActivation<Sta
         context: GuestContext<Bindings>,
     ) -> Result<Self, GuestError> {
         negotiate_abi(definition.abi_version)?;
+        super::update::admit_checkpoint(checkpoint.as_ref(), &definition.codec.identity)?;
         let address = context
             .actor
             .reference()
@@ -113,10 +114,13 @@ impl<State: Send + 'static, Bindings: Send + Sync + 'static> GuestActivation<Sta
     /// Capture only after active handlers finish; new deliveries cannot enter meanwhile.
     pub async fn checkpoint(&self) -> Result<Checkpoint, GuestError> {
         let _quiesced = self.deliveries.write().await;
-        self.state
+        let checkpoint = self
+            .state
             .block_concurrency_while(async |state| {
                 (self.definition.checkpoint)(&state, &self.context).await
             })
-            .await
+            .await?;
+        super::update::admit_checkpoint(Some(&checkpoint), &self.definition.codec.identity)?;
+        Ok(checkpoint)
     }
 }

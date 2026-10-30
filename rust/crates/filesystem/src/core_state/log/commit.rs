@@ -19,7 +19,7 @@ impl CoreLog {
         )?;
         let change = PreparedChange::new(change, work)?;
         let installation = self.admit_installation(change.change(), work)?;
-        let buffer = self.encode_frame(change.change(), work)?;
+        let buffer = Self::encode_frame(self.epoch, self.sequence, change.change(), work)?;
         let deferred = root.durability == Durability::Deferred
             || matches!(root.admission, Admission::Owned(_));
         let new_length = self.length.checked_add(buffer.bytes.len() as u64).ok_or(
@@ -102,8 +102,9 @@ impl CoreLog {
         .transpose()
     }
 
-    fn encode_frame(
-        &self,
+    pub(in crate::core_state) fn encode_frame(
+        epoch: Uuid,
+        sequence: u64,
         change: &Change,
         work: Option<&crate::NativeMaterializationWork>,
     ) -> Result<LogBuffer, LocalCoreStateStoreError> {
@@ -129,8 +130,8 @@ impl CoreLog {
         serde_json::to_writer(
             &mut buffer,
             &LogFrame {
-                epoch: self.epoch,
-                sequence: self.sequence,
+                epoch,
+                sequence,
                 change,
             },
         )?;

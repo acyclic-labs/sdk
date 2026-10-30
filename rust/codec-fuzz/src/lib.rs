@@ -8,6 +8,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "protobuf" => protobuf(bytes),
         "protobuf_json" => protobuf_json(bytes),
         "session_frames" => session_frames(bytes),
+        "session_protocol" => assert!(acyclic_stream::codec_fuzz::session(bytes)),
         "stream_persistence" => assert!(acyclic_stream::codec_fuzz::check(bytes)),
         "object_persistence" => assert!(acyclic_objects::codec_fuzz::check(bytes)),
         "ids" => ids(bytes),
@@ -16,6 +17,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "actor_codecs" => actor_codecs(bytes),
         "filesystem_codecs" => filesystem_codecs(bytes),
         "filesystem_pages" => filesystem_pages::check(bytes),
+        "machine_journal" => assert!(acyclic_machines::codec_fuzz::check(bytes)),
         _ => return Err(format!("unknown corpus target {target}")),
     }
     Ok(())
@@ -199,6 +201,24 @@ pub fn identities(bytes: &[u8]) {
 
 pub fn actor_codecs(bytes: &[u8]) {
     use acyclic_actors::{guest::wire, local::State, timers::TimerRecord};
+    assert!(acyclic_actors::reservation::codec_fuzz::check(bytes));
+    if let Ok(checkpoint) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
+        use acyclic_actors::guest::{CheckpointCodec, CodecIdentity, GuestError, prepare_update};
+        let codec = CheckpointCodec {
+            identity: CodecIdentity {
+                name: "codec".into(),
+                version: "1".into(),
+            },
+            encode: |bytes: &Vec<u8>| Ok(bytes.clone().into()),
+            decode: |checkpoint| Ok(checkpoint.bytes.to_vec()),
+        };
+        let expected = if checkpoint.codec == codec.identity {
+            Ok(Some(checkpoint.bytes.to_vec()))
+        } else {
+            Err(GuestError::IncompatibleCodec)
+        };
+        assert_eq!(prepare_update(Some(&checkpoint), &codec), expected);
+    }
     if let Ok(value) = State::decode(bytes) {
         let canonical = value.encode();
         assert_eq!(State::decode(&canonical).unwrap(), value);
@@ -231,9 +251,27 @@ pub fn actor_codecs(bytes: &[u8]) {
             value
         );
     }
+    if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
+        && let Ok(record) = acyclic_stream::wire_codec::record(value)
+        && let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record)
+    {
+        let encoded = invocation
+            .record(&acyclic_stream::StreamPath::new("codec/state").unwrap())
+            .unwrap();
+        let round_trip = acyclic_stream::Record {
+            value: encoded.value,
+            headers: encoded.headers,
+            ..record
+        };
+        assert_eq!(
+            acyclic_actors::invocation::Invocation::decode(&round_trip).unwrap(),
+            Some(invocation)
+        );
+    }
 }
 
 pub fn filesystem_codecs(bytes: &[u8]) {
+    assert!(acyclic_fs::core_state::codec_fuzz::check(bytes));
     use acyclic_fs::{
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
         workspace_context_wire as context,
@@ -254,9 +292,12 @@ pub fn filesystem_codecs(bytes: &[u8]) {
             bytes
         );
     }
-    let _ = acyclic_fs::distributed::state_record::StateRecord::decode(
-        bytes::Bytes::copy_from_slice(bytes),
-    );
+    assert!(acyclic_fs::distributed::state_record::codec_fuzz::check(
+        bytes
+    ));
+    if let Ok(value) = acyclic_fs::windows_usn_codec::WindowsUsnCheckpoint::from_bytes(bytes) {
+        assert_eq!(value.to_bytes().as_slice(), bytes);
+    }
     macro_rules! context {
         ($decode:ident, $encode:ident) => {
             if let Ok(value) = context::$decode(bytes) {

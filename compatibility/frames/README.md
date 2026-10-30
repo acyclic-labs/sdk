@@ -22,3 +22,11 @@ from `rust/codec-fuzz`. Their `corpus/SOURCES.tsv` records the producing call,
 byte length and SHA-256. Run `cargo run --example replay` to validate those
 captured bytes without rewriting them. Never replace provider or external-tool
 output with manually authored fixtures.
+
+The `corpus/` names in `golden.hex` are exact copies of those captured SDK
+outputs, using the same paths as `SOURCES.tsv`. Capture compares each current
+encoder output with this shared baseline before saving a seed. Replay compares
+the saved seed with both its provenance and this baseline. After reviewing an
+intentional format change, `cargo run --example capture -- --accept-goldens`
+captures new baseline rows through the production encoders. Ordinary capture
+and replay never update the golden file.

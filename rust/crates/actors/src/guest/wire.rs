@@ -16,10 +16,15 @@ use super::{
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
 use bytes::Bytes;
+#[cfg(test)]
 use prost::Message as _;
 
 /// Fixed key of the encoded effect commit; publication supplies its own key.
 const EFFECTS_KEY: &[u8] = b"acyclic.actors.transition.v1";
+const MANIFEST_DOMAIN: &[u8] = b"\xffAMNF";
+const DELIVERY_DOMAIN: &[u8] = b"\xffADLV";
+const TRANSITION_DOMAIN: &[u8] = b"\xffATRN";
+const VERSION: &[u8] = b"\x01";
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct DeliveryWire {
@@ -152,12 +157,31 @@ fn invalid(field: &str) -> GuestError {
 }
 
 /// Decode `bytes` as `M`, refusing anything but its canonical encoding.
-fn canonical<M: prost::Message + Default>(bytes: &[u8], field: &str) -> Result<M, GuestError> {
+fn canonical<M: prost::Message + Default>(
+    bytes: &[u8],
+    field: &str,
+    domain: &[u8],
+) -> Result<M, GuestError> {
+    let bytes = acyclic_auth::format::header(
+        bytes,
+        domain,
+        VERSION,
+        || invalid(field),
+        || GuestError::UnsupportedFormat,
+    )?;
     let message = M::decode(bytes).map_err(|_| invalid(field))?;
     if message.encode_to_vec() != bytes {
         return Err(invalid(field));
     }
     Ok(message)
+}
+
+fn encode(value: &impl prost::Message, domain: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(domain.len() + VERSION.len() + value.encoded_len());
+    bytes.extend_from_slice(domain);
+    bytes.extend_from_slice(VERSION);
+    value.encode_raw(&mut bytes);
+    bytes
 }
 
 fn checkpoint_wire(checkpoint: &Checkpoint) -> CheckpointWire {
@@ -181,28 +205,30 @@ fn checkpoint(wire: CheckpointWire) -> Checkpoint {
 /// Encode an artifact's manifest: code, codec, subscriptions, bindings and limits.
 #[must_use]
 pub fn encode_manifest(manifest: &Manifest) -> Vec<u8> {
-    ManifestWire {
-        code: Bytes::copy_from_slice(manifest.code.as_bytes()),
-        codec_name: manifest.codec.name.clone(),
-        codec_version: manifest.codec.version.clone(),
-        subscriptions: manifest.subscriptions.clone(),
-        interrupts: manifest
-            .interrupts
-            .iter()
-            .map(|filter| InterruptWire {
-                subscription: filter.subscription.clone(),
-                value_prefix: filter.value_prefix.clone(),
-            })
-            .collect(),
-        bindings: manifest.bindings.iter().cloned().map(Into::into).collect(),
-        limits: Some(manifest.limits.into()),
-    }
-    .encode_to_vec()
+    encode(
+        &ManifestWire {
+            code: Bytes::copy_from_slice(manifest.code.as_bytes()),
+            codec_name: manifest.codec.name.clone(),
+            codec_version: manifest.codec.version.clone(),
+            subscriptions: manifest.subscriptions.clone(),
+            interrupts: manifest
+                .interrupts
+                .iter()
+                .map(|filter| InterruptWire {
+                    subscription: filter.subscription.clone(),
+                    value_prefix: filter.value_prefix.clone(),
+                })
+                .collect(),
+            bindings: manifest.bindings.iter().cloned().map(Into::into).collect(),
+            limits: Some(manifest.limits.into()),
+        },
+        MANIFEST_DOMAIN,
+    )
 }
 
 /// Decode and admit an artifact's canonical manifest on its host.
 pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
-    let wire: ManifestWire = canonical(bytes, "manifest")?;
+    let wire: ManifestWire = canonical(bytes, "manifest", MANIFEST_DOMAIN)?;
     let limits = wire.limits.ok_or_else(|| invalid("limits"))?;
     let manifest = Manifest {
         code: domain::CodeSha256::try_from(wire.code.to_vec()).map_err(|_| invalid("code"))?,
@@ -234,50 +260,52 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, GuestError> {
 /// Encode one delivery and the actor's committed checkpoint for a guest.
 #[must_use]
 pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> Vec<u8> {
-    DeliveryWire {
-        actor: delivery.actor.encode().into(),
-        epoch: delivery.epoch,
-        now_unix_ms: delivery.now_unix_ms,
-        trigger: Some(match &delivery.trigger {
-            Trigger::Record {
-                subscription,
-                sequence,
-            } => TriggerWire::Record(RecordTrigger {
-                subscription: subscription.clone(),
-                sequence: *sequence,
+    encode(
+        &DeliveryWire {
+            actor: delivery.actor.encode().into(),
+            epoch: delivery.epoch,
+            now_unix_ms: delivery.now_unix_ms,
+            trigger: Some(match &delivery.trigger {
+                Trigger::Record {
+                    subscription,
+                    sequence,
+                } => TriggerWire::Record(RecordTrigger {
+                    subscription: subscription.clone(),
+                    sequence: *sequence,
+                }),
+                Trigger::Alarm {
+                    generation,
+                    now_unix_ms,
+                } => TriggerWire::Alarm(AlarmTrigger {
+                    generation: *generation,
+                    now_unix_ms: *now_unix_ms,
+                }),
             }),
-            Trigger::Alarm {
-                generation,
-                now_unix_ms,
-            } => TriggerWire::Alarm(AlarmTrigger {
-                generation: *generation,
-                now_unix_ms: *now_unix_ms,
-            }),
-        }),
-        // A delivery names its subscription, not a path, so it spells the origin.
-        record: delivery
-            .record
-            .clone()
-            .map(|record| wire_codec::record_wire(record, None)),
-        checkpoint: committed.map(checkpoint_wire),
-        state_commit: Bytes::copy_from_slice(delivery.subscriptions.anchor().as_bytes()),
-        state_path: delivery.subscriptions.state_path().as_str().into(),
-        subscriptions: delivery
-            .subscriptions
-            .iter()
-            .map(|(id, cut)| SubscriptionWire {
-                id: id.clone(),
-                path: cut.path.as_str().into(),
-                cursor: cut.cursor,
-            })
-            .collect(),
-    }
-    .encode_to_vec()
+            // A subscription delivery has no followed-path context.
+            record: delivery
+                .record
+                .clone()
+                .map(|record| wire_codec::record_wire(record, None)),
+            checkpoint: committed.map(checkpoint_wire),
+            state_commit: Bytes::copy_from_slice(delivery.subscriptions.anchor().as_bytes()),
+            state_path: delivery.subscriptions.state_path().as_str().into(),
+            subscriptions: delivery
+                .subscriptions
+                .iter()
+                .map(|(id, cut)| SubscriptionWire {
+                    id: id.clone(),
+                    path: cut.path.as_str().into(),
+                    cursor: cut.cursor,
+                })
+                .collect(),
+        },
+        DELIVERY_DOMAIN,
+    )
 }
 
 /// Decode one canonical delivery and committed checkpoint inside a guest.
 pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), GuestError> {
-    let wire: DeliveryWire = canonical(bytes, "delivery")?;
+    let wire: DeliveryWire = canonical(bytes, "delivery", DELIVERY_DOMAIN)?;
     if wire
         .subscriptions
         .windows(2)
@@ -331,7 +359,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         ),
         record: wire
             .record
-            .map(|record| wire_codec::record(record, None))
+            .map(wire_codec::record)
             .transpose()
             .map_err(|_| invalid("record"))?,
     };
@@ -351,30 +379,32 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
         effects.conditions.extend(effect.conditions.iter().cloned());
         effects.mutations.push(effect.mutation.clone());
     }
-    Ok(TransitionWire {
-        response: transition.response.clone(),
-        checkpoint: Some(checkpoint_wire(&transition.checkpoint)),
-        alarm: Some(match transition.alarm {
-            AlarmChange::Keep => AlarmWire::Keep(true),
-            AlarmChange::Set { deadline_unix_ms } => AlarmWire::Set(deadline_unix_ms),
-            AlarmChange::Clear => AlarmWire::Clear(true),
-        }),
-        effects: Some(wire_codec::commit_to_wire(&effects)),
-        participant: transition
-            .participant
-            .as_ref()
-            .map(|participant| ParticipantWire {
-                kind: participant.kind.clone(),
-                plan: participant.plan.clone(),
+    Ok(encode(
+        &TransitionWire {
+            response: transition.response.clone(),
+            checkpoint: Some(checkpoint_wire(&transition.checkpoint)),
+            alarm: Some(match transition.alarm {
+                AlarmChange::Keep => AlarmWire::Keep(true),
+                AlarmChange::Set { deadline_unix_ms } => AlarmWire::Set(deadline_unix_ms),
+                AlarmChange::Clear => AlarmWire::Clear(true),
             }),
-    }
-    .encode_to_vec())
+            effects: Some(wire_codec::commit_to_wire(&effects)),
+            participant: transition
+                .participant
+                .as_ref()
+                .map(|participant| ParticipantWire {
+                    kind: participant.kind.clone(),
+                    plan: participant.plan.clone(),
+                }),
+        },
+        TRANSITION_DOMAIN,
+    ))
 }
 
 /// Decode a guest's canonical transition on its host. Effects arrive as one
 /// effect carrying every condition, which joins identically to the original.
 pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
-    let wire: TransitionWire = canonical(bytes, "transition")?;
+    let wire: TransitionWire = canonical(bytes, "transition", TRANSITION_DOMAIN)?;
     let alarm = match wire.alarm.ok_or_else(|| invalid("alarm"))? {
         AlarmWire::Keep(true) => AlarmChange::Keep,
         AlarmWire::Set(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },
@@ -500,6 +530,28 @@ mod tests {
     }
 
     #[test]
+    fn version_refusal_precedes_guest_payload_decode() {
+        type Decoder = fn(&[u8]) -> Result<(), GuestError>;
+        let formats: [(&[u8], Decoder); 3] = [
+            (MANIFEST_DOMAIN, |bytes| decode_manifest(bytes).map(|_| ())),
+            (DELIVERY_DOMAIN, |bytes| decode_delivery(bytes).map(|_| ())),
+            (TRANSITION_DOMAIN, |bytes| {
+                decode_transition(bytes).map(|_| ())
+            }),
+        ];
+        for (domain, decode) in formats {
+            for version in [0, 2, u8::MAX] {
+                let mut bytes = domain.to_vec();
+                bytes.push(version);
+                assert_eq!(decode(&bytes), Err(GuestError::UnsupportedFormat));
+            }
+            let mut current = domain.to_vec();
+            current.extend_from_slice(VERSION);
+            assert!(matches!(decode(&current), Err(GuestError::Decode(_))));
+        }
+    }
+
+    #[test]
     fn delivery_round_trips_and_refuses_unknown_fields() -> Result<(), Box<dyn std::error::Error>> {
         let delivery = Delivery {
             actor: ActorReference::new(b"account", b"namespace", b"actor")?,
@@ -574,20 +626,20 @@ mod tests {
             ),
         };
         let bytes = encode_delivery(&delivery, None);
-        let mut wire = DeliveryWire::decode(bytes.as_slice())?;
+        let mut wire: DeliveryWire = canonical(&bytes, "delivery", DELIVERY_DOMAIN)?;
         let original_path = std::mem::take(&mut wire.state_path);
-        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        assert!(decode_delivery(&encode(&wire, DELIVERY_DOMAIN)).is_err());
         wire.state_path = original_path;
         wire.state_commit.clear();
-        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        assert!(decode_delivery(&encode(&wire, DELIVERY_DOMAIN)).is_err());
         wire.state_commit = Bytes::from_static(&[17; 32]);
         wire.subscriptions.swap(0, 1);
-        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        assert!(decode_delivery(&encode(&wire, DELIVERY_DOMAIN)).is_err());
         wire.subscriptions[1] = wire.subscriptions[0].clone();
-        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        assert!(decode_delivery(&encode(&wire, DELIVERY_DOMAIN)).is_err());
         wire.subscriptions.truncate(1);
         wire.subscriptions[0].path = String::new();
-        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        assert!(decode_delivery(&encode(&wire, DELIVERY_DOMAIN)).is_err());
         Ok(())
     }
 

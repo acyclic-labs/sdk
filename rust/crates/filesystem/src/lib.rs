@@ -172,6 +172,12 @@ pub use acyclic_fs_base::text_merge;
 pub mod watch;
 #[cfg(all(feature = "native-watch", target_os = "windows"))]
 mod windows_usn;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(test, feature = "test-support", all(feature = "native-watch", windows))
+))]
+#[doc(hidden)]
+pub mod windows_usn_codec;
 pub mod workspace;
 pub mod workspace_context;
 pub mod workspace_context_wire;

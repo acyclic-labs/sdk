@@ -220,22 +220,18 @@ codec: CodecIdentity,
  * Encoded logical state. No runtime heap format is implied.
  */
 bytes: Uint8Array, };
-export type GuestError = { "type": "unsupportedAbi", "detail": number } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string };
+export type GuestError = { "type": "unsupportedAbi", "detail": number } | { "type": "unsupportedFormat" } | { "type": "nestedMutation" } | { "type": "missingIdentity" } | { "type": "incompatibleCodec" } | { "type": "decode", "detail": string } | { "type": "encode", "detail": string } | { "type": "handler", "detail": string };
 export type CheckpointCodec<State> = {
 /**
  * Identity written on the next checkpoint.
  */
 identity: CodecIdentity,
 /**
- * Explicit decoder compatibility, including identity itself.
- */
-readable: Array<CodecIdentity>,
-/**
  * Artifact encoder.
  */
 encode: (state: State) => Uint8Array,
 /**
- * Artifact decoder, including migration of readable older versions.
+ * Artifact decoder, called only after its exact codec identity is admitted.
  */
 decode: (checkpoint: Checkpoint) => State, };
 export type CallerCapability = {

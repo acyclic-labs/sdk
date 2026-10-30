@@ -107,9 +107,6 @@ fn actor_reference_framing_and_legacy_boundary() -> Result<(), Box<dyn std::erro
     let mut trailing = bytes.clone();
     trailing.push(0);
     assert!(ActorReference::decode(&trailing).is_err());
-    let mut version = bytes;
-    *version.get_mut(20).ok_or("version")? = 2;
-    assert!(ActorReference::decode(&version).is_err());
     // Without field boundaries these distinct valid triples alias.
     let first = ActorReference::new(b"a", b"bc", b"d")?;
     let second = ActorReference::new(b"ab", b"c", b"d")?;
@@ -166,7 +163,11 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
         Err(IdentityError::Malformed)
     );
     let mut impossible_length = encoded;
-    impossible_length.get_mut(..8).ok_or("length")?.fill(255);
+    let length_start = RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len();
+    impossible_length
+        .get_mut(length_start..length_start + 8)
+        .ok_or("length")?
+        .fill(255);
     assert_eq!(
         ResourceIdentity::decode(&impossible_length),
         Err(IdentityError::Malformed)
@@ -175,6 +176,28 @@ fn rejects_malformed_storage_and_wire() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(ResourceId::new(b""), Err(IdentityError::EmptyId));
     let pair = ResourceIdentity::from_parts(AccountId::new(b"a")?, ResourceId::new(b"b")?);
     assert_eq!(pair, ResourceIdentity::new(b"a", b"b")?);
+    Ok(())
+}
+
+#[test]
+fn resource_version_refusal_precedes_fields() -> Result<(), Box<dyn std::error::Error>> {
+    let encoded = ResourceIdentity::new(b"a", b"b")?.encode();
+    for version in [0, 2, u8::MAX] {
+        let mut bytes = RESOURCE_DOMAIN.to_vec();
+        bytes.push(version);
+        assert_eq!(
+            ResourceIdentity::decode(&bytes),
+            Err(IdentityError::UnsupportedVersion)
+        );
+    }
+    let body = encoded
+        .get(RESOURCE_DOMAIN.len() + RESOURCE_VERSION.len()..)
+        .ok_or("payload")?;
+    assert_eq!(
+        ResourceIdentity::decode(body),
+        Err(IdentityError::UnsupportedVersion)
+    );
+    assert_eq!(ResourceIdentity::decode(&encoded)?.encode(), encoded);
     Ok(())
 }
 fn label_contract(validate: impl Fn(&[u8]) -> bool) -> bool {
@@ -331,7 +354,10 @@ fn shared_golden_pairs_and_hostnames() -> Result<(), Box<dyn std::error::Error>>
     let vectors: Vectors = serde_json::from_str(include_str!(
         "../../tests/fixtures/resource-identity-v1.json"
     ))?;
-    assert_eq!(vectors.encoding, "u64be-length-account-u64be-length-id");
+    assert_eq!(
+        vectors.encoding,
+        "acyclic.resource-v1-u64be-length-account-u64be-length-id"
+    );
     assert_eq!(
         vectors.component_format,
         "nonempty-opaque-bytes; product limits apply; DNS labels at most 63 bytes"
