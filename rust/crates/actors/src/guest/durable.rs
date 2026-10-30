@@ -1,4 +1,5 @@
-//! Host adapters for Durable Object state. Storage and socket ownership stay in Cloud.
+//! Host adapters for Durable Object state. Socket ownership stays with the host:
+//! Cloud's and the local runtime's (`local::Sockets`).
 use super::{GuestError, SocketPayload};
 use crate::addressing::ActorReference;
 use bytes::Bytes;
@@ -6,6 +7,15 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
 use ts_rs::TS;
+
+/// Maximum retained tags on one hibernating socket.
+pub const WEB_SOCKET_TAG_COUNT: usize = 10;
+/// Maximum Unicode scalar values in one tag.
+pub const WEB_SOCKET_TAG_CHARACTERS: usize = 256;
+/// Maximum opaque socket attachment bytes.
+pub const WEB_SOCKET_ATTACHMENT_BYTES: usize = 2048;
+/// Maximum Unicode scalar values in either auto-response string.
+pub const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS: usize = 2048;
 
 /// Runtime-owned hibernatable socket identity, unrelated to the actor's identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -18,13 +28,43 @@ pub struct WebSocketAutoResponse {
     /// Exact outgoing text frame.
     pub response: String,
 }
-/// Scoped runtime effects; implementations must check the actor reference on every call.
-pub trait DurableHost: Send + Sync {
-    /// Atomically clear actor storage and alarm; the address remains usable.
-    fn delete_all(
-        &self,
-        actor: &ActorReference,
-    ) -> impl Future<Output = Result<(), GuestError>> + Send;
+/// Admit the CF hibernation tag contract before invoking the host.
+pub fn validate_web_socket_tags(tags: &[String]) -> Result<(), GuestError> {
+    if tags.len() > WEB_SOCKET_TAG_COUNT
+        || tags
+            .iter()
+            .any(|tag| tag.chars().count() > WEB_SOCKET_TAG_CHARACTERS)
+    {
+        return Err(GuestError::Handler(
+            "WebSocket tags exceed 10 tags or 256 characters".into(),
+        ));
+    }
+    Ok(())
+}
+/// Admit an attachment independently of its serialization format.
+pub fn validate_web_socket_attachment(bytes: &[u8]) -> Result<(), GuestError> {
+    if bytes.len() > WEB_SOCKET_ATTACHMENT_BYTES {
+        return Err(GuestError::Handler(
+            "WebSocket attachment exceeds 2048 bytes".into(),
+        ));
+    }
+    Ok(())
+}
+/// Admit the exact text pair the host may answer without activating the actor.
+pub fn validate_web_socket_auto_response(value: &WebSocketAutoResponse) -> Result<(), GuestError> {
+    if value.request.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
+        || value.response.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
+    {
+        return Err(GuestError::Handler(
+            "WebSocket auto-response exceeds 2048 characters".into(),
+        ));
+    }
+    Ok(())
+}
+/// Hibernatable socket effects. A host keeps sockets, tags, attachments and the
+/// auto-response pair outside the actor heap, so a hibernated actor holding
+/// sockets costs it nothing; implementations check the actor on every call.
+pub trait SocketHost: Send + Sync {
     /// Transfer a pending socket to host ownership, retaining tags across hibernation.
     fn accept_web_socket(
         &self,
@@ -90,12 +130,26 @@ pub trait DurableHost: Send + Sync {
         socket: &WebSocketId,
     ) -> Result<Vec<String>, GuestError>;
 }
+/// Scoped runtime effects; implementations must check the actor reference on every call.
+pub trait DurableHost: SocketHost {
+    /// Atomically clear actor storage and alarm; the address remains usable.
+    fn delete_all(
+        &self,
+        actor: &ActorReference,
+    ) -> impl Future<Output = Result<(), GuestError>> + Send;
+}
 /// Scoped state supplied by the host at activation; the reference is never authority.
 pub struct DurableObjectState<H> {
     reference: ActorReference,
     host: Arc<H>,
 }
 impl<H: DurableHost> DurableObjectState<H> {
+    /// Clear state and alarm without deleting its address or namespace deployment.
+    pub async fn delete_all(&self) -> Result<(), GuestError> {
+        self.host.delete_all(&self.reference).await
+    }
+}
+impl<H: SocketHost> DurableObjectState<H> {
     /// Materialize only after host admission of the namespace binding.
     pub const fn new(reference: ActorReference, host: Arc<H>) -> Self {
         Self { reference, host }
@@ -103,10 +157,6 @@ impl<H: DurableHost> DurableObjectState<H> {
     /// Transferable address without the host adapter.
     pub const fn id(&self) -> &ActorReference {
         &self.reference
-    }
-    /// Clear state and alarm without deleting its address or namespace deployment.
-    pub async fn delete_all(&self) -> Result<(), GuestError> {
-        self.host.delete_all(&self.reference).await
     }
     /// Retain a socket and its tags across hibernation.
     pub fn accept_web_socket(

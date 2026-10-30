@@ -7,8 +7,7 @@ pub struct Service<P> {
     authority: Arc<Authority>,
     node: String,
     limits: Limits,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Option<Arc<dyn CallProvider>>,
+    products: Products,
     lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P> Service<P> {
@@ -19,8 +18,7 @@ impl<P> Service<P> {
             authority,
             node,
             limits,
-            resources: None,
-            calls: None,
+            products: Products::default(),
             lifetime: None,
         }
     }
@@ -32,8 +30,15 @@ impl<P> Service<P> {
         resources: Option<Arc<dyn ResourceProvider>>,
         calls: Arc<dyn CallProvider>,
     ) -> Self {
-        self.resources = resources;
-        self.calls = Some(calls);
+        self.products.resources = resources;
+        self.products.calls = Some(calls);
+        self
+    }
+
+    /// Installs the owning actor-socket host. Each socket is a virtual
+    /// channel on this session and ends when its channel or session ends.
+    pub fn with_sockets(mut self, sockets: Arc<dyn SocketProvider>) -> Self {
+        self.products.sockets = Some(sockets);
         self
     }
 
@@ -60,8 +65,7 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
         let session = serve_on_with_products(
             Arc::clone(&self.provider),
             Arc::clone(&self.authority),
-            self.resources.clone(),
-            self.calls.clone(),
+            self.products.clone(),
             self.node.clone(),
             self.limits,
             incoming,
