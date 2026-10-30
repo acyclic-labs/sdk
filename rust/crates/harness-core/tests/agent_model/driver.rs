@@ -200,6 +200,7 @@ impl TurnHost for Host {
             effects: Some(self.0.clone()),
             outputs: Arc::new(Unused),
             input: None,
+            roster: None,
             goal: self
                 .1
                 .clone()
@@ -207,6 +208,91 @@ impl TurnHost for Host {
         };
         Box::pin(async move { Ok(open) })
     }
+}
+
+/// Host announcing its roster exactly when the agent's announced digest
+/// differs, as every host does ([`Roster::announcement`]).
+struct Announcing(Host, Arc<Mutex<Roster>>);
+
+impl TurnHost for Announcing {
+    fn open<'a>(
+        &'a self,
+        agent: &'a AgentState,
+        turn: OperationId,
+        input: &'a acyclic_harness_core::model::ModelContent,
+        stop: acyclic_actors::guest::CancellationToken,
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<OpenTurn>> {
+        Box::pin(async move {
+            let mut open = self.0.open(agent, turn, input, stop).await?;
+            let announced = self
+                .1
+                .lock()
+                .expect("lock")
+                .announcement(agent.roster)
+                .map_err(|error| CoreError::Invalid(error.to_string()))?;
+            open.roster = match announced {
+                Some((_, digest)) => Some((file("targets.json")?, digest)),
+                None => None,
+            };
+            Ok(open)
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_roster_enters_the_conversation_only_when_its_digest_changes() -> Result {
+    let device = |os: &str| TargetRecord {
+        name: "laptop".into(),
+        owner: "ana".into(),
+        class: TargetClass::Attached,
+        os: os.into(),
+        shell: "bash".into(),
+        path_style: PathStyle::Posix,
+        state: TargetState::Online,
+    };
+    let roster = |os| Roster::home(device(os)).expect("valid roster");
+    let script = Arc::new(Script {
+        progress: Mutex::new((0..3).map(|_| ready()).collect()),
+        ..Script::default()
+    });
+    let current = Arc::new(Mutex::new(roster("linux")));
+    let driver = ExecutorDriver::new(Announcing(Host(script, None), Arc::clone(&current)));
+    let path = AgentPath::root(&id(1));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
+    // The first turn announces; an unchanged roster is never announced
+    // again; a changed one (the negative control) is.
+    for (sequence, os, announced) in [(1, "linux", true), (2, "linux", false), (3, "macos", true)] {
+        *current.lock().expect("lock") = roster(os);
+        let record = InboxRecord::Message(Message {
+            from: super::user(),
+            id: intent(&format!("m{sequence}")),
+            body: Box::new(file("prompt.md")?),
+            attachments: None,
+        });
+        let settled = step(
+            &driver,
+            &path,
+            Some(state.clone()),
+            sequence,
+            Wake::Inbox { sequence, record },
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let entries: Vec<_> = settled
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Conversation(bytes) => Some(ConversationEntry::decode(bytes)),
+                _ => None,
+            })
+            .collect::<std::result::Result<_, _>>()?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].targets.is_some(), announced, "turn {sequence}");
+        let digest = roster(os).canonical().map(|(_, digest)| digest).ok();
+        assert_eq!(settled.state.roster, digest);
+        state = settled.state;
+    }
+    Ok(())
 }
 
 fn driver(progress: Vec<ExecutionProgress<TurnOutput>>) -> (Arc<Script>, ExecutorDriver<Host>) {

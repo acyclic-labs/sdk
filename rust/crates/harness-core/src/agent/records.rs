@@ -25,8 +25,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// it, and readers refuse every other version whole: there is no migration
 /// code. The headerless format before it is version 1; version 2 carries a
 /// spawn brief by file reference. Version 3 binds goal runs to their committed
-/// terminal conversation entry.
-pub const RECORD_VERSION: u32 = 3;
+/// terminal conversation entry. Version 4 lets a conversation entry name the
+/// execution-target roster its turn announced.
+pub const RECORD_VERSION: u32 = 4;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -657,10 +658,9 @@ mod tests {
             }
         );
         // The header decides: a later version is refused before its record is read.
-        assert_eq!(
-            refused(br#"{"record":{"spawn":"not read"},"version":4}"#).found,
-            4
-        );
+        let later = RECORD_VERSION + 1;
+        let record = format!(r#"{{"record":{{"spawn":"not read"}},"version":{later}}}"#);
+        assert_eq!(refused(record.as_bytes()).found, later);
         // Negative controls. A spawn of this version decodes; the version 1
         // body under this version's header is malformed, never a partial spawn.
         let volume = VolumeRef::new(
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(InboxRecord::decode(&encoded).ok(), Some(spawn));
         let mut relabeled = br#"{"record":"#.to_vec();
         relabeled.extend_from_slice(V1_SPAWN);
-        relabeled.extend_from_slice(br#","version":3}"#);
+        relabeled.extend_from_slice(format!(r#","version":{RECORD_VERSION}}}"#).as_bytes());
         assert!(matches!(
             InboxRecord::decode(&relabeled),
             Err(Error::Record("record is malformed"))

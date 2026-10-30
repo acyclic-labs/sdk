@@ -122,10 +122,11 @@ impl StockExecutor {
         {
             return Ok(Ok(None));
         }
-        let executor =
-            context.harness.workspace_tools.as_ref().ok_or_else(|| {
-                Error::Unsupported("hook workspace execution is not bound".into())
-            })?;
+        let home = context
+            .harness
+            .target(None)
+            .map_err(|_| Error::Unsupported("hook workspace execution is not bound".into()))?;
+        let executor = &home.executor;
         let issued = ToolContext::new(Arc::clone(context), operation, prompt_call(event))?;
         let mut output = executor
             .run_hooks(

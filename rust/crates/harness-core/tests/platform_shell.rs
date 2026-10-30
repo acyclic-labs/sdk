@@ -1,8 +1,8 @@
-//! The public default catalog follows the native host shell contract.
+//! The public default catalog is the same on every host.
 use acyclic_harness_core::Result;
 
 #[test]
-fn default_tool_names_and_shell_contract_match_the_host() -> Result<()> {
+fn default_tool_names_and_shell_contract_are_host_independent() -> Result<()> {
     let registry = acyclic_harness_core::tools::defaults()?;
     let names = registry
         .definitions(None)?
@@ -25,12 +25,16 @@ fn default_tool_names_and_shell_contract_match_the_host() -> Result<()> {
     let schema = &tool.definition.input_schema;
     assert_eq!(schema["required"], serde_json::json!(["command"]));
     assert!(schema["properties"].get("cwd").is_some());
+    assert!(schema["properties"].get("target").is_some());
     assert_eq!(schema["additionalProperties"], false);
     assert!(tool.hook_names.is_empty());
-    assert!(tool.definition.description.contains(if cfg!(windows) {
-        "PowerShell syntax"
-    } else {
-        "bash syntax"
-    }));
+    // One description on every OS: each target's language comes from the roster.
+    assert_eq!(
+        tool.definition.description,
+        acyclic_harness_core::tools::shell::DESCRIPTION
+    );
+    for host_specific in ["PowerShell", "bash"] {
+        assert!(!tool.definition.description.contains(host_specific));
+    }
     Ok(())
 }

@@ -5,6 +5,11 @@ use std::path::{Component, Path};
 
 pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 
+/// The one model-visible `shell` description on every OS. Each target's
+/// command language and path style come from the conversation's roster, so
+/// the tool contract never changes with the host or the target.
+pub const DESCRIPTION: &str = "Run a command on an execution target, in that target's listed shell language and path style. `target` names a target from the roster, or user:<owner> for that user's home device; omitted, the command runs on your home target. The command runs in the calling task's composed workspace view; writes outside it are not captured. No OS sandbox in release 1";
+
 /// A command in the calling task's view; workspace selection is host-owned.
 /// Release 1 uses no OS sandbox: commands can reach the host filesystem.
 /// Writes outside the task view are not captured. The cwd must remain in the view.
@@ -24,6 +29,11 @@ pub struct ShellInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 4294967))]
     pub timeout: Option<u32>,
+    /// Target from the roster, or user:<owner> for that user's home device.
+    /// Omission runs on the agent's home target; there is no fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1))]
+    pub target: Option<String>,
 }
 
 impl ShellInput {
@@ -38,7 +48,7 @@ impl ShellInput {
                 .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
         {
             return Err(Error::Invalid(
-                "invalid shell command, cwd or timeout".into(),
+                "invalid shell command, cwd, target or timeout".into(),
             ));
         }
         self.timeout_ms()?;

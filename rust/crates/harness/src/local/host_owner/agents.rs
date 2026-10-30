@@ -443,6 +443,7 @@ impl HostDriver {
             output,
             outcome: Default::default(),
             goal: None,
+            targets: None,
         };
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {

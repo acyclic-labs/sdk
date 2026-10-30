@@ -15,6 +15,7 @@ fn approval() -> Interaction {
             tool: "write".into(),
             call_id: "call".into(),
             arguments: json!({"path": "approved"}),
+            target: None,
         },
     }
 }

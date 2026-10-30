@@ -19,10 +19,10 @@ proptest! {
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
         let baseline = work.live_allocation_bytes();
-        let paid = copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy).unwrap();
+        let paid = copy_approval_subject(&invocation, Some(&work), crate::interaction::ApprovalRoute::Policy, None).unwrap();
         prop_assert_eq!((work.receipt().bytes_copied, paid.1.is_some()), (expected, true));
         prop_assert_eq!(&paid.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
-            tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(),
+            tool: invocation.name.clone(), call_id: invocation.call_id.clone(), arguments: invocation.arguments.clone(), target: None,
         });
         prop_assert!(paid.1.as_ref().unwrap().work().shares_ledger(&work));
         prop_assert!(paid.1.as_ref().unwrap().bytes() > 0);
@@ -33,9 +33,9 @@ proptest! {
         let control = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::performance::work_budget(4096, 1 << 20), &cancellation,
         ).unwrap();
-        let unmetered = copy_approval_subject(&invocation, None, crate::interaction::ApprovalRoute::Policy).unwrap();
+        let unmetered = copy_approval_subject(&invocation, None, crate::interaction::ApprovalRoute::Policy, None).unwrap();
         prop_assert_eq!(&unmetered.0, &ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy,
-            tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments,
+            tool: invocation.name, call_id: invocation.call_id, arguments: invocation.arguments, target: None,
         });
         prop_assert_ne!((control.receipt().bytes_copied, unmetered.1.is_some()), (expected, true));
     }
@@ -59,7 +59,8 @@ fn subject_copy_denies_exhausted_copy_work_before_allocating() {
         copy_approval_subject(
             &invocation,
             Some(&work),
-            crate::interaction::ApprovalRoute::Policy
+            crate::interaction::ApprovalRoute::Policy,
+            None
         )
         .is_err()
     );

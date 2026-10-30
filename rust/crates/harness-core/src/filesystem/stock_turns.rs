@@ -32,6 +32,13 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>>;
+
+    /// The execution targets `agent`'s turns run on
+    /// ([`TurnExecutors::roster`]); `None` binds no targets.
+    fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        let _ = agent;
+        None
+    }
 }
 
 /// The context of a host with no context of its own: each turn's tools act
@@ -75,6 +82,10 @@ impl TurnContext for Tasks {
         Box::pin(async move {
             Self::bind(&self.0, executor, agent, turn, authority).map(|(executor, _)| executor)
         })
+    }
+
+    fn roster(&self, _: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        self.0.targets().map(|targets| Arc::clone(targets.roster()))
     }
 }
 
@@ -237,6 +248,10 @@ impl StockExecutors {
 }
 
 impl TurnExecutors for StockExecutors {
+    fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        self.context.roster(agent)
+    }
+
     fn executor<'a>(
         &'a self,
         agent: &'a AgentState,

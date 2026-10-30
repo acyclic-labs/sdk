@@ -5,6 +5,8 @@
 //! harness/agents/<root>/conversation      conversation, inherited by children at the fork cut
 //! harness/agents/<root>/closed            exists once the agent is archived
 //! harness/agents/<root>/children/<id>     child subtree, same shape
+//! harness/agents/<root>/targets/<name>     one execution target of the tree: LATEST
+//!                                          "status" holds its TargetRecord (v1)
 //! harness/actors/<actor>                  A4 actor state (`Store` root), outside the subtree
 //! harness/status/<id>                      status records, outside the subtree
 //! ```
@@ -12,6 +14,10 @@
 //! Status lives outside the subtree so the commit that creates an agent (a spawn
 //! fork may write nothing inside its destination) also writes its first status:
 //! every agent a `children` page lists already has one.
+//!
+//! Targets live only under the tree's root, and no child inherits them: every
+//! agent of the tree reads the root's `targets` by path prefix, so a spawn
+//! copies nothing and a device attaches to the whole tree in one commit.
 
 use super::Error;
 use acyclic_stream::StreamPath;
@@ -27,13 +33,16 @@ pub const VOLUMES: &str = "harness/volumes";
 /// Root of every agent's status stream, keyed by its globally unique id.
 pub const STATUSES: &str = "harness/status";
 /// Relative names a child does not inherit from its parent.
-pub const NOT_INHERITED: [&str; 2] = [CHILDREN, CLOSED];
+pub const NOT_INHERITED: [&str; 3] = [CHILDREN, CLOSED, TARGETS];
 /// Deepest admitted nesting; bounds every path and every lineage walk.
 pub const MAX_DEPTH: usize = 64;
 
 const CONVERSATION: &str = "conversation";
 const CLOSED: &str = "closed";
 const CHILDREN: &str = "children";
+const TARGETS: &str = "targets";
+/// The LATEST key of a target's status record.
+pub const TARGET_STATUS: &str = "status";
 const ID_HEX: usize = 32;
 
 /// 128-bit agent identity, canonical lowercase hex. It is also the actor id.
@@ -235,6 +244,23 @@ impl AgentPath {
     pub fn children(&self) -> Result<StreamPath, Error> {
         stream(&format!("{}/{CHILDREN}", self.text))
     }
+
+    /// The root of this agent's tree: itself for a root.
+    #[must_use]
+    pub fn tree_root(&self) -> Self {
+        let end = AGENTS.len() + 1 + ID_HEX;
+        Self {
+            text: self.text[..end].to_owned(),
+            depth: 0,
+        }
+    }
+
+    /// The status stream of the tree's target `name`, under the tree's root
+    /// whichever agent of the tree asks; `children_page` of its parent lists
+    /// every target of the tree.
+    pub fn target(&self, name: &str) -> Result<StreamPath, Error> {
+        stream(&format!("{}/{TARGETS}/{name}", self.tree_root().text))
+    }
 }
 
 impl TryFrom<String> for AgentPath {
@@ -306,6 +332,14 @@ mod tests {
         ] {
             assert!(AgentPath::try_from(malformed).is_err());
         }
+        // Every agent of a tree addresses the root's targets.
+        let nested = root.child(&AgentId::from_bytes([3; 16]))?;
+        assert_eq!(nested.tree_root(), root.parent().expect("nested root"));
+        assert_eq!(
+            nested.target("pc")?,
+            root.parent().expect("root").target("pc")?
+        );
+        assert_ne!(foreign.target("pc")?, root.target("pc")?);
         for depth in [1, 8, MAX_DEPTH] {
             let mut descendant = root.clone();
             for _ in root.depth()..depth {
