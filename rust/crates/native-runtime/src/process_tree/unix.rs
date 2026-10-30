@@ -141,28 +141,29 @@ fn exit_status_id(
     Ok(Some(ExitStatus::from_raw(raw)))
 }
 
-pub(super) fn reap_exit_id(
+/// Reaps a child whose exit was already observed.
+///
+/// The wait blocks rather than asking once: Darwin reports a process's exit
+/// (`NOTE_EXIT`) before its zombie can be waited for, so a non-blocking
+/// reap right after that event can find nothing. The kernel ends this wait
+/// as soon as the observed exit completes.
+pub(super) fn reap_exited_id(
     pid: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
-) -> io::Result<(Option<ExitStatus>, io::Result<()>)> {
+) -> io::Result<(ExitStatus, io::Result<()>)> {
     let mut status = 0;
     let (result, recorded) =
         super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
             // SAFETY: exclusively owned child ID and writable status.
-            let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
+            let waited = unsafe { libc::waitpid(pid, &raw mut status, 0) };
             if waited < 0 {
                 Err(io::Error::last_os_error())
             } else {
                 Ok(waited)
             }
         })?;
-    match result {
-        Ok(0) => Ok((None, recorded)),
-        Ok(_) => Ok((Some(ExitStatus::from_raw(status)), recorded)),
-        Err(error) => Err(error),
-    }
+    result.map(|_| (ExitStatus::from_raw(status), recorded))
 }
-
 pub(super) fn read_pipe(
     pipe: &mut (impl Read + Pipe),
     buffer: &mut [std::mem::MaybeUninit<u8>],
