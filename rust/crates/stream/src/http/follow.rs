@@ -25,15 +25,19 @@ fn parse_id(value: &Value) -> Result<CommitId, StreamError> {
             .map_err(|_| StreamError::Unavailable)?,
     ))
 }
-fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
+// An envelope's records belong to the mutation's path, which spells none.
+fn parse_records(value: &Value, owner: &StreamPath) -> Result<Vec<Record>, StreamError> {
     value
         .as_array()
         .ok_or(StreamError::Unavailable)?
         .iter()
-        .map(parse_record)
+        .map(|record| parse_record(record, owner))
         .collect()
 }
-fn parse_record(value: &Value) -> Result<Record, StreamError> {
+fn parse_record(value: &Value, owner: &StreamPath) -> Result<Record, StreamError> {
+    if value.get("origin").is_some() {
+        return Err(StreamError::Unavailable);
+    }
     let bytes = parse_bytes(field(value, "value")?)?;
     let keys = field(value, "keys")?
         .as_array()
@@ -69,6 +73,7 @@ fn parse_record(value: &Value) -> Result<Record, StreamError> {
         commit_id: parse_id(field(value, "commitId")?)?,
         committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
         headers,
+        origin: owner.clone(),
     })
 }
 fn parse_append(value: &Value) -> Result<AppendOutcome, StreamError> {
@@ -128,17 +133,23 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
     let mutations = mutations
         .iter()
         .map(|value| {
+            let kind = parse_string(field(value, "type")?)?;
+            let owner = match kind {
+                "append" => parse_path(field(value, "path")?)?,
+                "fork" => parse_path(field(value, "destination")?)?,
+                _ => return Err(StreamError::Unavailable),
+            };
             let records = value
                 .get("records")
-                .map(parse_records)
+                .map(|records| parse_records(records, &owner))
                 .transpose()?
                 .unwrap_or_default();
             if records.len() > MAX_ITEMS {
                 return Err(StreamError::Unavailable);
             }
-            match parse_string(field(value, "type")?)? {
+            match kind {
                 "append" => Ok(CommittedMutation::Append(CommittedAppend {
-                    path: parse_path(field(value, "path")?)?,
+                    path: owner,
                     start: parse_u64(field(value, "start")?)?,
                     end: parse_u64(field(value, "end")?)?,
                     tail: parse_u64(field(value, "tail")?)?,
@@ -152,7 +163,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
                         .map(parse_path)
                         .collect::<Result<_, _>>()?,
                     source: parse_path(field(value, "source")?)?,
-                    destination: parse_path(field(value, "destination")?)?,
+                    destination: owner,
                     forked_at: parse_u64(field(value, "forkedAt")?)?,
                     tail: parse_u64(field(value, "tail")?)?,
                     records,

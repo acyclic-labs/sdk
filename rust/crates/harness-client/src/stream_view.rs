@@ -1,4 +1,4 @@
-use acyclic_stream::{StreamError, StreamWatermarks, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire, wire_codec};
 use bytes::Bytes;
 use std::{collections::VecDeque, mem::size_of};
 
@@ -42,13 +42,21 @@ pub struct StreamView {
     revision: u64,
     watermarks: StreamWatermarks,
     filtered: bool,
+    /// The followed stream an unspelled record origin names.
+    followed: Option<StreamPath>,
 }
 
 impl StreamView {
     /// `filtered` folds a follow whose provider omits records outside its
     /// selection: records and watermarks may then move the cursor forward
     /// past skipped sequences, but never backward.
-    pub(crate) fn new(policy: StreamViewPolicy, next: u64, revision: u64, filtered: bool) -> Self {
+    pub(crate) fn new(
+        policy: StreamViewPolicy,
+        next: u64,
+        revision: u64,
+        filtered: bool,
+        followed: Option<StreamPath>,
+    ) -> Self {
         Self {
             policy,
             records: VecDeque::new(),
@@ -61,6 +69,7 @@ impl StreamView {
                 durable: 0,
             },
             filtered,
+            followed,
         }
     }
 
@@ -204,7 +213,7 @@ impl StreamView {
                 }
                 // Use the canonical record/header validator, including its size
                 // bounds, before retaining anything from the delivery.
-                wire_codec::record(record.clone())?;
+                wire_codec::record(record.clone(), self.followed.as_ref())?;
                 let charge = record_charge(record)?;
                 if charge > self.policy.bytes {
                     return Err(StreamError::LimitExceeded);
@@ -266,6 +275,7 @@ fn compact_record(record: &wire::Record) -> wire::Record {
         value: Bytes::copy_from_slice(&record.value),
         commit_id: Bytes::copy_from_slice(&record.commit_id),
         committed_at_micros: record.committed_at_micros,
+        origin: record.origin.clone(),
         keys: record
             .keys
             .iter()

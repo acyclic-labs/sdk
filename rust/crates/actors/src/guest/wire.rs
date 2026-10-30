@@ -254,7 +254,11 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
                 now_unix_ms: *now_unix_ms,
             }),
         }),
-        record: delivery.record.clone().map(wire_codec::record_wire),
+        // A delivery names its subscription, not a path, so it spells the origin.
+        record: delivery
+            .record
+            .clone()
+            .map(|record| wire_codec::record_wire(record, None)),
         checkpoint: committed.map(checkpoint_wire),
         state_commit: Bytes::copy_from_slice(delivery.subscriptions.anchor().as_bytes()),
         state_path: delivery.subscriptions.state_path().as_str().into(),
@@ -327,7 +331,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         ),
         record: wire
             .record
-            .map(wire_codec::record)
+            .map(|record| wire_codec::record(record, None))
             .transpose()
             .map_err(|_| invalid("record"))?,
     };

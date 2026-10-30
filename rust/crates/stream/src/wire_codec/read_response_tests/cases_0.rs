@@ -10,6 +10,7 @@ fn records(from: u64, count: u64) -> Vec<wire::Record> {
             value: vec![u8::try_from(sequence % 251).unwrap_or(0); 100].into(),
             commit_id: vec![1; 32].into(),
             committed_at_micros: sequence,
+            origin: String::new(),
         })
         .collect()
 }

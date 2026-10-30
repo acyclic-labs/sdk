@@ -258,6 +258,7 @@ impl Swarm {
                             value: fetched.value.into(),
                             commit_id: fetched.commit,
                             committed_at_micros: 0,
+                            origin: acyclic_stream::StreamPath::new("origin").unwrap(),
                             headers: Default::default(),
                         }
                     }),

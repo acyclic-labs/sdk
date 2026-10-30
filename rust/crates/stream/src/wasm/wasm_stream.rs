@@ -331,13 +331,14 @@ impl WasmStream {
         check_command_size(input)?;
         let request = decode::<wire::ReadRequest>(input)?;
         let request = wire_codec::read_from_wire(request).map_err(js_error)?;
+        let path = request.path.clone();
         let records = self.provider.read(request).await.map_err(js_error)?;
         let mut output = Vec::new();
         futures::pin_mut!(records);
         while let Some(record) = records.next().await {
             let record = record.map_err(js_error)?;
             output.push(
-                wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                wire_codec::read_response_wire(vec![wire_codec::record_wire(record, Some(&path))])
                     .encode_to_vec(),
             );
         }
@@ -353,14 +354,18 @@ impl WasmStream {
         if request.progress {
             return Err(js_error(StreamError::InvalidArgument));
         }
+        let path = request.path.clone();
         let stream = crate::records_only(self.provider.follow(request).await.map_err(js_error)?);
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 stream
-                    .map(|record| {
+                    .map(move |record| {
                         record.map(|record| {
-                            wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
-                                .encode_to_vec()
+                            wire_codec::read_response_wire(vec![wire_codec::record_wire(
+                                record,
+                                Some(&path),
+                            )])
+                            .encode_to_vec()
                         })
                     })
                     .boxed_local(),

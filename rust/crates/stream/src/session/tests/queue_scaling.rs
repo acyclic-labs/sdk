@@ -11,6 +11,7 @@ fn record(sequence: u64) -> Event {
         value: OwnedBytes::from_static(b"running"),
         commit_id: crate::CommitId::from_bytes([1; 32]),
         committed_at_micros: 0,
+        origin: crate::StreamPath::new("origin").unwrap(),
     })
 }
 

@@ -401,13 +401,20 @@ impl WireSession {
                     if follow.resource.starts_with(FS_RESOURCE)
                         || follow.delivery == wire::SessionDelivery::Latest as i32
             );
+        // A stream follow spells only record origins other than its path.
+        let followed = match &subscription.kind {
+            Some(wire::session_subscription::Kind::Follow(follow)) => {
+                acyclic_stream::wire_codec::session::stream_path(&follow.resource).ok()
+            }
+            _ => None,
+        };
         let request = subscription.clone();
         let client = self.client.clone();
         let opening = Box::pin(async move { client.subscribe(subscription).await });
         (
             RetainedView {
                 request,
-                view: StreamView::new(self.view_policy, from, revision, filtered),
+                view: StreamView::new(self.view_policy, from, revision, filtered, followed),
             },
             Subscription {
                 state: SubscriptionState::Opening(opening),

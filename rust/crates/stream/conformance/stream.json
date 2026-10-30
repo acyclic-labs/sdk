@@ -19,6 +19,7 @@
     "canonical-segment-relative-exclusions-without-sibling-leakage",
     "inherited-record-identities-and-private-fork-suffixes",
     "child-status-records-share-the-page-cut-with-missing-stream-none",
-    "child-status-values-headers-and-framing-obey-the-page-byte-bound"
+    "child-status-values-headers-and-framing-obey-the-page-byte-bound",
+    "records-name-the-appending-stream-through-nested-forks"
   ]
 }

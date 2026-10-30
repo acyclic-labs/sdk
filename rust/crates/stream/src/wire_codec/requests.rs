@@ -37,8 +37,13 @@ fn append_record_len(record: &AppendRecord) -> usize {
     record_body_len(&record.value, &record.headers)
 }
 
-pub(crate) fn record_len(record: &crate::Record) -> usize {
+/// Encoded length of `record_wire(record, followed)`.
+pub(crate) fn record_len(record: &crate::Record, followed: Option<&crate::StreamPath>) -> usize {
     record_body_len(&record.value, &record.headers)
+        .saturating_add(
+            super::spelled_origin(record, followed)
+                .map_or(0, |origin| block_len(origin.as_str().len())),
+        )
         .saturating_add(uint_len((record.sequence != 0).then_some(record.sequence)))
         .saturating_add(block_len(record.commit_id.as_bytes().len()))
         .saturating_add(uint_len(
@@ -60,7 +65,7 @@ pub(crate) fn child_len(child: &crate::Child) -> usize {
             child
                 .tail_record
                 .as_ref()
-                .map_or(0, |record| block_len(record_len(record))),
+                .map_or(0, |record| block_len(record_len(record, None))),
         )
         .saturating_add(
             child
@@ -89,7 +94,7 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
                         .saturating_add(
                             head.last
                                 .as_ref()
-                                .map_or(0, |record| block_len(record_len(record))),
+                                .map_or(0, |record| block_len(record_len(record, None))),
                         )
                         .saturating_add(uint_len((head.durable != 0).then_some(head.durable)))
                         .saturating_add(uint_len(head.retained_through))
@@ -123,14 +128,11 @@ pub(crate) fn heads_len(view: &crate::Heads) -> usize {
             view.retained
                 .iter()
                 .map(|observation| {
-                    block_len(
-                        block_len(observation.path.as_str().len()).saturating_add(
-                            observation
-                                .record
-                                .as_ref()
-                                .map_or(0, |record| block_len(record_len(record))),
-                        ),
-                    )
+                    block_len(block_len(observation.path.as_str().len()).saturating_add(
+                        observation.record.as_ref().map_or(0, |record| {
+                            block_len(record_len(record, Some(&observation.path)))
+                        }),
+                    ))
                 })
                 .fold(0usize, usize::saturating_add),
         )

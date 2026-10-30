@@ -164,6 +164,7 @@ async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestRe
             .next()
             .await
             .ok_or(StreamError::Unavailable)??,
+        Some(&StreamPath::new(crate::conformance::key_seek::SOURCE)?),
     );
     let mut data = wire::SessionData {
         after: Some(wire::SessionCursor {

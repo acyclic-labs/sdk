@@ -126,8 +126,9 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             tail_reads.set(tail_reads.get() + 1);
             Ok(Some(4))
         },
-        |start, bodies, exclude| {
+        |origin, start, bodies, exclude| {
             records(
+                origin,
                 start,
                 bodies,
                 identity,
@@ -149,15 +150,23 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             CommittedMutation::Append(append_fact(
                 source.clone(),
                 4,
-                records(4, &bodies, identity, 9_000, Vec::with_capacity(2))?
+                records(&source, 4, &bodies, identity, 9_000, Vec::with_capacity(2))?
             )?),
             CommittedMutation::Fork(CommittedFork {
+                // Evaluated before `destination` moves into the fact.
+                records: records(
+                    &destination,
+                    1,
+                    &bodies,
+                    identity,
+                    9_000,
+                    Vec::with_capacity(2),
+                )?,
                 exclude: exclusions,
-                source,
+                source: source.clone(),
                 destination,
                 forked_at: 1,
                 tail: 3,
-                records: records(1, &bodies, identity, 9_000, Vec::with_capacity(2))?,
             }),
         ]
     );
@@ -165,8 +174,9 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     let reset = facts(
         &mutations,
         |_| Ok(None),
-        |start, bodies, exclude| {
+        |origin, start, bodies, exclude| {
             records(
+                origin,
                 start,
                 bodies,
                 identity,
@@ -182,14 +192,14 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
         facts(
             &mutations,
             |_| Ok(Some(4)),
-            |_, _, _| Err(StreamError::Unavailable),
+            |_, _, _, _| Err(StreamError::Unavailable),
             Vec::new()
         ),
         Err(StreamError::InvalidArgument),
         "the planner must not grow an unfunded output"
     );
     assert_eq!(
-        records(0, &bodies, identity, 9_000, Vec::with_capacity(1)),
+        records(&source, 0, &bodies, identity, 9_000, Vec::with_capacity(1)),
         Err(StreamError::InvalidArgument),
         "record construction must use admitted slots"
     );

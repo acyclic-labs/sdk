@@ -46,8 +46,8 @@ async fn reviewed_follow(client: &Client, path: StreamPath) -> Result<RecordStre
         })
         .boxed();
     Ok(data
-        .map(|data| match data?.item {
-            Some(Item::Record(record)) => wire_codec::record(record),
+        .map(move |data| match data?.item {
+            Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
             _ => Err(StreamError::Unavailable),
         })
         .boxed())

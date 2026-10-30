@@ -64,6 +64,9 @@ pub struct Record {
     pub committed_at_micros: u64,
     /// Canonically sorted indexed keys, authenticated with the value.
     pub headers: RecordHeaders,
+    /// Stream that appended the record. A fork shares the record unchanged,
+    /// so a follow of the fork sees the source segment's path here.
+    pub origin: StreamPath,
 }
 
 /// One immutable single-valued indexed header.

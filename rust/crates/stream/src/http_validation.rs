@@ -109,6 +109,9 @@ fn validate_record(value: &Value) -> Result {
     }
     id(field(item, "commitId")?)?;
     u64_string(field(item, "committedAtMicros")?)?;
+    if let Some(origin) = item.get("origin") {
+        crate::StreamPath::new(string(origin)?).map_err(|_| "invalid record origin")?;
+    }
     Ok(())
 }
 

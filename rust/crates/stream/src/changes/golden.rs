@@ -9,6 +9,9 @@ const V1_FRAME: &[u8] = b"\x08\x04\x12\x23\x0a\x03pub\x12\x0d\x0a\x01b\x12\x05wr
 
 #[test]
 fn retained_v1_golden_frame_and_unknown_marker_control() {
+    // The frame predates origins: a record of the followed path spells none.
+    let followed = crate::StreamPath::new("followed").unwrap();
+    let followed = Some(&followed);
     let wire = wire::Record::decode(V1_FRAME).unwrap();
     let old_value = wire::ChangeRecord {
         context: b"pub".as_slice().into(),
@@ -23,10 +26,10 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
     };
     assert_eq!(old_value.encode_to_vec(), wire.value);
     assert_eq!(wire.encode_to_vec(), V1_FRAME);
-    let record = wire_codec::record(wire.clone()).unwrap();
+    let record = wire_codec::record(wire.clone(), followed).unwrap();
     assert_eq!(decode(&record.value, &record.headers).unwrap(), old_value);
     assert_eq!(
-        wire_codec::record_wire(record.clone()).encode_to_vec(),
+        wire_codec::record_wire(record.clone(), followed).encode_to_vec(),
         V1_FRAME
     );
     let body = AppendRecord {
@@ -73,7 +76,7 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
         old_value.entries[..1]
     );
     assert_eq!(
-        wire_codec::record_wire(projected).attributes,
+        wire_codec::record_wire(projected, followed).attributes,
         wire.attributes
     );
     // The signed authority ceiling also projects the prior typed format.
@@ -95,7 +98,7 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
         let mut unknown = wire.clone();
         unknown.attributes.first_mut().unwrap().value = marker.to_vec().into();
         assert_eq!(
-            wire_codec::record(unknown.clone()),
+            wire_codec::record(unknown.clone(), followed),
             Err(StreamError::InvalidArgument)
         );
         let unknown_record = Record {
@@ -123,7 +126,7 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
         .unwrap()
         .clone_from(&b"a".as_slice().into());
     assert_eq!(
-        wire_codec::record(forged),
+        wire_codec::record(forged, followed),
         Err(StreamError::InvalidArgument)
     );
     for value in [
@@ -135,7 +138,7 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
         let mut malformed = wire.clone();
         malformed.value = value.to_vec().into();
         assert_eq!(
-            wire_codec::record(malformed),
+            wire_codec::record(malformed, followed),
             Err(StreamError::InvalidArgument)
         );
     }

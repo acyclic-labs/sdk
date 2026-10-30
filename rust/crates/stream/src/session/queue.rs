@@ -68,7 +68,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     let key = (!value.attention).then(|| value.key.clone());
                     (Item::LatestValue(value), key)
                 } else {
-                    (Item::Record(wire_codec::record_wire(record)), None)
+                    (
+                        Item::Record(wire_codec::record_wire(record, channel.followed.as_ref())),
+                        None,
+                    )
                 };
                 (cursor(next), item, key)
             }

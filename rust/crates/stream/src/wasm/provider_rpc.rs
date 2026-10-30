@@ -118,6 +118,7 @@ impl InjectedStream {
     async fn cursor(
         &self,
         operation: &str,
+        path: &crate::StreamPath,
         input: impl Message,
         preceding: Option<CommitId>,
         from: u64,
@@ -149,9 +150,10 @@ impl InjectedStream {
         } else {
             None
         };
+        let path = path.clone();
         Ok(
             futures::stream::try_unfold((cursor, from), move |(mut cursor, next)| {
-                let seek = seek.clone();
+                let (seek, path) = (seek.clone(), path.clone());
                 async move {
                     let Some(frame) = cursor.next().await? else {
                         return if read {
@@ -168,7 +170,7 @@ impl InjectedStream {
                             let Some(wire::session_data::Item::Record(record)) = data.item else {
                                 return Err(StreamError::InvalidResponse);
                             };
-                            let record = wire_codec::record(record)?;
+                            let record = wire_codec::record(record, Some(&path))?;
                             if record.sequence < next
                                 || (read && seek.is_none() && record.sequence != next)
                                 || seek.as_ref().is_some_and(|key| {
@@ -312,6 +314,7 @@ impl StreamProvider for InjectedStream {
         Ok(crate::records_only(
             self.cursor(
                 "read",
+                &request.path,
                 wire::ReadRequest {
                     key: wire_codec::read_key_to_wire(&request.key),
                     path: request.path.to_string(),
@@ -342,6 +345,7 @@ impl StreamProvider for InjectedStream {
     ) -> Result<crate::FollowStream, StreamError> {
         self.cursor(
             "follow",
+            &request.path,
             wire::FollowRequest {
                 when_absent: request.when_absent.to_wire(),
                 path: request.path.to_string(),
@@ -366,17 +370,19 @@ impl super::WasmStream {
     ) -> Result<super::WasmFollow, JsValue> {
         super::check_command_size(input)?;
         let provider = self.provider();
-        let updates: FollowStream = match operation {
+        let (path, updates): (_, FollowStream) = match operation {
             "read" if preceding.is_empty() => {
                 let request =
                     wire_codec::read_from_wire(super::decode::<wire::ReadRequest>(input)?)
                         .map_err(super::js_error)?;
-                provider
+                let path = request.path.clone();
+                let records = provider
                     .read(request)
                     .await
                     .map_err(super::js_error)?
                     .map(|item| item.map(FollowUpdate::Record))
-                    .boxed_local()
+                    .boxed_local();
+                (path, records)
             }
             "follow" => {
                 let mut request =
@@ -388,12 +394,16 @@ impl super::WasmStream {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
                 request.preceding = anchor;
-                provider.follow(request).await.map_err(super::js_error)?
+                let path = request.path.clone();
+                (
+                    path,
+                    provider.follow(request).await.map_err(super::js_error)?,
+                )
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };
         let stream = updates
-            .map(|item| {
+            .map(move |item| {
                 item.map(|update| {
                     let body = match update {
                         FollowUpdate::Record(record) => {
@@ -406,7 +416,7 @@ impl super::WasmStream {
                                 accepted: after,
                                 durable: 0,
                                 item: Some(wire::session_data::Item::Record(
-                                    wire_codec::record_wire(record),
+                                    wire_codec::record_wire(record, Some(&path)),
                                 )),
                             })
                         }

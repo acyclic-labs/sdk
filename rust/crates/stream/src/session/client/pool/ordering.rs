@@ -374,13 +374,17 @@ fn deliver(pool: &mut Pool, model: &mut Model, id: u64) -> TestCaseResult {
                     after: Some(super::super::super::cursor(sequence + 1)),
                     accepted: sequence + 1,
                     durable: sequence + 1,
-                    item: Some(Item::Record(wire_codec::record_wire(crate::Record {
-                        headers: Default::default(),
-                        sequence,
-                        value: vec![sequence.to_le_bytes()[0]].into(),
-                        commit_id: crate::CommitId::from_bytes([1; 32]),
-                        committed_at_micros: 0,
-                    }))),
+                    item: Some(Item::Record(wire_codec::record_wire(
+                        crate::Record {
+                            headers: Default::default(),
+                            sequence,
+                            value: vec![sequence.to_le_bytes()[0]].into(),
+                            commit_id: crate::CommitId::from_bytes([1; 32]),
+                            committed_at_micros: 0,
+                            origin: crate::StreamPath::new("origin").unwrap(),
+                        },
+                        None,
+                    ))),
                 }),
             ),
         )

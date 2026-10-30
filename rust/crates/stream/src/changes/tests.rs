@@ -49,6 +49,7 @@ fn typed_projection_removes_outside_entries_while_opaque_mixed_keys_are_denied()
         headers: body.headers,
         commit_id: crate::CommitId::from_bytes([1; 32]),
         committed_at_micros: 42,
+        origin: crate::StreamPath::new("origin").unwrap(),
     };
     assert!(filter().matches(&record.headers));
     let projected = filter().project(record.clone()).unwrap().unwrap();

@@ -127,6 +127,7 @@ pub(crate) fn facts(
     source: &[CommitMutation],
     mut tail: impl FnMut(&StreamPath) -> Result<Option<u64>, StreamError>,
     mut build: impl FnMut(
+        &StreamPath,
         u64,
         &[AppendRecord],
         &[RelativePath],
@@ -137,18 +138,20 @@ pub(crate) fn facts(
         return Err(StreamError::InvalidArgument);
     }
     for mutation in source {
-        let (start, bodies, exclusions) = match mutation {
+        // A fork's own records belong to its destination.
+        let (origin, start, bodies, exclusions) = match mutation {
             CommitMutation::Append { path, records } => {
-                (tail(path)?.unwrap_or(0), records, &[][..])
+                (path, tail(path)?.unwrap_or(0), records, &[][..])
             }
             CommitMutation::Fork {
+                destination,
                 at_tail,
                 records,
                 exclude,
                 ..
-            } => (*at_tail, records, exclude.as_slice()),
+            } => (destination, *at_tail, records, exclude.as_slice()),
         };
-        let (records, exclude) = build(start, bodies, exclusions)?;
+        let (records, exclude) = build(origin, start, bodies, exclusions)?;
         output.push(match mutation {
             CommitMutation::Append { path, .. } => {
                 CommittedMutation::Append(append_fact(path.clone(), start, records)?)
@@ -179,6 +182,7 @@ pub(crate) fn facts(
 }
 
 pub(crate) fn records(
+    origin: &StreamPath,
     start: u64,
     bodies: &[AppendRecord],
     commit_id: CommitId,
@@ -202,6 +206,7 @@ pub(crate) fn records(
             headers: value.headers,
             commit_id,
             committed_at_micros,
+            origin: origin.clone(),
         });
     }
     Ok(records)

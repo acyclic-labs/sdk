@@ -331,6 +331,7 @@ pub fn verify_link_isolation(broken: bool) {
                                 value: Bytes::from_static(b"healthy"),
                                 commit_id: vec![7; 32].into(),
                                 committed_at_micros: 0,
+                                origin: String::new(),
                                 keys: Vec::new(),
                                 attributes: Vec::new(),
                             })),

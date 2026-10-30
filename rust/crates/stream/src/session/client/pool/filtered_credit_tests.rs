@@ -28,13 +28,17 @@ async fn qualify_prefix_credit(omit_held_data: bool) -> Result<(), Box<dyn std::
                 accepted: 5,
                 durable: 5,
                 after: Some(super::super::super::cursor(sequence + 1)),
-                item: Some(Item::Record(wire_codec::record_wire(crate::Record {
-                    headers: Default::default(),
-                    sequence,
-                    value: Bytes::from_static(b"match").into(),
-                    commit_id: crate::CommitId::from_bytes([7; 32]),
-                    committed_at_micros: 0,
-                }))),
+                item: Some(Item::Record(wire_codec::record_wire(
+                    crate::Record {
+                        headers: Default::default(),
+                        sequence,
+                        value: Bytes::from_static(b"match").into(),
+                        commit_id: crate::CommitId::from_bytes([7; 32]),
+                        committed_at_micros: 0,
+                        origin: crate::StreamPath::new("origin").unwrap(),
+                    },
+                    None,
+                ))),
             }),
         )
     };

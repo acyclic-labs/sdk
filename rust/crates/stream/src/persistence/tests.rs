@@ -134,6 +134,7 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
                     sequence: 2,
                     commit_id: CommitId::from_bytes([9; 32]),
                     committed_at_micros: 17,
+                    origin: StreamPath::new("a")?,
                     value: Bytes::from_static(b"retained"),
                     headers: Default::default(),
                 }],

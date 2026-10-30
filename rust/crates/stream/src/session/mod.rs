@@ -94,6 +94,8 @@ struct Channel {
     generation: u64,
     latest: bool,
     opaque_cursor: bool,
+    /// The followed stream an unspelled record origin names.
+    followed: Option<StreamPath>,
     revalidate: Option<ResourceRevalidation>,
     pending: VecDeque<Pending>,
     progress: Option<wire::SessionWatermark>,

@@ -24,7 +24,7 @@ async fn frames() -> Result<Vec<wire::SessionFrame>, StreamError> {
     let records = provider
         .read(ReadRequest {
             key: None,
-            path,
+            path: path.clone(),
             from: 0,
             limit: 2,
             at_least: Default::default(),
@@ -46,6 +46,7 @@ async fn frames() -> Result<Vec<wire::SessionFrame>, StreamError> {
                 durable: 0,
                 item: Some(wire::session_data::Item::Record(wire_codec::record_wire(
                     record,
+                    Some(&path),
                 ))),
             })),
         })

@@ -366,7 +366,11 @@ pub fn children_page_from_response(
             .map(|child| {
                 Ok(crate::Child {
                     origin: child.origin.map(fork_origin_from_wire).transpose()?,
-                    tail_record: child.tail_record.map(record).transpose()?,
+                    // A tail record may sit in a relative tail stream, so it spells its origin.
+                    tail_record: child
+                        .tail_record
+                        .map(|record| self::record(record, None))
+                        .transpose()?,
                     path: path(child.path)?,
                 })
             })
@@ -384,7 +388,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
             .into_iter()
             .map(|child| wire::Child {
                 origin: child.origin.map(fork_origin_to_wire),
-                tail_record: child.tail_record.map(record_wire),
+                tail_record: child.tail_record.map(|record| record_wire(record, None)),
                 path: child.path.to_string(),
             })
             .collect(),
@@ -507,19 +511,17 @@ pub(crate) fn committed_mutation(
 ) -> Result<CommittedMutation, StreamError> {
     match value.mutation.ok_or(StreamError::Unavailable)? {
         wire::committed_mutation::Mutation::Append(value) => {
+            let path = path(value.path)?;
             Ok(CommittedMutation::Append(CommittedAppend {
-                path: path(value.path)?,
+                records: owned_records(value.records, &path)?,
+                path,
                 start: value.start,
                 end: value.end,
                 tail: value.tail,
-                records: value
-                    .records
-                    .into_iter()
-                    .map(record)
-                    .collect::<Result<_, _>>()?,
             }))
         }
         wire::committed_mutation::Mutation::Fork(value) => {
+            let destination = path(value.destination)?;
             Ok(CommittedMutation::Fork(CommittedFork {
                 exclude: value
                     .exclude
@@ -527,14 +529,10 @@ pub(crate) fn committed_mutation(
                     .map(path)
                     .collect::<Result<_, _>>()?,
                 source: path(value.source)?,
-                destination: path(value.destination)?,
+                records: owned_records(value.records, &destination)?,
+                destination,
                 forked_at: value.forked_at,
                 tail: value.tail,
-                records: value
-                    .records
-                    .into_iter()
-                    .map(record)
-                    .collect::<Result<_, _>>()?,
             }))
         }
     }
@@ -544,11 +542,15 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
     let mutation = match value {
         CommittedMutation::Append(value) => {
             wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
+                records: value
+                    .records
+                    .into_iter()
+                    .map(|record| record_wire(record, Some(&value.path)))
+                    .collect(),
                 path: value.path.to_string(),
                 start: value.start,
                 end: value.end,
                 tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
             })
         }
         CommittedMutation::Fork(value) => {
@@ -558,11 +560,15 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
                     .into_iter()
                     .map(|path| path.to_string())
                     .collect(),
+                records: value
+                    .records
+                    .into_iter()
+                    .map(|record| record_wire(record, Some(&value.destination)))
+                    .collect(),
                 source: value.source.to_string(),
                 destination: value.destination.to_string(),
                 forked_at: value.forked_at,
                 tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
             })
         }
     };

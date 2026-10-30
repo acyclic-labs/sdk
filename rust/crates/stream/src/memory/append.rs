@@ -67,7 +67,8 @@ impl MemoryStream {
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
         );
-        let (records, mut allocation) = self.records(&request.records, start, commit_id, time)?;
+        let (records, mut allocation) =
+            self.records(&request.path, &request.records, start, commit_id, time)?;
         let fact = crate::preparation::append_fact(request.path.clone(), start, records)?;
         let outcome = AppendOutcome::Committed(AppendReceipt {
             start,

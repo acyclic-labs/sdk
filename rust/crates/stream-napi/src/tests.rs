@@ -114,7 +114,10 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
     }));
     let follow = Arc::new(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            records: Arc::new(Mutex::new(Some(record_frames(
+                records,
+                acyclic_stream::StreamPath::new("origin").unwrap(),
+            )))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -148,7 +151,10 @@ async fn terminal_peer_and_transport_errors_keep_their_codes_before_end() {
         let records = futures::stream::once(async move { Err(error) }).boxed();
         let follow = NativeStreamFollow {
             state: FollowState {
-                records: Arc::new(Mutex::new(Some(record_frames(records)))),
+                records: Arc::new(Mutex::new(Some(record_frames(
+                    records,
+                    acyclic_stream::StreamPath::new("origin").unwrap(),
+                )))),
                 token: CancellationToken::new(),
                 closed: Arc::new(AtomicBool::new(false)),
             },
@@ -180,6 +186,7 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         value: vec![1_u8, 2].into(),
         commit_id: acyclic_stream::CommitId::default(),
         committed_at_micros: 0,
+        origin: acyclic_stream::StreamPath::new("origin").unwrap(),
         headers: Default::default(),
     };
     let mut record = Some(record);
@@ -193,7 +200,10 @@ async fn close_during_ready_poll_drops_cursor_without_reinsertion() {
         *close_task_slot.lock().expect("close task slot poisoned") = Some(close_task);
         Poll::Ready(record.take().map(Ok))
     }));
-    *follow.state.records.lock().await = Some(record_frames(records));
+    *follow.state.records.lock().await = Some(record_frames(
+        records,
+        acyclic_stream::StreamPath::new("origin").unwrap(),
+    ));
 
     let first = follow.next_result().await.expect("first read failed");
     assert!(first.value.is_none());
@@ -446,12 +456,16 @@ async fn finite_cursor_yields_before_the_rest_of_the_page_and_releases_on_close(
             value: vec![7].into(),
             commit_id: Default::default(),
             committed_at_micros: 0,
+            origin: acyclic_stream::StreamPath::new("origin").unwrap(),
             headers: Default::default(),
         })))
     });
     let cursor = NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            records: Arc::new(Mutex::new(Some(record_frames(
+                records,
+                acyclic_stream::StreamPath::new("origin").unwrap(),
+            )))),
             token: CancellationToken::new(),
             closed: Arc::new(AtomicBool::new(false)),
         },

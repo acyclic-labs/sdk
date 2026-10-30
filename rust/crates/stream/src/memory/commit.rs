@@ -116,6 +116,7 @@ fn bind_histories(
 impl MemoryStream {
     fn records(
         &self,
+        origin: &StreamPath,
         bodies: &[AppendRecord],
         start: u64,
         commit_id: CommitId,
@@ -132,7 +133,8 @@ impl MemoryStream {
                 (bodies.len() * std::mem::size_of::<Record>()) as u64,
             ))?;
         }
-        let mut records = crate::preparation::records(start, bodies, commit_id, time, buffer)?;
+        let mut records =
+            crate::preparation::records(origin, start, bodies, commit_id, time, buffer)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
             for record in &mut records {
@@ -160,8 +162,8 @@ impl MemoryStream {
         let facts = crate::preparation::facts(
             source,
             |path| Ok(state.paths.get(path).map(|path| path.tail)),
-            |start, bodies, exclusions| {
-                let (records, claim) = self.records(bodies, start, commit_id, time)?;
+            |origin, start, bodies, exclusions| {
+                let (records, claim) = self.records(origin, bodies, start, commit_id, time)?;
                 self.absorb(&mut allocation, claim)?;
                 let (mut exclude, claim) = if exclusions.is_empty() {
                     (Vec::new(), Default::default())
