@@ -1,5 +1,5 @@
 //! Bind warm responses to the actual retention and renewal request validators.
-use acyclic_inference::{MAXIMUM_MESSAGE_BYTES, validate_customer_wire, wire};
+use acyclic_inference::{validate_customer_wire, wire};
 use prost::Message;
 
 fn requests(view: &wire::WarmView) -> (wire::RetainWarmRequest, wire::RenewWarmRequest) {
@@ -30,36 +30,18 @@ fn requests(view: &wire::WarmView) -> (wire::RetainWarmRequest, wire::RenewWarmR
     )
 }
 
-fn bound(
-    kind: &str,
-    bytes: &[u8],
-    view: &wire::WarmView,
-    expected: &[u8],
-    related: &impl Message,
-) -> bool {
-    let related = related.encode_to_vec();
-    let accepted = validate_customer_wire(kind, bytes, expected, &related).is_ok();
-    if accepted {
-        let canonical = view.encode_to_vec();
-        if canonical.len() <= MAXIMUM_MESSAGE_BYTES {
-            assert!(validate_customer_wire(kind, &canonical, expected, &related).is_ok());
-        }
-        assert!(validate_customer_wire(kind, bytes, expected, &[0xff]).is_err());
-        let mut foreign = expected.to_vec();
-        *foreign
-            .first_mut()
-            .expect("admission requires a 32-byte identity") ^= 1;
-        assert!(validate_customer_wire(kind, bytes, &foreign, &related).is_err());
-    }
-    accepted
-}
-
 pub(super) fn check(bytes: &[u8]) {
     let Ok(view) = wire::WarmView::decode(bytes) else {
         return;
     };
     let (retain, renew) = requests(&view);
-    if bound("warm_context", bytes, &view, &view.context, &retain) {
+    if super::inference_pair(
+        "warm_context",
+        bytes,
+        &view,
+        &view.context,
+        &retain.encode_to_vec(),
+    ) {
         assert!(
             validate_customer_wire("retain_warm_request", &retain.encode_to_vec(), &[], &[])
                 .is_ok()
@@ -83,7 +65,13 @@ pub(super) fn check(bytes: &[u8]) {
             );
         }
     }
-    if bound("warm_commitment", bytes, &view, &view.commitment, &renew) {
+    if super::inference_pair(
+        "warm_commitment",
+        bytes,
+        &view,
+        &view.commitment,
+        &renew.encode_to_vec(),
+    ) {
         assert!(
             validate_customer_wire("renew_warm_request", &renew.encode_to_vec(), &[], &[]).is_ok()
         );
