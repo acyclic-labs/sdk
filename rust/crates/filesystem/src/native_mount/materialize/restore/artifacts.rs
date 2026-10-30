@@ -97,22 +97,17 @@ pub(in crate::native_mount::materialize) fn acquire_restore_lock(
             )
             .map_err(MaterializeError::from)?,
         );
-        loop {
-            work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
-                .map_err(MaterializeError::from)?;
-            match file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive) {
-                Ok(()) => {
-                    return Ok(RestoreLock {
-                        file,
-                        cleanup: Some(cleanup),
-                    });
-                }
-                Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
-                }
-                Err(error) => return Err(error.into()),
-            }
+        work.started_io(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
+            .map_err(MaterializeError::from)?;
+        if blocking {
+            file.lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
+        } else {
+            file.try_lock(acyclic_native_runtime::FileLockMode::Exclusive)?;
         }
+        Ok(RestoreLock {
+            file,
+            cleanup: Some(cleanup),
+        })
     })
 }
 
