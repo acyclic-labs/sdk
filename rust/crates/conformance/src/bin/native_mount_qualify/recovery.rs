@@ -4,60 +4,42 @@ pub(super) fn crash_recovery() -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let crash_root = root.path().join("child");
     let mount = root.path().join("mount");
-    let ready = root.path().join("ready");
     fs::create_dir(&mount)?;
-    let qualification = crash_recovery_inner(&crash_root, &mount, &ready);
+    let qualification = crash_recovery_inner(&crash_root, &mount);
     #[cfg(windows)]
-    // The recovered path becomes an ordinary directory after the resumed
-    // provider stops. The preserved residue lives under the same temporary
-    // parent and is removed only when this isolated fixture is dropped.
-    let cleanup = fs::remove_dir(&mount).map_err(Failure::from);
-    #[cfg(not(windows))]
-    let cleanup = recover_with_retry(&mount);
-    match (qualification, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
-        (Err(error), Err(cleanup_error)) => {
-            Err(format!("{error}; final mount cleanup also failed: {cleanup_error}").into())
-        }
+    let qualification = qualification.and_then(|()| fs::remove_dir(&mount).map_err(Failure::from));
+    if qualification.is_err() {
+        // Preserve the original recovery owner/error and avoid deleting through
+        // a mount whose detach was not proved. Cleanup never replays recovery.
+        eprintln!(
+            "crash qualification fixture retained at {}",
+            root.keep().display()
+        );
     }
+    qualification
 }
 
-fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result<(), Failure> {
-    let mut child = spawn_captured_child(
-        Command::new(std::env::current_exe()?)
-            .arg("--crash-child")
-            .arg(crash_root)
-            .arg(mount)
-            .arg(ready),
-    )?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    while !ready.exists() && Instant::now() < deadline {
-        if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate(None)?;
-            return Err(
-                format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
-            );
+const CRASH_READY: &[u8] = b"acyclic-crash-mount-ready\n";
+
+fn crash_recovery_inner(crash_root: &Path, mount: &Path) -> Result<(), Failure> {
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let mut child = CapturedChild::spawn(
+            Command::new(std::env::current_exe()?)
+                .arg("--crash-child")
+                .arg(crash_root)
+                .arg(mount),
+        )?;
+        let ready = child.receipt(CRASH_READY).await;
+        eprintln!("qualification phase: crash child receipt settled; termination starting");
+        let stopped = child.stop().await;
+        match (ready, stopped) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(cleanup)) => {
+                Err(format!("{error}; crash child cleanup also failed: {cleanup}").into())
+            }
         }
-        if let Some(status) = child.process.try_wait(None)? {
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            return Err(format!(
-                "crash child exited before readiness ({}): {}{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    if !ready.exists() {
-        child.process.terminate(None)?;
-        return Err("crash child did not mount within 30 seconds".into());
-    }
-    eprintln!("qualification phase: crash child ready; termination starting");
-    child.process.terminate(None)?;
+    })?;
     eprintln!("qualification phase: crash child terminated; recovery starting");
     #[cfg(windows)]
     {
@@ -114,7 +96,7 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     }
     #[cfg(not(windows))]
     {
-        recover_with_retry(mount)?;
+        recover_mount(mount)?;
         eprintln!("qualification phase: crash recovery finished");
         if mount.exists() && (!mount.is_dir() || fs::read_dir(mount)?.next().is_some()) {
             return Err("crash recovery did not restore an empty ordinary directory".into());
@@ -127,30 +109,18 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
 }
 
 #[cfg(not(windows))]
-fn recover_with_retry(mount: &Path) -> Result<(), Failure> {
+fn recover_mount(mount: &Path) -> Result<(), Failure> {
     let mut recovery = NativeMountRecoveryOwner::acquire(mount)?;
-    let mut recovery_error = None;
-    for attempt in 0..2 {
-        match recovery.recover() {
-            Ok(_) => return Ok(()),
-            Err(error) => {
-                recovery_error = Some(error);
-                if attempt == 0 {
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
+    recovery.recover().map(|_| ()).map_err(|error| {
+        acyclic_fs::NativeMountError::RecoveryFailed {
+            error: Box::new(error),
+            owner: recovery,
         }
-    }
-    Err(acyclic_fs::NativeMountError::RecoveryFailed {
-        error: Box::new(recovery_error.unwrap_or_else(|| {
-            acyclic_fs::NativeMountError::Lifecycle("native mount recovery failed")
-        })),
-        owner: recovery,
-    }
-    .into())
+        .into()
+    })
 }
 
-pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Failure> {
+pub(super) fn crash_child(root: PathBuf, mount: PathBuf) -> Result<(), Failure> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         fs::create_dir_all(&root)?;
@@ -173,8 +143,17 @@ pub(super) fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Resu
             }
             let _open_hydrated_file = File::open(mount.join("alive.txt"))?;
         }
-        fs::write(ready, b"ready")?;
-        std::future::pending::<Result<(), Failure>>().await
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(CRASH_READY)?;
+        stdout.flush()?;
+        drop(stdout);
+        let mut unexpected_release = [0];
+        std::io::stdin()
+            .lock()
+            .read_exact(&mut unexpected_release)?;
+        Err::<(), Failure>(
+            "crash fixture received an orderly release instead of termination".into(),
+        )
     })
 }
 
