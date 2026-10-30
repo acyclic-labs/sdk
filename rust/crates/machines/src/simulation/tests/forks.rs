@@ -1,10 +1,6 @@
 use super::*;
 
 #[tokio::test]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "indices are preceded by an assert_eq!(children.len(), 2), proving them in-bounds"
-)]
 async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     let provider = SimulatedMachines::default();
     let create_key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000008")
@@ -24,16 +20,19 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     let Ok(MutationOutcome::Forked(children)) = provider
         .fork(
             checkpoint.id,
-            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
             fork_key,
         )
         .await
     else {
         unreachable!();
     };
-    assert_eq!(children.len(), 2);
-    assert_ne!(children[0].id, children[1].id);
-    assert_ne!(children[0].id, machine.id);
+    assert_eq!(children.len(), 1_025);
+    let mut children = children.iter();
+    let first = children.next().unwrap_or_else(|| unreachable!());
+    let second = children.next().unwrap_or_else(|| unreachable!());
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.id, machine.id);
     provider
         .destroy_checkpoint(
             checkpoint.id,
@@ -43,7 +42,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         .await
         .unwrap_or_else(|_| unreachable!());
     assert!(provider.inspect_machine(machine.id).await.is_ok());
-    assert!(provider.inspect_machine(children[0].id).await.is_ok());
+    assert!(provider.inspect_machine(first.id).await.is_ok());
 }
 
 #[tokio::test]
@@ -158,11 +157,6 @@ async fn live_fork_requires_a_running_source() {
             .fork_machine(MachineId::new(), two(), key(0x23))
             .await,
         Err(ProviderError::NotFound(_))
-    ));
-    let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap_or(NonZeroU32::MAX);
-    assert!(matches!(
-        provider.fork_machine(parent.id, too_many, key(0x24)).await,
-        Err(ProviderError::Invalid(_))
     ));
 }
 

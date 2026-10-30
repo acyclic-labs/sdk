@@ -153,11 +153,6 @@ impl MachinesProvider for SimulatedMachines {
                     "required image capabilities are unavailable".into(),
                 ));
             }
-            if state.machines.len() >= 1_024 {
-                return Err(ProviderError::Rejected(
-                    "simulation machine limit reached".into(),
-                ));
-            }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
             let contract = Self::contract(&request, image, capabilities, platform);
@@ -218,8 +213,11 @@ impl MachinesProvider for SimulatedMachines {
                 let state = self.state.lock().await;
                 let mut values = state
                     .machines
-                    .values()
-                    .filter(|value| after.is_none_or(|cursor| value.id > cursor))
+                    .range((
+                        after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .map(|(_, value)| value)
                     .take(
                         usize::try_from(limit)
                             .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
@@ -319,9 +317,6 @@ impl MachinesProvider for SimulatedMachines {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let count_value = count.get();
-                if count_value > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 self.apply(
                     key,
                     MemoryIntent::Fork(checkpoint, count_value),
@@ -338,11 +333,6 @@ impl MachinesProvider for SimulatedMachines {
                         }
                         let add = usize::try_from(count_value)
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                        if state.machines.len().saturating_add(add) > 1_024 {
-                            return Err(ProviderError::Rejected(
-                                "simulation machine limit reached".into(),
-                            ));
-                        }
                         let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
@@ -384,9 +374,6 @@ impl MachinesProvider for SimulatedMachines {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let count_value = count.get();
-                if count_value > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 self.apply(
                     key,
                     MemoryIntent::ForkMachine(machine, count_value),
@@ -408,11 +395,6 @@ impl MachinesProvider for SimulatedMachines {
                         }
                         let add = usize::try_from(count_value)
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                        if state.machines.len().saturating_add(add) > 1_024 {
-                            return Err(ProviderError::Rejected(
-                                "simulation machine limit reached".into(),
-                            ));
-                        }
                         let mut children = Vec::with_capacity(add);
                         for index in 0..count_value {
                             let id = Self::machine(key, index);
@@ -621,12 +603,16 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let limit = usize::try_from(limit)
                     .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?;
-                let mut values = state
-                    .events
-                    .get(&machine)
-                    .into_iter()
-                    .flatten()
-                    .filter(|value| after_sequence.is_none_or(|cursor| value.sequence > cursor))
+                let events = state.events.get(&machine).map_or(&[][..], Vec::as_slice);
+                // Events are retained without gaps, and sequence one is at offset zero.
+                // The exclusive sequence cursor therefore names the next offset directly.
+                let start = usize::try_from(after_sequence.unwrap_or_default())
+                    .unwrap_or(usize::MAX)
+                    .min(events.len());
+                let mut values = events
+                    .get(start..)
+                    .unwrap_or_default()
+                    .iter()
                     .take(limit + 1)
                     .cloned()
                     .collect::<Vec<_>>();

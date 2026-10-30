@@ -318,14 +318,8 @@ pub(super) fn fork_children(
     values: &[wire::MachineId],
     source: Option<MachineId>,
 ) -> Result<Vec<MachineId>, ProviderError> {
-    if values.is_empty()
-        || values.len()
-            > usize::try_from(MAX_FORK_CHILDREN)
-                .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
-    {
-        return Err(ProviderError::Rejected(
-            "fork child set is outside the public bound".into(),
-        ));
+    if values.is_empty() {
+        return Err(ProviderError::Rejected("fork returned no children".into()));
     }
     let mut seen = BTreeSet::new();
     let mut children = Vec::with_capacity(values.len());

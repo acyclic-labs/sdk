@@ -2369,3 +2369,43 @@ Candidates include event-driven loops and retry identity references; these requi
 | `typescript/packages/stream/test/stream.test.ts:899` | Implicit wait window / timed test guard | OS child-exit wait, peer terminal/cancellation event, or zero-timer assertion replaces the implicit wall-clock guard and stale bounded-handshake expectation | Actioned |
 | `typescript/packages/stream/test/stream.test.ts:907` | Implicit wait window / timed test guard | OS child-exit wait, peer terminal/cancellation event, or zero-timer assertion replaces the implicit wall-clock guard and stale bounded-handshake expectation | Actioned |
 | `typescript/packages/stream/test/stream.test.ts:910` | Timer / delay / interval | Timer interception is a zero-registration proof at the peer settle event; no idle, Welcome or logical-registration timer may be created | Actioned |
+
+## Logical capacity audit
+
+Audit basis: design audit v3 (2026-10-30), axis (f), and gap register G63–G67. This inventory distinguishes limits on complete logical work from pages, scheduling credit, physical protocol constraints and explicit caller capacity. Status starts as **open**; completion requires removal of the refusal/truncation and its hidden default, with consumer updates.
+
+Excluded: `harness`, `harness-core`, `harness-tui`, `harness-client`, and `typescript/packages/harness` (tracked separately in #1744). MCP startup/tool defaults, agent depth/goals/checkpoints/children/history and the shell preset in those packages remain in that scope. The filesystem shell adapter must preserve the optional caller deadline supplied by that work.
+
+| Gap / audit finding | Code / mechanism | Existing arbitrary bound | Status |
+|---|---|---|---|
+| G63/G65, PLATFORM-7 | `stream/src/memory/memory_limits.rs`, `capacity.rs`, replay admission | 100k paths; 64 MiB path bytes; 1m records, commits and replay identities; 256 MiB payload | Open |
+| G63/G65, PLATFORM-7 | `stream/src/local/local_stream_limits.rs`, local journal/recovery | 1m commands; 1 GiB journal | Open |
+| G63/G65, clients-26 | Stream WASM/IndexedDB and TS `stream/src/memory.ts` | 65,536 commands; 256 MiB journal | Open |
+| G63, PLATFORM-7/22 | Stream client/session/command envelopes | MAX_ITEMS applied to logical append/commit/membership; queue overload refusal instead of credit | Open; distinguish wire pages/frames |
+| G64, FS-21 | `filesystem/src/model.rs` and kernel consumers | path 32 KiB; depth 1,024; object 64 MiB; mutations 2,048; lookup batch 65,536; dependencies 262,144; read 16 MiB; files 16m; objects 64m; generation 1 TiB | Open |
+| G64, PLATFORM-10 / FS-21 | `filesystem/src/logical_objects` | 5 GiB object fallback | Open |
+| G64, clients-26 | Filesystem memory/JS/native bindings and generated defaults | 1 GiB memory preset; mandatory numeric forms of logical maxima | Open |
+| G64, FS-21 | Filesystem source/capture/probe/native view and S3 multipart | path/extent/queued-change totals, retained upload/history/closure limits | Open; distinguish returned pages and explicit requests |
+| G64/G65, PLATFORM-33 | `actors/src/contract.rs` | 64 subscriptions, bindings and secrets | Open |
+| G65, clients-26 | Actors socket metadata in Rust guest contract and TS `actors/src/durable.ts` | attachment 2,048 bytes; autoresponse 2,048 characters; 10 tags; tag 256 characters | Open |
+| G63/G65, PLATFORM-13/34 | Actors logical unary input/state/result | 16 MiB envelope | Open; distinguish actual protective frame |
+| G67, PLATFORM-14 | `machines/src/simulation`, fork validation and public constant | fleet/fork 1,024; replay and per-machine events 4,096 | Actioned: removed population refusals and fork admission cap in simulator and gRPC; checkpoint-fork control requests 1,025 children; retained-receipt/event control crosses 4,096 transitions. Event pages seek directly by dense sequence; machine pages range from their cursor. Fixed-key index and paged fork transport obligations remain pending. |
+| G67, clients-26 | `typescript/packages/machines/src/client.ts` | omitted maximum silently ends listing at 1,024 | Actioned: omission keeps paging to the original terminal cursor; explicit caller maximum retained. |
+| G67, PLATFORM-31 | Machines exec/argv and provider adapters | default execution deadline and command totals | Open; inspect current implementation (older 60s allegation superseded by G89) |
+| G64/G65, PLATFORM-15 | `objects/src/http.rs`, `availability/client.rs`, TS Objects transports | omitted caller context gets 30s; TS response/message gets 64 MiB | Open |
+| G63/G64/G65 | Other HTTP/gRPC/hosted primitive clients | hidden total response/request deadlines and body defaults | Open; preserve actual frame protection |
+| G65, tooling-19 | `harness-conformance/src/execution/observation.rs` | omitted max_steps becomes 16 | Open (crate is outside exclusions) |
+| G65, tooling-19 | archive/package validation and subprocess captures | compressed 16/100 MiB; expanded 64/128/512 MiB; capture 4/8/16/256 MiB | Open |
+| G65, tooling-19 | conformance native supervision and client controls | child output 4 MiB; fixture total 8 MiB | Open; explicit user fixture capacity remains valid |
+| G65 | Other presets, fallbacks, `Some(N)`, truncation and lifetime counters | Repository-wide candidate search, including providers, search and conformance | Open |
+
+Allowed bounds retained after inspection:
+
+- Directory, result, event and output range page sizes split work and expose continuation.
+- Active runtime slots, in-flight requests and byte credit delay admission without discarding logical intent.
+- Cache capacity evicts reproducible data without limiting logical history.
+- OS-enforced component/argv constraints apply only in the corresponding native adapter.
+- Explicit caller reservations, capacities and deadlines remain explicit; absence must remain unbounded.
+- Protective framing/decompression bounds need a concrete physical encoding or bomb-protection contract; a small logical envelope is not protection.
+
+Validation obligations for each changed mechanism: preserve atomicity and authority; waits name their actual producer and report producer loss; admission/check overhead is constant in unrelated history/population. Negative controls restore a former cap, suppress/drop the producer, or grow unrelated history. Full requested output necessarily costs its own bytes/items; this is not a population scan. Record required syscalls, durability barriers, round trips, allocations and copies in the PR, including before/after counts where known.

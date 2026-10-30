@@ -143,6 +143,17 @@ describe("Machines simulation", () => {
     const none: string[] = [];
     for await (const machine of listMachines(provider, { maximum: 0 })) none.push(machine);
     expect(none).toEqual([]);
+
+    const forked = await provider.forkMachine(created, 1025, idempotencyKey("high-level-fork"));
+    if (forked.kind !== "machine-forked") throw new Error("wrong live fork outcome");
+    const all = new Set<string>();
+    for await (const machine of listMachines(provider)) all.add(machine);
+    expect(all.size).toBe(1026);
+    expect(all.has(created)).toBe(true);
+    for (const child of forked.children) expect(all.has(child.id)).toBe(true);
+    const bounded: string[] = [];
+    for await (const machine of listMachines(provider, { maximum: 1 })) bounded.push(machine);
+    expect(bounded).toHaveLength(1);
   });
 
   test("does not impose a client-side maximum beyond safe integer precision", async () => {

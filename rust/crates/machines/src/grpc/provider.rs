@@ -342,9 +342,6 @@ machine_mutations! {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.fork", observation, async {
-            if count.get() > MAX_FORK_CHILDREN {
-                return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-            }
             let value = self
                 .client()
                 .await?
@@ -381,9 +378,6 @@ machine_mutations! {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         obs::operation!("acyclic.machines.fork_machine", observation, async {
-            if count.get() > MAX_FORK_CHILDREN {
-                return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-            }
             let value = self
                 .client()
                 .await?

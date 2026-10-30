@@ -40,7 +40,7 @@ impl Default for MemoryState {
     }
 }
 
-/// Deterministic bounded process-local state-machine provider.
+/// Deterministic process-local state-machine provider.
 #[derive(Clone)]
 pub struct SimulatedMachines {
     state: Arc<Mutex<MemoryState>>,
@@ -192,11 +192,6 @@ impl SimulatedMachines {
                 ))
             };
         }
-        if state.replays.len() >= 4_096 {
-            return Err(ProviderError::Rejected(
-                "simulation operation limit reached".into(),
-            ));
-        }
         let outcome = action(&mut state)?;
         state.replays.insert(
             key,
@@ -232,11 +227,6 @@ fn event(
     observed_at: u64,
 ) -> Result<(), ProviderError> {
     let values = state.events.entry(machine).or_default();
-    if values.len() >= 4_096 {
-        return Err(ProviderError::Rejected(
-            "simulation event limit reached".into(),
-        ));
-    }
     let sequence = u64::try_from(values.len())
         .map_err(|_| ProviderError::Rejected("simulation event limit reached".into()))?
         + 1;
