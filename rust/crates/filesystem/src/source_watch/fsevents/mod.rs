@@ -81,12 +81,14 @@ impl NativeSourceWatch {
             bytes += handler_bytes;
             shared.ownership.retain(handler_bytes, work)?;
             let reader = shared.clone();
-            let handler = Arc::new(move |events: EventBatch<'_>| {
+            let handler = Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
                 let mut work = reader.delivery.callback_work();
-                let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    reader.events(events.iter(), &mut work)
-                }))
-                .unwrap_or(Err(DemandError::WorkerUnavailable));
+                let delivered =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match events {
+                        Ok(events) => reader.events(events.iter(), &mut work),
+                        Err(error) => Err(io::Error::other(error).into()),
+                    }))
+                    .unwrap_or(Err(DemandError::WorkerUnavailable));
                 if let Err(error) = delivered {
                     reader.delivery.failed_with_work(error, &mut work);
                 }

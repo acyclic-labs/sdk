@@ -137,7 +137,17 @@ impl FsEventsWatcher {
         self.stream = Some(
             EventStream::start(
                 &roots,
-                Arc::new(move |events: EventBatch<'_>| {
+                Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+                    let events = match events {
+                        Ok(events) => events,
+                        Err(error) => {
+                            if let Ok(mut handler) = handler.lock() {
+                                handler
+                                    .handle_event(Err(Error::from(std::io::Error::other(error))));
+                            }
+                            return;
+                        }
+                    };
                     for (path, flags) in events.iter() {
                         let watched = recursive.iter().any(|(root, recursive)| {
                             path.starts_with(root)
