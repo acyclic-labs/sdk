@@ -81,6 +81,27 @@ impl Journal {
         }
     }
 
+    pub(crate) fn machine_id(&self) -> MachineId {
+        self.machine
+    }
+
+    /// Keys a provider-initiated transition by the incarnation's publication
+    /// tail: fresh for each lifecycle position, and shared by every request that
+    /// observed the same position, so concurrent triggers join one operation.
+    pub(crate) async fn implicit_key(
+        &self,
+        purpose: &[u8],
+    ) -> Result<IdempotencyKey, ProviderError> {
+        let path = self.path(format_args!("machines/{}", self.machine))?;
+        let tail = self.head(path).await?.tail;
+        let mut digest = Sha256::new();
+        digest.update(b"acyclic-machines-implicit-transition-v1");
+        digest.update(purpose);
+        digest.update(self.machine.as_bytes());
+        digest.update(tail.to_be_bytes());
+        Ok(IdempotencyKey::from_digest(digest.finalize().into()))
+    }
+
     pub(crate) async fn machine(&self) -> Result<MachineObservation, ProviderError> {
         let path = self.path(format_args!("machines/{}", self.machine))?;
         decode(self.head(path).await?)

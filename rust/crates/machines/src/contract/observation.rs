@@ -12,6 +12,8 @@ pub enum MachineState {
     Destroyed,
     Failed,
     Indeterminate,
+    /// Unreachable until its own device or guest reconnects; the provider cannot wake it.
+    Offline,
 }
 
 /// Stable logical service endpoint.
@@ -156,7 +158,7 @@ pub type OperationStream =
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
-    pub(crate) timeout_ms: u32,
+    pub(crate) timeout_ms: u64,
     pub(crate) cwd: Option<String>,
     pub(crate) stdin: Vec<u8>,
     pub(crate) expiry_unix_ms: Option<u64>,
@@ -164,8 +166,9 @@ pub struct ExecCommand {
 }
 
 impl ExecCommand {
-    /// Checks argv admission and a positive command deadline.
-    pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
+    /// Checks argv admission and a positive command deadline in milliseconds,
+    /// which also bounds an implicit wake of an idle-suspended Machine.
+    pub fn new(argv: Vec<String>, timeout_ms: u64) -> Result<Self, ProviderError> {
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)
             || argv.iter().any(|value| value.contains('\0'))
@@ -231,7 +234,7 @@ impl ExecCommand {
     }
 
     #[must_use]
-    pub fn timeout_ms(&self) -> u32 {
+    pub fn timeout_ms(&self) -> u64 {
         self.timeout_ms
     }
 }

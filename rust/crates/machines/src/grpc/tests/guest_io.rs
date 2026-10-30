@@ -226,7 +226,7 @@ async fn stop(shutdown: tokio::sync::oneshot::Sender<()>, task: ServerTask) {
         .unwrap();
 }
 
-fn command(timeout_ms: u32) -> ExecCommand {
+fn command(timeout_ms: u64) -> ExecCommand {
     ExecCommand::new(vec!["printf".into(), "hello".into()], timeout_ms).unwrap()
 }
 
@@ -254,8 +254,16 @@ fn command_bounds_are_checked_before_dispatch() {
     assert_eq!(bounded.argv().len(), 8);
     assert_eq!(bounded.timeout_ms(), 60_000);
     assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());
-    for timeout in [60_001, 120_000, 300_000, u32::MAX] {
+    // The shell tool's whole u32-second range is representable, never clamped.
+    for timeout in [60_001, 120_000, 300_000, u64::from(u32::MAX) * 1_000] {
         assert_eq!(command(timeout).timeout_ms(), timeout);
+        let Some(wire::ExecInput {
+            input: Some(wire::exec_input::Input::Start(start)),
+        }) = super::super::input::encode(MachineId::new(), command(timeout)).next()
+        else {
+            panic!("exec input must start with its admission frame");
+        };
+        assert_eq!(start.timeout_ms, timeout);
     }
 }
 
@@ -860,11 +868,28 @@ async fn read_output_preserves_wide_offsets_and_validates_evidence() {
 
 #[tokio::test]
 async fn simulator_rejects_guest_io_instead_of_fabricating_output() {
-    let machines = Machines::new(Arc::new(SimulatedMachines::default()));
-    let machine = Machine::new(
-        machines,
+    let provider = Arc::new(SimulatedMachines::default());
+    let absent = Machine::new(
+        Machines::new(provider.clone()),
         MachineId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
     );
+    // Exec admits like a physical provider before refusing guest execution.
+    assert!(matches!(
+        absent.exec(command(1)).await,
+        Err(ProviderError::NotFound(_))
+    ));
+    let MutationOutcome::Created(created) = provider
+        .create(CreateMachine::new(
+            IdempotencyKey::new(),
+            Some(Image::custom([1; 32]).unwrap()),
+            [2; 32],
+        ))
+        .await
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let machine = Machine::new(Machines::new(provider), created.id);
     assert!(matches!(
         machine.exec(command(1)).await,
         Err(ProviderError::Unsupported(_))

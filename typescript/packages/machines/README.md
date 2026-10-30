@@ -19,7 +19,7 @@ Use `createMachinesClient` from `@acyclic-labs/machines/transport` with the host
 
 The Cloud product API uses gRPC. In Node or Bun, import `createMachinesGrpcClient` from `@acyclic-labs/machines/grpc` and request types from `@acyclic-labs/machines/proto`. Its `machines` client accepts protobuf request fields and returns admissions with machine and operation identities. Watch the original operation to observe completion. Omit Create's image to use the server's installed default; the resulting contract records its immutable identity. Call `close()` to release the connection; RPC options accept an `AbortSignal` and per-call timeout.
 
-`machines.exec({ protocol, machine, argv, timeoutMs })` streams tagged `output.data { stream: STDOUT | STDERR, bytes }` frames, followed by one terminal `output.exitCode` or typed `output.stopped` receipt. Output is yielded as it arrives; the terminal event completes without waiting for transport EOF. Arguments stream with explicit boundaries in chunks of at most 64 KiB, independently of process stdin. The first argument must be nonempty, every argument must be NUL-free, and later empty arguments are preserved. Native OS exec reports argument capacity errors; the SDK imposes no aggregate argument/count limit. Supply a positive uint32 timeout in milliseconds. Optional fields carry binary stdin, guest cwd, absolute authority expiry and a combined output allowance. There is no implicit shell evaluation. Execution has no lifecycle operation ID and is never automatically retried: a canceled, timed-out or lost reply does not prove that the command did not run. Missing terminal results and empty or oversized data frames fail the stream. Only the producer's cleanup receipt attests physical termination.
+`machines.exec({ protocol, machine, argv, timeoutMs })` streams tagged `output.data { stream: STDOUT | STDERR, bytes }` frames, followed by one terminal `output.exitCode` or typed `output.stopped` receipt. Output is yielded as it arrives; the terminal event completes without waiting for transport EOF. Arguments stream with explicit boundaries in chunks of at most 64 KiB, independently of process stdin. The first argument must be nonempty, every argument must be NUL-free, and later empty arguments are preserved. Native OS exec reports argument capacity errors; the SDK imposes no aggregate argument/count limit. Supply a positive uint64 `bigint` timeout in milliseconds; it covers every shell timeout without clamping. Exec on an idle-suspended Machine whose policy is after-idle wakes it inside the same call and deadline; a manually suspended Machine is refused. Optional fields carry binary stdin, guest cwd, absolute authority expiry and a combined output allowance. There is no implicit shell evaluation. Execution has no lifecycle operation ID and is never automatically retried: a canceled, timed-out or lost reply does not prove that the command did not run. Missing terminal results and empty or oversized data frames fail the stream. Only the producer's cleanup receipt attests physical termination.
 
 `machines.readFile` and `writeFile` transfer native binary chunks, at most 65536 bytes each, with `access: { machine, path, offset, deadlineUnixMs }`. Paths are absolute guest paths, offsets and deadlines are bigint, and replies preserve exact bytes, short writes and POSIX errno. Both canonical RPCs are bidirectional streams; generated service clients can retain the same RPC across chunks with the original machine/path/deadline. These scalar helpers send one chunk and close on its native receipt, including when the server keeps its output open. `truncate: true` is allowed only at offset zero. Neither method executes a shell, resets the original deadline or automatically repeats an interrupted write.
 
@@ -32,11 +32,11 @@ const client = createMachinesGrpcClient({ endpoint, token });
 try {
   const admission = await client.machines.create(request);
   for await (const state of client.machines.watchOperation({
-    protocol: { major: 1, minor: 3 }, operation: admission.operation,
+    protocol: { major: 1, minor: 4 }, operation: admission.operation,
   }, { timeoutMs: 0 })) console.log(state);
-  const protocol = { major: 1, minor: 3 };
+  const protocol = { major: 1, minor: 4 };
   for await (const frame of client.machines.exec({
-    protocol, machine: admission.machine, argv: ["/bin/echo", "hello"], timeoutMs: 1000,
+    protocol, machine: admission.machine, argv: ["/bin/echo", "hello"], timeoutMs: 1000n,
   })) console.log(frame.output);
   const output = await client.machines.readOutput({
     protocol, machine: admission.machine, offset: 0n, limit: 65536,

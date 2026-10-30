@@ -47,10 +47,10 @@ export function createMachinesClient(transport: Transport) {
         const { argv, stdin = new Uint8Array(), ...admission } = request;
         const query = create(wire.ExecStartSchema, admission);
         if (!argv.length || !argv[0] || argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
-        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffffffff) throw new RangeError("timeoutMs must be a positive uint32");
+        if (typeof request.timeoutMs !== "bigint" || request.timeoutMs < 1n || request.timeoutMs > 0xffffffffffffffffn) throw new RangeError("timeoutMs must be a positive uint64 bigint");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
-          let remaining = BigInt(query.timeoutMs) + 1000n;
+          let remaining = query.timeoutMs + 1000n;
           if (query.expiryUnixMs !== undefined) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
             if (expiry < remaining) remaining = expiry;

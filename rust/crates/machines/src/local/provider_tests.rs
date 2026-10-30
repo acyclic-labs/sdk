@@ -19,6 +19,8 @@ pub(super) fn enrollment(machine: MachineId) -> MachineObservation {
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [2; 32],
             budgets: Budgets::default(),
+            platform: Platform::host(DeviceKind::Desktop).unwrap(),
+            lifecycle: LifecycleClass::Provisioned,
         },
         endpoints: Vec::new(),
         last_checkpoint: None,
@@ -260,5 +262,115 @@ async fn failed_spawn_cannot_become_a_positive_destroy_receipt()
         local.exec(machine, child()).await,
         Err(ProviderError::Conflict(_))
     ));
+    Ok(())
+}
+
+async fn enrolled(
+    observation: MachineObservation,
+) -> Result<Arc<dyn MachinesProvider>, ProviderError> {
+    let root = StreamPath::new(format!("machine-tests/{}", observation.id))
+        .map_err(|error| ProviderError::Invalid(error.to_string()))?;
+    provider(
+        observation,
+        options(),
+        Arc::new(MemoryStream::default()),
+        root,
+    )
+    .await
+}
+
+fn last_state(page: &EventPage) -> Option<MachineState> {
+    page.events.iter().rev().find_map(|event| match event.fact {
+        EventFact::State(state) => Some(state),
+        _ => None,
+    })
+}
+
+#[tokio::test]
+async fn idle_suspended_machine_wakes_for_exec_and_attached_devices_only_detach()
+-> Result<(), Box<dyn std::error::Error>> {
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(3_600));
+    let local = enrolled(observation).await?;
+    local.suspend(machine, IdempotencyKey::new()).await?;
+    // The manual-policy refusal is the negative control in the public factory
+    // test above: the same exec on a Manual Machine returns Conflict.
+    let mut output = local.exec(machine, child().with_stdin(vec![0])).await?;
+    let mut exit = None;
+    while let Some(frame) = output.next().await {
+        if let ExecOutput::ExitCode(code) = frame? {
+            exit = Some(code);
+        }
+    }
+    assert_eq!(exit, Some(9));
+    assert_eq!(
+        local.inspect_machine(machine).await?.state,
+        MachineState::Running
+    );
+    // The implicit wake is retained like an explicit one.
+    let page = local.events(machine, None, 100).await?;
+    assert_eq!(last_state(&page), Some(MachineState::Running));
+    assert!(
+        page.events
+            .iter()
+            .any(|event| event.fact == EventFact::State(MachineState::Suspended))
+    );
+
+    let device = MachineId::new();
+    let mut attached = enrollment(device);
+    attached.contract.lifecycle = LifecycleClass::Attached;
+    let mut idle = attached.clone();
+    idle.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(1));
+    assert!(matches!(
+        enrolled(idle).await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    let mut foreign = attached.clone();
+    foreign.contract.platform.path_style = match foreign.contract.platform.path_style {
+        PathStyle::Posix => PathStyle::Windows,
+        PathStyle::Windows => PathStyle::Posix,
+    };
+    assert!(matches!(
+        enrolled(foreign).await,
+        Err(ProviderError::Invalid(_))
+    ));
+    let local = enrolled(attached).await?;
+    for refused in [
+        local.suspend(device, IdempotencyKey::new()).await,
+        local.wake(device, IdempotencyKey::new()).await,
+    ] {
+        assert!(matches!(refused, Err(ProviderError::Unsupported(_))));
+    }
+    assert_eq!(
+        local.destroy_machine(device, IdempotencyKey::new()).await?,
+        MutationOutcome::MachineDestroyed(device)
+    );
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_producer_suspends_after_quiet_and_an_explicit_wake_rearms_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    let idle = Duration::from_secs(60);
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(idle);
+    let local = enrolled(observation).await?;
+    let state = || async {
+        local
+            .inspect_machine(machine)
+            .await
+            .map(|value| value.state)
+    };
+    tokio::time::sleep(idle / 2).await;
+    assert_eq!(state().await?, MachineState::Running);
+    tokio::time::sleep(idle).await;
+    assert_eq!(state().await?, MachineState::Suspended);
+    local.wake(machine, IdempotencyKey::new()).await?;
+    tokio::time::sleep(idle / 2).await;
+    assert_eq!(state().await?, MachineState::Running);
+    tokio::time::sleep(idle).await;
+    assert_eq!(state().await?, MachineState::Suspended);
     Ok(())
 }

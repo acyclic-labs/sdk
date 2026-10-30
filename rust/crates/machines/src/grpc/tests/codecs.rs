@@ -128,6 +128,64 @@ pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineC
         }),
         network_policy_digest: vec![8; 32],
         budgets: Some(wire::Budgets::default()),
+        platform: Some(wire::Platform {
+            os: wire::OperatingSystem::Linux as i32,
+            arch: wire::Architecture::X64 as i32,
+            device_kind: wire::DeviceKind::VirtualMachine as i32,
+            shell: wire::Shell::Bash as i32,
+            path_style: wire::PathStyle::Posix as i32,
+        }),
+        lifecycle: wire::LifecycleClass::Provisioned as i32,
+    }
+}
+
+#[test]
+fn contracts_retain_their_platform_lifecycle_and_offline_state() {
+    let attached = || wire::MachineContract {
+        platform: Some(wire::Platform {
+            os: wire::OperatingSystem::Windows as i32,
+            arch: wire::Architecture::Arm64 as i32,
+            device_kind: wire::DeviceKind::Desktop as i32,
+            shell: wire::Shell::Powershell as i32,
+            path_style: wire::PathStyle::Windows as i32,
+        }),
+        lifecycle: wire::LifecycleClass::Attached as i32,
+        ..wire_contract(&[])
+    };
+    let contract = decode_contract(Some(&attached())).unwrap();
+    assert_eq!(
+        contract.platform,
+        Platform {
+            os: OperatingSystem::Windows,
+            arch: Architecture::Arm64,
+            device_kind: DeviceKind::Desktop,
+            shell: Shell::PowerShell,
+            path_style: PathStyle::Windows,
+        }
+    );
+    assert_eq!(contract.lifecycle, LifecycleClass::Attached);
+    assert!(contract.provisioned().is_err() && !contract.wakes_on_demand());
+    assert_eq!(
+        decode_machine_state(wire::MachineStatus::Offline as i32),
+        Ok(MachineState::Offline)
+    );
+    // An unstated platform or lifecycle is never guessed.
+    let cases: [fn(&mut wire::MachineContract); 3] = [
+        |value: &mut wire::MachineContract| value.platform = None,
+        |value: &mut wire::MachineContract| {
+            value.platform.as_mut().unwrap().shell = wire::Shell::Unspecified as i32;
+        },
+        |value: &mut wire::MachineContract| {
+            value.lifecycle = wire::LifecycleClass::Unspecified as i32;
+        },
+    ];
+    for broken in cases {
+        let mut value = attached();
+        broken(&mut value);
+        assert!(matches!(
+            decode_contract(Some(&value)),
+            Err(ProviderError::Rejected(_))
+        ));
     }
 }
 

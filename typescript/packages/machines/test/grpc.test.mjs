@@ -27,7 +27,7 @@ after(async () => {
 
 const caCertificate = readFileSync(new URL("./fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("./fixtures/server-key.pem", import.meta.url), "utf8");
-const protocol = { major: 1, minor: 3 };
+const protocol = { major: 1, minor: 4 };
 const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);
@@ -182,7 +182,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
     },
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, commandRequest({ protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
+      assert.deepEqual(query, commandRequest({ protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000n }));
       assert.ok(context.timeoutMs() > 30000);
       calls.push("exec");
       yield { machine, output: channelData(new TextEncoder().encode("sdk-token\n")) };
@@ -207,7 +207,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
   const observation = await machines.inspectMachine({ protocol, machine: admission.machine });
   assert.equal(observation.status, wire.MachineStatus.RUNNING);
   assert.equal(observation.createdAtUnixMs, 9007199254740993n);
-  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }), 0);
+  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000n }), 0);
   assert.equal(new TextDecoder().decode((await machines.readOutput({ protocol, machine: admission.machine, offset: 0n, limit: MAX_OUTPUT_READ_BYTES })).data), "sdk-token\n");
   assert.deepEqual((await machines.destroyMachine({ protocol, machine: admission.machine, idempotencyKey: identity(6) })).machine, admission.machine);
   assert.deepEqual(calls, ["create", "inspect", "exec", "read", "destroy"]);
@@ -236,7 +236,7 @@ test("exec preserves nonzero exit status, cancellation, timeout and unavailable 
       yield { machine, output: { case: "exitCode", value: -9 } };
     },
   });
-  const request = { protocol, machine, argv: ["exit"], timeoutMs: 1000 };
+  const request = { protocol, machine, argv: ["exit"], timeoutMs: 1000n };
   assert.equal(await exec(machines, request), -9);
   await assert.rejects(exec(machines, { ...request, argv: ["unavailable"] }), error => error.code === Code.Unavailable);
   await assert.rejects(exec(machines, { ...request, argv: ["timeout"] }), error => error.code === Code.DeadlineExceeded);
@@ -261,7 +261,7 @@ test("exec yields output before the command completes", async t => {
       yield { machine, output: { case: "exitCode", value: 0 } };
     },
   });
-  const iterator = machines.exec({ protocol, machine, argv: ["echo"], timeoutMs: 1000 });
+  const iterator = machines.exec({ protocol, machine, argv: ["echo"], timeoutMs: 1000n });
   const first = await iterator.next();
   assert.deepEqual(first.value.output, channelData(new Uint8Array([0, 255])));
   finish();
@@ -274,7 +274,7 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
   const cancellation = new Promise(resolve => { cancelled = resolve; });
   const request = {
     protocol, machine, argv: ["bash", "--noprofile", "--norc", "-c", `read -r line; printf '%s' "$line"; #${"é😀".repeat(16000)}`, "", ...Array(65).fill("argument")],
-    timeoutMs: 300000, stdin: Uint8Array.from({ length: 150000 }, (_, index) => index % 3 === 0 ? 0 : index % 3 === 1 ? 255 : 10), cwd: "/workspace/sub directory",
+    timeoutMs: 300000n, stdin: Uint8Array.from({ length: 150000 }, (_, index) => index % 3 === 0 ? 0 : index % 3 === 1 ? 255 : 10), cwd: "/workspace/sub directory",
     expiryUnixMs: 4102444800000n, maximumOutputBytes: 4n,
   };
   const stopped = { kind: wire.ExecStopKind.EXPIRED, message: "scope elapsed", cleanupCompleted: true };
@@ -314,7 +314,7 @@ test("exec delivers output while command input is backpressured and drop cancels
       complete = true;
     },
   }, true);
-  const output = machines.exec({ protocol, machine, argv: ["bash", "-c", "#".repeat(200000)], stdin: new Uint8Array(200000), timeoutMs: 300000 });
+  const output = machines.exec({ protocol, machine, argv: ["bash", "-c", "#".repeat(200000)], stdin: new Uint8Array(200000), timeoutMs: 300000n });
   assert.deepEqual((await output.next()).value.output, channelData(new Uint8Array([7])));
   assert.equal(complete, false);
   await output.return();
@@ -345,7 +345,7 @@ for (const mode of ["early-exit", "malformed"]) {
     });
     const watch = machines.watchOperation({ protocol, operation }, { timeoutMs: 0 })[Symbol.asyncIterator]();
     assert.equal((await watch.next()).value.status, wire.OperationStatus.PENDING);
-    const request = { protocol, machine, argv: ["sleep"], timeoutMs: 60000 };
+    const request = { protocol, machine, argv: ["sleep"], timeoutMs: 60000n };
     if (mode === "malformed") {
       await assert.rejects(exec(machines, request, { timeoutMs: 0 }), error => error.code === Code.DataLoss);
     } else {
@@ -385,10 +385,10 @@ test("exec rejects incomplete and malformed streams and completes at its termina
     },
   });
   for (const mode of ["missing", "unknown", "unspecified-channel", "unknown-channel", "empty", "oversized", "partial-error"]) {
-    await assert.rejects(exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000 }), error => error.code === (mode === "partial-error" ? Code.Unavailable : Code.DataLoss));
+    await assert.rejects(exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000n }), error => error.code === (mode === "partial-error" ? Code.Unavailable : Code.DataLoss));
   }
   for (const mode of ["duplicate", "tail"]) {
-    assert.equal(await exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000 }), 0);
+    assert.equal(await exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000n }), 0);
   }
 });
 
@@ -423,7 +423,7 @@ test("an exec RPC deadline cancels the pending call without redispatch", async t
       yield { machine, output: { case: "exitCode", value: 0 } };
     },
   });
-  await assert.rejects(exec(machines, { protocol, machine, argv: ["sleep"], timeoutMs: 60000 }, { timeoutMs: 100 }), error => error.code === Code.DeadlineExceeded);
+  await assert.rejects(exec(machines, { protocol, machine, argv: ["sleep"], timeoutMs: 60000n }, { timeoutMs: 100 }), error => error.code === Code.DeadlineExceeded);
   await cancellation;
   assert.equal(attempts, 1);
 });
@@ -434,11 +434,11 @@ test("exec and console request bounds fail before reaching the server", async t 
     async *exec() { attempts++; yield { machine }; },
     readOutput() { attempts++; return { machine }; },
   });
-  const request = { protocol, machine, argv: ["echo"], timeoutMs: 1 };
+  const request = { protocol, machine, argv: ["echo"], timeoutMs: 1n };
   for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"]]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
-  for (const timeoutMs of [0, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const timeoutMs of [0n, 1n << 64n, 1000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
   for (const cwd of ["", "a\0b"]) await assert.rejects(exec(machines, { ...request, cwd }), RangeError);
   for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
@@ -455,7 +455,7 @@ test("exec and console reject substituted machines and invalid output ranges", a
       return { machine, offset: (1n << 64n) - 1n, data: new Uint8Array(1) };
     },
   });
-  await assert.rejects(exec(machines, { protocol, machine, argv: ["echo"], timeoutMs: 1 }), error => error.code === Code.DataLoss);
+  await assert.rejects(exec(machines, { protocol, machine, argv: ["echo"], timeoutMs: 1n }), error => error.code === Code.DataLoss);
   for (const limit of [1, 2, 3, 4]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 1n, limit }), error => error.code === Code.DataLoss);
 });
 
@@ -497,7 +497,7 @@ test("return interrupts a pending stream pull and terminal watch needs no EOF", 
       await watchCancelled.promise;
     },
   });
-  const stream = machines.exec({ protocol, machine, argv: ["sleep"], timeoutMs: 300000 });
+  const stream = machines.exec({ protocol, machine, argv: ["sleep"], timeoutMs: 300000n });
   assert.equal((await stream.next()).value.output.case, "data");
   const pending = assert.rejects(stream.next(), error => error.code === Code.Canceled);
   await stream.return();
@@ -549,7 +549,7 @@ test("original guest deadlines bound stalled credentials even with timeout zero"
   for (const method of ["readFile", "writeFile", "exec"]) {
     const deadline = BigInt(Date.now() + 100);
     const access = { machine, path: "/file", deadlineUnixMs: deadline };
-    if (method === "exec") await assert.rejects(exec(client.machines, { protocol, machine, argv: ["sleep"], timeoutMs: 300000, expiryUnixMs: deadline }, { timeoutMs: 0 }), expired);
+    if (method === "exec") await assert.rejects(exec(client.machines, { protocol, machine, argv: ["sleep"], timeoutMs: 300000n, expiryUnixMs: deadline }, { timeoutMs: 0 }), expired);
     else if (method === "readFile") await assert.rejects(client.machines.readFile({ protocol, access, limit: 1 }, { timeoutMs: 0 }), expired);
     else await assert.rejects(client.machines.writeFile({ protocol, access, data: new Uint8Array([1]) }, { timeoutMs: 0 }), expired);
   }
@@ -618,7 +618,7 @@ test("Rust transport projection preserves original binary duplex pressure and ca
     },
   }, true);
   const frames = [
-    { input: { case: "start", value: { protocol, machine, timeoutMs: 1000 } } },
+    { input: { case: "start", value: { protocol, machine, timeoutMs: 1000n } } },
     { input: { case: "argument", value: { data: new TextEncoder().encode("shell"), end: true } } },
     { input: { case: "commandComplete", value: {} } },
   ];

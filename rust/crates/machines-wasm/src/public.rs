@@ -6,11 +6,12 @@
 )]
 
 use acyclic_machines::{
-    Budgets, Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine,
-    Endpoint, EventFact, EventPage, ExpirationPolicy, ForkFidelity, Image, ImageQualification,
-    MachineContract, MachineEvent, MachineId, MachineObservation, MachinePage, MachineState,
-    MachinesProvider, MutationOutcome, OperationId, OperationObservation, OperationPhase, Pressure,
-    ProviderError, SuspensionPolicy, UsageReceipt,
+    Architecture, Budgets, Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy,
+    CreateMachine, DeviceKind, Endpoint, EventFact, EventPage, ExpirationPolicy, ForkFidelity,
+    Image, ImageQualification, LifecycleClass, MachineContract, MachineEvent, MachineId,
+    MachineObservation, MachinePage, MachineState, MachinesProvider, MutationOutcome,
+    OperatingSystem, OperationId, OperationObservation, OperationPhase, PathStyle, Platform,
+    Pressure, ProviderError, Shell, SuspensionPolicy, UsageReceipt,
 };
 use hex::{decode, encode};
 use serde::{
@@ -490,6 +491,50 @@ pub struct ContractOut {
     expiration: TimedOut,
     network_policy_digest_hex: String,
     budgets: BudgetsOut,
+    platform: PlatformOut,
+    #[tsify(type = "\"provisioned\" | \"attached\"")]
+    lifecycle: &'static str,
+}
+#[derive(Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformOut {
+    #[tsify(type = "\"linux\" | \"macos\" | \"windows\"")]
+    os: &'static str,
+    #[tsify(type = "\"x64\" | \"arm64\"")]
+    arch: &'static str,
+    #[tsify(type = "\"virtual-machine\" | \"container\" | \"desktop\" | \"server\"")]
+    device_kind: &'static str,
+    #[tsify(type = "\"bash\" | \"powershell\"")]
+    shell: &'static str,
+    #[tsify(type = "\"posix\" | \"windows\"")]
+    path_style: &'static str,
+}
+fn platform_out(value: Platform) -> PlatformOut {
+    PlatformOut {
+        os: match value.os {
+            OperatingSystem::Linux => "linux",
+            OperatingSystem::Macos => "macos",
+            OperatingSystem::Windows => "windows",
+        },
+        arch: match value.arch {
+            Architecture::X64 => "x64",
+            Architecture::Arm64 => "arm64",
+        },
+        device_kind: match value.device_kind {
+            DeviceKind::VirtualMachine => "virtual-machine",
+            DeviceKind::Container => "container",
+            DeviceKind::Desktop => "desktop",
+            DeviceKind::Server => "server",
+        },
+        shell: match value.shell {
+            Shell::Bash => "bash",
+            Shell::PowerShell => "powershell",
+        },
+        path_style: match value.path_style {
+            PathStyle::Posix => "posix",
+            PathStyle::Windows => "windows",
+        },
+    }
 }
 fn contract_out(value: &MachineContract) -> ContractOut {
     ContractOut {
@@ -502,6 +547,11 @@ fn contract_out(value: &MachineContract) -> ContractOut {
         expiration: expiration_out(&value.expiration),
         network_policy_digest_hex: encode(value.network_policy_digest),
         budgets: budgets_out(value.budgets),
+        platform: platform_out(value.platform),
+        lifecycle: match value.lifecycle {
+            LifecycleClass::Provisioned => "provisioned",
+            LifecycleClass::Attached => "attached",
+        },
     }
 }
 #[derive(Serialize, Tsify)]
@@ -530,6 +580,7 @@ fn state_out(value: MachineState) -> &'static str {
         MachineState::Destroyed => "destroyed",
         MachineState::Failed => "failed",
         MachineState::Indeterminate => "indeterminate",
+        MachineState::Offline => "offline",
     }
 }
 #[derive(Serialize, Tsify)]
@@ -543,7 +594,7 @@ pub struct EndpointOut {
 pub struct ObservationOut {
     id: String,
     #[tsify(
-        type = "\"starting\" | \"running\" | \"suspending\" | \"suspended\" | \"waking\" | \"destroying\" | \"destroyed\" | \"failed\" | \"indeterminate\""
+        type = "\"starting\" | \"running\" | \"suspending\" | \"suspended\" | \"waking\" | \"destroying\" | \"destroyed\" | \"failed\" | \"indeterminate\" | \"offline\""
     )]
     state: &'static str,
     contract: ContractOut,
@@ -620,7 +671,7 @@ pub struct EventOut {
 pub enum FactOut {
     State {
         #[tsify(
-            type = "\"starting\" | \"running\" | \"suspending\" | \"suspended\" | \"waking\" | \"destroying\" | \"destroyed\" | \"failed\" | \"indeterminate\""
+            type = "\"starting\" | \"running\" | \"suspending\" | \"suspended\" | \"waking\" | \"destroying\" | \"destroyed\" | \"failed\" | \"indeterminate\" | \"offline\""
         )]
         state: &'static str,
     },

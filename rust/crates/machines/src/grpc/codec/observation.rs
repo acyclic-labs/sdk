@@ -63,6 +63,50 @@ pub(in super::super) fn decode_contract(
             spend_micros: budgets.spend_micros,
             concurrency: budgets.concurrency,
         },
+        platform: decode_platform(value.platform.as_ref())?,
+        lifecycle: match wire::LifecycleClass::try_from(value.lifecycle) {
+            Ok(wire::LifecycleClass::Provisioned) => LifecycleClass::Provisioned,
+            Ok(wire::LifecycleClass::Attached) => LifecycleClass::Attached,
+            _ => {
+                return Err(ProviderError::Rejected(
+                    "machine lifecycle class is invalid".into(),
+                ));
+            }
+        },
+    })
+}
+fn decode_platform(value: Option<&wire::Platform>) -> Result<Platform, ProviderError> {
+    let invalid = || ProviderError::Rejected("machine platform is invalid".into());
+    let value = value.ok_or_else(invalid)?;
+    Ok(Platform {
+        os: match wire::OperatingSystem::try_from(value.os) {
+            Ok(wire::OperatingSystem::Linux) => OperatingSystem::Linux,
+            Ok(wire::OperatingSystem::Macos) => OperatingSystem::Macos,
+            Ok(wire::OperatingSystem::Windows) => OperatingSystem::Windows,
+            _ => return Err(invalid()),
+        },
+        arch: match wire::Architecture::try_from(value.arch) {
+            Ok(wire::Architecture::X64) => Architecture::X64,
+            Ok(wire::Architecture::Arm64) => Architecture::Arm64,
+            _ => return Err(invalid()),
+        },
+        device_kind: match wire::DeviceKind::try_from(value.device_kind) {
+            Ok(wire::DeviceKind::VirtualMachine) => DeviceKind::VirtualMachine,
+            Ok(wire::DeviceKind::Container) => DeviceKind::Container,
+            Ok(wire::DeviceKind::Desktop) => DeviceKind::Desktop,
+            Ok(wire::DeviceKind::Server) => DeviceKind::Server,
+            _ => return Err(invalid()),
+        },
+        shell: match wire::Shell::try_from(value.shell) {
+            Ok(wire::Shell::Bash) => Shell::Bash,
+            Ok(wire::Shell::Powershell) => Shell::PowerShell,
+            _ => return Err(invalid()),
+        },
+        path_style: match wire::PathStyle::try_from(value.path_style) {
+            Ok(wire::PathStyle::Posix) => PathStyle::Posix,
+            Ok(wire::PathStyle::Windows) => PathStyle::Windows,
+            _ => return Err(invalid()),
+        },
     })
 }
 pub(in super::super) fn digest(value: &[u8], name: &str) -> Result<[u8; 32], ProviderError> {
@@ -85,24 +129,8 @@ pub(in super::super) fn decode_machine_observation(
             "machine identity was substituted".into(),
         ));
     }
-    let state = match wire::MachineStatus::try_from(value.status)
-        .map_err(|_| ProviderError::Rejected("machine state is invalid".into()))?
-    {
-        wire::MachineStatus::Starting => MachineState::Starting,
-        wire::MachineStatus::Running => MachineState::Running,
-        wire::MachineStatus::Suspending => MachineState::Suspending,
-        wire::MachineStatus::Suspended => MachineState::Suspended,
-        wire::MachineStatus::Waking => MachineState::Waking,
-        wire::MachineStatus::Destroying => MachineState::Destroying,
-        wire::MachineStatus::Destroyed => MachineState::Destroyed,
-        wire::MachineStatus::Failed => MachineState::Failed,
-        wire::MachineStatus::Indeterminate => MachineState::Indeterminate,
-        wire::MachineStatus::Unspecified => {
-            return Err(ProviderError::Rejected(
-                "machine state is unspecified".into(),
-            ));
-        }
-    };
+    let state = decode_machine_state(value.status)?;
+
     let mut names = BTreeSet::new();
     let mut endpoints = Vec::with_capacity(value.endpoints.len());
     for endpoint in value.endpoints {
@@ -207,6 +235,7 @@ pub(in super::super) fn decode_machine_state(value: i32) -> Result<MachineState,
         wire::MachineStatus::Destroyed => Ok(MachineState::Destroyed),
         wire::MachineStatus::Failed => Ok(MachineState::Failed),
         wire::MachineStatus::Indeterminate => Ok(MachineState::Indeterminate),
+        wire::MachineStatus::Offline => Ok(MachineState::Offline),
         wire::MachineStatus::Unspecified => Err(ProviderError::Rejected(
             "machine state is unspecified".into(),
         )),

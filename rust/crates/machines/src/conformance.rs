@@ -1,8 +1,9 @@
 //! Public, backend-independent Machines qualification and request budgets.
 
 use crate::{
-    Capability, CompatibilityPolicy, CreateMachine, IdempotencyKey, Image, MachineObservation,
-    MachineState, MachinesProvider, MutationOutcome, OperationPhase, ProviderError,
+    Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
+    LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
+    OperationPhase, ProviderError, SuspensionPolicy,
 };
 use acyclic_stream::testing::{Counted, RequestLedger, Requests};
 use futures::StreamExt as _;
@@ -55,6 +56,183 @@ impl<P: MachinesProvider> Backend for Fixture<P> {
     fn network_policy(&self) -> [u8; 32] {
         self.network_policy
     }
+}
+
+/// A Backend whose provider also reaches attached devices. The fixture owns the
+/// device side: it enrolls one device and opens or closes its connection.
+#[async_trait::async_trait]
+pub trait AttachedBackend: Backend {
+    /// Enrolls one fresh attached device and returns its Running observation.
+    async fn attach(&self) -> Result<MachineObservation, String>;
+    /// Opens (`true`) or closes (`false`) that device's connection.
+    async fn set_online(&self, machine: MachineId, online: bool) -> Result<(), String>;
+}
+
+#[async_trait::async_trait]
+impl AttachedBackend for Fixture<crate::SimulatedMachines> {
+    async fn attach(&self) -> Result<MachineObservation, String> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000a01")
+            .map_err(|error| error.to_string())?;
+        self.provider
+            .inner()
+            .attach(key, crate::SIMULATED_PLATFORM)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    async fn set_online(&self, machine: MachineId, online: bool) -> Result<(), String> {
+        self.provider
+            .inner()
+            .set_online(machine, online)
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Runs the attached profile: an attached device offers exec and observation
+/// only, destroy detaches it, and an Offline device is Unavailable.
+pub async fn verify_attached(backend: &dyn AttachedBackend) -> Result<(), String> {
+    let provider = backend.provider();
+    let key = |suffix: u8| {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
+            .map_err(|error| error.to_string())
+    };
+    let device = backend.attach().await?;
+    if device.contract.lifecycle != LifecycleClass::Attached
+        || device.state != MachineState::Running
+        || device.contract.wakes_on_demand()
+    {
+        return Err("attached device is not a running attached contract".into());
+    }
+    let refused = [
+        provider.checkpoint(device.id, key(0x50)?).await,
+        provider
+            .fork_machine(device.id, NonZeroU32::MIN, key(0x51)?)
+            .await,
+        provider.suspend(device.id, key(0x52)?).await,
+        provider.wake(device.id, key(0x53)?).await,
+        provider
+            .set_suspension_policy(device.id, SuspensionPolicy::Manual, key(0x54)?)
+            .await,
+    ];
+    if !refused
+        .iter()
+        .all(|result| matches!(result, Err(ProviderError::Unsupported(_))))
+    {
+        return Err("attached device accepted a provisioning lifecycle operation".into());
+    }
+    backend.set_online(device.id, false).await?;
+    if state(provider, device.id).await? != MachineState::Offline {
+        return Err("a closed device connection is not observed as Offline".into());
+    }
+    let woken = provider.wake(device.id, key(0x55)?).await;
+    let executed = provider.exec(device.id, probe()?).await;
+    if !matches!(woken, Err(ProviderError::Unavailable))
+        || !matches!(executed, Err(ProviderError::Unavailable))
+    {
+        return Err("an Offline device was not Unavailable to wake and exec".into());
+    }
+    backend.set_online(device.id, true).await?;
+    if state(provider, device.id).await? != MachineState::Running {
+        return Err("a reopened device connection is not observed as Running".into());
+    }
+    if provider
+        .destroy_machine(device.id, key(0x56)?)
+        .await
+        .map_err(|error| error.to_string())?
+        != MutationOutcome::MachineDestroyed(device.id)
+        || state(provider, device.id).await? != MachineState::Destroyed
+    {
+        return Err("attached destroy did not detach the device".into());
+    }
+    Ok(())
+}
+
+async fn state(
+    provider: &dyn MachinesProvider,
+    machine: MachineId,
+) -> Result<MachineState, String> {
+    provider
+        .inspect_machine(machine)
+        .await
+        .map(|value| value.state)
+        .map_err(|error| error.to_string())
+}
+
+fn probe() -> Result<ExecCommand, String> {
+    ExecCommand::new(vec!["true".into()], 60_000).map_err(|error| error.to_string())
+}
+
+/// Admits one exec and consumes its whole result. A provider without a guest
+/// operating system still performs admission, then reports Unsupported.
+async fn exec_admitted(provider: &dyn MachinesProvider, machine: MachineId) -> Result<(), String> {
+    match provider.exec(machine, probe()?).await {
+        Ok(mut output) => {
+            while let Some(frame) = output.next().await {
+                frame.map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        }
+        Err(ProviderError::Unsupported(_)) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Exec wakes a Machine suspended under AfterIdle within the same call, and
+/// never wakes a manually suspended one.
+async fn exec_wakes(
+    provider: &dyn MachinesProvider,
+    machine: &MachineObservation,
+    image: Image,
+    network_policy: [u8; 32],
+) -> Result<(), String> {
+    let key = |suffix: u8| {
+        IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
+            .map_err(|error| error.to_string())
+    };
+    if !machine.contract.wakes_on_demand() {
+        return Err("the default create policy does not suspend after idle".into());
+    }
+    provider
+        .suspend(machine.id, key(0x08)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    exec_admitted(provider, machine.id).await?;
+    if state(provider, machine.id).await? != MachineState::Running {
+        return Err("exec did not wake an idle-suspended Machine".into());
+    }
+    let mut request = CreateMachine::new(key(0x40)?, Some(image), network_policy);
+    request.suspension = SuspensionPolicy::Manual;
+    let MutationOutcome::Created(manual) = provider
+        .create(request)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Err("manual create returned the wrong outcome".into());
+    };
+    provider
+        .suspend(manual.id, key(0x41)?)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Refusal is a definite answer: never uncertainty, and never a missing guest.
+    let refused = provider.exec(manual.id, probe()?).await;
+    if !matches!(
+        refused,
+        Err(ProviderError::Conflict(_) | ProviderError::Rejected(_))
+    ) {
+        return Err("exec on a manually suspended Machine was not refused".into());
+    }
+    if state(provider, manual.id).await? != MachineState::Suspended {
+        return Err("a refused exec woke a manually suspended Machine".into());
+    }
+    if provider
+        .destroy_machine(manual.id, key(0x42)?)
+        .await
+        .map_err(|error| error.to_string())?
+        != MutationOutcome::MachineDestroyed(manual.id)
+    {
+        return Err("manual Machine cleanup substituted its outcome".into());
+    }
+    Ok(())
 }
 
 /// Runs all lifecycle, replay, capability, fork, operation and payload-read cases.
@@ -234,7 +412,7 @@ async fn verify_provider(
         }
     }
     let create_key = key(1)?;
-    let request = CreateMachine::new(create_key, Some(image), network_policy);
+    let request = CreateMachine::new(create_key, Some(image.clone()), network_policy);
     let created = provider
         .create(request.clone())
         .await
@@ -347,6 +525,7 @@ async fn verify_provider(
     }) {
         return Err("lifecycle state event history is incomplete".into());
     }
+    exec_wakes(provider, &machine, image, network_policy).await?;
     let usage = provider
         .usage(machine.id, 1, 2)
         .await
@@ -482,6 +661,11 @@ mod tests {
         ))
     }
     suite!(public_simulated_suite, simulated);
+
+    #[tokio::test]
+    async fn attached_profile() -> Result<(), String> {
+        verify_attached(&simulated().await?).await
+    }
 
     #[tokio::test]
     async fn live_fork_fidelities() -> Result<(), String> {

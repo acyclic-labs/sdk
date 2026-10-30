@@ -132,6 +132,28 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
         host.inspect(&sandbox).await?.state,
         acyclic_machines::MachineState::Suspended
     );
+    let wake_key = IdempotencyKey::new("wake-sandbox")?;
+    assert!(matches!(
+        host.wake(OperationId::from_bytes([4; 16]), &wake_key, &foreign)
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    host.wake(OperationId::from_bytes([4; 16]), &wake_key, &sandbox)
+        .await?;
+    assert_eq!(
+        host.inspect(&sandbox).await?.state,
+        acyclic_machines::MachineState::Running
+    );
+    assert!(matches!(
+        host.fork_machine(
+            OperationId::from_bytes([5; 16]),
+            &IdempotencyKey::new("fork-sandbox")?,
+            &foreign,
+            NonZeroU32::MIN
+        )
+        .await,
+        Err(Error::Invalid(_))
+    ));
     let delete_key = IdempotencyKey::new("delete-sandbox")?;
     assert!(matches!(
         host.destroy(OperationId::from_bytes([3; 16]), &delete_key, &foreign)
@@ -185,6 +207,8 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
             expiration: acyclic_machines::ExpirationPolicy::Never,
             network_policy_digest: [2; 32],
             budgets: Default::default(),
+            platform: acyclic_machines::SIMULATED_PLATFORM,
+            lifecycle: acyclic_machines::LifecycleClass::Provisioned,
         },
         endpoints: Vec::new(),
         last_checkpoint: None,

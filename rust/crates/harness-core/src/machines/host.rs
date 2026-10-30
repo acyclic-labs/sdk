@@ -168,6 +168,63 @@ impl MachinesHost {
         }
     }
 
+    /// Wakes the original machine under the caller's stable mutation key.
+    /// Exec on an idle-suspended provisioned Machine wakes it implicitly.
+    pub async fn wake(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+    ) -> Result<()> {
+        let machine = self.machine_id(sandbox)?;
+        match self
+            .provider
+            .wake(machine, machines_key(idempotency_key)?)
+            .await
+            .map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::Woken(actual) if actual == machine => Ok(()),
+            _ => Err(Error::Storage(
+                "Machines substituted the wake result; recovery: inspect the original operation"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Forks a live machine and returns the provider's fidelity and children.
+    pub async fn fork_machine(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+        count: NonZeroU32,
+    ) -> Result<(ForkFidelity, Vec<SandboxRef>)> {
+        let machine = self.machine_id(sandbox)?;
+        match self
+            .provider
+            .fork_machine(machine, count, machines_key(idempotency_key)?)
+            .await
+            .map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::MachineForked {
+                source,
+                fidelity,
+                children,
+            } if source == machine && children.len() == count.get() as usize => Ok((
+                fidelity,
+                children
+                    .into_iter()
+                    .map(|child| {
+                        SandboxRef::new(self.provider_ref.clone(), child.id.as_bytes().into(), None)
+                    })
+                    .collect::<Result<_>>()?,
+            )),
+            _ => Err(Error::Storage(
+                "Machines substituted the live fork result; recovery: recover the original operation".into(),
+            )),
+        }
+    }
+
     /// Deletes the original machine and retains uncertainty on a lost reply.
     pub async fn destroy(
         &self,

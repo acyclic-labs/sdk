@@ -52,7 +52,13 @@ explicitly indeterminate and is never dispatched again. This is a scoped
 workspace provider, not a fleet allocator. It does not change the admitted
 volume/image, freeze process memory, snapshot a mutable tree, attest billing or
 provide tenant isolation. Processes retain the host user's OS privileges.
-Automatic suspension/expiry and snapshot capabilities are refused at enrollment.
+Enrollment must declare this host's OS, architecture and path style. Automatic
+expiry and snapshot capabilities are refused. A provisioned enrollment may
+declare `AfterIdle` suspension: one parked task per Machine, woken only by that
+Machine's own activity or idle deadline, stops the process generation after the
+idle period. The next exec or file operation wakes it inside its own deadline
+through the same journaled transition. Manual suspension is never undone
+implicitly. An attached enrollment cannot suspend, and destroy detaches it.
 
 Run `cargo test -p acyclic-machines --features conformance,local --lib`.
 Real-process controls cover binary channels/input, exit, source buffer identity,

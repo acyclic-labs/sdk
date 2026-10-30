@@ -22,6 +22,11 @@
     "live-fork-children-inherit-the-source-contract",
     "live-fork-without-capability-is-unsupported",
     "live-fork-children-join-before-their-source",
-    "all-seven-capability-intents-round-trip"
+    "all-seven-capability-intents-round-trip",
+    "exec-wakes-an-idle-suspended-machine",
+    "manually-suspended-exec-is-refused",
+    "attached-device-refuses-provisioning-lifecycle",
+    "offline-device-wake-and-exec-are-unavailable",
+    "attached-destroy-detaches"
   ]
 }

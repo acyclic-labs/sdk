@@ -1,6 +1,6 @@
 # acyclic-machines
 
-Machines protocol 1.3 is shape-free. Customers choose an immutable image and
+Machines protocol 1.4 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
@@ -37,11 +37,28 @@ Responses preserve short IO and nonzero POSIX errno. An interrupted write may be
 partial and returns `FileIndeterminate(machine)` when completion is unknown.
 Clients never repeat it automatically. Truncation is explicit, at offset zero.
 
+Every `MachineContract` states its `Platform` (OS, architecture, device kind,
+shell and path style) and its `LifecycleClass`. A `Provisioned` Machine is one
+the provider creates and owns. An `Attached` Machine is an existing device the
+provider only reaches: create, checkpoint, fork, suspend, wake and suspension
+policy changes return `Unsupported`, and destroy detaches it without touching the
+device. An unreachable attached device reports `MachineState::Offline`; wake and
+exec on it return `Unavailable`.
+
+Exec, read and write on a provisioned Machine suspended under
+`SuspensionPolicy::AfterIdle` wake it first, inside the same call and under the
+same deadline. The implicit wake is a journaled transition like an explicit one.
+A manually suspended Machine is refused with `Conflict`. The timeout is `u64`
+milliseconds, so it represents every shell timeout without clamping; a deadline
+the clock cannot represent is rejected.
+
 `Machine::read_output(offset, limit)` reads the retained live console with exact
 `u64` offsets. A later response offset exposes discarded bytes; continue from
 `output.offset + output.data.len()`. Empty data means no newer bytes now, not EOF.
 The simulator returns `Unsupported` for guest I/O and never fabricates output or
-a command result.
+a command result. Its exec still performs admission first, including an implicit
+wake. `SimulatedMachines::attach` enrolls an attached device and `set_online`
+moves it between Running and Offline.
 
 ```sh
 cargo add acyclic-machines
@@ -75,8 +92,8 @@ those resources for every create without substituting their identities. Register
 factory with `acyclic_machines::conformance::suite!(MyBackend::fresh)`.
 
 The suite checks capability negotiation, lifecycle, operation recovery/watch,
-idempotent replay, checkpoint and live fork fidelity, and exact stable event
-reads. The checked benchmark measures event reads, with zero control calls after
+idempotent replay, checkpoint and live fork fidelity, wake on exec, and exact
+stable event reads. Providers of attached devices also run `verify_attached`. The checked benchmark measures event reads, with zero control calls after
 provisioning; it does not claim simulator guest execution. Failed dispatches are
 counted and keep their original error. Instrument the transport boundary as well
 when qualifying physical request traffic. Run the reference adapter on demand:
