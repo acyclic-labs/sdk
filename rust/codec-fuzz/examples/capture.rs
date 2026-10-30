@@ -355,6 +355,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "acyclic_auth::testing::root (test-only deterministic signing keys)",
         &mut manifest,
     )?;
+    for (name, bytes) in acyclic_codec_fuzz::auth_capability::seeds(&token)? {
+        save(
+            "auth",
+            name,
+            &bytes,
+            "VerifiedCapability::attenuate/encode/encode_sealed from the actual signed SDK root (test-only deterministic signing keys)",
+            &mut manifest,
+        )?;
+    }
     let capability = acyclic_auth::authority::decode_capability(&token)?;
     let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![
         acyclic_auth::contract::Attribute {
