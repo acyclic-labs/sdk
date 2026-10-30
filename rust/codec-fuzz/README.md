@@ -4,7 +4,7 @@ target here does not register a scheduled check.
 | Target | Production decoders exercised |
 | --- | --- |
 | `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects, Streams and Harness, including session messages, the protocol handshake and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. Every Auth entry also exercises its semantic admission and semantic decode/encode round trip, including grant, certificate, revocation, caller and attribute validation. |
-| `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. |
+| `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. The resulting binary projection reaches the same typed and semantic checks as `protobuf`, including Auth admission. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
 | `session_protocol` | Actual session admission and dispatch, including arbitrary first Hello, typed version refusal before credentials, initial interests and request-producer closure. |
 | `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, memory and local snapshot containers, incarnations, retained retry observations, committed envelopes, semantic records, compressed read batches and change records. File and memory frame readers must agree. |
@@ -22,6 +22,17 @@ The protobuf oracle compares encoded fixed points, rather than Rust equality:
 valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
 fields may be discarded at a service boundary. Persisted canonical codecs also
 check byte equality wherever their contract requires it.
+
+Both protobuf syntax targets additionally call public semantic conversions for
+18 Stream message types, the Objects availability cursor, four Actors request
+validators and nine Inference message types. Accepted Stream projections use
+their actual reverse codec and preserve the complete semantic value, including
+record origins under explicit, matching and foreign follow contexts. Accepted
+Inference views must refuse a changed caller-selected identity. The one
+round-trip helper also serves Auth; no service codec is reimplemented here.
+Private service admission and validators requiring related request/specification
+facts remain separate inventory work. These source hooks have not been compiled
+or executed with the current changes.
 
 From this directory, capture seeds with the SDK's actual encoders:
 
@@ -47,6 +58,12 @@ the typed binary output through the same descriptors. The signed token uses only
 it contains no account credential. These are SDK output captures, not hosted
 service traffic. Regenerate the complete protobuf corpus when schemas change,
 because the decoder indices can change.
+
+Four additional Stream semantic seed producers reuse the same captured
+record/batch writer outputs, including an origin-elided projection. Each is
+captured under both protobuf syntaxes (eight inputs); capture and shared-golden
+admission for these additions are pending. The capture process executes the
+real Stream producer once and reuses its outputs.
 
 `corpus/EXTERNAL.tsv` separately records exact output from published
 `@modelcontextprotocol/server-filesystem@2.1.0` and
