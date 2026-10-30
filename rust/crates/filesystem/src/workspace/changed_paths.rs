@@ -19,10 +19,12 @@ impl ChangedPathEntry {
     }
 }
 
-/// A demand-driven delta retaining both exact generation pins and its original
-/// work and cancellation. Rows follow the deterministic file/edge frontier,
+/// A demand-driven authored-namespace delta retaining both exact generation pins
+/// and its original work and cancellation. Rows follow the file/edge frontier,
 /// with moved subtrees expanded before the next file; they are not path-sorted.
 /// Dropping the cursor retires its physical state before its scratch credit.
+/// Source observations and identity shadows belong to a source-backed view's
+/// separate [`crate::LazySnapshotRef`].
 pub struct ChangedPaths<A: 'static, O: 'static> {
     owner: ReadOwner<State<A, O>>,
 }

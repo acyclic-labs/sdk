@@ -200,7 +200,9 @@ pub struct FileRecord {
     pub link_count: u64,
     /// Canonical metadata object.
     pub metadata: ObjectId,
-    /// Authenticated direct parent/name bindings in this generation; absent for its root.
+    /// Authenticated direct parent/name bindings in this generation's authored
+    /// namespace; absent for its root. Source-backed views retain unresolved
+    /// source aliases separately from this relation.
     pub bindings: Option<ObjectId>,
     /// Kind-specific content identity.
     pub payload: FilePayload,

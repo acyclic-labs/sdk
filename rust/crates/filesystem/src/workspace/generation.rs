@@ -114,6 +114,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     /// No complete delta or path list is prepared. Both checkouts stay pinned
     /// until the returned cursor is dropped. The supplied work is the total
     /// budget for admission and all subsequent rows; receipts are cumulative.
+    ///
+    /// These endpoints describe their authored namespaces. A source-backed
+    /// [`crate::LazyWorkspace`] also retains source observations, tombstones and
+    /// identity shadows in its [`crate::LazySnapshotRef`]. A query over that
+    /// complete cut must resolve those components alongside this frontier.
     pub async fn changed_paths_to<W: crate::facade::FsWork>(
         &self,
         to: &Generation<A, O>,
