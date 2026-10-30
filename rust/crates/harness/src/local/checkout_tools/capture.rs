@@ -27,6 +27,7 @@ const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
     initial: Option<WatchBatch>,
+    baseline_pending: bool,
     before_images_complete: bool,
     #[cfg(all(test, not(loom)))]
     injection: Option<tests::Injection>,
@@ -70,6 +71,7 @@ impl Cursor {
         Ok(Self {
             watcher,
             initial: None,
+            baseline_pending: workspace.import_source,
             before_images_complete: true,
             #[cfg(all(test, not(loom)))]
             injection: None,
@@ -324,12 +326,12 @@ where
 
     // On failure discard the cursor: the next command must establish a new
     // baseline rather than skip changes consumed before a failed commit.
-    let baseline = needs_baseline(slot, physical);
-    // Reuse the import publication as the durable diff baseline. Recovery
-    // resolves this exact operation, never a later checkout head.
-    let first_baseline = physical.import_source
-        && slot.as_ref().is_some_and(|cursor| cursor.initial.is_some())
+    // Reuse the complete import publication as the durable diff baseline.
+    // Eligibility survives cursor loss: recovery must scan again until this
+    // exact operation has a receipt, never substitute a later checkout head.
+    let baseline_pending = physical.import_source
         && phase == 0
+        && slot.as_ref().is_none_or(|cursor| cursor.baseline_pending)
         && workspace
             .operation_generation(
                 acyclic_fs::IdempotencyKey::from_bytes(
@@ -342,6 +344,7 @@ where
             .map_err(storage)?
             .value
             .is_none();
+    let baseline = needs_baseline(slot, physical) || baseline_pending;
     let mut cursor = match slot.take() {
         Some(cursor) => cursor,
         None => Cursor::open(physical, policy)?,
@@ -369,7 +372,7 @@ where
     )?
     .await?;
     // A best-effort before-image refusal cannot certify an exact snapshot.
-    let first_baseline = first_baseline && cursor.before_images_complete;
+    let first_baseline = baseline_pending && cursor.before_images_complete;
     if checkout.has_pending_mutations() || settlement.is_some() || first_baseline {
         let operation = if first_baseline {
             baseline_operation(workspace.id())
@@ -415,6 +418,9 @@ where
                 "checkout capture publication raced with another writer".into(),
             ));
         }
+    }
+    if phase == 0 {
+        cursor.baseline_pending = baseline_pending && !first_baseline;
     }
     *slot = Some(cursor);
     Ok(())

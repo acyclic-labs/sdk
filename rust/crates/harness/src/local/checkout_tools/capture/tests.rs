@@ -459,6 +459,79 @@ async fn rescan_preserves_the_original_publication_fence() -> Result<()> {
     harness.disconnect().await
 }
 
+/// Neither a failed native capture nor a rejected publication can consume the
+/// initial import's identity. Both failures discard the actual watcher cursor.
+async fn refuse_initial_imports(tools: &CheckoutTools) -> Result<Option<Cursor>> {
+    let workspace = tools.workspace.view().workspace();
+    let cancellation = CancellationToken::new();
+    let original = workspace
+        .head(WorkBudget::UNBOUNDED, &cancellation)
+        .await
+        .map_err(storage)?
+        .value
+        .id();
+    let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+    cursor.initial = Some(WatchBatch::RescanRequired {
+        epoch: 1,
+        reason: WatchInvalidationReason::RootChanged,
+    });
+    let mut slot = Some(cursor);
+    assert!(matches!(
+        run(tools, &mut slot).await,
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(slot.is_none(), "failed capture retained its cursor");
+
+    let calls = AtomicUsize::new(0);
+    let before_effect = || {
+        std::future::ready(if calls.fetch_add(1, Ordering::Relaxed) == 0 {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized("import publication refused".into()))
+        })
+    };
+    assert!(
+        record_changes(
+            (&tools.capture_options, &tools.capture_policy),
+            (&tools.workspace, tools.workspace.view()),
+            &mut slot,
+            (OperationId::new(), 0),
+            PublicationPermit::Unrestricted,
+            &before_effect,
+            None,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2, "refuse the actual commit");
+    assert!(slot.is_none(), "failed publication retained its cursor");
+    assert_eq!(
+        workspace
+            .head(WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(storage)?
+            .value
+            .id(),
+        original
+    );
+    assert!(
+        workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    baseline_operation(workspace.id()).into_bytes()
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .is_none(),
+        "a refusal published the baseline"
+    );
+    Ok(slot)
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(4))]
     #[test]
@@ -468,7 +541,7 @@ proptest::proptest! {
             let (directory, harness, tools) = fixture().await?;
             let original = format!("before-{seed}\n");
             std::fs::write(directory.path().join("marker"), original.as_bytes()).map_err(storage)?;
-            let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+            let mut slot = refuse_initial_imports(&tools).await?;
             let cancellation = CancellationToken::new();
             let workspace = tools.workspace.view().workspace();
             let empty = workspace.head(WorkBudget::UNBOUNDED, &cancellation).await.map_err(storage)?.value;
@@ -512,7 +585,7 @@ proptest::proptest! {
 async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
     std::fs::remove_file(directory.path().join("marker")).map_err(storage)?;
-    let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+    let mut slot = refuse_initial_imports(&tools).await?;
     run(&tools, &mut slot).await?;
     let workspace = tools.workspace.view().workspace();
     let cancellation = CancellationToken::new();
