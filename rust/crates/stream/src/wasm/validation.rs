@@ -701,7 +701,11 @@ mod http {
                         )?;
                         let record = field(observation, "record")?;
                         if !record.is_null() {
-                            set(&selected, "record", &record_js(record, None)?)?;
+                            set(
+                                &selected,
+                                "record",
+                                &record_js(record, Some(string(field(observation, "path")?)?))?,
+                            )?;
                         }
                         Ok(selected.into())
                     })?,

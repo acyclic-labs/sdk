@@ -57,7 +57,11 @@ test("nested fork records retain their original paths through read, follow and c
   // Use the actual immutable provider fact for JSON projection controls too.
   const json = (value: unknown) => JSON.stringify(value, (_, value: unknown) =>
     typeof value === "bigint" ? value.toString() : value instanceof Uint8Array ? Buffer.from(value).toString("base64") : value);
-  const { origin: _, ...elided } = original;
+  const elideOrigin = (record: EncodedRecord) => {
+    const { origin: _, ...elided } = record;
+    return elided;
+  };
+  const elided = elideOrigin(original);
   const project = (record: unknown, followed?: string) =>
     (decodeHttpResponse("read", json({ records: [record] }), followed) as { records: EncodedRecord[] }).records[0];
   expect(project(elided, "origin/root")?.origin).toBe("origin/root");
@@ -66,12 +70,24 @@ test("nested fork records retain their original paths through read, follow and c
   expect(() => project(original, "origin/root")).toThrow();
   expect(() => project({ ...original, origin: "invalid//path" }, "origin/c")).toThrow();
   expect((decodeHttpResponse("head", json(head)) as typeof head).last?.origin).toBe("origin/a");
-  expect(() => decodeHttpResponse("head", json({ ...head, last: elided }))).toThrow();
+  if (head.last === undefined) throw new Error("original head record missing");
+  expect(() => decodeHttpResponse("head", json({ ...head, last: elideOrigin(head.last) }))).toThrow();
   expect(() => decodeHttpResponse("children/page", json({ ...page,
-    children: page.children.map(child => ({ ...child, tailRecord: elided })),
+    children: page.children.map(child => ({ ...child,
+      ...(child.tailRecord === undefined ? {} : { tailRecord: elideOrigin(child.tailRecord) }),
+    })),
   }))).toThrow();
   expect(() => decodeHttpResponse("heads", json({ ...retained,
     heads: retained.heads.map(head => ({ ...head, origin: head?.origin ?? null, last: head?.last ?? null })),
-    retained: retained.retained.map(selected => ({ ...selected, record: elided })),
+    retained: retained.retained.map(selected => ({ ...selected, record: { ...selected.record, origin: selected.path } })),
+  }))).toThrow();
+  const owned = { ...envelope, mutations: envelope.mutations.map(mutation => ({ ...mutation,
+    records: mutation.records.map(record => elideOrigin(record as EncodedRecord)),
+  })) };
+  expect((decodeHttpResponse("commits/read", json(owned)) as typeof envelope).mutations[0]?.records[0]?.origin).toBe("origin/c");
+  expect(() => decodeHttpResponse("commits/read", json({ ...owned,
+    mutations: owned.mutations.map(mutation => ({ ...mutation,
+      records: mutation.records.map(record => ({ ...record, origin: "origin/root" })),
+    })),
   }))).toThrow();
 });

@@ -344,7 +344,13 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 path(field(observation, "path")?)?;
                 let record = field(observation, "record")?;
                 if !record.is_null() {
-                    validate_record(record)?;
+                    validate_record_body(record)?;
+                    if let Some(origin) = object(record)?.get("origin") {
+                        path(origin)?;
+                        if string(origin)? == string(field(observation, "path")?)? {
+                            return Err("selected record must elide its origin");
+                        }
+                    }
                 }
             }
             validate_revision(field(item, "snapshot")?)?;
