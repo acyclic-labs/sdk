@@ -73,7 +73,7 @@ export class AgentExplorer {
   readonly #options: ExplorerOptions;
   readonly #db: IDBDatabase | undefined;
   #frame: number | undefined;
-  #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
+  #renderQueued = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #scheduled = false;
   #closed = false;
@@ -82,16 +82,17 @@ export class AgentExplorer {
     if (this.#closed) return;
     this.#core.drive();
     this.#arm();
-    if (this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
+    if (this.#frame !== undefined || this.#renderQueued) return;
     if (typeof globalThis.requestAnimationFrame === "function") {
       this.#frame = globalThis.requestAnimationFrame(this.#render);
     } else {
-      this.#fallbackFrame = setTimeout(this.#render, 16);
+      this.#renderQueued = true;
+      queueMicrotask(this.#render);
     }
   };
   readonly #render = () => {
     this.#frame = undefined;
-    this.#fallbackFrame = undefined;
+    this.#renderQueued = false;
     if (this.#closed) return;
     this.#options.render(this.#core.frame() as ExplorerRow[], this);
   };
@@ -182,10 +183,9 @@ export class AgentExplorer {
       globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
       if (this.#timer !== undefined) clearTimeout(this.#timer);
       if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
-      if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
       this.#timer = undefined;
       this.#frame = undefined;
-      this.#fallbackFrame = undefined;
+      this.#renderQueued = false;
       this.#db?.close();
       this.#core.free();
     }
