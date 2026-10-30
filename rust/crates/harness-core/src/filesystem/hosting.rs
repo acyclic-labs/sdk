@@ -356,17 +356,8 @@ where
             turns.executors,
             turns.limits,
             turns.approval_policy,
-        );
-        let turner = turner.with_workspace_tools({
-            let volumes = Arc::clone(&volumes);
-            Arc::new(move |agent, authority| {
-                Ok(Arc::new(super::FilesystemTools::new(
-                    Arc::clone(&volumes),
-                    agent,
-                    authority,
-                )?))
-            })
-        });
+        )
+        .with_filesystem_tools();
         let turner = Arc::new(configure(turner));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses

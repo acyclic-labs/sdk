@@ -430,6 +430,26 @@ struct Bindings {
     content: ContentBindings,
 }
 
+impl<P, O> FilesystemTurnHost<P, acyclic_fs::StreamAuthorityStore<P>, O>
+where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    /// Binds filesystem commands to each turn's original placement and authority.
+    #[must_use]
+    pub fn with_filesystem_tools(mut self) -> Self {
+        let host = Arc::clone(&self.host);
+        self.workspace_tools = Some(Arc::new(move |agent, authority| {
+            Ok(Arc::new(super::FilesystemTools::new(
+                Arc::clone(&host),
+                agent,
+                authority,
+            )?))
+        }));
+        self
+    }
+}
+
 impl<P, A, O> FilesystemTurnHost<P, A, O>
 where
     P: crate::store::JournalProvider + ?Sized + 'static,
@@ -463,14 +483,6 @@ where
             goals: Some(Default::default()),
             policy,
         }
-    }
-
-    pub(in crate::filesystem) fn with_workspace_tools(
-        mut self,
-        factory: WorkspaceToolsFactory,
-    ) -> Self {
-        self.workspace_tools = Some(factory);
-        self
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
