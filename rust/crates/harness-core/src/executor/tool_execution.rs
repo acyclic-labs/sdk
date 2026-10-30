@@ -4,23 +4,18 @@ use crate::wire::ErrorCode::{Conflict, Invalid};
 
 mod dispatch;
 
-/// A model tool call refused before dispatch. It is the call's model-visible result, never an
-/// error: it is recorded as the call's settlement, without a start, and reaches no executor or
-/// task outcome.
+/// A model tool call failure recorded without dispatch as its model-visible result.
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
     Unavailable,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
     /// The bound policy denied the call; the model can adapt.
-    Refused(Error),
-    /// A pre-tool approval refused this call, retaining the guard's explanation.
-    #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-    Approval(crate::InteractionRejection, String),
+    Failed(Error),
 }
 
 impl ToolCallRejection {
-    fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error, Option<String>) {
+    fn into_failure(self, io: Option<&PreparationIo>) -> (ToolFailureKind, Error) {
         match self {
             Self::Unavailable => (
                 ToolFailureKind::Unavailable,
@@ -29,26 +24,19 @@ impl ToolCallRejection {
                     crate::wire::ErrorCode::NotFound,
                     "tool is not available",
                 ),
-                None,
             ),
-            Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation, None),
-            Self::Refused(denial) => (ToolFailureKind::Refused, denial, None),
-            #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Approval(reason, prompt) => (
-                ToolFailureKind::Refused,
-                Error::InteractionRejected(reason),
-                Some(prompt),
-            ),
+            Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation),
+            Self::Failed(error) => (ToolFailureKind::ExecutorRejected, error),
         }
     }
 }
 
 /// Why the bound policy stopped a call before dispatch.
 pub(in crate::executor) enum PolicyStop {
-    /// Approval is pending or was rejected; the turn's progress reports it.
+    /// Approval is pending; the turn's progress reports its operation.
     Progress(ExecutionProgress<()>),
     /// The policy denied the call; the model receives the denial as the call's result.
-    Refused(Error),
+    Failed(Error),
 }
 
 /// A recorded tool failure's model-visible content, received instead of a result.
@@ -167,7 +155,7 @@ impl StockExecution<'_> {
                     operation_id,
                     step,
                     &invocation,
-                    ToolCallRejection::Refused(Error::Unauthorized(reason)),
+                    ToolCallRejection::Failed(Error::Unauthorized(reason)),
                 )
                 .await?;
             self.append_hook_context(_hook_context, pre_hook)?;
@@ -216,17 +204,15 @@ impl StockExecution<'_> {
                         .await?
                 {
                     match stop {
-                        super::tool_hooks::HookApprovalStop::Progress(progress) => {
-                            return Ok(progress);
-                        }
-                        super::tool_hooks::HookApprovalStop::Refused(reason, prompt) => {
+                        PolicyStop::Progress(progress) => return Ok(progress),
+                        PolicyStop::Failed(error) => {
                             let content = self
                                 .settle_tool_refusal(
                                     journal,
                                     operation_id,
                                     step,
                                     &invocation,
-                                    ToolCallRejection::Approval(reason, prompt),
+                                    ToolCallRejection::Failed(error),
                                 )
                                 .await?;
                             return self.push_tool_result(&invocation, content, prior_messages);
@@ -238,14 +224,14 @@ impl StockExecution<'_> {
                     .await?
                 {
                     Some(PolicyStop::Progress(progress)) => return Ok(progress),
-                    Some(PolicyStop::Refused(denial)) => {
+                    Some(PolicyStop::Failed(denial)) => {
                         let content = self
                             .settle_tool_refusal(
                                 journal,
                                 operation_id,
                                 step,
                                 &invocation,
-                                ToolCallRejection::Refused(denial),
+                                ToolCallRejection::Failed(denial),
                             )
                             .await?;
                         return self.push_tool_result(&invocation, content, prior_messages);
@@ -307,7 +293,7 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         rejection: ToolCallRejection,
     ) -> Result<crate::model::ToolResultContent> {
-        let (reason, error, context) = rejection.into_failure(self.io);
+        let (reason, error) = rejection.into_failure(self.io);
         let (_, records) = self
             .tool_records(journal, operation_id, step, &invocation.call_id)
             .await?;
@@ -335,7 +321,11 @@ impl StockExecution<'_> {
             }
         }
         let cause = with_history_io(self.io, |work| {
-            ToolFailureCause::refusal(&invocation.name, reason, &error, context.as_deref(), work)
+            if reason.precedes_dispatch() {
+                ToolFailureCause::refusal(&invocation.name, reason, &error, None, work)
+            } else {
+                ToolFailureCause::of(&error, work)
+            }
         })?;
         self.settle_tool_cause(
             journal,
@@ -407,9 +397,9 @@ impl StockExecution<'_> {
         let Some(policy) = &self.stock.policy else {
             let denial = Error::Unauthorized("no approval policy admits this tool call".into());
             return if started {
-                Err(denial)
+                Err(Error::Indeterminate(invocation.operation_id))
             } else {
-                Ok(Some(PolicyStop::Refused(denial)))
+                Ok(Some(PolicyStop::Failed(denial)))
             };
         };
         let identity_matches = || -> Result<bool> {
@@ -437,18 +427,23 @@ impl StockExecution<'_> {
         match decision {
             ToolPolicyDecision::Allow => {}
             // A denial before dispatch is the call's result; the pinned policy
-            // re-derives it on replay. After a recorded start it is a conflict.
+            // re-derives it on replay. A recorded start requires reconciliation,
+            // so a later denial cannot establish that the effect never happened.
             ToolPolicyDecision::Deny { reason } if !started => {
-                return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
+                return Ok(Some(PolicyStop::Failed(Error::Unauthorized(reason))));
             }
-            ToolPolicyDecision::Deny { reason } => {
-                return Err(Error::Unauthorized(reason));
+            ToolPolicyDecision::Deny { .. } => {
+                return Err(Error::Indeterminate(invocation.operation_id));
             }
             ToolPolicyDecision::RequireApproval { prompt } => {
                 if !scope.grants().contains(capability::INTERACTION_ROUTE) {
-                    return Err(Error::Unauthorized(
-                        "stock tool approval requires interaction:route".into(),
-                    ));
+                    return if started {
+                        Err(Error::Indeterminate(invocation.operation_id))
+                    } else {
+                        Ok(Some(PolicyStop::Failed(Error::Unauthorized(
+                            "stock tool approval requires interaction:route".into(),
+                        ))))
+                    };
                 }
                 let task = TaskId::from_bytes(operation_id.into_bytes());
                 let ((approval_operation, request), _hold) = tool_approval_request(
@@ -473,7 +468,7 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    return Ok(Some(PolicyStop::Progress(progress)));
+                    return Ok(Some(progress));
                 }
             }
         }
@@ -556,8 +551,7 @@ mod refusal_admission_tests {
         let allocated = acyclic_test_support::measure(|| {
             refusal = Some(ToolCallRejection::Unavailable.into_failure(Some(&io)));
         });
-        let (kind, error, context) = refusal.unwrap();
-        assert!(context.is_none());
+        let (kind, error) = refusal.unwrap();
         assert_eq!(kind, ToolFailureKind::Unavailable);
         assert_eq!(error.code(), crate::wire::ErrorCode::NotFound);
         assert_eq!(allocated.count_total, 0);

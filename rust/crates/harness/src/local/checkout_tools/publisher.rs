@@ -47,6 +47,19 @@ enum Publication<'a> {
 }
 
 impl CheckoutPublisher {
+    fn selected_workspace(&self, state: &State) -> Result<Arc<LocalWorkspace>> {
+        #[cfg(all(test, not(loom)))]
+        if tests::PUBLISH_TO_INITIAL_MOUNT.get() {
+            return Ok(Arc::clone(&self.tools.workspace));
+        }
+        self.tools
+            .workspace
+            .cached_selected_workspace(state)
+            .ok_or_else(|| {
+                Error::Conflict("selected checkout has no admitted physical binding".into())
+            })
+    }
+
     pub(in crate::local) fn new(
         tools: Arc<CheckoutTools>,
         files: Arc<LocalFilesystem>,
@@ -89,22 +102,23 @@ impl CheckoutPublisher {
             Publication::Once { path, .. } | Publication::Path { path, .. } => (None, *path),
             Publication::Replace(source) => (Some(source.volume()), source.path()),
         };
-        let (mount, relative) = self.tools.workspace.mounts.file(volume, path)?;
-        mount.check(
-            acyclic_fs::access::Action::Write,
-            &relative,
-            self.tools.clock.now_unix_millis() / 1000,
-        )?;
         serialized(&self.tools.state, async |mut state| {
+            let physical = self.selected_workspace(&state)?;
+            let (mount, relative) = physical.mounts.file(volume, path)?;
+            mount.check(
+                acyclic_fs::access::Action::Write,
+                &relative,
+                self.tools.clock.now_unix_millis() / 1000,
+            )?;
             let view = state.active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
-            if reconciliation::recover(&self.tools.workspace, view, &|| async { Ok(()) }).await? {
+            if reconciliation::recover(&physical, view, &|| async { Ok(()) }).await? {
                 state.watcher = None;
             }
             let State { active, watcher, .. } = &mut *state;
             let view = active.as_ref().unwrap_or_else(|| self.tools.workspace.view());
             // Settle an earlier write's durable capture before staging moves its head.
             if mount.view.source.is_none() {
-                self.finish_pending_capture(view, watcher).await?;
+                self.finish_pending_capture(&physical, view, watcher).await?;
             }
             let native = match &mount.view.source {
                 Some(source) => Some(source.native().await),
@@ -125,10 +139,12 @@ impl CheckoutPublisher {
             if original.is_none() {
                 if let Some(native) = native {
                     native.sync().await?;
-                } else if mount.view.source.is_none()
-                    && matches!(&publication, Publication::Replace(_))
-                {
-                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
+                } else if mount.view.source.is_none() {
+                    if let Some(mounted) = &physical.mounted {
+                        mounted.sync().await.map_err(storage)?;
+                    } else if matches!(&publication, Publication::Replace(_)) {
+                        self.tools.capture((&physical, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
+                    }
                 }
             }
             let file = match publication {
@@ -143,7 +159,7 @@ impl CheckoutPublisher {
             if let Some(native) = native {
                 native.advance_to_head().await?;
             } else if mount.view.source.is_none() {
-                return self.settle(view, watcher, operation, file).await;
+                return self.settle(&physical, view, watcher, operation, file).await;
             }
             Ok(file)
         })
@@ -151,18 +167,25 @@ impl CheckoutPublisher {
         .inspect_err(|error| tracing::error!(%operation, ?error, "checkout file publication did not complete"))
     }
 
-    /// Settles a staged file in an unmounted checkout: owes the write its
+    /// Settles a staged file in its selected physical checkout: owes the write its
     /// physical publication and capture, finishes that debt, and returns the
     /// reference to the generation that holds exactly the written bytes. A
     /// first attempt and every replay, whether it enters through the write
     /// or through recovery, settle the same way.
     async fn settle(
         &self,
+        physical: &LocalWorkspace,
         view: &workspace::View,
         watcher: &mut Option<capture::Cursor>,
         operation: OperationId,
         file: FileRef,
     ) -> Result<FileRef> {
+        if physical.mounted.is_some() {
+            // A native view already projects the committed generation. Advancing
+            // that view replaces physical checkout publication and recapture.
+            reconciliation::advance_mount(physical, &|| async { Ok(()) }).await?;
+            return Ok(file);
+        }
         // The physical write carries host metadata (mode, owner, times) that
         // the staged generation cannot predict, so it is owed a capture of
         // its own, under the write's operation, so the agent's own write is
@@ -174,7 +197,7 @@ impl CheckoutPublisher {
         // replay that is, while the staged generation is still the head. One
         // operation may publish several paths, so the capture's identity
         // names the path too.
-        let selected = (&*self.tools.workspace, view);
+        let selected = (physical, view);
         let owed = (
             publication_operation(operation, file.path()),
             acyclic_fs::GitGenerationRef {
@@ -189,13 +212,14 @@ impl CheckoutPublisher {
         if tests::KILL_BEFORE_WRITE.get() {
             return Err(Error::Storage("killed before the write".into()));
         }
-        self.finish_pending_capture(view, watcher).await?;
+        self.finish_pending_capture(physical, view, watcher).await?;
         self.observed(view, operation, file).await
     }
 
     // Every publication entry point settles the same durable debt.
     async fn finish_pending_capture(
         &self,
+        physical: &LocalWorkspace,
         view: &workspace::View,
         watcher: &mut Option<capture::Cursor>,
     ) -> Result<()> {
@@ -204,19 +228,14 @@ impl CheckoutPublisher {
             return Ok(());
         }
         self.tools
-            .finish_owed_write(
-                (&self.tools.workspace, view),
-                watcher,
-                PublicationPermit::Unrestricted,
-            )?
+            .finish_owed_write((physical, view), watcher, PublicationPermit::Unrestricted)?
             .await
     }
 
     fn staged_generation(&self, file: &FileRef) -> Result<acyclic_fs::GenerationId> {
         let staged = self.files.file_generation(file, None)?;
-        Ok(acyclic_fs::GenerationId::new(
-            acyclic_fs::Digest::from_bytes(staged.as_resource().key().try_into().map_err(storage)?),
-        ))
+        acyclic_fs::GenerationId::from_bytes(staged.as_resource().key())
+            .ok_or_else(|| Error::Invalid("invalid canonical generation reference".into()))
     }
 }
 
@@ -334,6 +353,7 @@ impl ContentPublisher for CheckoutPublisher {
         self.supports_stage(io)?;
         BoundedContentFuture::new(None, || async move {
             serialized(&self.tools.state, async |mut state| {
+                let physical = self.selected_workspace(&state)?;
                 let State {
                     active, watcher, ..
                 } = &mut *state;
@@ -346,7 +366,7 @@ impl ContentPublisher for CheckoutPublisher {
                 // reach no mount is refused.
                 let mut refused = None;
                 let mut admitted = false;
-                for (_, mount) in self.tools.workspace.mounts.mounts() {
+                for (_, mount) in physical.mounts.mounts() {
                     let workspace = mount
                         .view
                         .source
@@ -398,7 +418,9 @@ impl ContentPublisher for CheckoutPublisher {
                         } else {
                             // A recovered publication names the same
                             // generation the original write returned.
-                            file = self.settle(view, watcher, operation, file).await?;
+                            file = self
+                                .settle(&physical, view, watcher, operation, file)
+                                .await?;
                         }
                         return Ok((Some(file), None));
                     }

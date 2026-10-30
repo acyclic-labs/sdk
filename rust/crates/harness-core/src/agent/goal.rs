@@ -13,7 +13,8 @@ use crate::{
     OperationId,
     goal::{GoalContinuationPolicy, GoalStatus, GoalView},
 };
-use acyclic_stream::BoxProviderFuture;
+use acyclic_stream::{BoxProviderFuture, StreamPath};
+use serde::{Deserialize, Serialize};
 
 /// Identity prefix of a goal continuation: `goal:{loop}:{n}`, where `loop` is
 /// the turn that started the loop and `n` counts its continuations from 1.
@@ -38,22 +39,47 @@ pub trait TurnGoal: acyclic_stream::ProviderPlatform {
 
 /// The goal loop `input` belongs to and how many continuations it has had: a
 /// continuation names both; any other input starts a loop of its own `turn`.
-fn position(agent: &AgentState, input: &TurnInput, turn: OperationId) -> (String, u32) {
+fn continuation(agent: &super::AgentPath, input: &TurnInput) -> Option<(OperationId, u32)> {
     if let TurnInput::Message {
         from: Sender::Agent { path },
         id,
         ..
     } = input
-        && *path == agent.path
+        && path == agent
         && let Some((run, count)) = id
             .as_str()
             .strip_prefix(GOAL_INTENT)
             .and_then(|rest| rest.rsplit_once(':'))
+        && let Ok(run) = OperationId::parse(run)
         && let Ok(count) = count.parse()
+        && count > 0
     {
-        return (run.to_owned(), count);
+        return Some((run, count));
     }
-    (turn.to_string(), 0)
+    None
+}
+
+fn position(agent: &AgentState, input: &TurnInput, turn: OperationId) -> (OperationId, u32) {
+    continuation(&agent.path, input).unwrap_or((turn, 0))
+}
+
+/// The committed goal run of a self-continuation, never a caller-supplied run.
+pub(super) fn continuing(agent: &super::AgentPath, input: &TurnInput) -> Option<OperationId> {
+    continuation(agent, input).map(|(run, _)| run)
+}
+
+/// A completed goal references its canonical conversation entry.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Completed {
+    pub sequence: u64,
+}
+
+impl super::AgentRecord for Completed {}
+
+pub(super) fn result(agent: &super::AgentPath, run: OperationId) -> Result<StreamPath, Error> {
+    StreamPath::new(format!("{}/goals/{run}", agent.as_str()))
+        .map_err(|_| Error::Path("invalid goal result path"))
 }
 
 /// What `agent`'s turn `turn`, started by `input`, does about its goal once it

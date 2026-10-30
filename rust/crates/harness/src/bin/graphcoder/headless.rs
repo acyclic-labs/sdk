@@ -87,9 +87,10 @@ async fn answer(
     conversation: &Conversation,
     id: &str,
     entry: &ConversationEntry,
+    inbox: u64,
 ) -> Result<Value, Failure> {
     let (_, text) = conversation.turn(entry).await?;
-    Ok(json!({"id": id, "inbox": entry.inbox, "text": text}))
+    Ok(json!({"id": id, "inbox": inbox, "text": text}))
 }
 
 /// The printed line of prompt `id` at `inbox` once `reply` settled it.
@@ -100,7 +101,10 @@ async fn settled(
     reply: Reply,
 ) -> Result<Option<Value>, Failure> {
     Ok(match reply {
-        Reply::Answered { entry, .. } => Some(answer(conversation, id, &entry).await?),
+        Reply::Answered { entry, origin, .. } => {
+            let inbox = origin.as_ref().map_or(entry.inbox, |origin| origin.inbox);
+            Some(answer(conversation, id, &entry, inbox).await?)
+        }
         Reply::Dropped => {
             Some(json!({"id": id, "inbox": inbox, "error": conversation.dropped().await?}))
         }

@@ -85,6 +85,9 @@ pub struct AgentState {
     pub brief: Option<[u8; 32]>,
     /// Exact conversation tail; the agent is its only writer.
     pub conversation_tail: u64,
+    /// Cancelled inputs before this sequence, including goal continuations.
+    #[serde(default)]
+    pub dropped_before: u64,
     /// Inherited conversation tail at adoption: this agent's own entries are
     /// `[conversation_base, conversation_tail)`, in increasing inbox order.
     pub conversation_base: u64,
@@ -164,6 +167,7 @@ impl AgentState {
             policy: adopted.policy.clone(),
             brief,
             conversation_tail: adopted.conversation_tail,
+            dropped_before: 0,
             conversation_base: adopted.conversation_tail,
             checkpoint: adopted.checkpoint,
             // The creating commit wrote the first status (`Idle`).
@@ -259,6 +263,7 @@ impl AgentState {
     /// Drops every pending input before inbox sequence `end`; the inbox
     /// read-back resumes at `end`.
     fn drop_before(&mut self, end: u64) {
+        self.dropped_before = self.dropped_before.max(end);
         self.queued.retain(|queued| queued.inbox >= end);
         self.taken.retain(|sequence| *sequence >= end);
         if self.overflow.is_some_and(|from| from < end) {
@@ -309,6 +314,11 @@ impl AgentState {
 pub enum Out {
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
+    /// Complete this goal run with the preceding conversation entry.
+    GoalCompleted {
+        /// Original turn identity, preserved across self-continuations.
+        run: crate::OperationId,
+    },
     /// The conversation entry just before this is the agent's latest context
     /// checkpoint, indexed in its state with the append.
     Checkpoint,
@@ -633,7 +643,10 @@ fn finalize_step(
                     .ok_or(Error::Record("agent conversation tail overflow"))?;
             }
             Out::Checkpoint => state.checkpoint = sequence.checked_sub(1),
-            Out::Send { .. } | Out::Archive { .. } | Out::Spawn { .. } => {}
+            Out::Send { .. }
+            | Out::Archive { .. }
+            | Out::Spawn { .. }
+            | Out::GoalCompleted { .. } => {}
         }
     }
     state.conversation_tail = state
@@ -695,6 +708,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     };
     let admitted = kernel::admit(control(&state), kind);
     if admitted.clear_queue {
+        state.dropped_before = state.dropped_before.max(sequence);
         state.drop_queue();
     }
     if !admitted.control.turn {
@@ -767,7 +781,7 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } | Out::Checkpoint => true,
+        Out::Archive { .. } | Out::Checkpoint | Out::GoalCompleted { .. } => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }

@@ -23,7 +23,7 @@ export function conversation(id: string, inbox: bigint): string {
 export async function appendRecord(stream: WasmStream, path: string, value: string): Promise<bigint> {
   const response = fromBinary(AppendResponseSchema, await stream.dispatch("append",
     toBinary(AppendRequestSchema, create(AppendRequestSchema, {
-      path, records: [{ value: encode.encode(`{"record":${value},"version":2}`) }],
+      path, records: [{ value: encode.encode(`{"record":${value},"version":3}`) }],
     }))));
   if (response.outcome.case !== "committed") throw new Error(`actor fixture append: ${response.outcome.case}`);
   return response.outcome.value.tail;

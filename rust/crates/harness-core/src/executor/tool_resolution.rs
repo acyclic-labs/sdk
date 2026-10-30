@@ -9,18 +9,22 @@ impl StockExecution<'_> {
         request: &Interaction,
         invocation: &ToolInvocation,
         started: bool,
-    ) -> Result<Option<ExecutionProgress<()>>> {
+    ) -> Result<Option<tool_execution::PolicyStop>> {
         if !self
             .stock
             .tool_scope
             .grants()
             .contains(capability::INTERACTION_ROUTE)
         {
-            return Err(stock_boundary(
-                self.io,
-                crate::wire::ErrorCode::Unauthorized,
-                "stock tool approval requires interaction:route",
-            ));
+            return if started {
+                Err(Error::Indeterminate(invocation.operation_id))
+            } else {
+                Ok(Some(tool_execution::PolicyStop::Failed(stock_boundary(
+                    self.io,
+                    crate::wire::ErrorCode::Unauthorized,
+                    "stock tool approval requires interaction:route",
+                ))))
+            };
         }
         let task = TaskId::from_bytes(operation.into_bytes());
         let approval = with_history_io(self.io, |work| {
@@ -42,7 +46,9 @@ impl StockExecution<'_> {
             return if started {
                 Err(Error::Indeterminate(invocation.operation_id))
             } else {
-                Ok(Some(ExecutionProgress::Pending(invocation.operation_id)))
+                Ok(Some(tool_execution::PolicyStop::Progress(
+                    ExecutionProgress::Pending(invocation.operation_id),
+                )))
             };
         };
         if stock_is_native(self.io) && matches!(outcome, InteractionOutcome::Answered { .. }) {
@@ -54,8 +60,8 @@ impl StockExecution<'_> {
         }
         match check_tool_approval(outcome) {
             Ok(()) => Ok(None),
-            Err(Error::InteractionRejected(reason)) if !started => {
-                Ok(Some(ExecutionProgress::Rejected(reason)))
+            Err(error @ Error::InteractionRejected(_)) if !started => {
+                Ok(Some(tool_execution::PolicyStop::Failed(error)))
             }
             Err(Error::InteractionRejected(_)) => {
                 Err(Error::Indeterminate(invocation.operation_id))

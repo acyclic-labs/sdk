@@ -2,7 +2,8 @@ use super::OperationId;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode;
 
-/// Terminal non-approval outcomes kept distinct for tool callers.
+/// Reasons an interaction settled without approving its action. Tool callers
+/// return these reasons through the ordinary recoverable tool-failure result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InteractionRejection {
     /// A participant explicitly refused the action.

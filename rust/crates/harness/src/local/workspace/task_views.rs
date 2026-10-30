@@ -15,6 +15,38 @@ pub(super) fn view_options(
 }
 
 impl LocalWorkspace {
+    /// Binds a spawned agent to its retained project fork and this filesystem's
+    /// shared native instance. Model tools and native hosts use the same view.
+    pub(in crate::local) async fn bound_task_view(
+        &self,
+        view: workspace::View,
+        project: &VolumeRef,
+        scratch: VolumeRef,
+        owner: &dyn super::owner::ViewOwner,
+        authority: &crate::filesystem::NativeMountAuthority,
+    ) -> Result<(Arc<LocalWorkspace>, Arc<Mounts>)> {
+        let mut state = crate::sync::owned::lock_owned(StateArc::clone(&self.state)).await;
+        let key = project.storage_name(&mut None)?;
+        let mounts = if let Some(mounts) = state
+            .allocated_mounts
+            .get(&key)
+            .and_then(std::sync::Weak::upgrade)
+        {
+            mounts
+        } else {
+            state
+                .allocated_mounts
+                .retain(|_, mounts| mounts.strong_count() != 0);
+            let mounts = self.bound_mounts(project, scratch, authority).await?;
+            state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
+            mounts
+        };
+        let workspace = self
+            .mount_task_view(view, owner, Some(Arc::clone(&mounts)), authority)
+            .await?;
+        Ok((workspace, mounts))
+    }
+
     /// All task views enter the filesystem's shared instance. The host may
     /// select its already admitted workspace namespace; ordinary harnesses
     /// share the process root. No host adapter mounts a task view itself.
@@ -94,7 +126,7 @@ impl LocalWorkspace {
         view: workspace::View,
         owner: &dyn super::owner::ViewOwner,
         mounts: Option<Arc<workspace::Mounts>>,
-        signed: &Scope,
+        authority: &crate::filesystem::NativeMountAuthority,
     ) -> Result<Arc<LocalWorkspace>> {
         // Mount retirement may outlive the previous owner. Each
         // live mount needs its own namespace so retiring it cannot
@@ -122,11 +154,7 @@ impl LocalWorkspace {
             identity: acyclic_fs::NativeRootIdentity::from_bytes([0; 16]),
             filesystem: self.filesystem.clone(),
             store: self.store.clone(),
-            mount_authority: self
-                .mount_authority
-                .as_ref()
-                .map(|authority| authority.for_scope(signed))
-                .transpose()?,
+            mount_authority: Some(authority.clone()),
         };
         let (active, pending) = workspace.selected_view().await?;
         let selected = active.as_ref().unwrap_or_else(|| workspace.view());
@@ -158,6 +186,21 @@ impl LocalWorkspace {
         let workspace = Arc::new(workspace);
         Ok(workspace)
     }
+    /// Returns the physical binding already admitted by checkout selection.
+    /// Publication shares the state guard and cannot create another mount owner.
+    pub(in crate::local) fn cached_selected_workspace(
+        self: &Arc<Self>,
+        state: &State,
+    ) -> Option<Arc<LocalWorkspace>> {
+        let view = state.active.as_ref().unwrap_or_else(|| self.view());
+        if self.mounted.is_none() || view.workspace().id() == state.initial_view {
+            return Some(Arc::clone(self));
+        }
+        state.workspace.as_ref().and_then(|(selected, workspace)| {
+            (*selected == view.workspace().id()).then(|| Arc::clone(workspace))
+        })
+    }
+
     // The caller owns this checkout's state guard. A sparse mount follows one
     // workspace; switching selects a separate mount instead of staging across
     // the mount's filesystem boundary. Failed mounts can be retried from state.
@@ -176,10 +219,8 @@ impl LocalWorkspace {
             state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
-        if let Some((selected, workspace)) = &state.workspace
-            && *selected == id
-        {
-            return Ok(workspace.clone());
+        if let Some(workspace) = self.cached_selected_workspace(state) {
+            return Ok(workspace);
         }
         owner.verify().await?;
         let mounted = self.mount_task_source(view).await?;

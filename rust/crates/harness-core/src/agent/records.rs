@@ -24,8 +24,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// carried by their one shared header. Any change to a persisted shape bumps
 /// it, and readers refuse every other version whole: there is no migration
 /// code. The headerless format before it is version 1; version 2 carries a
-/// spawn brief by file reference.
-pub const RECORD_VERSION: u32 = 2;
+/// spawn brief by file reference. Version 3 binds goal runs to their committed
+/// terminal conversation entry.
+pub const RECORD_VERSION: u32 = 3;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -657,8 +658,8 @@ mod tests {
         );
         // The header decides: a later version is refused before its record is read.
         assert_eq!(
-            refused(br#"{"record":{"spawn":"not read"},"version":3}"#).found,
-            3
+            refused(br#"{"record":{"spawn":"not read"},"version":4}"#).found,
+            4
         );
         // Negative controls. A spawn of this version decodes; the version 1
         // body under this version's header is malformed, never a partial spawn.
@@ -690,7 +691,7 @@ mod tests {
         assert_eq!(InboxRecord::decode(&encoded).ok(), Some(spawn));
         let mut relabeled = br#"{"record":"#.to_vec();
         relabeled.extend_from_slice(V1_SPAWN);
-        relabeled.extend_from_slice(br#","version":2}"#);
+        relabeled.extend_from_slice(br#","version":3}"#);
         assert!(matches!(
             InboxRecord::decode(&relabeled),
             Err(Error::Record("record is malformed"))

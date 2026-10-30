@@ -9,9 +9,11 @@ use serde_json::Value;
 )]
 #[serde(deny_unknown_fields)]
 pub struct HookOutput {
-    /// Reason the guarded action was blocked.
+    /// Reason the guarded action was blocked, returned to the model so it can
+    /// choose another action.
     pub blocked: Option<String>,
-    /// A pre-tool hook requested human approval, with its explanation.
+    /// A pre-tool hook requested human approval, with its explanation. A refusal
+    /// is returned to the model as the call's ordinary tool failure.
     pub approval: Option<String>,
     /// Extra context to include in the next model request.
     pub additional_context: Vec<String>,

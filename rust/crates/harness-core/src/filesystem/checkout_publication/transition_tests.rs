@@ -2,6 +2,41 @@ use super::*;
 use acyclic_fs::{OperationId, WorkCounters};
 use proptest::prelude::*;
 
+fn generation_associations(digest: [u8; 32], root: [u8; 16]) -> [acyclic_fs::GenerationId; 5] {
+    use acyclic_fs::{Digest, FileId, GenerationId, ObjectId, ObjectKind, ObjectStorage};
+    let plain = GenerationId::new(Digest::from_bytes(digest));
+    let association = ObjectStorage {
+        locator: Digest::from_bytes(digest),
+        root_file_id: FileId::from_bytes(root),
+        origin_generation: Digest::from_bytes(digest),
+    };
+    let sealed = ObjectId {
+        kind: ObjectKind::GenerationRoot,
+        digest: plain.digest(),
+        storage: Some(association),
+    };
+    let mut variants = [plain, GenerationId::from_root(sealed), plain, plain, plain];
+    for field in 0..3 {
+        let mut storage = association;
+        let mut changed = digest;
+        changed[0] ^= 1;
+        match field {
+            0 => storage.locator = Digest::from_bytes(changed),
+            1 => {
+                let mut changed = root;
+                changed[0] ^= 1;
+                storage.root_file_id = FileId::from_bytes(changed);
+            }
+            _ => storage.origin_generation = Digest::from_bytes(changed),
+        }
+        variants[field + 2] = GenerationId::from_root(ObjectId {
+            storage: Some(storage),
+            ..sealed
+        });
+    }
+    variants
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     // Only an Applied record for this exact root and generation transition
@@ -9,11 +44,13 @@ proptest! {
     #[test]
     fn completion_requires_exact_original_root_and_transition(
         root in any::<[u8; 16]>(), from in any::<[u8; 32]>(), to in any::<[u8; 32]>(),
-        phase in 0usize..6, change in 0usize..4,
+        phase in 0usize..6, change in 0usize..4, from_case in 0usize..5, to_case in 0usize..5,
     ) {
         use acyclic_fs::{Digest, GenerationId, MaterializationIntent, MaterializationJournal, MaterializationPhase, MaterializationPlan, NativeRootIdentity};
-        let from = GenerationId::new(Digest::from_bytes(from));
-        let to = GenerationId::new(Digest::from_bytes(to));
+        let from_variants = generation_associations(from, root);
+        let to_variants = generation_associations(to, root);
+        let from = from_variants[from_case];
+        let to = to_variants[to_case];
         let phases = [MaterializationPhase::Preparing, MaterializationPhase::Prepared, MaterializationPhase::Applying, MaterializationPhase::Applied, MaterializationPhase::RollingBack, MaterializationPhase::RolledBack];
         let journal = MaterializationJournal {
             version: 1, revision: 1,
@@ -22,7 +59,7 @@ proptest! {
             preimages: Vec::new(), phase: phases[phase], applied: 0, restored: 0, work: WorkCounters::UNCHARGED, custody: None,
         };
         let mut actual_root = root;
-        let mutate = |id: GenerationId| { let mut bytes = id.digest().into_bytes(); bytes[0] ^= 1; GenerationId::new(Digest::from_bytes(bytes)) };
+        let mutate = |id: GenerationId| { let mut object = id.object_id(); let mut bytes = object.digest.into_bytes(); bytes[0] ^= 1; object.digest = Digest::from_bytes(bytes); GenerationId::from_root(object) };
         if change == 1 { actual_root[0] ^= 1; }
         let result = completed(&journal, NativeRootIdentity::from_bytes(actual_root), if change == 2 { mutate(from) } else { from }, if change == 3 { mutate(to) } else { to });
         prop_assert_eq!(result.is_ok(), change == 0);
@@ -30,6 +67,14 @@ proptest! {
         // Negative control: checking the phase alone acknowledges a foreign root
         // or transition. The production binding check must reject that shape.
         if phase == 3 && change != 0 { prop_assert!(journal.phase == MaterializationPhase::Applied); prop_assert!(result.is_err()); }
+        for other in from_variants.into_iter().filter(|other| *other != from) {
+            prop_assert_eq!(other.digest(), from.digest());
+            prop_assert!(completed(&journal, NativeRootIdentity::from_bytes(root), other, to).is_err());
+        }
+        for other in to_variants.into_iter().filter(|other| *other != to) {
+            prop_assert_eq!(other.digest(), to.digest());
+            prop_assert!(completed(&journal, NativeRootIdentity::from_bytes(root), from, other).is_err());
+        }
     }
 }
 

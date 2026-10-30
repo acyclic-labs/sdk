@@ -21,12 +21,12 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
-    fn refusal_admission_requires_an_operation_and_an_unstarted_call(step in any::<u32>(), call in "[a-z]{1,32}") {
+    fn tool_failure_settlement_preserves_admission_and_dispatch_custody(step in any::<u32>(), call in "[a-z]{1,32}") {
         for initialized in [false, true] {
             for started in [false, true] {
                 for empty in [false, true] {
                     for reason in [ToolFailureKind::Unavailable, ToolFailureKind::InvalidInput,
-                        ToolFailureKind::Refused, ToolFailureKind::ExecutorRejected,
+                        ToolFailureKind::ExecutorRejected,
                         ToolFailureKind::InvalidOutput, ToolFailureKind::ProjectionRejected,
                         ToolFailureKind::PublicationRejected] {
                         let call_id = if empty { "" } else { &call };
@@ -34,6 +34,7 @@ proptest! {
                         if started {
                             state.tools.insert((step, *blake3::hash(call_id.as_bytes()).as_bytes()), false, None)
                                 .map_err(|error| TestCaseError::fail(error.to_string()))?;
+                            state.pending_dispatches = 1;
                         }
                         let failure = ExecutionEvent::ToolFailed {
                             step, call_id: call_id.into(), reason,
@@ -41,9 +42,14 @@ proptest! {
                                 class: crate::executor::ToolErrorClass::Failed, message: "declined".into(),
                             },
                         };
-                        prop_assert_eq!(state.require_next(&failure, None).is_ok(),
-                            initialized && !empty && (reason.precedes_dispatch() != started),
+                        let valid = initialized && !empty && (reason == ToolFailureKind::ExecutorRejected || reason.precedes_dispatch() != started);
+                        prop_assert_eq!(state.require_next(&failure, None).is_ok(), valid,
                             "{:?}, initialized={}, started={}, empty={}", reason, initialized, started, empty);
+                        if valid {
+                            accept(&mut state, failure.clone()).map_err(|error| TestCaseError::fail(error.to_string()))?;
+                            prop_assert!(state.quiescent(None).map_err(|error| TestCaseError::fail(error.to_string()))?);
+                            prop_assert!(state.require_next(&failure, None).is_err(), "a settled failure cannot retire dispatch twice");
+                        }
                     }
                 }
             }
@@ -68,7 +74,8 @@ proptest! {
                 operation_id: OperationId::from_bytes([3; 16]), sequence,
                 idempotency_key: format!("refusal-{index}"),
                 event: ExecutionEvent::ToolFailed {
-                    step, call_id: format!("call-{index}"), reason: ToolFailureKind::Unavailable,
+                    step, call_id: format!("call-{index}"),
+                    reason: if index % 2 == 0 { ToolFailureKind::Unavailable } else { ToolFailureKind::ExecutorRejected },
                     cause: crate::executor::ToolFailureCause {
                         class: crate::executor::ToolErrorClass::NotFound, message: "unavailable".into(),
                     },

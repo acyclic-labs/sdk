@@ -105,12 +105,15 @@ impl ExecutionSummary {
             } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
-                // A refusal settles a call with no start; any other failure follows one.
+                // Admission and execution share the same ordinary failure. A failed
+                // admission has no dispatch to retire; a failed execution has one.
                 let recorded = self.tools.get(&(*step, key), io)?;
                 self.tail > 0
                     && !call_id.is_empty()
                     && cause.is_canonical()
-                    && if reason.precedes_dispatch() {
+                    && if *reason == crate::executor::ToolFailureKind::ExecutorRejected {
+                        recorded.is_none() || recorded == Some(&false)
+                    } else if reason.precedes_dispatch() {
                         recorded.is_none()
                     } else {
                         recorded == Some(&false)
@@ -315,6 +318,16 @@ impl ExecutionSummary {
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
+                let key = (
+                    *step,
+                    tool_key.ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "tool observation has no authenticated identity",
+                        )
+                    })?,
+                );
                 match event {
                     ExecutionEvent::ToolStarted { .. } => {
                         self.pending_dispatches =
@@ -326,7 +339,10 @@ impl ExecutionSummary {
                                 )
                             })?;
                     }
-                    ExecutionEvent::ToolFailed { reason, .. } if reason.precedes_dispatch() => {}
+                    ExecutionEvent::ToolFailed { reason, .. }
+                        if reason.precedes_dispatch()
+                            || (*reason == crate::executor::ToolFailureKind::ExecutorRejected
+                                && self.tools.get(&key, io)?.is_none()) => {}
                     _ => {
                         self.pending_dispatches =
                             self.pending_dispatches.checked_sub(1).ok_or_else(|| {
@@ -339,16 +355,7 @@ impl ExecutionSummary {
                     }
                 }
                 self.tools.insert(
-                    (
-                        *step,
-                        tool_key.ok_or_else(|| {
-                            canonical_boundary(
-                                io,
-                                crate::wire::ErrorCode::Storage,
-                                "tool observation has no authenticated identity",
-                            )
-                        })?,
-                    ),
+                    key,
                     !matches!(event, ExecutionEvent::ToolStarted { .. }),
                     io,
                 )?;
@@ -410,7 +417,8 @@ fn release_model(
     Ok(())
 }
 
-pub(super) const OBSERVATION_VERSION: u32 = 2;
+// Version 3 settles approval refusals through the ordinary tool-failure kind.
+pub(super) const OBSERVATION_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -475,7 +483,6 @@ impl PreparationRecord for Observation {
                 "publication_rejected",
                 "unavailable",
                 "invalid_input",
-                "refused",
                 "interrupted",
             ];
             let mut bytes = 0;

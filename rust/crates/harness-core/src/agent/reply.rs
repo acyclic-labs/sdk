@@ -7,10 +7,11 @@
 //! queued and read back in inbox order, and an approval response taken out of
 //! order resumes the waiting turn instead of starting an entry. So the entry
 //! answering a request is found by binary search over the agent's own committed
-//! range, with point reads through the canonical stream and no index or copy.
+//! range. A goal run joins its original request to its terminal conversation
+//! entry through the one reference committed with that entry; no output is copied.
 
 use super::{AgentRecord as _, AgentState, ConversationEntry, Error, IntentId, TurnInput};
-use acyclic_stream::{ReadRequest, StreamPath, StreamProvider};
+use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,10 @@ pub enum Reply {
         sequence: u64,
         /// The settled entry; its output is read through the agent's scoped reader.
         entry: ConversationEntry,
+        /// Original request when `entry` is its goal run's terminal turn.
+        /// Ordinary prompts answer with their own entry and no origin.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<Box<ConversationEntry>>,
     },
     /// Unread, queued or in the running turn.
     Pending,
@@ -59,10 +64,7 @@ pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
             std::cmp::Ordering::Equal => {
                 return match &entry.input {
                     TurnInput::Message { id: settled, .. } if settled == id => {
-                        Ok(Reply::Answered {
-                            sequence: middle,
-                            entry,
-                        })
+                        goal_reply(provider, state, middle, entry).await
                     }
                     _ => Err(Error::Conflict(
                         "the inbox sequence settled another request",
@@ -108,4 +110,60 @@ pub(super) async fn entry<P: crate::store::JournalProvider + ?Sized>(
         Some(record) if record.sequence == sequence => ConversationEntry::decode(&record.value),
         _ => Err(Error::Record("committed conversation entry is missing")),
     }
+}
+
+/// Joins only the run selected by this committed request. The terminal reference
+/// and conversation entry share one commit; a lagging checkpoint cannot expose
+/// that entry before its committed conversation tail.
+async fn goal_reply<P: crate::store::JournalProvider + ?Sized>(
+    provider: &P,
+    state: &AgentState,
+    sequence: u64,
+    request: ConversationEntry,
+) -> Result<Reply, Error> {
+    let Some(run) = request.goal else {
+        return Ok(Reply::Answered {
+            sequence,
+            entry: request,
+            origin: None,
+        });
+    };
+    let pending = || {
+        if request.inbox < state.dropped_before || matches!(state.phase, super::Phase::Done { .. })
+        {
+            Reply::Dropped
+        } else {
+            Reply::Pending
+        }
+    };
+    let mut records = match provider
+        .read(ReadRequest {
+            key: None,
+            path: super::goal::result(&state.path, run)?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+    {
+        Ok(records) => records,
+        Err(acyclic_stream::StreamError::NotFound) => return Ok(pending()),
+        Err(error) => return Err(Error::Stream(error)),
+    };
+    let Some(record) = records.try_next().await.map_err(Error::Stream)? else {
+        return Ok(pending());
+    };
+    let completed = super::goal::Completed::decode(&record.value)?;
+    if completed.sequence >= state.conversation_tail {
+        return Ok(Reply::Pending);
+    }
+    let entry = entry(provider, &state.path.conversation()?, completed.sequence).await?;
+    if completed.sequence < sequence || !entry.continues_goal(&state.path, run) {
+        return Err(Error::Record("goal completion names another run"));
+    }
+    Ok(Reply::Answered {
+        sequence: completed.sequence,
+        entry,
+        origin: Some(Box::new(request)),
+    })
 }

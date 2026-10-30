@@ -89,9 +89,6 @@ impl StockExecution<'_> {
                     ExecutionProgress::Pending(wait) => {
                         return Ok(ExecutionProgress::Pending(wait));
                     }
-                    ExecutionProgress::Rejected(reason) => {
-                        return Ok(ExecutionProgress::Rejected(reason));
-                    }
                     ExecutionProgress::Failed(reason) => {
                         return Ok(ExecutionProgress::Failed(reason));
                     }

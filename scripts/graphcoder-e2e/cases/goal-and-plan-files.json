@@ -76,8 +76,10 @@
     "requests": 5,
     "model_contains": [
       "Keep the current goal",
-      "Keep each Markdown plan",
-      "Continue the active goal in .volumes/scratch/GOAL.md."
+      "Keep each Markdown plan"
+    ],
+    "last_model_contains": [
+      "---\\nstatus: active\\n---\\nGOAL_E2E\\n"
     ],
     "tool_contains": [
       "GOAL.md",

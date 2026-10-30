@@ -94,9 +94,24 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             builder.forks.extend(spawn.request.mutations);
         }
     }
+    let mut sequence = prior_conversation;
     for out in &step.outs {
         match out {
-            Out::Conversation(record) => builder.append(conversation.clone(), record.clone()),
+            Out::Conversation(record) => {
+                builder.append(conversation.clone(), record.clone());
+                sequence = sequence
+                    .checked_add(1)
+                    .ok_or(Error::Record("agent conversation tail overflow"))?;
+            }
+            Out::GoalCompleted { run } => {
+                let sequence = sequence
+                    .checked_sub(1)
+                    .filter(|sequence| *sequence >= prior_conversation)
+                    .ok_or(Error::Record("goal completion has no conversation entry"))?;
+                let path = super::goal::result(path, *run)?;
+                builder.condition(CommitCondition::Absent { path: path.clone() });
+                builder.append(path, super::goal::Completed { sequence }.encode()?);
+            }
             Out::Checkpoint => {}
             Out::Send { to, record } => {
                 if matches!(

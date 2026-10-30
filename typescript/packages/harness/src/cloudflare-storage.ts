@@ -190,7 +190,6 @@ export class SqliteJournal {
 }
 
 function objectKey(value: Uint8Array): string {
-  if (value.length !== 33) throw new Error("STEP sqlite-object-key failed; recovery: supply the canonical 33-byte filesystem ObjectId");
   return Array.from(value, byte => byte.toString(16).padStart(2, "0")).join("");
 }
 

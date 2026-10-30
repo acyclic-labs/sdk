@@ -263,7 +263,7 @@ impl HostWorkspace {
         }
         verify_root(&self.mount_root)?;
         let owner = &*self.owner;
-        let mut state =
+        let state =
             crate::sync::owned::lock_owned(workspace::StateArc::clone(&self.workspace.state)).await;
         let (selected, pending) = self.workspace.selected_view().await?;
         let selected = selected.as_ref().unwrap_or_else(|| self.workspace.view());
@@ -275,24 +275,6 @@ impl HostWorkspace {
         )
         .await?;
         let view = self.workspace.spawned_project_view(&project).await?;
-        let key = project.storage_name(&mut None)?;
-        let mounts = if let Some(mounts) = state
-            .allocated_mounts
-            .get(&key)
-            .and_then(std::sync::Weak::upgrade)
-        {
-            mounts
-        } else {
-            state
-                .allocated_mounts
-                .retain(|_, mounts| mounts.strong_count() != 0);
-            let mounts = self
-                .workspace
-                .bound_mounts(&project, scratch, &signed)
-                .await?;
-            state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
-            mounts
-        };
         child_reference(reference)?;
         acyclic_fs::GitCompatRepository::new(
             selected.workspace().id(),
@@ -306,10 +288,17 @@ impl HostWorkspace {
         )
         .await
         .map_err(storage)?;
+        drop(state);
         let child_owner: Arc<dyn ViewOwner> = Arc::new(AgentOwner(child.clone()));
-        let workspace = self
+        let authority = self
             .workspace
-            .mount_task_view(view, &*child_owner, Some(Arc::clone(&mounts)), &signed)
+            .mount_authority
+            .as_ref()
+            .ok_or(Error::FilesystemAccessConfiguration("native mount owner"))?
+            .for_scope(&signed)?;
+        let (workspace, mounts) = self
+            .workspace
+            .bound_task_view(view, &project, scratch, &*child_owner, &authority)
             .await?;
         verify_root(&self.mount_root)?;
         let mut result = Self {

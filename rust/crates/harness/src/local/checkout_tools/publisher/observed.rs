@@ -48,7 +48,7 @@ impl CheckoutPublisher {
         let rebound = FileRef::new(
             file.volume().clone(),
             file.path().to_owned(),
-            hex::encode(capture.id().digest().into_bytes()),
+            hex::encode(capture.id().to_bytes().as_slice()),
             file.descriptor().clone(),
             file.display_name().to_owned(),
             &mut None,

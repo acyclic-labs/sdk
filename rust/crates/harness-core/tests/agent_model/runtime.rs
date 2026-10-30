@@ -51,6 +51,108 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn committed_controls_interrupt_a_held_turn_without_interrupting_ordinary_input() -> Result {
+    use acyclic_actors::guest::CancellationToken;
+    use std::sync::Mutex;
+    use tokio::sync::oneshot;
+
+    struct Held(Mutex<Option<oneshot::Sender<CancellationToken>>>);
+    impl TurnDriver for Held {
+        fn step<'a>(
+            &'a self,
+            _agent: &'a AgentState,
+            _cursor: u64,
+            _input: Option<Queued>,
+            cancellation: CancellationToken,
+        ) -> TurnFuture<'a> {
+            let started = self.0.lock().expect("held turn lock").take();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    started.send(cancellation.clone()).expect("turn observer");
+                    cancellation.cancelled().await;
+                }
+                Ok(TurnStep {
+                    reserved_children: 0,
+                    checkpoint: None,
+                    outs: Vec::new(),
+                    wait: Wait::Input,
+                    drops: None,
+                })
+            })
+        }
+    }
+
+    for archive in [false, true] {
+        let provider = Arc::new(MemoryStream::default());
+        let (started, observed) = oneshot::channel();
+        let host = AgentHost::new(
+            provider,
+            Held(Mutex::new(Some(started))),
+            ActorReference::new(b"account", b"agents", b"owner")?,
+            ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+            Arc::new(SystemClock),
+        )?;
+        let root = host.create(&intent("create"), adopted(id(1))).await?;
+        assert!(host.runtime().drain().await.is_empty());
+        let message = |name| -> Result<InboxRecord> {
+            Ok(InboxRecord::Message(Message {
+                from: user(),
+                id: intent(name),
+                body: Box::new(super::driver::file(name)?),
+                attachments: None,
+            }))
+        };
+        host.send(&root, &user(), &message("held")?).await?;
+        let drain = host.runtime().drain();
+        tokio::pin!(drain);
+        let cancellation = tokio::select! {
+            started = observed => started?,
+            failures = &mut drain => panic!("held turn ended before control: {failures:?}"),
+        };
+        host.send(&root, &user(), &message("ordinary")?).await?;
+        assert!(futures::poll!(&mut drain).is_pending());
+        assert!(
+            !cancellation.is_cancelled(),
+            "ordinary input interrupted the turn"
+        );
+
+        let delivered = if archive {
+            host.archive(&root, &user(), &intent("stop")).await?
+        } else {
+            host.send(
+                &root,
+                &user(),
+                &InboxRecord::Cancel(Control {
+                    by: user(),
+                    id: intent("stop"),
+                }),
+            )
+            .await?
+        };
+        assert!(matches!(delivered, Delivered::Committed { .. }));
+        // MemoryStream has the committed control ready. One delivery poll must
+        // signal the original token; an obsolete or overbroad prefix fails
+        // directly, without waiting for the handler's deadline.
+        let completed = futures::poll!(&mut drain);
+        assert!(
+            cancellation.is_cancelled(),
+            "committed control missed the held turn"
+        );
+        let failures = match completed {
+            std::task::Poll::Ready(failures) => failures,
+            std::task::Poll::Pending => drain.await,
+        };
+        assert!(failures.is_empty(), "{failures:?}");
+        let state = host.state(&root).await?;
+        assert_eq!(state.closed, archive);
+        if !archive {
+            assert_eq!(state.phase, Phase::Idle);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn committed_checkpoints_carry_final_tails_even_when_the_turn_must_be_shed() -> Result {
     for oversized in [false, true] {
         let provider = Arc::new(MemoryStream::default());

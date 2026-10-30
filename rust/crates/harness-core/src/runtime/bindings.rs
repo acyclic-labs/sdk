@@ -51,6 +51,23 @@ impl Bindings {
 }
 
 impl AgentHarness {
+    /// Selects an agent's workspace executor and project content together,
+    /// preserving this composition's scope and independent artifact storage.
+    /// The providers must already be bound to the selected project authority.
+    #[must_use]
+    pub fn with_workspace(
+        &self,
+        workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
+        content: ContentBindings,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            workspace_tools,
+            content: Some(content),
+            scope: self.scope.clone(),
+            artifacts: self.artifacts.clone(),
+        })
+    }
+
     /// The context for one agent turn. Its scope is this runtime's (tools,
     /// limits, run limits) plus the agent's volume `grants`; the agent's
     /// private volume reads and writes through `private`, and other volumes

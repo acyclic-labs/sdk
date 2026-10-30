@@ -125,13 +125,37 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         };
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
+        assert_eq!(model.requests().len(), 2);
         let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1");
         assert_eq!(text.is_some(), deny);
         if let Some(text) = text {
-            assert!(text.contains("(unauthorized)") && text.contains("echo is forbidden here"));
+            assert_eq!(
+                text,
+                "tool execution failed: unauthorized: echo is forbidden here"
+            );
         }
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
         assert_eq!(executor.execute(input, &journal).await?, output);
+        assert_eq!(model.requests().len(), 2);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
+        // A later denial cannot settle an effect whose start was already recorded.
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "started".into(),
+            name: "example.echo".into(),
+            arguments: json!({}),
+        };
+        let tool = executor.tools.get(&invocation.name, None, None)?.unwrap();
+        let started = StockExecution::ordinary(&executor)
+            .require_tool_policy(&journal, invocation.operation_id, &invocation, tool, true)
+            .await;
+        if deny {
+            assert!(
+                matches!(started, Err(Error::Indeterminate(id)) if id == invocation.operation_id)
+            );
+        } else {
+            assert!(matches!(started, Ok(None)));
+        }
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
     }
     Ok(())

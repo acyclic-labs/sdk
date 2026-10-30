@@ -188,9 +188,20 @@ pub struct ConversationEntry {
     /// How the turn settled; absent when it completed.
     #[serde(default, skip_serializing_if = "TurnOutcome::is_completed")]
     pub outcome: TurnOutcome,
+    /// The original goal run whose continuation this entry commits or settles.
+    #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<OperationId>,
 }
 
 impl ConversationEntry {
+    /// Whether this entry belongs to the authenticated self-continuation of
+    /// this exact agent and original goal run.
+    #[must_use]
+    pub fn continues_goal(&self, agent: &super::AgentPath, run: OperationId) -> bool {
+        self.goal == Some(run) && super::goal::continuing(agent, &self.input) == Some(run)
+    }
+
     /// The selection this entry makes for later turns: a completed checkpoint's.
     #[must_use]
     pub const fn checkpoint(&self) -> Option<&ContextAction> {
@@ -408,6 +419,7 @@ async fn settle_selection(
         input,
         output,
         outcome: TurnOutcome::Completed,
+        goal: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
@@ -424,6 +436,9 @@ fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
     let mut outs = vec![Out::Conversation(entry.encode()?)];
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
+    }
+    if let Some(run) = entry.goal {
+        outs.push(Out::GoalCompleted { run });
     }
     Ok(outs)
 }
@@ -484,16 +499,18 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // a cancelled entry holding its prompt and the answer it
                 // streamed so far, with no further model request.
                 let partial = open.outputs.partial(turn).await.map_err(host_error)?;
+                let goal = super::goal::continuing(&agent.path, &input);
                 let entry = ConversationEntry {
                     inbox,
                     input,
                     output: stage_text(&open, turn, partial).await?,
                     outcome: TurnOutcome::Cancelled,
+                    goal,
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
-                    outs: vec![Out::Conversation(entry.encode()?)],
+                    outs: settled(&entry)?,
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -537,14 +554,21 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }
                         _ => None,
                     };
+                    let run = super::goal::continuing(&agent.path, &input)
+                        .or_else(|| goal.as_ref().map(|_| turn));
                     let entry = ConversationEntry {
                         inbox,
                         input,
                         output,
                         outcome: TurnOutcome::Completed,
+                        goal: run,
                     };
                     // The tools' recorded effects commit with the turn's settlement.
-                    let mut outs = settled(&entry)?;
+                    let mut outs = if goal.is_some() {
+                        vec![Out::Conversation(entry.encode()?)]
+                    } else {
+                        settled(&entry)?
+                    };
                     outs.extend(goal);
                     // Every agent waits for input once its turn settles: a child
                     // stays open to its parent's messages until archived, and a
@@ -652,7 +676,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         drops: None,
                     });
                 }
-                ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),
                 ExecutionProgress::Failed(kind) => failed(kind.message()),
                 ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
             };

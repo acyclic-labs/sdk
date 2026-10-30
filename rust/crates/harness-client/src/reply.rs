@@ -325,14 +325,24 @@ fn validate_reply(
             | AgentCommand::Rewind { .. }
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
-        (AgentReply::Reply { reply }, AgentCommand::Reply { id, inbox, .. }) => {
+        (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
             // An answer is the entry of exactly the requested message.
             return match reply {
-                Reply::Answered { entry, .. }
-                    if entry.inbox != *inbox
-                        || !matches!(&entry.input, TurnInput::Message { id: settled, .. } if settled == id) =>
-                {
-                    Err(CommandError::Invalid)
+                Reply::Answered { entry, origin, .. } => {
+                    let request = origin.as_deref().unwrap_or(entry);
+                    if request.inbox != *inbox
+                        || !matches!(&request.input, TurnInput::Message { id: settled, .. } if settled == id)
+                        || match origin {
+                            Some(origin) => !origin
+                                .goal
+                                .is_some_and(|run| entry.continues_goal(agent, run)),
+                            None => entry.goal.is_some(),
+                        }
+                    {
+                        Err(CommandError::Invalid)
+                    } else {
+                        Ok(())
+                    }
                 }
                 _ => Ok(()),
             };
@@ -563,6 +573,117 @@ mod tests {
         assert!(matches!(
             decode_agent_reply(&bytes, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn reply_keeps_the_original_request_and_exact_goal_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::{
+            AgentId, OperationId,
+            agent::{ConversationEntry, GOAL_INTENT, Sender},
+            conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+            resources::ProviderRef,
+        };
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
+        let run = OperationId::from_bytes([2; 16]);
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
+                "scratch".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                &mut None,
+            )?,
+            "output.json".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"done", "application/json", &mut None)?,
+            "output".into(),
+            &mut None,
+        )?;
+        let origin = ConversationEntry {
+            inbox: 1,
+            input: TurnInput::Message {
+                from: Sender::User {
+                    principal: "user".into(),
+                },
+                id: IntentId::try_from("prompt")?,
+                body: Box::new(file.clone()),
+                attachments: None,
+            },
+            output: file.clone(),
+            outcome: Default::default(),
+            goal: Some(run),
+        };
+        let terminal = ConversationEntry {
+            inbox: 3,
+            input: TurnInput::Message {
+                from: Sender::Agent {
+                    path: agent.clone(),
+                },
+                id: IntentId::try_from(format!("{GOAL_INTENT}{run}:2"))?,
+                body: Box::new(file),
+                attachments: None,
+            },
+            ..origin.clone()
+        };
+        let command = AgentCommand::Reply {
+            agent: agent.clone(),
+            id: IntentId::try_from("prompt")?,
+            inbox: 1,
+        };
+        let encode = |entry, origin| {
+            encode_agent_reply(
+                &Ok(AgentReply::Reply {
+                    reply: Reply::Answered {
+                        sequence: 2,
+                        entry,
+                        origin,
+                    },
+                }),
+                &command,
+            )
+        };
+        let bytes = encode(terminal.clone(), Some(Box::new(origin.clone())))?;
+        assert!(
+            matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Reply {
+            reply: Reply::Answered { entry, origin: Some(origin), .. }
+        }) if entry.inbox == 3 && origin.inbox == 1)
+        );
+        // The first settlement cannot masquerade as terminal, nor can a
+        // foreign goal or sender replace the authenticated self-continuation.
+        assert!(matches!(
+            encode(origin.clone(), None),
+            Err(CommandError::Invalid)
+        ));
+        let mut foreign = terminal.clone();
+        foreign.goal = Some(OperationId::from_bytes([3; 16]));
+        assert!(matches!(
+            encode(foreign, Some(Box::new(origin.clone()))),
+            Err(CommandError::Invalid)
+        ));
+        let mut foreign = terminal;
+        let TurnInput::Message { from, .. } = &mut foreign.input else {
+            return Err("terminal input is not a message".into());
+        };
+        *from = Sender::User {
+            principal: "user".into(),
+        };
+        assert!(matches!(
+            encode(foreign, Some(Box::new(origin.clone()))),
+            Err(CommandError::Invalid)
+        ));
+        let ordinary = ConversationEntry {
+            goal: None,
+            ..origin
+        };
+        let bytes = encode(ordinary, None)?;
+        assert!(matches!(
+            decode_agent_reply(&bytes, &command)?,
+            Ok(AgentReply::Reply {
+                reply: Reply::Answered { origin: None, .. }
+            })
         ));
         Ok(())
     }

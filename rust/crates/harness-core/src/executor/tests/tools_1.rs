@@ -127,7 +127,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
 }
 
 #[tokio::test]
-async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Result<()> {
+async fn stock_approval_wait_returns_refusals_to_the_next_model_step() -> Result<()> {
     struct ApprovalPolicy;
     impl ToolPolicy for ApprovalPolicy {
         fn identity(&self) -> ComponentIdentity {
@@ -158,9 +158,24 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             })
         }
     }
-    for outcome in [
-        InteractionOutcome::Approved {},
-        InteractionOutcome::Denied {},
+    for (outcome, rejection) in [
+        (InteractionOutcome::Approved {}, None),
+        (
+            InteractionOutcome::Denied {},
+            Some(crate::InteractionRejection::Denied),
+        ),
+        (
+            InteractionOutcome::Declined {},
+            Some(crate::InteractionRejection::Declined),
+        ),
+        (
+            InteractionOutcome::Cancelled {},
+            Some(crate::InteractionRejection::Cancelled),
+        ),
+        (
+            InteractionOutcome::Expired {},
+            Some(crate::InteractionRejection::Expired),
+        ),
     ] {
         let model = Arc::new(scripted_model());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
@@ -227,50 +242,86 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound("approval".into()))?
             .1 = Some(outcome.clone());
-        if outcome == (InteractionOutcome::Approved {}) {
+        #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
+        {
+            // A hook's human approval shares the policy's ordinary failure
+            // settlement, including on replay and after dispatch.
+            let mut hook_executor = executor.clone();
+            hook_executor.hooks = Some(Arc::new(crate::hooks::BoundHooks {
+                rules: crate::hooks::Hooks::default(),
+                manifest: [19; 32],
+            }));
+            let hook = StockExecution::ordinary(&hook_executor);
+            let tool = hook_executor
+                .tools
+                .get(&invocation.name, None, None)?
+                .ok_or_else(|| Error::NotFound("approval tool".into()))?;
+            let hook_journal = Journal::default();
             assert!(matches!(
-                executor.execute_progress(input.clone(), &journal).await?,
-                ExecutionProgress::Ready(TurnOutput { steps: 2, .. })
+                hook.hook_approval(
+                    &hook_journal, input.operation_id, &invocation, tool,
+                    "Approve echo".into(), false,
+                ).await?,
+                Some(tool_execution::PolicyStop::Progress(ExecutionProgress::Pending(operation))) if operation == invocation.operation_id
             ));
-            assert_eq!(model.requests().len(), 2);
-            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-            executor.execute(input, &journal).await?;
-            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-        } else {
-            assert!(matches!(
-                executor.execute_progress(input.clone(), &journal).await?,
-                ExecutionProgress::Rejected(crate::InteractionRejection::Denied)
-            ));
+            {
+                let mut interactions = hook_journal.2.lock().unwrap();
+                assert_eq!(interactions.len(), 1);
+                interactions
+                    .values_mut()
+                    .next()
+                    .ok_or_else(|| Error::NotFound("hook approval".into()))?
+                    .1 = Some(outcome.clone());
+            }
+            for _ in 0..2 {
+                let progress = hook
+                    .hook_approval(
+                        &hook_journal,
+                        input.operation_id,
+                        &invocation,
+                        tool,
+                        "Approve echo".into(),
+                        false,
+                    )
+                    .await?;
+                match rejection {
+                    Some(expected) => assert!(matches!(
+                        progress, Some(tool_execution::PolicyStop::Failed(Error::InteractionRejected(actual))) if actual == expected
+                    )),
+                    None => assert!(progress.is_none()),
+                }
+            }
+            if rejection.is_some() {
+                assert!(matches!(
+                    hook.hook_approval(
+                        &hook_journal, input.operation_id, &invocation, tool,
+                        "Approve echo".into(), true,
+                    ).await,
+                    Err(Error::Indeterminate(operation)) if operation == invocation.operation_id
+                ));
+            }
             assert_eq!(model.requests().len(), 1);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
-            let reference = stage_json(
-                &journal,
-                input.operation_id,
-                "tool-start",
-                &crate::tool::RecordedInvocation {
-                    invocation: &invocation,
-                    metadata: &Value::Null,
-                },
-                None,
-            )
-            .await?;
-            journal
-                .append(
-                    input.operation_id,
-                    "tool:0:call-1:started",
-                    &ExecutionEvent::ToolStarted {
-                        step: 0,
-                        call_id: invocation.call_id.clone(),
-                        invocation: reference,
-                    },
-                    None,
-                )?
-                .await?;
-            assert!(
-                matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
-            );
-            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         }
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.steps, 2);
+        assert_eq!(output.text, "done");
+        assert_eq!(model.requests().len(), 2);
+        let requests = model.requests();
+        let failure = tool_error_text(&requests[1].messages, "call-1");
+        if let Some(reason) = rejection {
+            assert_eq!(
+                failure,
+                Some(format!("tool execution failed: interaction {reason}"))
+            );
+        } else {
+            assert_eq!(failure, None);
+        }
+        let expected_effects = usize::from(rejection.is_none());
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), expected_effects);
+        assert_eq!(executor.execute(input, &journal).await?, output);
+        assert_eq!(model.requests().len(), 2);
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), expected_effects);
     }
     Ok(())
 }
@@ -1064,8 +1115,12 @@ async fn stock_tool_validation_failure_returns_to_the_model_and_replays_without_
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
         let text = tool_error_text(&model.requests()[1].messages, "call-1");
-        let prefix = format!("{} (", expected.message());
-        assert!(text.is_some_and(|text| text.starts_with(&prefix) && text.contains("): ")));
+        if expected == ToolFailureKind::ExecutorRejected {
+            assert!(text.is_some_and(|text| text.starts_with("tool execution failed: ")));
+        } else {
+            let prefix = format!("{} (", expected.message());
+            assert!(text.is_some_and(|text| text.starts_with(&prefix) && text.contains("): ")));
+        }
         assert_eq!(executor.execute(input, &journal).await?, output);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         assert_eq!(model.requests().len(), 2);

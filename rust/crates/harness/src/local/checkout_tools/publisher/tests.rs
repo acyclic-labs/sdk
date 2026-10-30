@@ -6,6 +6,8 @@ mod observed_cost;
 mod recovery;
 
 thread_local! {
+    /// Negative control: synchronize and advance the mount from before checkout.
+    pub(super) static PUBLISH_TO_INITIAL_MOUNT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Counterfactual: reread and hash even an identical authenticated payload.
     pub(super) static REREAD_MATCHING_PAYLOAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Stops a publication after it owes its write, before the write.
