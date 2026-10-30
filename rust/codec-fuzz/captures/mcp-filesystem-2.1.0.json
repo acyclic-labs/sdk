@@ -63,5 +63,21 @@
     "de7704d3a321748c331aec282f45c4ad038d49d86e9910036ff971a7decb5392",
     "31ae89f956bb9e9fcb9a654e967d443faf254cf21c448affd33438b9a770a8aa"
   ],
-  "tools": 14
+  "tools": 14,
+  "outputs": [
+    {
+      "path": "harness_codecs/mcp-filesystem-2.1.0-stdio",
+      "bytes": 12868,
+      "sha256": "735ab618f5eb36a2d5b42e78337095d35bc2855e446bcbb411214825b5c3e78a",
+      "codec": "stdio",
+      "method": "tools/list"
+    },
+    {
+      "path": "harness_codecs/mcp-filesystem-2.1.0-result",
+      "bytes": 12651,
+      "sha256": "31ae89f956bb9e9fcb9a654e967d443faf254cf21c448affd33438b9a770a8aa",
+      "codec": "json",
+      "method": "tools/list"
+    }
+  ]
 }

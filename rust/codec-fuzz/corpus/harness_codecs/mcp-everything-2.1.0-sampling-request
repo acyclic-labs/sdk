@@ -1,0 +1,1 @@
+{"method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"Resource trigger-sampling-request context: codec capture"}}],"systemPrompt":"You are a helpful test server.","maxTokens":1,"temperature":0.7,"_meta":{"progressToken":0}},"jsonrpc":"2.0","id":0}

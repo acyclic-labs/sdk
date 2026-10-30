@@ -3,6 +3,67 @@ use prost::Message;
 pub mod filesystem_pages;
 mod mcp;
 
+/// External captures must reach their recorded successful service or callback
+/// admission; chunk-equivalent refusal alone cannot qualify a positive seed.
+pub fn admit_external(codec: &str, method: &str, bytes: &[u8]) -> Result<(), String> {
+    use acyclic_harness_core::{
+        OperationId, contract,
+        mcp::{
+            callbacks::{McpCallbackPolicy, McpCallbackRequest},
+            services,
+        },
+    };
+    let result = match codec {
+        "stdio" => {
+            if method != "tools/list" {
+                return Err("stdio capture is not discovery".into());
+            }
+            return acyclic_harness_core::mcp::stdio::codec_fuzz::admit(bytes)
+                .map(|_| ())
+                .map_err(|error| format!("captured stdio discovery refused: {error:?}"));
+        }
+        "json" | "sse" => acyclic_harness_core::mcp::http::codec_fuzz::admit(
+            bytes,
+            if codec == "json" {
+                "application/json"
+            } else {
+                "text/event-stream"
+            },
+            OperationId::from_bytes([if method == "initialize" { 6 } else { 7 }; 16]),
+            method == "initialize",
+        ),
+        "callback" => {
+            let message = contract::json_from_slice(bytes).map_err(|error| error.to_string())?;
+            let request = McpCallbackRequest {
+                parent: OperationId::from_bytes([7; 16]),
+                policy: McpCallbackPolicy {
+                    server: "capture".into(),
+                    revision: "2.1.0".into(),
+                    sampling: true,
+                    maximum_requests: 1,
+                },
+                message,
+            };
+            if request
+                .message
+                .get("method")
+                .and_then(serde_json::Value::as_str)
+                != Some(method)
+            {
+                return Err("captured callback method differs from provenance".into());
+            }
+            request.validate().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
+        _ => return Err(format!("unknown external capture codec {codec}")),
+    }
+    .map_err(|error| format!("captured {codec} response refused: {error:?}"))?;
+    if method != "initialize" {
+        services::validate_result(method, result, None).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
 /// Replay one named target through the same entry point used by libFuzzer.
 pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
     match target {

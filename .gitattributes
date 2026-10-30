@@ -17,6 +17,7 @@ rust/crates/auth/fuzz/corpus/** binary
 rust/codec-fuzz/corpus/*/* binary
 rust/crates/harness-providers/fuzz/corpus/*/* binary
 rust/codec-fuzz/captures/*.requests.jsonl binary
+rust/codec-fuzz/captures/*.stdout.jsonl binary
 
 # Preserve byte-exact patch context.
 patches/*.patch -whitespace

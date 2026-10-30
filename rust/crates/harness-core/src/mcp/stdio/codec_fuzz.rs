@@ -53,6 +53,11 @@ pub fn check(input: &[u8]) {
     }
 }
 
+/// Require the real discovery exchange to succeed for captured server stdout.
+pub fn admit(input: &[u8]) -> Result<Value, ErrorCode> {
+    parse(input, input.len().max(1)).map(|(_, result)| result)
+}
+
 /// Capture the client's actual first write. Successful response transcripts
 /// must be captured from a running server, rather than assembled here.
 pub fn seed() -> Result<Vec<u8>, Box<dyn std::error::Error>> {

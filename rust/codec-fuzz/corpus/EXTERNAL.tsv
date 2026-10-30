@@ -2,3 +2,21 @@
 # path	bytes	sha256	producer
 harness_codecs/mcp-filesystem-2.1.0-stdio	12868	735ab618f5eb36a2d5b42e78337095d35bc2855e446bcbb411214825b5c3e78a	@modelcontextprotocol/server-filesystem@2.1.0 stdio discovery; capture-mcp.mjs
 harness_codecs/mcp-filesystem-2.1.0-result	12651	31ae89f956bb9e9fcb9a654e967d443faf254cf21c448affd33438b9a770a8aa	@modelcontextprotocol/server-filesystem@2.1.0 stdio discovery; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-stdio	15170	0a75d8926ff2cbbae47ae349faa4dbb9f7b30e258d342db3e4e3cc1597c442bb	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-tools-list	11135	68f7ec8959261a40a1ce11f77b4b68a77c323d7f6a1e85419f6a0e522e6570d4	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-resources-list	1323	6c557336780b3b26d6b0f02f747665b780e255254f5d99d216b6d190f7fa1f0c	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-resources-templates-list	569	98d8451eb7f8033328b6f0d3bcaae25c102337e17f94f294f14b931b4e51425e	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-resources-read	2258	a5f11c5a71727d11f6b69a978d4e99385c91daf56a6873cc77b037cbe925125b	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-prompts-list	1078	d2ed9bd6b08b07a75b9d414b3f32b2e7ccee54c8b1ec941f272a95c3d54f058f	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-prompts-get	180	b033b1b072d0af8c8578198a030a7e9aba9686025fb7f765d8594b5bd498b63e	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-tools-call	130	e5606924a1b3207e15ff7ac9f88cc61abccf7aace7ad259efaf5aea19d43c7b8	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-sampling-request	299	b44da81df9edf77de3895f498547d5dd07a5c919df23e6a7da297b1076c14e32	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-sampling-refusal	216	58419205bc75c8e17d6644d6e65277b2c782ce601a3ef07f672e71dd82cbf376	@modelcontextprotocol/server-everything@2.1.0 stdio; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-initialize	4085	23d04497e9dc480860e1e199f8ca9c8d5cca50e8852c73843e66eb454fbb2785	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-tools-list	10557	747c89def61caa0721a57d54e488ca33fbbad913fe2829fd9bafe2f94464d085	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-resources-list	1435	ec2d95fddd8c893f9f767605d803daea7f3ce82a8425ba32d9cc939bd2d25409	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-resources-templates-list	681	49522b2a31490c3441e86918d5e5b181f8e6e9e99dd44cb393b1711fa3f031b8	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-resources-read	2370	dffa567d849ec2cfa5f39db7a6f73f80e339c4c59b78caf06406c7df0575940c	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-prompts-list	1190	cd08ccaaf0c8ae496f72dacb195d7e80bb10962a5191be971b53f452f8c15ec9	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-prompts-get	292	038a72b4d676c6a83f28d07fb37972068364bac4c69205a289478952f4e94ed4	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
+harness_codecs/mcp-everything-2.1.0-http-tools-call	242	ba33bebea2f4de2387947feabebda243d49cd07068edd5412df07b6f1a23f402	@modelcontextprotocol/server-everything@2.1.0 http; capture-mcp.mjs
