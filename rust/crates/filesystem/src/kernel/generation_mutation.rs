@@ -1729,7 +1729,7 @@ impl TransactionState {
             retained_name_bytes,
             TreeMutation::Remove {
                 name,
-                expected_file_id: expected,
+                expected_file_id: Some(binding.file_id),
             },
         );
         self.paths[state].binding = None;
