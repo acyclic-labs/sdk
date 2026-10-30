@@ -555,39 +555,28 @@ impl<M: Medium> Account<M> {
     async fn open_revisions(&self) -> Result<Issued, Error> {
         let key = self.incarnation_key();
         let account = AppliedRevisions::storage_scope("objects", self.prefix.as_bytes());
-        loop {
-            let Some(record) = self.medium.read(&key, None).await.map_err(medium)? else {
-                let incarnation = u128::from_be_bytes(version()?);
-                let record = incarnation_record(incarnation, 1);
-                if self.medium.create(&key, record).await.map_err(medium)? {
-                    self.medium.flush(&[key]).await.map_err(medium)?;
-                    return Ok(Issued::new(account, incarnation, 1));
-                }
-                continue;
-            };
-            let (incarnation, run) = match decode_incarnation(&record) {
-                Ok(claimed) => claimed,
-                // Torn before its flush: neither its run nor any earlier one
-                // can be told apart, so the account starts a new incarnation.
-                Err(_) if self.medium.volatile() => {
-                    self.medium.remove_if(&key, &record).await.map_err(medium)?;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            let run = run.checked_add(1).ok_or_else(corrupt)?;
-            let claimed = incarnation_record(incarnation, run);
-            if self
-                .medium
-                .replace(&key, &record, claimed)
-                .await
-                .map_err(medium)?
-            {
-                // A run claimed twice would reuse its revisions.
-                self.medium.flush(&[key]).await.map_err(medium)?;
-                return Ok(Issued::new(account, incarnation, run));
-            }
+        let observed = self.medium.read(&key, None).await.map_err(medium)?;
+        let (incarnation, run) = match observed.as_deref().map(decode_incarnation) {
+            Some(Ok((incarnation, run))) => (incarnation, run.checked_add(1).ok_or_else(corrupt)?),
+            // A torn, unflushed claim issued no durable authority. Replace
+            // its exact bytes once, so a competing repair remains fenced.
+            None => (u128::from_be_bytes(version()?), 1),
+            Some(Err(_)) if self.medium.volatile() => (u128::from_be_bytes(version()?), 1),
+            Some(Err(error)) => return Err(error),
+        };
+        let claimed = incarnation_record(incarnation, run);
+        let accepted = match observed {
+            Some(record) => self.medium.replace(&key, &record, claimed).await,
+            None => self.medium.create(&key, claimed).await,
         }
+        .map_err(medium)?;
+        if !accepted {
+            return Err(ErrorCode::Conflict.into());
+        }
+        // A run claimed twice would reuse its revisions. Only the accepted
+        // claim is flushed and installed as this owner's authority.
+        self.medium.flush(&[key]).await.map_err(medium)?;
+        Ok(Issued::new(account, incarnation, run))
     }
 
     fn envelope_key(&self, digest: &Digest) -> String {
@@ -1057,25 +1046,30 @@ impl<M: Medium> Account<M> {
         wanted: Envelope,
     ) -> Result<Put, Error> {
         let key = self.envelope_key(&digest);
-        let (envelope, created) = loop {
-            let fresh = Envelope {
-                version: version()?,
-                ..wanted.clone()
-            };
-            self.track(&digest, &fresh);
-            match self.medium.create(&key, fresh.encode().into()).await {
-                Ok(true) => break (fresh, true),
-                Ok(false) => self.untrack(&digest, &fresh.version),
-                Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
-                Err(error) => return Err(medium(error)),
+        let fresh = Envelope {
+            version: version()?,
+            ..wanted.clone()
+        };
+        self.track(&digest, &fresh);
+        let created = match self.medium.create(&key, fresh.encode().into()).await {
+            Ok(true) => true,
+            Ok(false) => {
+                self.untrack(&digest, &fresh.version);
+                false
             }
+            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+            Err(error) => return Err(medium(error)),
+        };
+        let envelope = if created {
+            fresh
+        } else {
             let Some((observed, existing)) = self.stored_envelope(&digest).await? else {
-                // Removed since, or torn by a crash.
-                self.clear_torn(&key).await?;
-                continue;
+                // The competing envelope disappeared. Recovery owns torn
+                // storage; publication returns this conditional cut once.
+                return Err(ErrorCode::Conflict.into());
             };
             let existing = Self::equal(existing, &wanted)?;
-            if existing.dying.is_some() || existing.condemned != 0 {
+            let live = if existing.dying.is_some() || existing.condemned != 0 {
                 let live = Envelope {
                     dying: None,
                     condemned: 0,
@@ -1086,20 +1080,19 @@ impl<M: Medium> Account<M> {
                     .replace(&key, &observed, live.encode().into())
                     .await
                 {
-                    Ok(true) => {}
-                    // A definite conflict names a different envelope cut.
-                    Ok(false) => continue,
+                    Ok(true) => live,
+                    Ok(false) => return Err(ErrorCode::Conflict.into()),
                     Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
                     Err(error) => return Err(medium(error)),
                 }
-                self.track(&digest, &live);
-                break (live, false);
-            }
+            } else {
+                existing
+            };
             // A version outside the unflushed set is durable, unless this put
             // writes to it; tracked first, so its writes are never invisible
             // to a commit.
-            self.track(&digest, &existing);
-            break (existing, false);
+            self.track(&digest, &live);
+            live
         };
         let verified = Verified {
             digest,
@@ -1129,8 +1122,8 @@ impl<M: Medium> Account<M> {
         })
     }
 
-    /// Writes `payload` as `envelope`'s version, replacing one a crash tore;
-    /// whether this call wrote it, or `None` when that is unknown.
+    /// Writes `payload` as `envelope`'s version once. A competing payload
+    /// that disappeared returns Conflict; an uncertain write is None.
     async fn write_payload(
         &self,
         digest: &Digest,
@@ -1138,26 +1131,22 @@ impl<M: Medium> Account<M> {
         payload: OwnedBytes,
     ) -> Result<Option<bool>, Error> {
         let key = self.payload_key(digest, &envelope.version);
-        loop {
-            match crate::availability::Restoration::write(
-                &self.state.availability,
-                *digest,
-                self.medium.create(&key, payload.clone()),
-            )
-            .await
-            {
-                Ok(true) => return Ok(Some(true)),
-                Ok(false) => {}
-                Err(MediumError::Ambiguous(_)) => return Ok(None),
-                Err(error) => return Err(medium(error)),
-            }
-            if self.complete(digest, envelope).await? {
-                return Ok(Some(false));
-            }
-            if let Some(torn) = self.medium.read(&key, None).await.map_err(medium)? {
-                self.medium.remove_if(&key, &torn).await.map_err(medium)?;
-            }
+        match crate::availability::Restoration::write(
+            &self.state.availability,
+            *digest,
+            self.medium.create(&key, payload),
+        )
+        .await
+        {
+            Ok(true) => return Ok(Some(true)),
+            Ok(false) => {}
+            Err(MediumError::Ambiguous(_)) => return Ok(None),
+            Err(error) => return Err(medium(error)),
         }
+        if self.complete(digest, envelope).await? {
+            return Ok(Some(false));
+        }
+        Err(ErrorCode::Conflict.into())
     }
 
     /// An existing envelope a put adopts: the same bytes, the same references.
