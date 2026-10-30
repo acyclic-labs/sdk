@@ -9,15 +9,17 @@ Candidates include event-driven loops and retry identity references; these requi
 | Baseline site | Kind | Replacement event or permitted exception | Status |
 | --- | --- | --- | --- |
 | `rust/crates/actors/proto/actors/v1/actors.proto:239` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:29` | Conformance quiet/alarm timing | Replace absence window and physical alarm lead time with retained logical clock control plus committed actor state/output cut; positive alarm delivery remains the original primitive | Pending |
+| `rust/crates/actors/src/conformance.rs:31` | Conformance quiet/alarm timing | Replace absence window and physical alarm lead time with retained logical clock control plus committed actor state/output cut; positive alarm delivery remains the original primitive | Pending |
 | `rust/crates/actors/src/conformance.rs:384` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/conformance.rs:395` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:475` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:511` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:535` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:563` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:475` | Timer / delay / interval | Deleted extra conformance deadline. Await original invocation/applied-state/checkpoint stream event; provider error or closed follow returns the original typed error. Paused-input and changed-anchor negative controls remain | Actioned |
+| `rust/crates/actors/src/conformance.rs:511` | Timer / delay / interval | Deleted extra conformance deadline. Await original invocation/applied-state/checkpoint stream event; provider error or closed follow returns the original typed error. Paused-input and changed-anchor negative controls remain | Actioned |
+| `rust/crates/actors/src/conformance.rs:535` | Retry / backoff / identity | Explicit re-send of the same operation validates its original committed input identity across pause/restart; there is no automatic retry loop | Allowed retry identity |
+| `rust/crates/actors/src/conformance.rs:563` | Timer / delay / interval | Deleted extra conformance deadline. Await original invocation/applied-state/checkpoint stream event; provider error or closed follow returns the original typed error. Paused-input and changed-anchor negative controls remain | Actioned |
 | `rust/crates/actors/src/conformance.rs:798` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:876` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/conformance.rs:926` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:876` | Timer / delay / interval | Deleted extra conformance deadline. Await original invocation/applied-state/checkpoint stream event; provider error or closed follow returns the original typed error. Paused-input and changed-anchor negative controls remain | Actioned |
+| `rust/crates/actors/src/conformance.rs:926` | Timer / delay / interval | Deleted extra conformance deadline. Await original invocation/applied-state/checkpoint stream event; provider error or closed follow returns the original typed error. Paused-input and changed-anchor negative controls remain | Actioned |
 | `rust/crates/actors/src/domain/formal_proofs.rs:175` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/domain/observations.rs:27` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/domain/observations.rs:65` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
@@ -88,14 +90,14 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/actors/src/local/runtime/interrupt.rs:181` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/limits.rs:34` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/tests.rs:330` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/tests.rs:844` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/tests.rs:960` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/tests.rs:1167` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/tests.rs:1405` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/tests.rs:1641` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/tests.rs:10` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/tests.rs:135` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/tests.rs:318` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:844` | Loop (inspect progress source) | Each recheck follows a real record on the original same-commit state stream; closed producer returns an error. No timer, periodic probe or retry budget exists | Actioned |
+| `rust/crates/actors/src/local/runtime/tests.rs:960` | Timed wait / readiness | Deleted test-level timeout around the original actor control/delivery future. Real committed pause, available admission or caller-selected manifest deadline owns completion; existing control assertions retain original state and output evidence | Actioned |
+| `rust/crates/actors/src/local/runtime/tests.rs:1167` | Timed wait / readiness | Deleted test-level timeout around the original actor control/delivery future. Real committed pause, available admission or caller-selected manifest deadline owns completion; existing control assertions retain original state and output evidence | Actioned |
+| `rust/crates/actors/src/local/runtime/tests.rs:1405` | Retry / backoff / identity | Exact same attempt identity replays its own committed result, with an explicit changed-attempt conflict control; no automatic retry loop | Allowed retry identity |
+| `rust/crates/actors/src/local/runtime/tests.rs:1641` | Timed wait / readiness | Deleted test-level timeout around the original actor control/delivery future. Real committed pause, available admission or caller-selected manifest deadline owns completion; existing control assertions retain original state and output evidence | Actioned |
+| `rust/crates/actors/src/local/tests.rs:10` | Retry / backoff / identity | Explicit re-send of the original actor operation/publication must recover the same state/reply records across real store reopen; no automatic retry loop | Allowed retry identity |
+| `rust/crates/actors/src/local/tests.rs:135` | Retry / backoff / identity | Explicit re-send of the original actor operation/publication must recover the same state/reply records across real store reopen; no automatic retry loop | Allowed retry identity |
+| `rust/crates/actors/src/local/tests.rs:318` | Timed wait / readiness | Await the already-registered original state follow after the real atomic publication. Pause/resume and foreign-history controls precede the same waiter; no test timer remains | Actioned |
 | `rust/crates/actors/src/timers.rs:139` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/fixtures/authoring/guest.ts:13` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/fixtures/authoring/guest.ts:141` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |

@@ -959,11 +959,7 @@ async fn an_unclaimed_actor_pauses_before_its_first_delivery() -> TestResult {
         Arc::new(Package::new()?),
         Arc::new(Manual(AtomicU64::new(1))),
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.pause(&address, true),
-    )
-    .await??;
+    runtime.pause(&address, true).await?;
     assert_eq!(
         store.load(&address).await?.state().map(State::epoch),
         Some(0)
@@ -1166,11 +1162,7 @@ async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
         2,
         "queued duplicates cannot occupy active delivery permits"
     );
-    tokio::time::timeout(
-        std::time::Duration::from_secs(1),
-        runtime.drain_actor(&cold),
-    )
-    .await??;
+    runtime.drain_actor(&cold).await?;
     assert_eq!(
         records(&*provider, "out/duplicate-cold").await?,
         vec![Bytes::from_static(b"r0")]
@@ -1639,8 +1631,7 @@ fn refused(failures: &[(ActorReference, Error)], reason: &str) -> bool {
 #[tokio::test]
 async fn manifest_limits_bound_handler_time_and_checkpoint_size() -> TestResult {
     let stalled = run_limited(Limited::new(50, 1 << 16, true)?);
-    let (failures, published) =
-        tokio::time::timeout(std::time::Duration::from_secs(5), stalled).await??;
+    let (failures, published) = stalled.await?;
     assert!(refused(&failures, "timeout"), "{failures:?}");
     assert!(published.is_empty());
     // Control: the same package within its limits publishes.

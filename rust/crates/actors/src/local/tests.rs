@@ -317,7 +317,7 @@ async fn wait_applied_retains_its_cut_across_pause_and_never_consumes_input() ->
             key("applied/publish")?,
         )
         .await?;
-    let applied = tokio::time::timeout(std::time::Duration::from_secs(1), waiter).await??;
+    let applied = waiter.await?;
     assert_eq!(applied.cut(), &cut);
     assert_eq!(applied.revision(), resumed.tail + 1);
     assert_eq!(

@@ -446,47 +446,14 @@ pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     let run = target.namespace();
     ordered(target, run).await?;
     applied(target, run).await?;
-    bounded_case(target, "invoked", BUDGET_MS, invoked(target, run)).await?;
-    bounded_case(
-        target,
-        "invocation-failure",
-        BUDGET_MS,
-        invocation_failure(target, run),
-    )
-    .await?;
-    bounded_case(
-        target,
-        "shared-invocation",
-        BUDGET_MS,
-        shared_invocation(target, run),
-    )
-    .await?;
-    bounded_case(target, "reserved", 2 * BUDGET_MS, reserved(target, run)).await?;
+    invoked(target, run).await?;
+    invocation_failure(target, run).await?;
+    shared_invocation(target, run).await?;
+    reserved(target, run).await?;
     alarms(target, run).await?;
     paused(target, run).await?;
     interrupted(target, run).await?;
     restarted(target, run).await
-}
-
-/// A backend that never publishes a response must fail the verifier, rather
-/// than retaining an unbounded public invocation wait in the suite. The
-/// reservation case includes its deliberate lease-expiry wait in this budget.
-async fn bounded_case<T: Target + ?Sized>(
-    target: &T,
-    case: &'static str,
-    budget_ms: u64,
-    future: impl std::future::Future<Output = Result<(), Failure>>,
-) -> Result<(), Failure> {
-    let deadline = target
-        .clock()
-        .sleep_until(target.clock().now_unix_ms().saturating_add(budget_ms));
-    match futures::future::select(Box::pin(future), deadline).await {
-        futures::future::Either::Left((result, _)) => result,
-        futures::future::Either::Right(_) => Err(Failure::Violation {
-            case,
-            detail: "backend did not complete committed operations within the case budget".into(),
-        }),
-    }
 }
 
 /// One operation survives queued retries, pause, restart and a lost response.
@@ -513,22 +480,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         .ok_or(Error::Invalid("invocation fixture input is missing"))?
         .map_err(Error::from)?;
     let cut = AppliedCut::through("inbox".into(), fixture.inbox.clone(), &input)?;
-    let deadline = target
-        .clock()
-        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
-    match futures::future::select(
-        Box::pin(target.store().wait_applied(&fixture.actor, cut)),
-        deadline,
-    )
-    .await
-    {
-        futures::future::Either::Left((result, _)) => {
-            result?;
-        }
-        futures::future::Either::Right(_) => {
-            return fixture.violation("initial input was not applied".into());
-        }
-    }
+    target.store().wait_applied(&fixture.actor, cut).await?;
     target.pause(&fixture.actor, true).await?;
     let invocation = Invocation::new(
         fixture.actor.clone(),
@@ -565,15 +517,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         return fixture.violation("restart lost queued operation or pause".into());
     }
     target.pause(&fixture.actor, false).await?;
-    let deadline = target
-        .clock()
-        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
-    let committed = match futures::future::select(waiting, deadline).await {
-        futures::future::Either::Left((result, _)) => result?,
-        futures::future::Either::Right(_) => {
-            return fixture.violation("committed invocation missed its reply".into());
-        }
-    };
+    let committed = waiting.await?;
     let receipt = committed.receipt();
     if committed.response().as_ref() != b"emit"
         || receipt.ticket() != &ticket
@@ -952,28 +896,13 @@ async fn wait_pool_used<T: Target + ?Sized>(
         .await
         .map_err(Error::from)?;
     let mut records = acyclic_stream::records_only(records);
-    let wait = async {
-        while let Some(record) = records.next().await {
-            let state = crate::local::State::decode(&record.map_err(Error::from)?.value)?;
-            if used(&state)? == Some(expected) {
-                return Ok(());
-            }
-        }
-        fixture.violation("reservation state observation closed".into())
-    };
-    let deadline = fixture.target.clock().sleep_until(
-        fixture
-            .target
-            .clock()
-            .now_unix_ms()
-            .saturating_add(BUDGET_MS),
-    );
-    match futures::future::select(Box::pin(wait), deadline).await {
-        futures::future::Either::Left((result, _)) => result,
-        futures::future::Either::Right(_) => {
-            fixture.violation(format!("reservation units did not reach {expected}"))
+    while let Some(record) = records.next().await {
+        let state = crate::local::State::decode(&record.map_err(Error::from)?.value)?;
+        if used(&state)? == Some(expected) {
+            return Ok(());
         }
     }
+    Err(Error::Stream(StreamError::Unavailable).into())
 }
 
 /// A committed input cut is observed through the same original state stream.
@@ -1009,15 +938,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         return fixture.violation("wait applied consumed a paused input".into());
     }
     target.pause(&fixture.actor, false).await?;
-    let deadline = target
-        .clock()
-        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
-    let observed = match futures::future::select(wait, deadline).await {
-        futures::future::Either::Left((observed, _)) => observed?,
-        futures::future::Either::Right(_) => {
-            return fixture.violation("wait applied missed the committed wake".into());
-        }
-    };
+    let observed = wait.await?;
     if observed.cut() != &cut
         || observed
             .snapshot()
