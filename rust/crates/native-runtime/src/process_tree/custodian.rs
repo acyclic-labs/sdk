@@ -17,6 +17,7 @@
 //! leaves the owner's handle to kill the tree when the owner exits, and the
 //! owner's next tree starts a new custodian.
 
+use super::custodian_admission::{self as admission, Secret};
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::io::{self, BufRead as _, BufReader, Write as _};
@@ -192,9 +193,10 @@ impl Custodian {
         &self.identity
     }
 
-    /// Where a member admits a suspended process of `tree` it started itself.
-    pub(super) fn admission(&self, tree: usize) -> String {
-        format!("{}/{tree}", self.endpoint)
+    /// Where a member admits a suspended process of `tree` it started
+    /// itself, with the tree's admission secret.
+    pub(super) fn admission(&self, tree: usize, secret: &Secret) -> String {
+        format!("{}/{tree}/{}", self.endpoint, admission::encode(secret))
     }
 
     /// Hands `tree`'s Job and its suspended first member, `process`, to the
@@ -204,6 +206,7 @@ impl Custodian {
     pub(super) fn open(
         self: &Arc<Self>,
         tree: usize,
+        secret: &Secret,
         job: HANDLE,
         process: HANDLE,
     ) -> io::Result<Link> {
@@ -222,17 +225,28 @@ impl Custodian {
                     PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
                     0,
                 )?,
-                duplicate(ready.as_raw_handle().cast(), target, 0, DUPLICATE_SAME_ACCESS)?,
-                duplicate(done.as_raw_handle().cast(), target, 0, DUPLICATE_SAME_ACCESS)?,
+                duplicate(
+                    ready.as_raw_handle().cast(),
+                    target,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )?,
+                duplicate(
+                    done.as_raw_handle().cast(),
+                    target,
+                    0,
+                    DUPLICATE_SAME_ACCESS,
+                )?,
             ]
         };
         writeln!(
             self.input.lock().map_err(|_| poisoned())?,
-            "{tree} {} {} {} {}",
+            "{tree} {} {} {} {} {}",
             handed[0].expose_provenance(),
             handed[1].expose_provenance(),
             handed[2].expose_provenance(),
-            handed[3].expose_provenance()
+            handed[3].expose_provenance(),
+            admission::encode(secret)
         )?;
         // Done before ready is the custodian's refusal; its exit is its loss.
         match wait_any(&[
@@ -386,6 +400,7 @@ struct Opened {
     process: HANDLE,
     ready: HANDLE,
     done: HANDLE,
+    secret: Secret,
 }
 
 // SAFETY: plain kernel handle values this custodian owns, with no thread
@@ -406,6 +421,7 @@ impl Opened {
             process: handle()?,
             ready: handle()?,
             done: handle()?,
+            secret: admission::decode(fields.next()?)?,
         })
     }
 }
@@ -416,6 +432,8 @@ struct Tree {
     job: HANDLE,
     done: HANDLE,
     members: usize,
+    /// What an external admission of a member of this tree must present.
+    secret: Secret,
 }
 
 /// The custodian: watches each tree's Job, kills every tree when the owner
@@ -496,7 +514,13 @@ fn serve() -> io::Result<()> {
             }
             super::custodian_admission::ADMIT => {
                 let request = requests.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
-                let admitted = state.admit(request.tree, request.pid);
+                // Only a holder of the tree's secret may name its members.
+                let admitted = match state.trees.get(&request.tree) {
+                    Some(tree) if admission::matches(&tree.secret, &request.secret) => {
+                        state.admit(request.tree, request.pid)
+                    }
+                    _ => Ok(false),
+                };
                 let _ = request
                     .reply
                     .send(admitted.as_ref().is_ok_and(|admitted| *admitted));
@@ -549,17 +573,19 @@ impl State {
             job: opened.job,
             done: opened.done,
             members: 0,
+            secret: opened.secret,
         };
         // SAFETY: the handed-over Job and an initialized association.
-        let associated = u32::try_from(size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>())
-            .is_ok_and(|size| unsafe {
+        let associated = u32::try_from(size_of::<JOBOBJECT_ASSOCIATE_COMPLETION_PORT>()).is_ok_and(
+            |size| unsafe {
                 SetInformationJobObject(
                     opened.job,
                     JobObjectAssociateCompletionPortInformation,
                     (&raw const association).cast(),
                     size,
                 ) != 0
-            });
+            },
+        );
         let watched = if associated {
             self.members
                 .watch(&mut tree, opened.tree, opened.process)
@@ -652,10 +678,7 @@ impl State {
 
 /// Reads each tree the owner hands over and posts it to `port`; posts the
 /// end of the owner's input once it closes.
-fn read_trees(
-    mut input: BufReader<io::Stdin>,
-    port: HANDLE,
-) -> io::Result<mpsc::Receiver<Opened>> {
+fn read_trees(mut input: BufReader<io::Stdin>, port: HANDLE) -> io::Result<mpsc::Receiver<Opened>> {
     let (send, receive) = mpsc::channel();
     let port = port.expose_provenance();
     std::thread::Builder::new()
