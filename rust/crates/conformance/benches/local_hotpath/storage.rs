@@ -363,7 +363,11 @@ async fn actor_delivery(
         let drained = {
             // The scope closes its producer on success, error or cancellation.
             let _scope = scope;
-            Box::pin(runtime.drain_actor(&actor)).await
+            let result = Box::pin(runtime.drain_actor(&actor)).await;
+            if index == 0 {
+                fixture.entries.check_owned_scope(actor.clone(), expected)?;
+            }
+            result
         };
         let elapsed = started.elapsed();
         drained?;

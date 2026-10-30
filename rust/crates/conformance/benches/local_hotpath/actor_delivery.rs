@@ -34,7 +34,7 @@ impl std::error::Error for EntryError {}
 struct Pending {
     actor: ActorReference,
     sequence: u64,
-    sender: oneshot::Sender<std::result::Result<Instant, EntryError>>,
+    sender: Option<oneshot::Sender<std::result::Result<Instant, EntryError>>>,
 }
 
 #[derive(Default)]
@@ -73,7 +73,7 @@ impl Entries {
         *pending = Some(Pending {
             actor,
             sequence,
-            sender,
+            sender: Some(sender),
         });
         Ok((Scope(self.clone()), receiver))
     }
@@ -86,6 +86,24 @@ impl Entries {
 
     pub(super) fn calls(&self) -> u64 {
         self.calls.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn check_owned_scope(
+        self: &Arc<Self>,
+        actor: ActorReference,
+        sequence: u64,
+    ) -> Result {
+        match self.arm(actor, sequence) {
+            Err(error)
+                if error.downcast_ref::<EntryError>()
+                    == Some(&EntryError::ConcurrentObservation) =>
+            {
+                emit(
+                    serde_json::json!({"schema": 1, "kind": "negative_control", "control": "rearm after real handler entry before scope retirement", "result": "typed concurrent observation"}),
+                )
+            }
+            _ => Err("handler-entry producer custody ended before its delivery scope".into()),
+        }
     }
 
     pub(super) async fn check_dropped_producer(self: &Arc<Self>, actor: ActorReference) -> Result {
@@ -122,11 +140,12 @@ impl Handler for Observed {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
+            .as_mut()
+            && let Some(sender) = pending.sender.take()
         {
             let expected = pending.actor == delivery.actor
                 && matches!(&delivery.trigger, Trigger::Record { sequence, .. } if *sequence == pending.sequence);
-            let _ = pending.sender.send(if expected {
+            let _ = sender.send(if expected {
                 Ok(entered)
             } else {
                 Err(EntryError::UnexpectedDelivery)
