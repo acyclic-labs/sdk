@@ -162,6 +162,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_fs::native_ownership_codec::seeds() {
+        save(
+            "filesystem_codecs",
+            name,
+            &bytes,
+            "native ownership receipt production encoder with explicit test identities",
+            &mut manifest,
+        )?;
+    }
     save(
         "filesystem_codecs",
         "usn-checkpoint",
