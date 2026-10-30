@@ -475,6 +475,7 @@ pub enum TipProof {
         ResourceGrantProto,
         ExecutionGrantProto,
         BillingGrantProto,
+        FilesystemGrantProto,
         SocketPortRangeProto,
         SocketHostRuleProto,
         WebsocketConnectGrantProto,

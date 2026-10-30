@@ -6,9 +6,9 @@
 //! signed records, never from raw values, so they cannot be forged.
 use super::follower::{Account, Applied, EnvironmentFrontier, decode};
 use crate::{
-    BIRTH_DOMAIN, ENVIRONMENT_DOMAIN, KEY_DOMAIN, KEYRING_DOMAIN,
+    BIRTH_DOMAIN, ENVIRONMENT_DOMAIN, KEY_DOMAIN, KEYRING_DOMAIN, POSSESSION_DOMAIN,
     contract::*,
-    crypto::{BlockId, claims_message},
+    crypto::{BlockId, claims_message, public_key, verify_signature},
     revocation,
     verify::VerifyError,
 };
@@ -131,23 +131,15 @@ impl Issuer {
         root: SigningKey,
         now: u64,
     ) -> Result<(AccountRoot, Vec<Vec<u8>>), VerifyError> {
-        let mut account = AccountRoot {
-            root,
-            frontier: KeyringFrontier::resume(id, &[], &[])?,
-        };
-        let keyring = self.keyring(&mut account, now)?;
-        let checkpoint = account.publish(
-            RevocationPublication::Checkpoint(RevocationCheckpoint {
-                account_id: account.frontier.id.clone(),
-                sequence: 1,
-                retired_before_unix_seconds: 0,
-                minimum_key_epoch: 0,
-                keys: vec![],
-                blocks: vec![],
-                issued_at_unix_seconds: now,
-            }),
+        let id = id.into();
+        let frontier = KeyringFrontier::resume(id.clone(), &[], &[])?;
+        let keyring = self.keyring_for(
+            &frontier,
+            &root.verifying_key(),
+            frontier.minimum_key_epoch(),
             now,
         )?;
+        let (account, checkpoint) = AccountRoot::genesis(id, root, &self.anchor(), &keyring, now)?;
         Ok((account, vec![keyring, checkpoint]))
     }
 
@@ -389,7 +381,74 @@ impl KeyringFrontier {
     }
 }
 
+/// Verifies `proof` that the holder of `root` signed `birth`, which must
+/// name `root` as its genesis key: what the environment checks before it
+/// signs a keyring setting a customer-held root.
+///
+/// # Errors
+/// A Birth naming another key, or a proof over another Birth or by another
+/// key.
+pub fn verify_possession(birth: &Birth, root: &[u8], proof: &[u8]) -> Result<(), VerifyError> {
+    if birth.genesis_public_key != root {
+        return Err(VerifyError::Signature);
+    }
+    let mut message = Vec::new();
+    claims_message(
+        &mut message,
+        POSSESSION_DOMAIN,
+        &BirthProto::from(birth.clone()),
+    )?;
+    verify_signature(&public_key(root)?, &message, proof)
+}
+
 impl AccountRoot {
+    /// Creates custody of `id` under a root only its holder has: replays the
+    /// account's first keyring, environment-signed over an empty frontier
+    /// (see [`Issuer::keyring_for`]), through the follower's validation,
+    /// requires it to name `root`, then signs the first revocation
+    /// checkpoint. Returns the custody and the checkpoint to publish after
+    /// the keyring.
+    ///
+    /// # Errors
+    /// A keyring that does not apply to a new account or names another root.
+    pub fn genesis(
+        id: impl Into<String>,
+        root: SigningKey,
+        environment: &[BlockId],
+        keyring: &[u8],
+        now: u64,
+    ) -> Result<(Self, Vec<u8>), VerifyError> {
+        let mut frontier = KeyringFrontier::resume(id, &[], &[])?;
+        frontier.apply(keyring, environment, now)?;
+        if frontier.root() != Some(root.verifying_key().to_bytes()) {
+            return Err(VerifyError::Trust);
+        }
+        let mut account = Self { root, frontier };
+        let checkpoint = account.publish(
+            RevocationPublication::Checkpoint(RevocationCheckpoint {
+                account_id: account.frontier.id.clone(),
+                sequence: 1,
+                retired_before_unix_seconds: 0,
+                minimum_key_epoch: 0,
+                keys: vec![],
+                blocks: vec![],
+                issued_at_unix_seconds: now,
+            }),
+            now,
+        )?;
+        Ok((account, checkpoint))
+    }
+
+    /// `root`'s proof that it holds the key `birth` names, for
+    /// [`verify_possession`]. It precedes the account's custody: the
+    /// environment checks it before the first keyring exists.
+    ///
+    /// # Errors
+    /// When the Birth cannot be encoded.
+    pub fn possession_proof(root: &SigningKey, birth: &Birth) -> Result<Vec<u8>, VerifyError> {
+        sign(root, POSSESSION_DOMAIN, &BirthProto::from(birth.clone()))
+    }
+
     /// Restores custody of `id` under `root`: [`KeyringFrontier::resume`],
     /// then requires `root` to be the current root with a revocation
     /// checkpoint applied.

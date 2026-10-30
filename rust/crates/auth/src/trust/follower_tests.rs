@@ -348,6 +348,46 @@ fn a_public_frontier_rotates_a_root_the_issuer_never_holds() {
 }
 
 #[test]
+fn a_customer_root_proves_possession_then_creates_its_account() {
+    let issuer = Issuer::new("test", key(1));
+    let anchor = issuer.anchor();
+    let customer = key(6);
+    let public = customer.verifying_key().to_bytes();
+    let birth = issuer
+        .birth("customer", &customer.verifying_key(), NOW)
+        .unwrap()
+        .birth;
+    let proof = AccountRoot::possession_proof(&customer, &birth).unwrap();
+    crate::trust::verify_possession(&birth, &public, &proof).unwrap();
+    // Negative controls: a proof over another Birth, by another key, or for
+    // a Birth naming another key.
+    let mut other = birth.clone();
+    other.account_id = "other".into();
+    assert!(crate::trust::verify_possession(&other, &public, &proof).is_err());
+    let forged = AccountRoot::possession_proof(&key(7), &birth).unwrap();
+    assert!(crate::trust::verify_possession(&birth, &public, &forged).is_err());
+    assert!(
+        crate::trust::verify_possession(&birth, &key(7).verifying_key().to_bytes(), &forged)
+            .is_err()
+    );
+
+    // The environment signs the first keyring without the root's key; the
+    // root alone signs the checkpoint, and custody then resumes.
+    let empty = KeyringFrontier::resume("customer", &[], &[]).unwrap();
+    let keyring = issuer
+        .keyring_for(&empty, &customer.verifying_key(), 1, NOW)
+        .unwrap();
+    // Negative control: a keyring naming another root is refused.
+    assert_eq!(
+        AccountRoot::genesis("customer", key(7), &anchor, &keyring, NOW).err(),
+        Some(VerifyError::Trust)
+    );
+    let (_, checkpoint) =
+        AccountRoot::genesis("customer", customer.clone(), &anchor, &keyring, NOW).unwrap();
+    assert!(AccountRoot::resume("customer", customer, &anchor, &[&keyring, &checkpoint]).is_ok());
+}
+
+#[test]
 fn environment_rotation_replays_and_refuses_retired_signers() {
     let issuer = Issuer::new("test", key(1));
     let successor = Issuer::new("test", key(5));
