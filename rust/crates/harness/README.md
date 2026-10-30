@@ -156,3 +156,8 @@ scope and captured exact-reference byte map to invoke the same Rust constructor.
 Ancestor files require explicit owner approvals; a parent cannot delegate an
 unrelated owner's private file. See the [contract and verification map](docs/model-request-properties.md)
 for assumptions, negative controls and the boundary with agent composition.
+
+`AgentPath::contains` checks canonical agent subtree containment by borrowing
+the complete admitted ancestry. Parsing retains its original input and validates
+IDs without temporary owned copies. Containment grants no permission: the
+shared hosting path still checks the current caller and owner policy on use.

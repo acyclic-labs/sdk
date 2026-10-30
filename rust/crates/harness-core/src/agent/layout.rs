@@ -86,21 +86,26 @@ impl AgentId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    fn validate(value: &str) -> Result<(), Error> {
+        if value.len() == ID_HEX
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Ok(())
+        } else {
+            Err(Error::Path("agent id is not 32 lowercase hex digits"))
+        }
+    }
 }
 
 impl TryFrom<String> for AgentId {
     type Error = Error;
 
     fn try_from(value: String) -> Result<Self, Error> {
-        if value.len() == ID_HEX
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Ok(Self(value))
-        } else {
-            Err(Error::Path("agent id is not 32 lowercase hex digits"))
-        }
+        Self::validate(&value)?;
+        Ok(Self(value))
     }
 }
 
@@ -157,6 +162,17 @@ impl AgentPath {
             text: parent.to_owned(),
             depth: self.depth - 1,
         })
+    }
+
+    /// Whether `agent` is this canonical agent or one of its descendants.
+    /// Compares the complete ancestry once without allocating parent paths.
+    /// This checks routing containment, not the caller's current authority.
+    #[must_use]
+    pub fn contains(&self, agent: &Self) -> bool {
+        agent
+            .text
+            .strip_prefix(self.text.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with("/children/"))
     }
 
     /// The agent's own id, the last path segment.
@@ -218,12 +234,12 @@ impl TryFrom<String> for AgentPath {
             .ok_or(Error::Path("agent path is outside harness/agents"))?;
         let mut segments = rest.split('/');
         let mut depth = 0;
-        AgentId::try_from(segments.next().unwrap_or_default().to_owned())?;
+        AgentId::validate(segments.next().unwrap_or_default())?;
         while let Some(segment) = segments.next() {
             if segment != CHILDREN {
                 return Err(Error::Path("agent path has a non-children segment"));
             }
-            AgentId::try_from(segments.next().unwrap_or_default().to_owned())?;
+            AgentId::validate(segments.next().unwrap_or_default())?;
             depth += 1;
             if depth > MAX_DEPTH {
                 return Err(Error::Path("agent nesting exceeds MAX_DEPTH"));
@@ -252,4 +268,76 @@ pub fn not_inherited() -> Result<Vec<StreamPath>, Error> {
 
 fn stream(text: &str) -> Result<StreamPath, Error> {
     StreamPath::new(text).map_err(Error::Stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::hint::black_box;
+
+    #[test]
+    fn canonical_subtree_admission_borrows_ancestry_without_parent_copies() -> Result<(), Error> {
+        let root =
+            AgentPath::root(&AgentId::from_bytes([1; 16])).child(&AgentId::from_bytes([2; 16]))?;
+        let foreign =
+            AgentPath::root(&AgentId::from_bytes([9; 16])).child(&AgentId::from_bytes([2; 16]))?;
+        // A leaf-id-only check would admit the same id under a foreign root.
+        assert_eq!(root.id(), foreign.id());
+        assert!(!root.contains(&foreign));
+        assert!(!root.contains(&root.parent().expect("nested root")));
+        for malformed in [
+            format!("{root}0"),
+            format!("{root}/children/{}", "A".repeat(ID_HEX)),
+            format!("{root}/children/"),
+            format!("{root}/status"),
+        ] {
+            assert!(AgentPath::try_from(malformed).is_err());
+        }
+        for depth in [1, 8, MAX_DEPTH] {
+            let mut descendant = root.clone();
+            for _ in root.depth()..depth {
+                descendant = descendant.child(&AgentId::from_bytes([3; 16]))?;
+            }
+            let text = descendant.as_str().to_owned();
+            let original = text.as_ptr();
+            let mut parsed = None;
+            let parsing = acyclic_test_support::measure(|| {
+                parsed = Some(AgentPath::try_from(text));
+            });
+            let parsed = parsed.expect("parser ran")?;
+            assert_eq!(parsed, descendant);
+            assert_eq!(parsed.as_str().as_ptr(), original);
+            assert_eq!(parsing.count_total, 0);
+            // The former parser allocated an owned id for each ancestor.
+            let owned_ids = acyclic_test_support::measure(|| {
+                for id in parsed.as_str().split('/').skip(2).step_by(2) {
+                    black_box(AgentId::try_from(id.to_owned()).expect("canonical id"));
+                }
+            });
+            assert_eq!(owned_ids.count_total, depth as u64 + 1);
+            for calls in [1, 100, 1000] {
+                let borrowed = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        assert!(black_box(&root).contains(black_box(&parsed)));
+                        assert!(!root.contains(black_box(&foreign)));
+                    }
+                });
+                assert_eq!(borrowed.count_total, 0);
+                // Run the former parent-clone walk against the same ancestry.
+                let parents = acyclic_test_support::measure(|| {
+                    for _ in 0..calls {
+                        let mut cursor = Some(black_box(&parsed).clone());
+                        while let Some(path) = cursor {
+                            if path == root {
+                                break;
+                            }
+                            cursor = path.parent();
+                        }
+                    }
+                });
+                assert_eq!(parents.count_total, calls * depth as u64);
+            }
+        }
+        Ok(())
+    }
 }
