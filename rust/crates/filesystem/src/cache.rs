@@ -156,10 +156,12 @@ impl Flight {
         &self,
         context: &Context<'_>,
         #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
-    ) -> Poll<Result<Option<OwnedBytes>, ObjectStoreError>> {
+    ) -> Poll<Result<OwnedBytes, ObjectStoreError>> {
         let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
         match &mut *state {
-            FlightState::Complete(bytes) => Poll::Ready(Ok(bytes.clone())),
+            FlightState::Complete(bytes) => {
+                Poll::Ready(bytes.clone().ok_or(ObjectStoreError::SharedReadUnavailable))
+            }
             FlightState::Running(waiters) => {
                 if waiters
                     .value
@@ -239,21 +241,23 @@ impl Flight {
 struct ActiveFlightGuard<'a, S> {
     store: &'a CachedObjectStore<S>,
     object_id: ObjectId,
-    flight: Arc<Flight>,
+    flight: Option<Arc<Flight>>,
 }
 
 impl<S> ActiveFlightGuard<'_, S> {
-    fn finish(self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
-        self.flight.finish(bytes);
-        self.store.remove_flight(self.object_id, &self.flight)?;
-        Ok(())
+    fn finish(mut self, bytes: Option<OwnedBytes>) -> Result<(), ObjectStoreError> {
+        let flight = self.flight.take().ok_or(ObjectStoreError::Corrupt)?;
+        flight.finish(bytes);
+        self.store.remove_flight(self.object_id, &flight)
     }
 }
 
 impl<S> Drop for ActiveFlightGuard<'_, S> {
     fn drop(&mut self) {
-        self.flight.finish(None);
-        let _ = self.store.remove_flight(self.object_id, &self.flight);
+        if let Some(flight) = self.flight.take() {
+            flight.finish(None);
+            let _ = self.store.remove_flight(self.object_id, &flight);
+        }
     }
 }
 
@@ -298,6 +302,10 @@ impl Drop for PreparedBatch {
 }
 
 /// Async immutable-object accelerator over any conforming backend.
+/// Concurrent readers share one original read, including when its bytes are not
+/// retained in the cache. A failed or dropped producer ends followers with
+/// [`ObjectStoreError::SharedReadUnavailable`]; no follower starts a replacement
+/// read. The leader receives its original backend error.
 pub struct CachedObjectStore<S> {
     inner: S,
     shared: Arc<Namespace>,
@@ -779,7 +787,7 @@ async fn wait_for_flight(
     flight: &Flight,
     cancellation: &CancellationToken,
     #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
-) -> Result<Option<OwnedBytes>, ObjectStoreError> {
+) -> Result<OwnedBytes, ObjectStoreError> {
     let mut cancelled = pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
