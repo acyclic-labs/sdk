@@ -59,8 +59,6 @@ impl NativeSourceWatch {
                 stopping: AtomicBool::new(false),
                 completed: AtomicBool::new(false),
                 controller_alive: AtomicBool::new(true),
-                #[cfg(test)]
-                polling: AtomicBool::new(false),
                 cleanup: Mutex::new(StartupCleanup::default()),
                 ownership,
                 delivery,
@@ -160,8 +158,6 @@ impl NativeSourceWatch {
                 .unwrap_or_else(PoisonError::into_inner)
                 .reserve_worker(work)?;
             work.started_io(READ)?;
-            #[cfg(test)]
-            initialized.polling.store(true, Ordering::Release);
             drop(startup_reading);
             let cancelled = work.check().err();
             if cancelled.is_some() {
