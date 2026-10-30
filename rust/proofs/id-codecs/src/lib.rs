@@ -191,12 +191,30 @@ mod proofs {
         };
         root.storage = Some(storage);
         let mut other = root;
-        let mut locator = *storage.locator.as_bytes();
-        locator[0] ^= 1;
-        other.storage = Some(ObjectStorage {
-            locator: Digest::from_bytes(locator),
-            ..storage
-        });
+        let mut changed = storage;
+        let field: u8 = kani::any();
+        let byte: u8 = kani::any();
+        let bit: u8 = kani::any();
+        kani::assume(field < 3 && byte < 32 && bit < 8);
+        match field {
+            0 => {
+                let mut bytes = *storage.locator.as_bytes();
+                bytes[usize::from(byte)] ^= 1 << bit;
+                changed.locator = Digest::from_bytes(bytes);
+            }
+            1 => {
+                kani::assume(byte < 16);
+                let mut bytes = storage.root_file_id.into_bytes();
+                bytes[usize::from(byte)] ^= 1 << bit;
+                changed.root_file_id = acyclic_fs::FileId::from_bytes(bytes);
+            }
+            _ => {
+                let mut bytes = *storage.origin_generation.as_bytes();
+                bytes[usize::from(byte)] ^= 1 << bit;
+                changed.origin_generation = Digest::from_bytes(bytes);
+            }
+        }
+        other.storage = Some(changed);
         assert_ne!(root.to_bytes(), other.to_bytes());
         assert_ne!(
             GenerationId::from_root(root),
@@ -314,5 +332,82 @@ mod framing {
         let mut body: &[u8] = &[0];
         assert_eq!(decoder.read(&mut body), Ok(Some(1)));
         assert_eq!(decoder.finish(), Ok(()));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(17)]
+    fn grpc_header_admission_and_eof_are_independent_of_chunking() {
+        let header: [u8; 5] = kani::any();
+        let chunk: u8 = kani::any();
+        kani::assume(chunk > 0 && chunk <= 5);
+        let decode = |width: usize| {
+            let mut decoder = FrameDecoder::grpc();
+            let mut frame = None;
+            for mut input in header.chunks(width) {
+                while !input.is_empty() {
+                    let before = input.len();
+                    if let Some(value) = decoder.read(&mut input)? {
+                        assert!(frame.replace(value).is_none());
+                    }
+                    assert!(input.len() < before);
+                }
+            }
+            decoder.finish()?;
+            Ok::<_, StreamError>(frame)
+        };
+        let result = decode(5);
+        assert_eq!(result, decode(usize::from(chunk)));
+        let length = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+        match header[0] {
+            1 => assert_eq!(result, Err(StreamError::Unsupported)),
+            0 if length > acyclic_stream::MAX_COMMAND_BYTES => {
+                assert_eq!(result, Err(StreamError::LimitExceeded));
+            }
+            0 if length == 0 => assert_eq!(result, Ok(Some(wire::SessionFrame::default()))),
+            _ => assert_eq!(result, Err(StreamError::InvalidResponse)),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(33)]
+    fn credit_debits_preserve_both_balances_or_refuse_without_mutation() {
+        use acyclic_stream::wire_codec::session::{consume_credit, encode_grpc_frame};
+        let frame = wire::SessionFrame {
+            channel_id: kani::any(),
+            generation: kani::any(),
+            body: Some(wire::session_frame::Body::Data(wire::SessionData::default())),
+        };
+        // The real encoder determines the charge; no wire-size formula is
+        // duplicated in the proof. Its five transport bytes are not data credit.
+        let bytes = (encode_grpc_frame(&frame).unwrap().len() - 5) as u64;
+        let before = wire::SessionWindow {
+            bytes: kani::any(),
+            frames: kani::any(),
+        };
+        let mut after = before;
+        match consume_credit(&mut after, &frame) {
+            Ok(()) => {
+                assert_ne!(frame.channel_id, 0);
+                assert_eq!(before.bytes.checked_sub(bytes), Some(after.bytes));
+                assert_eq!(before.frames.checked_sub(1), Some(after.frames));
+            }
+            Err(StreamError::InvalidArgument) => {
+                assert_eq!(frame.channel_id, 0);
+                assert_eq!(after, before);
+            }
+            Err(error) => {
+                assert_eq!(error, StreamError::Capacity);
+                assert_ne!(frame.channel_id, 0);
+                assert!(before.bytes < bytes || before.frames == 0);
+                assert_eq!(after, before);
+            }
+        }
+        let control = wire::SessionFrame {
+            body: Some(wire::session_frame::Body::Window(before)),
+            ..frame
+        };
+        after = before;
+        assert_eq!(consume_credit(&mut after, &control), Ok(()));
+        assert_eq!(after, before);
     }
 }
