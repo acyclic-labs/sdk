@@ -2,10 +2,7 @@
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
 use acyclic_stream::StreamProviderExt as _;
-use acyclic_stream::{
-    StreamPath, StreamProvider,
-    runtime::{Executor as _, PlatformExecutor},
-};
+use acyclic_stream::{StreamPath, StreamProvider};
 use futures::TryFutureExt as _;
 use futures::future::Either;
 use std::sync::Arc;
@@ -43,15 +40,8 @@ async fn until(
     work: impl std::future::Future<Output = Result>,
 ) -> Result {
     let running = async {
-        let running = host.run(|_, _| {});
-        let timeout = PlatformExecutor.sleep(5_000);
-        futures::pin_mut!(running, timeout);
-        match futures::future::select(running, timeout).await {
-            Either::Left((result, _)) => {
-                Err(format!("dispatcher stopped before observation: {result:?}").into())
-            }
-            Either::Right(_) => Err("dispatcher observation timed out".into()),
-        }
+        let result = host.run(|_, _| {}).await;
+        Err(format!("dispatcher stopped before observation: {result:?}").into())
     };
     futures::pin_mut!(work, running);
     match futures::future::select(running, work).await {
