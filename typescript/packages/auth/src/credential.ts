@@ -57,6 +57,39 @@ export type CredentialProvider = ((signal?: AbortSignal) => string | Promise<str
   readonly watch?: () => CredentialWatch;
 };
 
+/** Original source registration linked to one transport attempt. */
+export interface CredentialSignal extends CredentialWatch {
+  readonly signal: AbortSignal;
+}
+
+/** Register before resolution. Raw callbacks acquire no fabricated source.
+ * Closing retires both event registrations and the original child signal. */
+export function watchCredential(
+  provider: CredentialProvider, parent: AbortSignal | undefined, reason: () => unknown,
+): CredentialSignal | undefined {
+  const watch = provider.watch?.();
+  if (!watch) return undefined;
+  const controller = new AbortController();
+  const stopped = () => controller.abort(parent?.reason);
+  const changed = () => controller.abort(reason());
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    parent?.removeEventListener("abort", stopped);
+    watch.changed.removeEventListener("abort", changed);
+    controller.signal.removeEventListener("abort", close);
+    try { watch.close(); }
+    finally { controller.abort(); }
+  };
+  controller.signal.addEventListener("abort", close, { once: true });
+  parent?.addEventListener("abort", stopped, { once: true });
+  watch.changed.addEventListener("abort", changed, { once: true });
+  if (parent?.aborted) stopped();
+  else if (watch.changed.aborted) changed();
+  return { validity: watch.validity, changed: watch.changed, signal: controller.signal, close };
+}
+
 export interface CredentialOptions {
   readonly token?: string;
   readonly credential?: CredentialProvider;
