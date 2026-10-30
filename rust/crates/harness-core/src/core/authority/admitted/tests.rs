@@ -781,7 +781,7 @@ fn typed_private_delegation_preserves_owner_policy_and_never_widens_attenuation(
 }
 
 #[test]
-fn exact_child_revocation_refuses_retained_access_with_an_older_guest_snapshot() -> Result<()> {
+fn exact_child_revocation_refuses_retained_access_through_every_verifier() -> Result<()> {
     block_on(async {
         let (root, _) = fixture()?;
         let volume = crate::conversation::VolumeRef::new(
@@ -805,7 +805,7 @@ fn exact_child_revocation_refuses_retained_access_with_an_older_guest_snapshot()
         let (context, _owner) = lifetime(&root, &caller)?;
         let (port, source, _native_owner) =
             forwarded(&root, &caller, context.clone(), false, None, false)?;
-        // Separate public state models the guest's immutable admission snapshot.
+        // A second verifier over the same public trust, as a guest admits.
         let snapshot = AuthorityVerifier::from_public(
             root.id.clone(),
             root.audience.clone(),
@@ -839,7 +839,8 @@ fn exact_child_revocation_refuses_retained_access_with_an_older_guest_snapshot()
         retained.require(&volume, VolumeOperation::Read, None)?;
         root.revoke_workload(&child)?;
         source.native.check()?; // Original caller remains live.
-        snapshot.verify(&child, &mut None)?; // Negative control: old public state accepts it.
+        // Every verifier follows the one live trust: no older view still accepts it.
+        assert!(snapshot.verify(&child, &mut None).is_err());
         assert!(verifier.verify(&child, &mut None).is_err());
         assert!(
             retained

@@ -249,7 +249,8 @@ async fn transport_identity_follows_without_any_authorization() -> tests::TestRe
     let path = "trust/v1/test";
     crate::Stream::new(memory.clone(), path)?
         .append("record", IdempotencyKey::unique())
-        .await?;
+        .await
+        .map_err(|error| format!("append: {error:?}"))?;
     let headers = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(AtomicUsize::new(0));
     let (seen, admitted) = (headers.clone(), requests.clone());
@@ -293,28 +294,47 @@ async fn transport_identity_follows_without_any_authorization() -> tests::TestRe
             }
         }),
     );
-    let refuse: ChannelConnector = Arc::new(|_| Box::pin(async { Err(StreamError::AccessDenied) }));
+    // Every routed node is this one server, reached over the same channel.
+    let home = channel.clone();
+    let route: ChannelConnector = Arc::new(move |_| {
+        let home = home.clone();
+        Box::pin(async move { Ok(home) })
+    });
     let client = Arc::new(Client::from_authenticated_channel(
         channel,
         CredentialProvider::transport_identity(),
-        refuse,
+        route,
     ));
     // The memory server admits sessions in-band; a platform server admits
     // trust paths by the channel's transport identity instead.
     client
-        .session_client()?
-        .register_credential(0, crate::session::testing::credential())?;
+        .session_client()
+        .map_err(|error| format!("session: {error:?}"))?
+        .register_credential(0, crate::session::testing::credential())
+        .map_err(|error| format!("register: {error:?}"))?;
     let source: &dyn crate::trust_feed::Source = &client;
-    let tail = source.tail(path).await?;
-    let mut records = source.follow(path, 0).await?;
-    let first = records.next().await.expect("one record")?;
+    let tail = source
+        .tail(path)
+        .await
+        .map_err(|error| format!("tail: {error:?}"))?;
+    let mut records = source
+        .follow(path, 0)
+        .await
+        .map_err(|error| format!("follow: {error:?}"))?;
+    let first = records
+        .next()
+        .await
+        .expect("one record")
+        .map_err(|error| format!("record: {error:?}"))?;
     assert_eq!(first.value.as_ref(), b"record");
     assert_eq!(tail, 1);
     assert!(requests.load(Ordering::SeqCst) > 0);
     assert_eq!(headers.load(Ordering::SeqCst), 0);
     // Negative control: a bearer client over the same server is observed.
     let bearer = Arc::new(client.with_credential("fixture")?);
-    crate::trust_feed::Source::tail(&bearer, path).await?;
+    // It holds no in-band session credential, so the server may refuse it;
+    // the header is observed either way.
+    let _refused = crate::trust_feed::Source::tail(&bearer, path).await;
     assert!(headers.load(Ordering::SeqCst) > 0);
     // Transports that cannot omit authorization refuse rather than send none.
     assert!(matches!(

@@ -344,14 +344,13 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
 -> Result<()> {
     let issuer = fixture();
     let audience = issuer.audience.clone();
-    let mut trust = issuer.public_workload_trust()?;
+    let trust = issuer.public_workload_trust()?;
     let parent = issuer.bootstrap_scope(
         "owner",
         &Capabilities::new(["tool:call:read", "tool:call:write"]),
         None,
         &mut None,
     )?;
-    drop(issuer);
     let child = parent.attenuate_workload(
         "reader",
         &Capabilities::new(["tool:call:read"]),
@@ -371,7 +370,7 @@ fn workload_holders_attenuate_with_public_trust_and_revocation_invalidates_desce
             )
             .is_err()
     );
-    trust.revoked_block_ids.insert(*parent.proof);
+    issuer.revoke_workload(&parent)?;
     assert!(
         child
             .verify_workload(&trust, &audience, now(), &mut None)

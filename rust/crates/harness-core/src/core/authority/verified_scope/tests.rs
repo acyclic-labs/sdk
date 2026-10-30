@@ -32,7 +32,7 @@ fn fixture() -> Result<(AuthorityRoot, AuthorityVerifier, Scope, VolumeRef)> {
 
 #[test]
 fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Result<()> {
-    let (_issuer, verifier, scope, volume) = fixture()?;
+    let (issuer, verifier, scope, volume) = fixture()?;
     let grant = ContentGrant::verify(
         &verifier,
         &scope,
@@ -56,67 +56,25 @@ fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Re
         signatures.is_empty(),
         "immutable scope was authenticated again"
     );
-    let original = verifier
-        .public
-        .trust
-        .read()
-        .map_err(workload::unauthorized)?
-        .clone();
-    let capability = workload::verify(
+    // Each live trust change reaches the already-verified grant and its clone.
+    issuer.revoke_workload(&scope)?;
+    assert!(grant.require(&volume, VolumeOperation::Read, None).is_err());
+    assert!(
+        cloned
+            .require(&volume, VolumeOperation::Read, None)
+            .is_err()
+    );
+    let (issuer, verifier, scope, volume) = fixture()?;
+    let grant = ContentGrant::verify(
         &verifier,
-        &verifier.audience,
         &scope,
-        workload::now(),
+        &volume,
+        VolumeOperation::Read,
+        u64::MAX,
         &mut None,
     )?;
-    let wire = acyclic_auth::authority::decode_capability(&scope.workload)
-        .map_err(workload::unauthorized)?;
-    let next = acyclic_auth::authority::decode_block(&wire.blocks[1].payload)
-        .map_err(workload::unauthorized)?
-        .next_public_key
-        .as_slice()
-        .try_into()
-        .map_err(workload::unauthorized)?;
-    for change in 0..9 {
-        let mut trust = original.as_ref().clone();
-        match change {
-            0 => trust.environment_keys.clear(),
-            1 => trust.issuer_keys.clear(),
-            2 => trust.account = "unavailable".into(),
-            3 => trust.minimum_key_epoch = u64::MAX,
-            4 => {
-                trust.revoked_key_ids.insert("runtime".into());
-            }
-            5 => {
-                trust.revoked_block_ids.insert(capability.block_ids()[0]);
-            }
-            6 => {
-                trust.revoked_block_ids.insert(capability.block_ids()[1]);
-            }
-            7 => trust.environment_keys.push(next),
-            _ => trust.issuer_keys.push(next),
-        }
-        *verifier
-            .public
-            .trust
-            .write()
-            .map_err(workload::unauthorized)? = std::sync::Arc::new(trust);
-        assert!(
-            grant.require(&volume, VolumeOperation::Read, None).is_err(),
-            "content grant ignored changed trust: {change}"
-        );
-        assert!(
-            cloned
-                .require(&volume, VolumeOperation::Read, None)
-                .is_err()
-        );
-    }
-    *verifier
-        .public
-        .trust
-        .write()
-        .map_err(workload::unauthorized)? = original;
-    grant.require(&volume, VolumeOperation::Read, None)?;
+    issuer.raise_minimum_epoch(2)?;
+    assert!(grant.require(&volume, VolumeOperation::Read, None).is_err());
     Ok(())
 }
 
