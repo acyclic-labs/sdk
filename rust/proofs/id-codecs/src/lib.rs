@@ -1,5 +1,37 @@
 //! Bounded proofs call the owning types' actual codecs, including seal custody.
 #[cfg(kani)]
+mod version {
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn version_admission_borrows_payload_and_refuses_before_decoding() {
+        use acyclic_stream::{StreamError, persistence::header};
+        let bytes: [u8; 12] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let input = &bytes[..length];
+        let result = header(input, b"kind-v", b"1\0");
+        if let Ok(payload) = result {
+            assert!(input.starts_with(b"kind-v1\0"));
+            assert_eq!(payload, &input[8..]);
+            assert_eq!(payload.as_ptr(), input[8..].as_ptr());
+        } else if input.starts_with(b"kind-v") {
+            assert_eq!(result, Err(StreamError::Unsupported));
+        } else {
+            assert_eq!(result, Err(StreamError::InvalidArgument));
+        }
+        for version in [b'0', b'2', u8::MAX] {
+            let mut obsolete = *b"kind-v1\0";
+            obsolete[6] = version;
+            assert_eq!(
+                header(&obsolete, b"kind-v", b"1\0"),
+                Err(StreamError::Unsupported)
+            );
+        }
+        assert_eq!(header(b"kind-v1\0", b"kind-v", b"1\0"), Ok(&[][..]));
+    }
+}
+
+#[cfg(kani)]
 mod proofs {
     use acyclic_fs::{Digest, GenerationId, ObjectId, ObjectKind, ObjectStorage};
 

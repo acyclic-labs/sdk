@@ -89,21 +89,13 @@ export class SessionNode {
     this.received.push(input);
     switch (input.body.case) {
       case "hello":
+        if (input.body.value.version !== 2) throw new StreamError("unsupported", "unsupported session version");
         connection.credit = { bytes: input.body.value.receiveBytes, frames: input.body.value.receiveFrames };
-        connection.output.push(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 1, nodeId: connection.node }) }));
+        connection.output.push(frame(0n, 0n, { case: "welcome", value: create(wire.SessionWelcomeSchema, { version: 2, nodeId: connection.node }) }));
+        if (input.body.value.interest !== undefined) this.interest(connection, input.body.value.interest);
         break;
       case "interest":
-        for (const removed of input.body.value.remove) connection.routes.delete(removed.channelId);
-        for (const subscription of input.body.value.upsert) {
-          if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
-          if (subscription.kind.case !== "follow" || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
-          const path = streamResourcePath(subscription.kind.value.resource);
-          const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, latest: subscription.kind.case === "follow" && subscription.kind.value.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, credit: { bytes: 0n, frames: 0 } };
-          connection.routes.set(route.id, route);
-          this.resumes.push({ node: connection.node, path: route.path, next: route.next });
-          connection.output.push(frame(route.id, route.generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume, precedingCommitId: subscription.kind.case === "follow" ? subscription.kind.value.precedingCommitId : new Uint8Array() }) }));
-        }
-        connection.output.push(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: input.body.value.revision }) }));
+        this.interest(connection, input.body.value);
         break;
       case "window": {
         const credit = input.channelId === 0n ? connection.credit : connection.routes.get(input.channelId)?.credit;
@@ -114,6 +106,19 @@ export class SessionNode {
     }
     this.pump(connection);
     for (const notify of this.changed) notify();
+  }
+  private interest(connection: Connection, interest: wire.SessionInterest): void {
+    for (const removed of interest.remove) connection.routes.delete(removed.channelId);
+    for (const subscription of interest.upsert) {
+      if (subscription.kind.case === "actorSocket" || subscription.kind.case === "actorCall") this.actorChannels += 1;
+      if (subscription.kind.case !== "follow" || subscription.channel === undefined || subscription.resume === undefined) throw new Error("expected a Streams subscription");
+      const path = streamResourcePath(subscription.kind.value.resource);
+      const route: Route = { id: subscription.channel.channelId, generation: subscription.channel.generation, path, latest: subscription.kind.case === "follow" && subscription.kind.value.delivery === wire.SessionDelivery.LATEST, next: subscription.resume.next, credit: { bytes: 0n, frames: 0 } };
+      connection.routes.set(route.id, route);
+      this.resumes.push({ node: connection.node, path: route.path, next: route.next });
+      connection.output.push(frame(route.id, route.generation, { case: "opened", value: create(wire.SessionOpenedSchema, { resume: subscription.resume, precedingCommitId: subscription.kind.case === "follow" ? subscription.kind.value.precedingCommitId : new Uint8Array() }) }));
+    }
+    connection.output.push(frame(0n, 0n, { case: "interestApplied", value: create(wire.SessionInterestAppliedSchema, { revision: interest.revision }) }));
   }
   pump(connection: Connection): void {
     if (connection.closed) return;

@@ -130,3 +130,6 @@ pub fn descriptor(
 
 #[cfg(test)]
 mod tests;
+
+/// Shared golden-frame lookup for persisted and wire codec tests.
+pub mod golden;

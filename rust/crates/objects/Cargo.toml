@@ -92,6 +92,7 @@ tower = { workspace = true, features = ["util"] }
 workspace = true
 
 [dev-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
 
 [build-dependencies]

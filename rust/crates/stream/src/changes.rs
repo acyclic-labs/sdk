@@ -12,8 +12,8 @@
 //! where `shared` is the longest common prefix with the previous key, so one
 //! list has exactly one encoding.
 //!
-//! Retained v1 records use the original canonical protobuf ChangeRecord and
-//! indexed headers. Reading never rewrites either format or its retry identity.
+//! Other versions are refused before interpreting the value. There is one
+//! reader and writer; retained records are never migrated or rewritten.
 use crate::{AppendRecord, Attribute, OwnedBytes, RecordHeaders, StreamError, wire};
 
 #[cfg(test)]
@@ -42,20 +42,12 @@ pub const WRITER_FORMAT: &[u8] = b"changes/v2";
 /// Exact reserved markers this canonical reader validates and projects.
 /// Persist these capabilities with the applied voter selection; intersect the
 /// voters' supported markers before admitting `WRITER_FORMAT` publication.
-pub const READER_FORMATS: &[&[u8]] = &[V1, WRITER_FORMAT];
+pub const READER_FORMATS: &[&[u8]] = &[WRITER_FORMAT];
 
 const FORMAT: &[u8] = WRITER_FORMAT;
-const V1: &[u8] = b"changes/v1";
 
 fn marks(name: &str, value: &OwnedBytes) -> bool {
     name == ATTRIBUTE && READER_FORMATS.contains(&value.as_ref())
-}
-
-fn compact(headers: &RecordHeaders) -> bool {
-    headers
-        .attributes()
-        .iter()
-        .any(|attribute| attribute.name == ATTRIBUTE && attribute.value.as_ref() == FORMAT)
 }
 
 pub(crate) fn unknown(headers: &RecordHeaders) -> bool {
@@ -77,14 +69,9 @@ pub fn is_changes(headers: &RecordHeaders) -> bool {
     marked(headers)
 }
 
-/// V2 derives its index from the compact value. V1 retains its original wire
-/// keys, so reading and retrying old records never changes their identity.
+/// Change records derive their index from their compact value.
 pub(crate) fn wire_keys(headers: &RecordHeaders) -> &[OwnedBytes] {
-    if compact(headers) {
-        &[]
-    } else {
-        headers.keys()
-    }
+    if marked(headers) { &[] } else { headers.keys() }
 }
 
 fn varint_len(value: usize) -> usize {
@@ -228,64 +215,6 @@ impl<'a> Reader<'a> {
         self.0 = rest;
         Ok(value)
     }
-
-    // The v1 producer used canonical protobuf: ordered length-delimited fields,
-    // minimal lengths and omitted empty scalar fields. Keep the retained bytes.
-    fn field(&mut self, tag: u8) -> Result<Option<&'a [u8]>, StreamError> {
-        if self.0.first() != Some(&tag) {
-            return Ok(None);
-        }
-        self.0 = self.0.get(1..).ok_or(StreamError::InvalidArgument)?;
-        let value = self.bytes()?;
-        if value.is_empty() {
-            return Err(StreamError::InvalidArgument);
-        }
-        Ok(Some(value))
-    }
-}
-
-fn parse_v1<'a>(
-    bytes: &'a [u8],
-    mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
-) -> Result<&'a [u8], StreamError> {
-    let mut reader = Reader(bytes);
-    let context = reader.field(10)?.unwrap_or_default();
-    let mut previous: Option<&[u8]> = None;
-    let mut count = 0;
-    while let Some(bytes) = reader.field(18)? {
-        let mut entry = Reader(bytes);
-        let key = entry.field(10)?.unwrap_or_default();
-        let operation = entry.field(18)?.ok_or(StreamError::InvalidArgument)?;
-        let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
-        let metadata = entry.field(26)?.unwrap_or_default();
-        count += 1;
-        if count > crate::MAX_RECORD_KEYS
-            || key.len() > crate::MAX_RECORD_KEY_BYTES
-            || previous.is_some_and(|previous| previous >= key)
-            || operation.chars().any(char::is_control)
-            || !entry.0.is_empty()
-        {
-            return Err(StreamError::InvalidArgument);
-        }
-        visit(key, operation, metadata)?;
-        previous = Some(key);
-    }
-    if count == 0 || !reader.0.is_empty() {
-        return Err(StreamError::InvalidArgument);
-    }
-    Ok(context)
-}
-
-fn parse_record<'a>(
-    bytes: &'a [u8],
-    headers: &RecordHeaders,
-    visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
-) -> Result<&'a [u8], StreamError> {
-    if compact(headers) {
-        parse(bytes, visit)
-    } else {
-        parse_v1(bytes, visit)
-    }
 }
 
 /// Visits each entry of a canonical value with its full key, rejecting every
@@ -370,7 +299,7 @@ pub(crate) fn decode(
 ) -> Result<wire::ChangeRecord, StreamError> {
     validate(bytes, headers)?;
     let mut entries = Vec::new();
-    let context = parse_record(bytes, headers, |key, operation, metadata| {
+    let context = parse(bytes, |key, operation, metadata| {
         entries.push(wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(key),
             operation: operation.into(),
@@ -393,7 +322,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
             .iter()
             .any(|attribute| attribute.name == ATTRIBUTE)
         {
-            return Err(StreamError::InvalidArgument);
+            return Err(StreamError::Unsupported);
         }
         return Ok(());
     }
@@ -401,7 +330,7 @@ pub(crate) fn validate(bytes: &[u8], headers: &RecordHeaders) -> Result<(), Stre
         return Err(StreamError::LimitExceeded);
     }
     let mut expected = headers.keys().iter();
-    parse_record(bytes, headers, |key, _, _| {
+    parse(bytes, |key, _, _| {
         if expected
             .next()
             .is_none_or(|expected| expected.as_ref() != key)
@@ -511,24 +440,6 @@ impl AppendRecord {
         }
         if changes.entries.is_empty() {
             return Ok(None);
-        }
-        if !compact(&self.headers) {
-            use prost::Message;
-            let headers = RecordHeaders::new(
-                changes
-                    .entries
-                    .iter()
-                    .map(|entry| entry.key.clone().into())
-                    .collect(),
-                self.headers
-                    .attributes()
-                    .iter()
-                    .map(crate::RecordAttribute::to_owned)
-                    .collect(),
-            )?;
-            let value: OwnedBytes = changes.encode_to_vec().into();
-            validate(&value, &headers)?;
-            return Ok(Some(Self { value, headers }));
         }
         Self::changes(
             &changes.context,

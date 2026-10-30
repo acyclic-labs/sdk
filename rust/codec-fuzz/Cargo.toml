@@ -17,11 +17,15 @@ acyclic-fs-wire = { path = "../crates/filesystem-wire" }
 acyclic-inference = { path = "../crates/inference", default-features = false }
 acyclic-machines = { path = "../crates/machines", default-features = false }
 acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
+acyclic-protobuf-json = { path = "../crates/protobuf-json" }
 acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support", "local"] }
 libfuzzer-sys = "0.4"
 futures = "0.3.31"
 prost = "0.14.4"
 sha2 = "0.11.0"
+bytes = "1.11.0"
+prost-reflect = { version = "0.16.3", features = ["serde"] }
+serde_json = "1.0"
 
 [build-dependencies]
 acyclic-proto-build = { path = "../../compatibility" }
@@ -32,6 +36,13 @@ prost-types = "0.14.4"
 [[bin]]
 name = "protobuf"
 path = "fuzz_targets/protobuf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protobuf_json"
+path = "fuzz_targets/protobuf_json.rs"
 test = false
 doc = false
 bench = false
@@ -67,6 +78,34 @@ bench = false
 [[bin]]
 name = "auth"
 path = "fuzz_targets/auth.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "actor_codecs"
+path = "fuzz_targets/actor_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filesystem_codecs"
+path = "fuzz_targets/filesystem_codecs.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identities"
+path = "fuzz_targets/identities.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "filesystem_pages"
+path = "fuzz_targets/filesystem_pages.rs"
 test = false
 doc = false
 bench = false

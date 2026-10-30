@@ -4,11 +4,16 @@ target here does not register a scheduled check.
 | Target | Production decoders exercised |
 | --- | --- |
 | `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects and Streams, including session messages and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. |
+| `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
-| `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, snapshots, retained retry observations, committed envelopes and change records. File and memory frame readers must agree. |
-| `object_persistence` | Manifests, stored HEAD envelopes and retained reference batches. |
+| `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, memory and local snapshot containers, incarnations, retained retry observations, committed envelopes, semantic records, compressed read batches and change records. File and memory frame readers must agree. |
+| `object_persistence` | Manifests, stored HEAD envelopes, retained reference batches, incarnations and collection epochs. |
 | `ids` | Every ObjectId kind and GenerationId, with both 33-byte plain and 113-byte sealed encodings. |
 | `auth` | Canonical blocks, capabilities, caveats, typed grant unions and cryptographic capability verification using the SDK's deterministic test trust. |
+| `identities` | Resource identities and Actor references, with exact accepted-byte identity. |
+| `actor_codecs` | Durable Actor state, guest manifests/deliveries/transitions and timer records through their semantic decoders. |
+| `filesystem_codecs` | Authority and durable records, distributed state records, workspace context records and JSON join/control projections. |
+| `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests and publication evidence. Immutable nodes use the production default decode limits. |
 
 The protobuf oracle compares encoded fixed points, rather than Rust equality:
 valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
@@ -19,6 +24,7 @@ From this directory, capture seeds with the SDK's actual encoders:
 
 ```sh
 cargo run --example capture
+cargo run --example replay
 ```
 
 The producer writes `corpus/SOURCES.tsv` with each path, length, SHA-256 and
@@ -26,7 +32,9 @@ producing call. Protobuf seeds are emitted by each generated message's default
 encoder and carry an eight-byte little-endian decoder index. Journal facts and
 snapshots come from real MemoryStream append, fork and commit operations.
 Objects metadata, manifests, ID references and session envelopes come from
-their production encoders. The signed token uses only deterministic test keys;
+their production encoders. Actor seeds include an actual Store creation
+effect; filesystem nodes use the canonical node encoders. JSON seeds project
+the typed binary output through the same descriptors. The signed token uses only deterministic test keys;
 it contains no account credential. These are SDK output captures, not hosted
 service traffic. Regenerate the complete protobuf corpus when schemas change,
 because the decoder indices can change.
@@ -37,10 +45,15 @@ an explicit run budget:
 ```sh
 cargo +nightly fuzz run session_frames -- -max_total_time=30
 cargo +nightly fuzz run protobuf -- -max_total_time=30
+cargo +nightly fuzz run protobuf_json -- -max_total_time=30
 cargo +nightly fuzz run stream_persistence -- -max_total_time=30
 cargo +nightly fuzz run object_persistence -- -max_total_time=30
 cargo +nightly fuzz run ids -- -max_total_time=30
 cargo +nightly fuzz run auth -- -max_total_time=30
+cargo +nightly fuzz run identities -- -max_total_time=30
+cargo +nightly fuzz run actor_codecs -- -max_total_time=30
+cargo +nightly fuzz run filesystem_codecs -- -max_total_time=30
+cargo +nightly fuzz run filesystem_pages -- -max_total_time=30
 ```
 
 The time budget belongs to the fuzz campaign. Targets impose no input-length
@@ -55,12 +68,15 @@ session and follow state-machine targets remain in `../crates/stream/fuzz`;
 filesystem object accounting and cancellation oracles remain in
 `../crates/filesystem/fuzz`. Those checks exercise different contracts.
 
-The support entry points are compiled only with `test-support`. The sole
-ordinary-runtime adjustment changes `read_frame(&File, ...)` to
-`read_frame(impl Read, ...)`, so the exact file parser also accepts a memory
-cursor. The existing file call is still statically dispatched: before/after
-syscalls, durability barriers, round trips, allocations and payload copies are
-unchanged. Input decoding is linear in bytes and returned items, independent of
+The private-codec support entry points require `test-support`. The file frame
+reader accepts `impl Read`, so fuzz input and recovery call the same statically
+dispatched parser. Format admission and golden-frame coverage are tracked in
+[the shared inventory](../../compatibility/FORMATS.md). Input decoding is linear in bytes and returned items, independent of
 agent population or retained history outside the supplied input. Fixed ID work
 is bounded by 113 bytes and allocates nothing. No decoder waits on an event;
 EOF is a typed framing result.
+
+The capture and replay executables report a failed step and a recovery command.
+Replay checks each captured length and SHA-256 before decoding; it never
+regenerates a differing baseline. A target or harness listed here does not
+establish that it has run. The inventory records remaining format coverage.

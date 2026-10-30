@@ -11,6 +11,7 @@ fn save(
     producer: &str,
     manifest: &mut String,
 ) -> Result<(), Box<dyn Error>> {
+    acyclic_codec_fuzz::exercise(target, bytes)?;
     let directory = Path::new("corpus").join(target);
     std::fs::create_dir_all(&directory)?;
     std::fs::write(directory.join(name), bytes)?;
@@ -35,6 +36,21 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             "prost::Message::default().encode_to_vec (first 8 bytes select type)",
             &mut manifest,
         )?;
+        let mut json = u64::try_from(index)?.to_le_bytes().to_vec();
+        json.extend_from_slice(
+            &acyclic_protobuf_json::encode(
+                acyclic_codec_fuzz::descriptor(decoder),
+                &(decoder.seed)(),
+            )
+            .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name))?,
+        );
+        save(
+            "protobuf_json",
+            decoder.name,
+            &json,
+            "acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)",
+            &mut manifest,
+        )?;
     }
     for (name, bytes) in acyclic_stream::codec_fuzz::seeds().await? {
         save(
@@ -51,6 +67,16 @@ async fn capture() -> Result<(), Box<dyn Error>> {
             name,
             &bytes,
             "acyclic_objects::codec_fuzz::seeds",
+            &mut manifest,
+        )?;
+    }
+    capture_semantic(&mut manifest)?;
+    for (name, bytes) in acyclic_codec_fuzz::filesystem_pages::seeds()? {
+        save(
+            "filesystem_pages",
+            name,
+            &bytes,
+            "filesystem::kernel canonical encoders",
             &mut manifest,
         )?;
     }
@@ -145,9 +171,163 @@ async fn capture() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
+    use acyclic_actors::{
+        domain,
+        guest::{self, Handler as _},
+    };
+    use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
+    use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
+    use bytes::Bytes;
+    use std::{collections::BTreeMap, sync::Arc};
+    let actor = ActorReference::new(b"account", b"namespace", b"codec")?;
+    save(
+        "identities",
+        "actor",
+        &actor.encode(),
+        "ActorReference::encode",
+        manifest,
+    )?;
+    save(
+        "identities",
+        "resource",
+        &ResourceIdentity::new(b"account", b"resource")?.encode(),
+        "ResourceIdentity::encode",
+        manifest,
+    )?;
+    let package = acyclic_actors::reservation::Package::new(
+        domain::CodeSha256::new(vec![1; 32])?,
+        domain::ActorLimits::new(1, 1024, 4096)?,
+    );
+    save(
+        "actor_codecs",
+        "manifest",
+        &guest::wire::encode_manifest(package.manifest()),
+        "guest::wire::encode_manifest(reservation::Package::manifest)",
+        manifest,
+    )?;
+    let store = acyclic_actors::local::Store::new(
+        Arc::new(MemoryStream::default()),
+        StreamPath::new("codec/actors")?,
+    );
+    let checkpoint = acyclic_actors::reservation::initial_checkpoint(7)?;
+    let effects = store.create(&actor, BTreeMap::new(), Some(checkpoint.clone()))?;
+    if let CommitMutation::Append { records, .. } = &effects[0].mutation {
+        let record = records.first().ok_or("actor creation emitted no state")?;
+        save(
+            "actor_codecs",
+            "state",
+            &record.value,
+            "local::Store::create state encoder",
+            manifest,
+        )?;
+    } else {
+        return Err("actor creation did not append state".into());
+    }
+    let delivery = guest::Delivery {
+        actor,
+        epoch: 1,
+        trigger: guest::Trigger::Alarm {
+            generation: 1,
+            now_unix_ms: 42,
+        },
+        now_unix_ms: 42,
+        record: None,
+        subscriptions: guest::SubscriptionCuts::new(
+            StreamPath::new("codec/actors/state")?,
+            CommitId::from_bytes([1; 32]),
+            BTreeMap::new(),
+        ),
+    };
+    save(
+        "actor_codecs",
+        "delivery",
+        &guest::wire::encode_delivery(&delivery, Some(&checkpoint)),
+        "guest::wire::encode_delivery",
+        manifest,
+    )?;
+    let transition = guest::Transition {
+        response: None,
+        checkpoint,
+        alarm: guest::AlarmChange::Keep,
+        effects: effects.into(),
+        participant: None,
+    };
+    save(
+        "actor_codecs",
+        "transition",
+        &guest::wire::encode_transition(&transition)?,
+        "guest::wire::encode_transition",
+        manifest,
+    )?;
+    let timer = acyclic_actors::timers::TimerRecord::new(
+        "11111111-1111-4111-8111-111111111111".into(),
+        "22222222-2222-4222-8222-222222222222".into(),
+        42,
+    )?;
+    save(
+        "actor_codecs",
+        "timer",
+        &timer.encode()?,
+        "TimerRecord::encode",
+        manifest,
+    )?;
+    use acyclic_fs::{
+        Digest, DurableCommit, Epoch, OperationId, ProposedCommit, Sequence,
+        streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
+    };
+    let proposed = ProposedCommit {
+        publication: None,
+        operation_id: OperationId::from_bytes([1; 16]),
+        fingerprint: Digest::from_bytes([2; 32]),
+        payload: Bytes::from_static(b"codec payload"),
+    };
+    let epoch = Epoch::new(1)?;
+    save(
+        "filesystem_codecs",
+        "authority",
+        &StreamsAuthorityRecord::encode(&proposed, epoch, u64::MAX)?,
+        "StreamsAuthorityRecord::encode",
+        manifest,
+    )?;
+    let durable = DurableCommit {
+        epoch,
+        sequence: Sequence::new(1),
+        operation_id: proposed.operation_id,
+        fingerprint: proposed.fingerprint,
+        previous_digest: Digest::from_bytes([3; 32]),
+        digest: Digest::from_bytes([4; 32]),
+        payload: proposed.payload,
+        settled_at_micros: None,
+    };
+    save(
+        "filesystem_codecs",
+        "durable",
+        &StreamsDurableRecord::encode(&durable, u64::MAX)?,
+        "StreamsDurableRecord::encode",
+        manifest,
+    )?;
+    let ids = [acyclic_fs::WorkspaceContextId::from_bytes([1; 16])];
+    save(
+        "filesystem_codecs",
+        "discard",
+        &acyclic_fs::workspace_context_wire::encode_discard(&ids)?,
+        "workspace_context_wire::encode_discard",
+        manifest,
+    )?;
+    Ok(())
+}
+
 fn main() {
-    if let Err(error) = futures::executor::block_on(capture()) {
-        eprintln!("corpus capture failed: {error}; recovery: cargo run --example capture");
-        std::process::exit(1);
+    match std::panic::catch_unwind(|| futures::executor::block_on(capture())) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            eprintln!("corpus capture failed: {error}; recovery: cargo run --example capture");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            eprintln!("corpus encoder validation panicked; recovery: cargo run --example capture");
+            std::process::exit(1);
+        }
     }
 }

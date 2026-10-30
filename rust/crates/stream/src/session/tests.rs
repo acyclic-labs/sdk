@@ -3,6 +3,7 @@ mod filtered_progress;
 mod properties;
 mod queue_scaling;
 mod resource_admission;
+mod versions;
 
 use super::*;
 use crate::{AppendRequest, MemoryStream, OwnedBytes};
@@ -17,8 +18,9 @@ fn hello(bytes: u64, frames: u32) -> wire::SessionFrame {
         0,
         0,
         Body::Hello(wire::SessionHello {
+            interest: None,
             credentials: vec![crate::session::testing::credential()],
-            version: 1,
+            version: crate::session::VERSION,
             client_id: Bytes::from_static(b"client"),
             destination_node: "node".into(),
             receive_bytes: bytes,

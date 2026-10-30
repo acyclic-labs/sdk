@@ -26,12 +26,15 @@ message SessionFrame {
   }
 }
 message SessionHello {
-  uint32 version = 1; // exactly 1
+  uint32 version = 1; // exactly 2; all other versions are refused
   bytes client_id = 2; // stable logical client identity, not authorization
   string destination_node = 3;
   uint64 receive_bytes = 4; // finite aggregate payload credit
   uint32 receive_frames = 5; // finite aggregate frame credit
   repeated bytes credentials = 6; // bounded slots, oldest index first
+  // The first request shares admission's flight; no Welcome is needed to send it.
+  // A peer checks version and credentials before interpreting this interest.
+  SessionInterest interest = 7;
 }
 // Empty credential drops the slot and closes every channel bound to it.
 message SessionCredential {

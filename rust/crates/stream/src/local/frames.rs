@@ -46,9 +46,27 @@ fn encode_header(limits: LocalStreamLimits, epoch: u64) -> Result<Vec<u8>, Local
 }
 
 /// The epoch of a whole journal header written for `limits`.
-fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Option<u64> {
-    let rest = header.strip_prefix(HEADER_MAGIC)?;
-    let (found, epoch) = rest.split_at_checked(LIMITS_BYTES)?;
-    (found == encode_limits(limits).ok()?).then_some(())?;
-    Some(u64::from_le_bytes(epoch.try_into().ok()?))
+fn versioned_header<'a>(
+    encoded: &'a [u8],
+    domain: &[u8],
+    version: &[u8],
+    format: &'static str,
+) -> Result<&'a [u8], LocalStreamError> {
+    crate::persistence::header(encoded, domain, version).map_err(|error| match error {
+        StreamError::Unsupported => LocalStreamError::UnsupportedVersion { format },
+        _ => LocalStreamError::Corrupt,
+    })
+}
+
+fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Result<u64, LocalStreamError> {
+    let rest = versioned_header(header, b"ACYCLIC-STREAM-LOCAL-V", b"2\0", "journal")?;
+    let (found, epoch) = rest
+        .split_at_checked(LIMITS_BYTES)
+        .ok_or(LocalStreamError::Corrupt)?;
+    if found != encode_limits(limits)? {
+        return Err(LocalStreamError::Corrupt);
+    }
+    Ok(u64::from_le_bytes(
+        epoch.try_into().map_err(|_| LocalStreamError::Corrupt)?,
+    ))
 }

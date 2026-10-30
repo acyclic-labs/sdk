@@ -18,6 +18,7 @@ copy a codec into a model. The obligations are:
 | `every_varint_prefix_and_eof_is_independent_of_chunking` | Symbolic inputs include every ten-byte varint prefix and partial EOF. Arbitrary chunking produces the same result, with strict input consumption at every step. |
 | `overflowing_credit_grants_never_partially_change_the_window` | Both counters advance together; overflow in either counter leaves both unchanged. |
 | `a_dropped_partial_frame_is_a_typed_eof_error` | Missing body bytes end in InvalidResponse; supplying the promised body ends successfully. |
+| `version_admission_borrows_payload_and_refuses_before_decoding` | Arbitrary domain/version prefixes either return the exact borrowed payload or a typed refusal. Old and unknown headers refuse even without a body. |
 
 Kani's unwinding assertions check the stated bounds; there are no waits or
 timeouts. ID operations inspect a fixed maximum of 113 bytes, with no heap
