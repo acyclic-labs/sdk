@@ -30,3 +30,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 ```
 
 Golden fixture provenance is recorded in `rust/crates/workers/tests/fixtures/cloud-workers/golden.json`. Local tests verify serialization and client composition; live deployment qualification belongs to the coordinator.
+
+`manifest::PreparedEntry` admits one environment and entry, its code and its
+declared sibling modules. It moves the selected configuration and owned payload
+bytes into a versioned immutable descriptor. Unselected entries, bindings,
+grants and secret references are excluded from the attachment identity.
+
+`entry::EntryStore` uses an existing account-scoped Objects provider to publish
+the sealed payload batch, publish the descriptor with its exact outgoing edges,
+and retain the closure under the caller's stable deployment root. Two deployments
+with identical content use separate roots. Repeating publication with the same
+root and content reconciles the same immutable object; release only after that
+deployment no longer names the attachment. Retention supplies durability through
+the original Objects contract.
+
+Loading reads one descriptor and checks its selected names and retention edges.
+Code and declared modules load lazily through that same provider and verify the
+original manifest digest and size. Each requested module uses one Objects read;
+unknown module names fail before I/O. The original Objects results, revisions
+and byte custody remain intact. No builder directory is needed. Objects identity
+does not convey account authority. This attachment API does not yet lower an
+attachment reference into accepted Actors deployment configuration.
