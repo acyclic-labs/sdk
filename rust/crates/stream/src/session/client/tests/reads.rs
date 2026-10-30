@@ -82,6 +82,56 @@ async fn operation_frontiers_retire_while_the_shared_session_keeps_progressing()
             .sequence,
         2
     );
+    cached_operation_frontier(&provider).await?;
+    Ok(())
+}
+
+async fn cached_operation_frontier(provider: &Arc<MemoryStream>) -> TestResult {
+    let fixture = Fixture::open(Arc::clone(provider), "cached-owner").await?;
+    let original = grpc::Client::from_channel(fixture._channel.clone(), "Bearer fixture".parse()?);
+    let context = Arc::clone(original.session_client()?.revisions());
+    let retired = Arc::downgrade(&context);
+    original
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    let sibling = original.clone().with_revisions(Arc::default());
+    let mut live = crate::records_only(
+        sibling
+            .follow(crate::FollowRequest::new(StreamPath::new("events")?, 3))
+            .await?,
+    );
+    assert_eq!(
+        sequences(original.read(read("events", 0, 3)?).await?).await?,
+        vec![0, 1, 2]
+    );
+    assert!(!context.floor(&Default::default())?.is_empty());
+    drop(original);
+    // This next real Open drains the original finite route's removal. The
+    // sibling still owns the same cache and live physical Session.
+    assert_eq!(
+        sequences(sibling.read(read("events", 0, 3)?).await?).await?,
+        vec![0, 1, 2]
+    );
+    assert!(
+        retired.upgrade().is_some(),
+        "the extra owner is the retention control"
+    );
+    drop(context);
+    assert!(
+        retired.upgrade().is_none(),
+        "the cached transport retained an ended operation"
+    );
+    append(provider, "events", 1).await?;
+    assert_eq!(
+        live.next()
+            .await
+            .transpose()?
+            .ok_or("follow ended")?
+            .sequence,
+        3
+    );
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }
 
@@ -316,7 +366,7 @@ async fn bounded_follow_delivers_exactly_the_read_range_and_closes() -> TestResu
             provider.read(request).await.err()
         );
     }
-    assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
+    assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }
 
@@ -355,7 +405,7 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
         wire_codec::session::follow_bound(&bounded("events", 0))?,
         None
     );
-    assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
+    assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }
 
@@ -628,12 +678,12 @@ async fn cancelling_a_finite_read_releases_only_its_own_interest() -> TestResult
         .await
         .map(crate::records_only)?;
     let records = client.read(read("events", 0, 10)?).await?;
-    assert_eq!(client.active.load(super::super::Ordering::Acquire), 2);
+    assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 2);
     drop(records);
-    assert_eq!(client.active.load(super::super::Ordering::Acquire), 1);
+    assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 1);
     append(&provider, "events", 1).await?;
     assert_eq!(next(&mut healthy).await?.sequence, 10);
     drop(healthy);
-    assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
+    assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     Ok(())
 }

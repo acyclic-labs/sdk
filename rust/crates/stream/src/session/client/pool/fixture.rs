@@ -131,15 +131,17 @@ pub(in crate::session::client) fn route(
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
     let (commands, _) = mpsc::channel(2);
     Client {
-        connections: super::super::super::Connections::new(),
-        executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-        commands,
-        removed: Arc::clone(&pool.removed),
-        next_id: Arc::new(AtomicU64::new(5)),
-        active: Arc::clone(&pool.active),
-        admissions: Arc::clone(&pool.admissions),
-        attempt_epoch: Arc::clone(&pool.attempt_epoch),
-        abandoned: Arc::clone(&pool.abandoned),
+        pool: PoolHandle {
+            connections: super::super::super::Connections::new(),
+            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+            commands,
+            removed: Arc::clone(&pool.removed),
+            next_id: Arc::new(AtomicU64::new(5)),
+            active: Arc::clone(&pool.active),
+            admissions: Arc::clone(&pool.admissions),
+            attempt_epoch: Arc::clone(&pool.attempt_epoch),
+            abandoned: Arc::clone(&pool.abandoned),
+        },
         revisions: Arc::default(),
     }
 }

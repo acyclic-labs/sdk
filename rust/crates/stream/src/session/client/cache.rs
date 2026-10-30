@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) struct Cache<T = Client> {
+pub(crate) struct Cache<T = PoolHandle> {
     // Lock order: never nest this cache lock with a session lock or an await.
     // Construction only publishes an empty pool; its task owns all dialing.
     client: Mutex<Option<T>>,

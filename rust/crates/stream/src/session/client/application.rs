@@ -109,7 +109,7 @@ impl ApplicationSubscription {
             generation,
             credit: Some(credit),
             progress: Arc::clone(&self.cursor.progress),
-            removed: Arc::clone(&self.cursor.client.removed),
+            removed: Arc::clone(&self.cursor.client.pool.removed),
             id: self.cursor.id,
             completion: Some(complete),
         }))
