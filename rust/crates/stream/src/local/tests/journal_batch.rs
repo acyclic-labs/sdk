@@ -30,7 +30,7 @@ async fn owned_frame_batches_reopen_in_order_and_release_original_work()
         // then recover the canonical decisions from the resulting real file.
         let visibility = stream.inner.visibility.write().await;
         let publication = stream.inner.publication.write().await;
-        stream.persist_frames(frames.into_iter()).await?;
+        let cursor = stream.persist_frames(frames.into_iter()).await?;
         assert_eq!(stream.inner.required()?, count);
         stream.await_publication(count).await?;
         drop(publication);
@@ -41,10 +41,9 @@ async fn owned_frame_batches_reopen_in_order_and_release_original_work()
             meter.write_bytes.load(std::sync::atomic::Ordering::SeqCst),
             bytes
         );
-        assert_eq!(
-            std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
-            HEADER_BYTES as u64 + bytes
-        );
+        let length = std::fs::metadata(root.path().join(JOURNAL_FILE))?.len();
+        assert_eq!(length, HEADER_BYTES as u64 + bytes);
+        assert_eq!(cursor, length);
         drop(stream);
         let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
         assert_eq!(reopened.tail(StreamPath::new("batch")?).await?, count);

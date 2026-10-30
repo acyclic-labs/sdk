@@ -213,14 +213,7 @@ impl CommandJournal for LocalPort {
                 return Err(StreamError::Capacity);
             }
         }
-        self.stream.persist_frames(prepared).await?;
-        let sequence = self
-            .stream
-            .inner
-            .journal
-            .lock()
-            .map_err(|_| self.stream.inner.poison())?
-            .bytes;
+        let sequence = self.stream.persist_frames(prepared).await?;
         Ok(AppendIf::Accepted {
             sequence,
             at_millis,

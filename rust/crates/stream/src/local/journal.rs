@@ -318,7 +318,7 @@ impl Journal {
     }
 
     /// Only completed physical writes advance the observable journal cut.
-    fn complete_append(&mut self, bytes: u64, required: bool) {
+    fn complete_append(&mut self, bytes: u64, required: bool) -> u64 {
         tracing::trace!(bytes, required, "acyclic.stream.journal_append");
         self.appended += 1;
         if required {
@@ -326,6 +326,7 @@ impl Journal {
         }
         self.operations += 1;
         self.bytes += bytes;
+        self.bytes
     }
 
     /// Whether frames were written since the journal last flushed.
