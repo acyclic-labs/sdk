@@ -321,10 +321,16 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
         ..Default::default()
     };
     let missing = connect(None)?;
-    assert!(matches!(
-        missing.subscribe(subscription.clone()).await,
-        Err(StreamError::Unsupported)
-    ));
+    let unsupported = match missing.subscribe(subscription.clone()).await {
+        Err(error) => error,
+        Ok(mut follow) => match follow.next().await {
+            Some(Err(error)) => error,
+            other => {
+                return Err(format!("missing resource provider did not refuse: {other:?}").into());
+            }
+        },
+    };
+    assert!(matches!(unsupported, StreamError::Unsupported));
     let connected = connect(Some(Arc::new(bound.changes()?)))?;
     let mut follow = connected.subscribe(subscription).await?;
     async {
