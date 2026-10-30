@@ -93,7 +93,13 @@ export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?
 export interface ReadKeySeek { readonly key: Uint8Array; readonly before: Sequence }
 export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">> & { readonly key?: ReadKeySeek };
 export interface FollowOptions { readonly whenAbsent?: "not_found" | "wait"; readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
-export interface StreamChild { readonly path: string; readonly tailRecord?: EncodedRecord; readonly origin?: ForkOrigin }
+export interface StreamChild {
+  readonly path: string;
+  /** Selected relative stream's exclusive tail; missing differs from present empty (0n). */
+  readonly tail?: bigint;
+  readonly tailRecord?: EncodedRecord;
+  readonly origin?: ForkOrigin;
+}
 export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
   | Readonly<{ after: string; hierarchyVersion: CommitId }>

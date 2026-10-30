@@ -222,20 +222,24 @@ fn projected_tail(
     paths: &Namespace,
     path: &StreamPath,
     relative: Option<&StreamPath>,
-) -> Result<Option<Record>, StreamError> {
+) -> Result<(Option<u64>, Option<Record>), StreamError> {
     let Some(relative) = relative else {
-        return Ok(None);
+        return Ok((None, None));
     };
     // A combined path over the bound cannot exist, so that child has no tail;
     // one long child never fails the page.
     if path.as_str().len() + 1 + relative.as_str().len() > crate::MAX_PATH_BYTES {
-        return Ok(None);
+        return Ok((None, None));
     }
     let target = StreamPath::new(format!("{}/{}", path.as_str(), relative.as_str()))?;
     let Some(stream) = paths.get(&target) else {
-        return Ok(None);
+        return Ok((None, None));
     };
-    Ok(last_record(stream))
+    let record = last_record(stream);
+    if stream.tail != 0 && record.is_none() {
+        return Err(StreamError::PrefixNotRetained);
+    }
+    Ok((Some(stream.tail), record))
 }
 
 fn last_record(stream: &PathState) -> Option<Record> {
@@ -306,10 +310,12 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
     let children = paths
         .into_iter()
         .map(|path| {
-            let tail_record = projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+            let (tail, tail_record) =
+                projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
             let origin = state.paths.origin(&path)?;
             let child = Child {
                 path,
+                tail,
                 tail_record,
                 origin,
             };

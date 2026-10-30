@@ -377,10 +377,24 @@ impl DurableReceipt {
 pub struct Child {
     /// Immediate inherited source at the page's immutable namespace cut.
     pub origin: Option<crate::ForkOrigin>,
+    /// Exclusive tail of the selected relative stream at this page cut.
+    /// `None` means that stream is missing (or no stream was selected);
+    /// `Some(0)` means it exists and is empty.
+    pub tail: Option<u64>,
     /// Last record of the requested relative stream at this page cut.
     pub tail_record: Option<Record>,
     /// Exact child path.
     pub path: StreamPath,
+}
+
+impl Child {
+    pub(crate) fn validate_tail(&self) -> Result<(), StreamError> {
+        let expected = self.tail.and_then(|tail| tail.checked_sub(1));
+        if self.tail_record.as_ref().map(|record| record.sequence) != expected {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(())
+    }
 }
 
 /// Bounded hierarchy traversal. A continuation is valid only while the
