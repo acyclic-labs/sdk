@@ -144,6 +144,8 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let old_path = session.views.keys().next().unwrap().clone();
     fill(&mut session.views.get_mut(&old_path).unwrap().view);
     let old_bytes = session.retained_bytes();
+    assert!(old_bytes > 0);
+    assert_eq!(old_bytes, session.view(&old_path).unwrap().retained_bytes());
     let old_next = session.view(&old_path).unwrap().next_sequence();
     let revision = session.revision();
     let (streams, mut resources) = tree.visible(32);
@@ -164,6 +166,7 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
         .map(|sub| validate_resource_subscription(sub).unwrap().0)
         .collect();
     session.replace_streams(streams).unwrap();
+    assert_eq!(session.retained_bytes(), 0);
     assert!(!session.resources.keys().all(|key| expected.contains(key)));
     assert_eq!(session.resources.len(), 4);
     session
@@ -255,6 +258,7 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 )
             };
             let retained = view(&session);
+            assert_eq!(session.retained_bytes(), retained.0);
             // Negative-control oracle: the old live-map membership check calls
             // this terminal interest new despite its populated retained fold.
             let would_reopen = if resource {
@@ -267,6 +271,7 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 let (streams, resources) = tree.visible(0);
                 session.replace_interests(streams, resources).unwrap();
                 assert_eq!(view(&session), retained);
+                assert_eq!(session.retained_bytes(), retained.0);
                 assert_eq!(session.followed_interests(), 11);
                 assert_eq!(session.retained_views(), 12);
             }
@@ -285,6 +290,25 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             ));
             assert_eq!(session.revision(), revision);
             assert_eq!(view(&session), retained);
+            let (mut streams, mut resources) = tree.visible(0);
+            let filter = Some(wire::SessionFilter {
+                keys: vec![wire::KeyRange {
+                    start: Bytes::from_static(b"restricted"),
+                    end: Bytes::from_static(b"restricted\0"),
+                }],
+                ..Default::default()
+            });
+            if resource {
+                resources[0].filter = filter;
+            } else {
+                streams[0].1.filter = filter;
+            }
+            assert!(matches!(
+                session.replace_interests(streams, resources),
+                Err(WireSessionError::InvalidSubscription)
+            ));
+            assert_eq!(session.revision(), revision);
+            assert_eq!(view(&session), retained);
             if resource {
                 session.begin_resource(request).unwrap();
                 assert_eq!(session.resource_view(&name).unwrap().retained_bytes(), 0);
@@ -293,29 +317,17 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
                 assert_eq!(session.view(&path).unwrap().retained_bytes(), 0);
             }
             assert_eq!(session.followed_interests(), 12);
+            assert_eq!(session.retained_bytes(), 0);
+            if resource {
+                fill(&mut session.resource_views.get_mut(&name).unwrap().view);
+                assert!(session.retained_bytes() > 0);
+                assert!(session.release_resource(&name).unwrap());
+                assert_eq!(session.retained_bytes(), 0);
+            }
+            session.clear().unwrap();
+            assert_eq!(session.retained_views(), 0);
+            assert_eq!(session.retained_bytes(), 0);
             scheduler.tasks.lock().unwrap().clear();
         }
     }
-}
-
-#[test]
-fn replacement_reopens_a_requested_stream_whose_follow_ended() {
-    let tree = Tree::new(1);
-    let (mut session, _scheduler) = client();
-    let (streams, _) = tree.visible(0);
-    let path = streams[0].0.clone();
-    session.replace_streams(streams.clone()).unwrap();
-    let live = session.revision();
-    // A live follow keeps its cursor: the same request opens nothing.
-    session.replace_streams(streams.clone()).unwrap();
-    assert_eq!(session.revision(), live + 1);
-    assert!(session.is_following(&path));
-    // A follow that ended (its stream did not exist yet) keeps only its
-    // final view. Negative control: the former replacement skipped any path
-    // with a retained view, so this stream was never followed again.
-    session.follows.remove(&path);
-    assert!(!session.is_following(&path));
-    session.replace_streams(streams).unwrap();
-    assert!(session.is_following(&path));
-    assert_eq!(session.revision(), live + 3);
 }

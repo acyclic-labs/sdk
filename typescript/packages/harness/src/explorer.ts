@@ -75,13 +75,25 @@ export class AgentExplorer {
   #frame: number | undefined;
   #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #scheduled = false;
   #closed = false;
+  readonly #drive = () => {
+    this.#scheduled = false;
+    if (this.#closed) return;
+    this.#core.drive();
+    this.#arm();
+    if (this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
+    if (typeof globalThis.requestAnimationFrame === "function") {
+      this.#frame = globalThis.requestAnimationFrame(this.#render);
+    } else {
+      this.#fallbackFrame = setTimeout(this.#render, 16);
+    }
+  };
   readonly #render = () => {
     this.#frame = undefined;
     this.#fallbackFrame = undefined;
     if (this.#closed) return;
     this.#options.render(this.#core.frame() as ExplorerRow[], this);
-    if (!this.#closed) this.#arm();
   };
   readonly #online = () => { this.#core.networkChanged(true); this.schedule(); };
   readonly #offline = () => { this.#core.networkChanged(false); this.schedule(); };
@@ -115,22 +127,19 @@ export class AgentExplorer {
     return explorer;
   }
 
-  /** Renders on the next animation frame; repeated calls coalesce. */
+  /** Drives in a microtask; rendering coalesces separately on animation frames. */
   schedule(): void {
-    if (this.#closed || this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
-    if (typeof globalThis.requestAnimationFrame === "function") {
-      this.#frame = globalThis.requestAnimationFrame(this.#render);
-    } else {
-      this.#fallbackFrame = setTimeout(this.#render, 16);
-    }
+    if (this.#closed || this.#scheduled) return;
+    this.#scheduled = true;
+    queueMicrotask(this.#drive);
   }
 
   /** The reader's one deadline becomes the page's one timer. */
   #arm(): void {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
-    const wakeIn = this.health().wakeIn;
-    if (wakeIn === null) return;
+    const wakeIn = this.#core.wakeIn();
+    if (wakeIn === undefined) return;
     this.#timer = setTimeout(() => { this.#timer = undefined; this.schedule(); }, Number(wakeIn));
   }
 

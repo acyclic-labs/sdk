@@ -14,7 +14,7 @@ test.each([-86_400_000, 86_400_000])("wall clock adjustment %i cannot move the r
   const core = new WasmExplorer(stream, () => {}, 0);
   try {
     core.networkChanged(false);
-    core.frame();
+    core.drive();
     const initial = core.health() as ExplorerHealth;
     const retry = initial.retryAt;
     if (retry === null) throw new Error("offline reader did not retain its retry deadline");
@@ -31,7 +31,7 @@ test.each([-86_400_000, 86_400_000])("wall clock adjustment %i cannot move the r
 
     elapsed = origin + Number(retry);
     expect((core.health() as ExplorerHealth).wakeIn).toBe(0n);
-    core.frame();
+    core.drive();
     expect((core.health() as ExplorerHealth).wakeIn).toBeNull();
     core.networkChanged(true);
     expect((core.health() as ExplorerHealth).connectivity).toBe("online");

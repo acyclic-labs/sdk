@@ -36,6 +36,13 @@ impl State {
         (monotonic_now() - self.origin).max(0.0) as u64
     }
 
+    fn wake_in(&self) -> Option<u64> {
+        self.explorer
+            .reader_ref()
+            .next_deadline()
+            .map(|deadline| deadline.saturating_sub(self.now()))
+    }
+
     fn wake(&mut self) {
         if let Some(waker) = self.waker.take() {
             waker.wake();
@@ -112,9 +119,9 @@ pub struct WasmExplorer {
 impl WasmExplorer {
     /// Opens an explorer whose reads and follows share `stream`'s session.
     /// `changed` is called whenever work completes (records, replies,
-    /// failures) or the wake deadline moves; the page then renders the next
-    /// frame and re-arms its one timer. `memory` is the device memory budget in bytes
-    /// (0 keeps the default).
+    /// failures) or the wake deadline moves; the page then drives the next
+    /// plan and re-arms its one timer independently of rendering. `memory`
+    /// is the device memory budget in bytes (0 keeps the default).
     ///
     /// # Errors
     /// Rejects an invalid reader policy.
@@ -169,15 +176,22 @@ impl WasmExplorer {
         Ok(Self { state })
     }
 
-    /// Plans one frame and returns the visible tree rows.
+    /// Plans visible work and wakes the driver, independently of rendering.
+    pub fn drive(&self) {
+        let mut state = self.state.borrow_mut();
+        let now = state.now();
+        state.explorer.frame(now);
+        state.wake();
+    }
+
+    /// Returns the visible tree rows from the most recent drive.
     ///
     /// # Errors
     /// Fails only if a row cannot be converted for JavaScript.
     pub fn frame(&self) -> Result<js_sys::Array, JsValue> {
-        let mut state = self.state.borrow_mut();
-        let now = state.now();
+        let state = self.state.borrow();
         let rows = js_sys::Array::new();
-        for (pos, row) in state.explorer.frame(now) {
+        for (pos, row) in state.explorer.rows() {
             let (view, latest) = match row {
                 Row::Agent {
                     path,
@@ -203,7 +217,6 @@ impl WasmExplorer {
             }
             rows.push(&view);
         }
-        state.wake();
         Ok(rows)
     }
 
@@ -223,13 +236,18 @@ impl WasmExplorer {
         Ok(rows)
     }
 
+    /// Milliseconds until the reader's deadline, without building a health view.
+    #[wasm_bindgen(js_name = wakeIn)]
+    pub fn wake_in(&self) -> Option<u64> {
+        self.state.borrow().wake_in()
+    }
+
     /// Connectivity, residency and the delay of the one timer the page arms.
     ///
     /// # Errors
     /// Fails only if the value cannot be converted for JavaScript.
     pub fn health(&self) -> Result<JsValue, JsValue> {
         let state = self.state.borrow();
-        let now = state.now();
         let reader = state.explorer.reader_ref();
         let residency = reader.residency();
         let (connectivity, retry_at) = match reader.connectivity() {
@@ -254,9 +272,7 @@ impl WasmExplorer {
             backing_bytes: residency.backing_bytes,
             requests: residency.requests,
             follows: residency.follows,
-            wake_in: reader
-                .next_deadline()
-                .map(|deadline| deadline.saturating_sub(now)),
+            wake_in: state.wake_in(),
             issues: reader
                 .issues()
                 .map(|(stream, issue)| Issue {

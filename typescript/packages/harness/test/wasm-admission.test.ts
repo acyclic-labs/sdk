@@ -77,12 +77,20 @@ test("browser admission refuses an artifact without its Machines workspace bindi
   expect(() => assertBrowserWasmExports(raw)).not.toThrow();
 });
 
-test("client admission requires both Rust JSON directions before dispatch", () => {
+test("client admission requires JSON directions and the event driver before dispatch", () => {
   for (const symbol of ["decodeClientJson", "encodeCanonicalJson", "discoverAgentControls"] as const) {
     for (const actual of [wrappers, raw]) {
       const missing = { ...actual } as Record<string, unknown>;
       delete missing[symbol];
       expect(() => assertClientWasmExports(missing)).toThrow();
     }
+  }
+  for (const method of ["drive", "wakeIn"] as const) {
+    const missingRaw = { ...raw };
+    delete missingRaw[`wasmexplorer_${method}`];
+    expect(() => assertClientWasmExports(missingRaw)).toThrow();
+    class MissingExplorer extends wrappers.WasmExplorer {}
+    Object.defineProperty(MissingExplorer.prototype, method, { value: undefined });
+    expect(() => assertClientWasmExports({ ...wrappers, WasmExplorer: MissingExplorer })).toThrow();
   }
 });
