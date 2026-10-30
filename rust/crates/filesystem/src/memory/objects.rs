@@ -1,9 +1,10 @@
 use super::*;
 use crate::async_storage::{AsyncObjectStore, object_error};
 
-/// Bounded in-memory immutable object store.
+/// In-memory immutable objects with an optional caller-selected size policy.
+#[derive(Default)]
 pub struct MemoryObjectStore {
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     pub(super) objects: RwLock<MemoryObjectState>,
 }
 
@@ -30,19 +31,11 @@ impl MemoryObjectState {
     }
 }
 
-impl Default for MemoryObjectStore {
-    fn default() -> Self {
-        Self {
-            maximum_object_bytes: DEFAULT_MAX_OBJECT_BYTES,
-            objects: RwLock::new(MemoryObjectState::default()),
-        }
-    }
-}
-
 impl MemoryObjectStore {
-    /// Creates a bounded memory object store.
-    pub fn new(maximum_object_bytes: u64) -> Result<Self, ObjectStoreError> {
-        if maximum_object_bytes == 0 {
+    /// Creates a memory object store with an optional positive byte policy.
+    pub fn new(maximum_object_bytes: impl Into<Option<u64>>) -> Result<Self, ObjectStoreError> {
+        let maximum_object_bytes = maximum_object_bytes.into();
+        if maximum_object_bytes == Some(0) {
             return Err(ObjectStoreError::TooLarge {
                 observed: 0,
                 maximum: 0,
@@ -66,10 +59,12 @@ impl MemoryObjectStore {
                 ..WorkCounters::UNCHARGED
             };
             // Size admission also applies to already hashed objects in insert.
-            if write.bytes.len() as u64 > self.maximum_object_bytes {
+            if let Some(maximum) = self.maximum_object_bytes
+                && write.bytes.len() as u64 > maximum
+            {
                 return Err(ObjectStoreError::TooLarge {
                     observed: write.bytes.len() as u64,
-                    maximum: self.maximum_object_bytes,
+                    maximum,
                 }
                 .into());
             }
@@ -93,10 +88,12 @@ impl MemoryObjectStore {
         }
         accounting.check()?;
         for write in writes {
-            if write.bytes.len() as u64 > self.maximum_object_bytes {
+            if let Some(maximum) = self.maximum_object_bytes
+                && write.bytes.len() as u64 > maximum
+            {
                 return Err(ObjectStoreError::TooLarge {
                     observed: write.bytes.len() as u64,
-                    maximum: self.maximum_object_bytes,
+                    maximum,
                 }
                 .into());
             }
