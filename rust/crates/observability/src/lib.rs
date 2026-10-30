@@ -11,15 +11,17 @@
 mod operations;
 #[cfg(not(target_arch = "wasm32"))]
 pub use operations::{
-    Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot, finish, record_outcome,
+    Completion, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot, finish,
+    observe, record_outcome,
 };
 
 mod slo;
 pub use slo::{LatencySlo, Slo, SloError, Verdict};
-
 #[cfg(not(target_arch = "wasm32"))]
-#[doc(hidden)]
-pub use futures as __futures;
+mod slo_query;
+#[cfg(not(target_arch = "wasm32"))]
+pub use slo_query::{SloQuery, SloView};
+
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub use tracing as __tracing;
@@ -29,6 +31,12 @@ pub use tracing as __tracing;
 /// retain the originating subscriber. No second copy of the producer is retained.
 #[macro_export]
 macro_rules! async_operation {
+    ($name:literal, $kind:expr, $context:path, $work:expr) => {{ $crate::operation_future!($name, $kind, $context, $work).await }};
+}
+
+/// Own and observe a single future without a forwarding async frame or box.
+#[macro_export]
+macro_rules! operation_future {
     ($name:literal, $kind:expr, $context:path, $work:expr) => {{
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -37,15 +45,10 @@ macro_rules! async_operation {
                 outcome = $crate::__tracing::field::Empty,
                 error.kind = $crate::__tracing::field::Empty,
             ));
-            let context = operation.clone();
-            context
-                .scope($crate::__futures::FutureExt::map($work, move |result| {
-                    $crate::finish(&operation, result, $kind)
-                }))
-                .await
+            operation.scope($crate::observe(&operation, $work, $kind))
         }
         #[cfg(target_arch = "wasm32")]
-        ($work).await
+        ($work)
     }};
 }
 
@@ -62,7 +65,8 @@ macro_rules! operation {
                 outcome = $crate::__tracing::field::Empty,
                 error.kind = $crate::__tracing::field::Empty,
             );
-            span.in_scope(|| $crate::finish(&span, ($work)(), $kind))
+            let completion = $crate::Completion::new(&span);
+            span.in_scope(|| completion.finish(($work)(), $kind))
         }
         #[cfg(target_arch = "wasm32")]
         ($work)()

@@ -1316,48 +1316,58 @@ impl<M: Medium> Account<M> {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        // Everything committed by `served` is visible to the read after it.
-        let served = self.read_revision().await?;
-        // Reading the payload proves the blob complete; an empty selection
-        // reads none, so it checks the payload instead.
-        let (_, envelope) = self
-            .stored_envelope(&digest)
-            .await?
-            .ok_or(Error::from(ErrorCode::NotFound))?;
-        let selected = range.resolve(envelope.length)?;
-        if selected.is_empty() && !self.complete(&digest, &envelope).await? {
-            return Err(ErrorCode::NotFound.into());
-        }
-        if selected.end - selected.start > maximum_bytes {
-            return Err(ErrorCode::QuotaExceeded.into());
-        }
-        let mut parts = Vec::new();
-        self.select(digest, envelope.clone(), selected.clone(), &mut parts)
-            .await?;
-        let body = match parts.len() {
-            0 => OwnedBytes::new(),
-            1 => parts.pop().ok_or_else(corrupt)?,
-            _ => {
-                self.medium
-                    .allocate(selected.end - selected.start)
-                    .map_err(medium)?;
-                let mut bytes = Vec::new();
-                bytes
-                    .try_reserve_exact(
-                        usize::try_from(selected.end - selected.start)
-                            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?,
-                    )
-                    .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
-                for part in &parts {
-                    bytes.extend_from_slice(part);
+        acyclic_observability::async_operation!(
+            "acyclic.objects.get",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                // Everything committed by `served` is visible to the read after it.
+                let served = self.read_revision().await?;
+                // Reading the payload proves the blob complete; an empty selection
+                // reads none, so it checks the payload instead.
+                let (_, envelope) = self
+                    .stored_envelope(&digest)
+                    .await?
+                    .ok_or(Error::from(ErrorCode::NotFound))?;
+                let selected = range.resolve(envelope.length)?;
+                if selected.is_empty() && !self.complete(&digest, &envelope).await? {
+                    return Err(ErrorCode::NotFound.into());
                 }
-                bytes.into()
+                if selected.end - selected.start > maximum_bytes {
+                    return Err(ErrorCode::QuotaExceeded.into());
+                }
+                let mut parts = Vec::new();
+                self.select(digest, envelope.clone(), selected.clone(), &mut parts)
+                    .await?;
+                let body = match parts.len() {
+                    0 => OwnedBytes::new(),
+                    1 => parts.pop().ok_or_else(corrupt)?,
+                    _ => {
+                        self.medium
+                            .allocate(selected.end - selected.start)
+                            .map_err(medium)?;
+                        let mut bytes = Vec::new();
+                        bytes
+                            .try_reserve_exact(
+                                usize::try_from(selected.end - selected.start)
+                                    .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?,
+                            )
+                            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
+                        for part in &parts {
+                            bytes.extend_from_slice(part);
+                        }
+                        bytes.into()
+                    }
+                };
+                if body.len() as u64 != selected.end - selected.start {
+                    return Err(corrupt());
+                }
+                Ok(
+                    Object::new(Self::head_of(digest, envelope), selected.start, body)
+                        .served_at(served),
+                )
             }
-        };
-        if body.len() as u64 != selected.end - selected.start {
-            return Err(corrupt());
-        }
-        Ok(Object::new(Self::head_of(digest, envelope), selected.start, body).served_at(served))
+        )
     }
 
     pub(crate) async fn put_inner(
@@ -1365,28 +1375,35 @@ impl<M: Medium> Account<M> {
         body: crate::Sealed,
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
-        let references = canonical(references);
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.read().await;
-        let digest = Digest::sealed(&body);
-        let body = body.into_bytes();
-        let length = body.len() as u64;
-        self.publish(
-            digest,
-            body,
-            Envelope {
-                kind: Kind::Blob,
-                length,
-                stored: length,
-                references,
-                // Assigned by `publish`.
-                version: [0; 16],
-                dying: None,
-                condemned: 0,
-            },
+        acyclic_observability::async_operation!(
+            "acyclic.objects.put",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let references = canonical(references);
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                let digest = Digest::sealed(&body);
+                let body = body.into_bytes();
+                let length = body.len() as u64;
+                self.publish(
+                    digest,
+                    body,
+                    Envelope {
+                        kind: Kind::Blob,
+                        length,
+                        stored: length,
+                        references,
+                        // Assigned by `publish`.
+                        version: [0; 16],
+                        dying: None,
+                        condemned: 0,
+                    },
+                )
+                .await
+                .map(|put| issued.committed(put))
+            }
         )
-        .await
-        .map(|put| issued.committed(put))
     }
 }
 
@@ -1394,7 +1411,12 @@ impl<M: Medium> Account<M> {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<M: Medium> crate::Blobs for Account<M> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
-        self.state.availability.subscribe(digest)
+        acyclic_observability::async_operation!(
+            "acyclic.objects.availability",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.state.availability.subscribe(digest) }
+        )
     }
 
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
@@ -1406,53 +1428,67 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        if manifest.parts.is_empty() {
-            return Err(invalid());
-        }
-        let length = manifest.length()?;
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.read().await;
-        for part in &manifest.parts {
-            let envelope = self
-                .blob(&part.digest)
-                .await?
-                .ok_or(Error::from(ErrorCode::MissingReference))?;
-            if envelope.length != part.length {
-                return Err(invalid());
+        acyclic_observability::async_operation!(
+            "acyclic.objects.put_manifest",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if manifest.parts.is_empty() {
+                    return Err(invalid());
+                }
+                let length = manifest.length()?;
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                for part in &manifest.parts {
+                    let envelope = self
+                        .blob(&part.digest)
+                        .await?
+                        .ok_or(Error::from(ErrorCode::MissingReference))?;
+                    if envelope.length != part.length {
+                        return Err(invalid());
+                    }
+                }
+                let encoded = manifest.encode();
+                let digest = Digest::of(&encoded);
+                let stored = encoded.len() as u64;
+                self.publish(
+                    digest,
+                    encoded.into(),
+                    Envelope {
+                        kind: Kind::Manifest,
+                        length,
+                        stored,
+                        references: canonical(manifest.references()),
+                        // Assigned by `publish`.
+                        version: [0; 16],
+                        dying: None,
+                        condemned: 0,
+                    },
+                )
+                .await
+                .map(|put| issued.committed(put))
             }
-        }
-        let encoded = manifest.encode();
-        let digest = Digest::of(&encoded);
-        let stored = encoded.len() as u64;
-        self.publish(
-            digest,
-            encoded.into(),
-            Envelope {
-                kind: Kind::Manifest,
-                length,
-                stored,
-                references: canonical(manifest.references()),
-                // Assigned by `publish`.
-                version: [0; 16],
-                dying: None,
-                condemned: 0,
-            },
         )
-        .await
-        .map(|put| issued.committed(put))
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
-        self.issued().await?;
-        self.flush_blobs(only, Vec::new()).await?;
-        // A blob collected since its put is not durable however flushed.
-        for digest in only.into_iter().flatten() {
-            match self.blob(digest).await? {
-                Some(envelope) if envelope.dying.is_none() => {}
-                _ => return Err(ErrorCode::MissingReference.into()),
+        acyclic_observability::async_operation!(
+            "acyclic.objects.flush",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.issued().await?;
+                self.flush_blobs(only, Vec::new()).await?;
+                // A blob collected since its put is not durable however flushed.
+                for digest in only.into_iter().flatten() {
+                    match self.blob(digest).await? {
+                        Some(envelope) if envelope.dying.is_none() => {}
+                        _ => return Err(ErrorCode::MissingReference.into()),
+                    }
+                }
+                Ok(())
             }
-        }
-        Ok(())
+        )
     }
 
     async fn get(
@@ -1465,269 +1501,320 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        let served = self.read_revision().await?;
-        let envelope = self
-            .blob(&digest)
-            .await?
-            .ok_or(Error::from(ErrorCode::NotFound))?;
-        let mut head = Self::head_of(digest, envelope);
-        head.revision = served;
-        Ok(head)
+        acyclic_observability::async_operation!(
+            "acyclic.objects.head",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let served = self.read_revision().await?;
+                let envelope = self
+                    .blob(&digest)
+                    .await?
+                    .ok_or(Error::from(ErrorCode::NotFound))?;
+                let mut head = Self::head_of(digest, envelope);
+                head.revision = served;
+                Ok(head)
+            }
+        )
     }
 
     async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.read().await;
-        let outcome = self.remove_blob(digest, None).await?;
-        let revision = if outcome == Delete::Deleted {
-            issued.commit()
-        } else {
-            issued.applied.current()
-        };
-        Ok(Deletion {
-            outcome,
-            revision: Some(revision),
-        })
+        acyclic_observability::async_operation!(
+            "acyclic.objects.delete",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                let outcome = self.remove_blob(digest, None).await?;
+                let revision = if outcome == Delete::Deleted {
+                    issued.commit()
+                } else {
+                    issued.applied.current()
+                };
+                Ok(Deletion {
+                    outcome,
+                    revision: Some(revision),
+                })
+            }
+        )
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
-        if limit == 0 {
-            return Err(invalid());
-        }
-        let served = self.read_revision().await?;
-        let after = after.map(|digest| self.envelope_key(&digest));
-        let limit = usize::try_from(limit).map_err(|_| invalid())?;
-        // Envelopes still awaiting their payload are not blobs: page past
-        // them to a full page.
-        let mut digests = Vec::new();
-        let mut cursor = after;
-        loop {
-            let wanted = limit - digests.len();
-            let keys = self
-                .medium
-                .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
-                .await
-                .map_err(medium)?;
-            for (key, _) in &keys {
-                let digest = self.digest_from_key(key)?;
-                if self.blob(&digest).await?.is_some() {
-                    digests.push(digest);
+        acyclic_observability::async_operation!(
+            "acyclic.objects.list",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if limit == 0 {
+                    return Err(invalid());
                 }
+                let served = self.read_revision().await?;
+                let after = after.map(|digest| self.envelope_key(&digest));
+                let limit = usize::try_from(limit).map_err(|_| invalid())?;
+                // Envelopes still awaiting their payload are not blobs: page past
+                // them to a full page.
+                let mut digests = Vec::new();
+                let mut cursor = after;
+                loop {
+                    let wanted = limit - digests.len();
+                    let keys = self
+                        .medium
+                        .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
+                        .await
+                        .map_err(medium)?;
+                    for (key, _) in &keys {
+                        let digest = self.digest_from_key(key)?;
+                        if self.blob(&digest).await?.is_some() {
+                            digests.push(digest);
+                        }
+                    }
+                    if keys.len() < wanted || digests.len() == limit {
+                        break;
+                    }
+                    cursor = keys.last().map(|(key, _)| key.clone());
+                }
+                let next = (digests.len() == limit)
+                    .then(|| digests.last().copied())
+                    .flatten();
+                Ok(Page {
+                    digests,
+                    next,
+                    revision: served,
+                })
             }
-            if keys.len() < wanted || digests.len() == limit {
-                break;
-            }
-            cursor = keys.last().map(|(key, _)| key.clone());
-        }
-        let next = (digests.len() == limit)
-            .then(|| digests.last().copied())
-            .flatten();
-        Ok(Page {
-            digests,
-            next,
-            revision: served,
-        })
+        )
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        let references = canonical(references);
-        if references.is_empty() {
-            return Err(invalid());
-        }
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.read().await;
-        self.medium
-            .allocate(references.len() as u64 * 32)
-            .map_err(medium)?;
-        let batch = encode_batch(&references);
-        // Each retain owns its batch and keys, so a concurrent release of an
-        // equal batch never removes them.
-        let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
-        let tag = Self::batch_tag(root, &name);
-        // The index-key vector is charged before any key is written, so a
-        // refused charge leaves nothing to clean up. Every key has one
-        // length: a fixed-width prefix and this tag.
-        let key = self.index_key(&references[0], &tag).len();
-        let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
-        self.medium.allocate(held).map_err(medium)?;
-        // Every write is withheld before the first key: n keys, then either
-        // their n removals or the batch and the one flush. A
-        // refused budget leaves nothing behind, and removing the keys of a
-        // retain that failed is never refused.
-        let n = references.len() as u64;
-        self.medium
-            .reserve_writes(2 * n + 2, batch.len() as u64)
-            .map_err(medium)?;
-        let key = format!("{}{name}", self.root_prefix(root));
-        match self.commit_batch(&references, &tag, &key, batch).await {
-            Ok(()) => {}
-            Err(Commit::Unknown) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(Commit::Failed(error)) => {
-                self.unreference(&references, &tag).await?;
-                return Err(error);
+        acyclic_observability::async_operation!(
+            "acyclic.objects.retain",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let references = canonical(references);
+                if references.is_empty() {
+                    return Err(invalid());
+                }
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                self.medium
+                    .allocate(references.len() as u64 * 32)
+                    .map_err(medium)?;
+                let batch = encode_batch(&references);
+                // Each retain owns its batch and keys, so a concurrent release of an
+                // equal batch never removes them.
+                let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
+                let tag = Self::batch_tag(root, &name);
+                // The index-key vector is charged before any key is written, so a
+                // refused charge leaves nothing to clean up. Every key has one
+                // length: a fixed-width prefix and this tag.
+                let key = self.index_key(&references[0], &tag).len();
+                let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
+                self.medium.allocate(held).map_err(medium)?;
+                // Every write is withheld before the first key: n keys, then either
+                // their n removals or the batch and the one flush. A
+                // refused budget leaves nothing behind, and removing the keys of a
+                // retain that failed is never refused.
+                let n = references.len() as u64;
+                self.medium
+                    .reserve_writes(2 * n + 2, batch.len() as u64)
+                    .map_err(medium)?;
+                let key = format!("{}{name}", self.root_prefix(root));
+                match self.commit_batch(&references, &tag, &key, batch).await {
+                    Ok(()) => {}
+                    Err(Commit::Unknown) => return Err(ErrorCode::OutcomeUnknown.into()),
+                    Err(Commit::Failed(error)) => {
+                        self.unreference(&references, &tag).await?;
+                        return Err(error);
+                    }
+                    Err(Commit::Unflushed(error)) => return Err(error),
+                }
+                Ok(Retained {
+                    references: references.len() as u64,
+                    revision: Some(issued.commit()),
+                })
             }
-            Err(Commit::Unflushed(error)) => return Err(error),
-        }
-        Ok(Retained {
-            references: references.len() as u64,
-            revision: Some(issued.commit()),
-        })
+        )
     }
 
     async fn release(&self, root: &RootId) -> Result<Released, Error> {
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.read().await;
-        let batches = self.list_all(&self.root_prefix(root)).await?;
-        let mut removed = Vec::new();
-        for (key, _) in &batches {
-            let Some(references) = self.batch(key).await? else {
-                continue;
-            };
-            match self.medium.remove(key).await {
-                Ok(_) => {}
-                Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-                Err(error) => return Err(medium(error)),
+        acyclic_observability::async_operation!(
+            "acyclic.objects.release",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.read().await;
+                let batches = self.list_all(&self.root_prefix(root)).await?;
+                let mut removed = Vec::new();
+                for (key, _) in &batches {
+                    let Some(references) = self.batch(key).await? else {
+                        continue;
+                    };
+                    match self.medium.remove(key).await {
+                        Ok(_) => {}
+                        Err(MediumError::Ambiguous(_)) => {
+                            return Err(ErrorCode::OutcomeUnknown.into());
+                        }
+                        Err(error) => return Err(medium(error)),
+                    }
+                    removed.push((key, references));
+                }
+                // A batch back from a crash must find its index keys: its removal is
+                // durable before theirs.
+                let batch_keys: Vec<_> = removed.iter().map(|(key, _)| (*key).clone()).collect();
+                self.medium.flush(&batch_keys).await.map_err(medium)?;
+                let mut index_keys = Vec::new();
+                for (key, references) in &removed {
+                    let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
+                    self.unreference(references, &tag).await?;
+                    index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
+                }
+                // An index key back from a crash would pin its child forever.
+                self.medium.flush(&index_keys).await.map_err(medium)?;
+                let revision = if batches.is_empty() {
+                    issued.applied.current()
+                } else {
+                    issued.commit()
+                };
+                Ok(Released {
+                    existed: !batches.is_empty(),
+                    revision: Some(revision),
+                })
             }
-            removed.push((key, references));
-        }
-        // A batch back from a crash must find its index keys: its removal is
-        // durable before theirs.
-        let batch_keys: Vec<_> = removed.iter().map(|(key, _)| (*key).clone()).collect();
-        self.medium.flush(&batch_keys).await.map_err(medium)?;
-        let mut index_keys = Vec::new();
-        for (key, references) in &removed {
-            let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
-            self.unreference(references, &tag).await?;
-            index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
-        }
-        // An index key back from a crash would pin its child forever.
-        self.medium.flush(&index_keys).await.map_err(medium)?;
-        let revision = if batches.is_empty() {
-            issued.applied.current()
-        } else {
-            issued.commit()
-        };
-        Ok(Released {
-            existed: !batches.is_empty(),
-            revision: Some(revision),
-        })
+        )
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let issued = self.issued().await?;
-        let _gate = self.state.gate.write().await;
-        let mut marked = HashSet::new();
-        let mut marks = Vec::new();
-        let mut pending = self.rooted().await?;
-        while let Some(digest) = pending.pop() {
-            if !marked.insert(digest) {
-                continue;
-            }
-            match self.stored_envelope(&digest).await {
-                Ok(Some((observed, envelope))) => {
-                    pending.extend(envelope.references.iter().copied());
-                    if envelope.dying.is_some() {
-                        marks.push((digest, observed, envelope));
+        acyclic_observability::async_operation!(
+            "acyclic.objects.collect",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let issued = self.issued().await?;
+                let _gate = self.state.gate.write().await;
+                let mut marked = HashSet::new();
+                let mut marks = Vec::new();
+                let mut pending = self.rooted().await?;
+                while let Some(digest) = pending.pop() {
+                    if !marked.insert(digest) {
+                        continue;
+                    }
+                    match self.stored_envelope(&digest).await {
+                        Ok(Some((observed, envelope))) => {
+                            pending.extend(envelope.references.iter().copied());
+                            if envelope.dying.is_some() {
+                                marks.push((digest, observed, envelope));
+                            }
+                        }
+                        // A retained reference to nothing protects nothing.
+                        Ok(None) => {}
+                        Err(_) => return Err(ErrorCode::Suspended.into()),
                     }
                 }
-                // A retained reference to nothing protects nothing.
-                Ok(None) => {}
-                Err(_) => return Err(ErrorCode::Suspended.into()),
-            }
-        }
-        // A kept blob outlives any deleter's mark.
-        for (digest, observed, envelope) in marks {
-            self.revive(&self.envelope_key(&digest), &observed, envelope)
-                .await?;
-        }
-        // Only a pass that can sweep advances the epoch: marking first never
-        // keeps less, since every sweep still consults the inbound index.
-        // Losing the claim to a crash only repeats the epoch, which keeps more.
-        let observed = self
-            .medium
-            .read(&self.epoch_key(), None)
-            .await
-            .map_err(medium)?;
-        let fence = match observed.as_deref().map(<[u8; 8]>::try_from) {
-            Some(Ok(bytes)) => u64::from_be_bytes(bytes),
-            Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
-            // Torn by a crash, or never claimed.
-            Some(Err(_)) | None => 0,
-        };
-        let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
-        let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
-        // One collector wins each epoch, across processes.
-        let claimed = match &observed {
-            Some(observed) => {
-                self.medium
-                    .replace(&self.epoch_key(), observed, advanced)
+                // A kept blob outlives any deleter's mark.
+                for (digest, observed, envelope) in marks {
+                    self.revive(&self.envelope_key(&digest), &observed, envelope)
+                        .await?;
+                }
+                // Only a pass that can sweep advances the epoch: marking first never
+                // keeps less, since every sweep still consults the inbound index.
+                // Losing the claim to a crash only repeats the epoch, which keeps more.
+                let observed = self
+                    .medium
+                    .read(&self.epoch_key(), None)
                     .await
-            }
-            None => self.medium.create(&self.epoch_key(), advanced).await,
-        };
-        match claimed {
-            Ok(true) => {}
-            Ok(false) => return Err(ErrorCode::Conflict.into()),
-            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(error) => return Err(medium(error)),
-        }
-        // Revisions and admissions of the earlier put protocol fence nothing.
-        for prefix in ["g/", "a/"] {
-            let mut pages = self.pages(format!("{}{prefix}", self.prefix));
-            while let Some(page) = pages.next().await? {
-                for (key, _) in page {
-                    self.medium.remove(&key).await.map_err(medium)?;
+                    .map_err(medium)?;
+                let fence = match observed.as_deref().map(<[u8; 8]>::try_from) {
+                    Some(Ok(bytes)) => u64::from_be_bytes(bytes),
+                    Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
+                    // Torn by a crash, or never claimed.
+                    Some(Err(_)) | None => 0,
+                };
+                let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
+                let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
+                // One collector wins each epoch, across processes.
+                let claimed = match &observed {
+                    Some(observed) => {
+                        self.medium
+                            .replace(&self.epoch_key(), observed, advanced)
+                            .await
+                    }
+                    None => self.medium.create(&self.epoch_key(), advanced).await,
+                };
+                match claimed {
+                    Ok(true) => {}
+                    Ok(false) => return Err(ErrorCode::Conflict.into()),
+                    Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
+                    Err(error) => return Err(medium(error)),
                 }
-            }
-        }
-        let mut collection = Collection {
-            epoch,
-            ..Collection::default()
-        };
-        let mut pages = self.pages(format!("{}e/", self.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                let digest = self.digest_from_key(&key)?;
-                if marked.contains(&digest) {
-                    collection.marked += 1;
-                    continue;
-                }
-                let stored = self
-                    .blob(&digest)
-                    .await?
-                    .map_or(0, |envelope| envelope.stored);
-                if self.sweep(digest, epoch).await? == Delete::Deleted {
-                    collection.swept += 1;
-                    collection.swept_bytes += stored;
-                }
-            }
-        }
-        // Payloads of no envelope or of a removed version: none can return.
-        let mut pages = self.pages(format!("{}p/", self.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, size) in page {
-                let (digest, version) = self.payload_of(&key)?;
-                match self.stored_envelope(&digest).await? {
-                    // Its envelope's pass above decided, or a put just wrote it.
-                    Some((_, envelope)) if envelope.version == version => {}
-                    _ => {
-                        self.medium.remove(&key).await.map_err(medium)?;
-                        collection.swept_bytes += size;
+                // Revisions and admissions of the earlier put protocol fence nothing.
+                for prefix in ["g/", "a/"] {
+                    let mut pages = self.pages(format!("{}{prefix}", self.prefix));
+                    while let Some(page) = pages.next().await? {
+                        for (key, _) in page {
+                            self.medium.remove(&key).await.map_err(medium)?;
+                        }
                     }
                 }
+                let mut collection = Collection {
+                    epoch,
+                    ..Collection::default()
+                };
+                let mut pages = self.pages(format!("{}e/", self.prefix));
+                while let Some(page) = pages.next().await? {
+                    for (key, _) in page {
+                        let digest = self.digest_from_key(&key)?;
+                        if marked.contains(&digest) {
+                            collection.marked += 1;
+                            continue;
+                        }
+                        let stored = self
+                            .blob(&digest)
+                            .await?
+                            .map_or(0, |envelope| envelope.stored);
+                        if self.sweep(digest, epoch).await? == Delete::Deleted {
+                            collection.swept += 1;
+                            collection.swept_bytes += stored;
+                        }
+                    }
+                }
+                // Payloads of no envelope or of a removed version: none can return.
+                let mut pages = self.pages(format!("{}p/", self.prefix));
+                while let Some(page) = pages.next().await? {
+                    for (key, size) in page {
+                        let (digest, version) = self.payload_of(&key)?;
+                        match self.stored_envelope(&digest).await? {
+                            // Its envelope's pass above decided, or a put just wrote it.
+                            Some((_, envelope)) if envelope.version == version => {}
+                            _ => {
+                                self.medium.remove(&key).await.map_err(medium)?;
+                                collection.swept_bytes += size;
+                            }
+                        }
+                    }
+                }
+                collection.revision = Some(if collection.swept > 0 {
+                    issued.commit()
+                } else {
+                    issued.applied.current()
+                });
+                Ok(collection)
             }
-        }
-        collection.revision = Some(if collection.swept > 0 {
-            issued.commit()
-        } else {
-            issued.applied.current()
-        });
-        Ok(collection)
+        )
     }
 
     async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
-        self.scrubbed().await?;
-        Ok(self.state.revisions.get().map(|issued| &issued.applied))
+        acyclic_observability::async_operation!(
+            "acyclic.objects.revisions",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.scrubbed().await?;
+                Ok(self.state.revisions.get().map(|issued| &issued.applied))
+            }
+        )
     }
 
     /// Every run commits only after its write is visible on the medium, so a
@@ -1737,76 +1824,90 @@ impl<M: Medium> crate::Blobs for Account<M> {
         &self,
         mut minimum: acyclic_stream::RevisionCut,
     ) -> Result<acyclic_stream::RevisionCut, Error> {
-        let Some(issued) = self.state.revisions.get() else {
-            // A stored run claim alone does not prove that this selected read
-            // has applied any index of it. Retain the caller's minimum.
-            return Ok(minimum);
-        };
-        let incarnation = issued.applied.current().incarnation;
-        let runs: Vec<_> = minimum
-            .iter()
-            .filter_map(|wanted| {
-                let run = issued.run_of(&wanted.scope)?;
-                Some((wanted.scope.clone(), wanted.incarnation, run))
-            })
-            .collect();
-        let mut claimed = None;
-        for (scope, wanted, run) in runs {
-            if wanted != incarnation {
-                return Err(ErrorCode::RevisionForeign.into());
-            }
-            if run == issued.run {
-                continue;
-            }
-            if run > issued.run {
-                let claimed = match claimed {
-                    Some(claimed) => claimed,
-                    None => {
-                        let record = self
-                            .medium
-                            .read(&self.incarnation_key(), None)
-                            .await
-                            .map_err(medium)?
-                            .ok_or(Error::from(ErrorCode::RevisionForeign))?;
-                        let (stored, run) = decode_incarnation(&record)?;
-                        if stored != incarnation {
-                            return Err(ErrorCode::RevisionForeign.into());
-                        }
-                        *claimed.insert(run)
-                    }
+        acyclic_observability::async_operation!(
+            "acyclic.objects.admitted",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let Some(issued) = self.state.revisions.get() else {
+                    // A stored run claim alone does not prove that this selected read
+                    // has applied any index of it. Retain the caller's minimum.
+                    return Ok(minimum);
                 };
-                // A run nobody claimed issued nothing; the wait refuses it.
-                if run > claimed {
-                    continue;
+                let incarnation = issued.applied.current().incarnation;
+                let runs: Vec<_> = minimum
+                    .iter()
+                    .filter_map(|wanted| {
+                        let run = issued.run_of(&wanted.scope)?;
+                        Some((wanted.scope.clone(), wanted.incarnation, run))
+                    })
+                    .collect();
+                let mut claimed = None;
+                for (scope, wanted, run) in runs {
+                    if wanted != incarnation {
+                        return Err(ErrorCode::RevisionForeign.into());
+                    }
+                    if run == issued.run {
+                        continue;
+                    }
+                    if run > issued.run {
+                        let claimed = match claimed {
+                            Some(claimed) => claimed,
+                            None => {
+                                let record = self
+                                    .medium
+                                    .read(&self.incarnation_key(), None)
+                                    .await
+                                    .map_err(medium)?
+                                    .ok_or(Error::from(ErrorCode::RevisionForeign))?;
+                                let (stored, run) = decode_incarnation(&record)?;
+                                if stored != incarnation {
+                                    return Err(ErrorCode::RevisionForeign.into());
+                                }
+                                *claimed.insert(run)
+                            }
+                        };
+                        // A run nobody claimed issued nothing; the wait refuses it.
+                        if run > claimed {
+                            continue;
+                        }
+                    }
+                    minimum.forget(&scope);
                 }
+                Ok(minimum)
             }
-            minimum.forget(&scope);
-        }
-        Ok(minimum)
+        )
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        self.scrubbed().await?;
-        let mut usage = Usage::default();
-        let mut after: Option<String> = None;
-        loop {
-            let page = self
-                .medium
-                .list(&format!("{}e/", self.prefix), after.as_deref(), PAGE)
-                .await
-                .map_err(medium)?;
-            for (key, _) in &page {
-                let digest = self.digest_from_key(key)?;
-                if let Some(envelope) = self.blob(&digest).await? {
-                    usage.blobs += 1;
-                    usage.unique_bytes += envelope.stored;
+        acyclic_observability::async_operation!(
+            "acyclic.objects.usage",
+            |error: &Error| error.code.as_str_name(),
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.scrubbed().await?;
+                let mut usage = Usage::default();
+                let mut after: Option<String> = None;
+                loop {
+                    let page = self
+                        .medium
+                        .list(&format!("{}e/", self.prefix), after.as_deref(), PAGE)
+                        .await
+                        .map_err(medium)?;
+                    for (key, _) in &page {
+                        let digest = self.digest_from_key(key)?;
+                        if let Some(envelope) = self.blob(&digest).await? {
+                            usage.blobs += 1;
+                            usage.unique_bytes += envelope.stored;
+                        }
+                    }
+                    if page.len() < PAGE {
+                        return Ok(usage);
+                    }
+                    after = page.last().map(|(key, _)| key.clone());
                 }
             }
-            if page.len() < PAGE {
-                return Ok(usage);
-            }
-            after = page.last().map(|(key, _)| key.clone());
-        }
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]

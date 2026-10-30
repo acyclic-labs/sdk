@@ -7,82 +7,107 @@ impl StreamProvider for LocalStream {
     }
 
     async fn durability_barrier(&self) -> Result<(), StreamError> {
-        self.seal_accepted().await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.durability_barrier",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.seal_accepted().await }
+        )
     }
 
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.accepted(self.inner.provider.inspect_idempotency(idempotency_key))
-            .await?
+        acyclic_observability::async_operation!(
+            "acyclic.stream.inspect_idempotency",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.accepted(
+                    self.inner
+                        .provider
+                        .inspect_idempotency_inner(idempotency_key),
+                )
+                .await?
+            }
+        )
     }
 
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        request.validate()?;
-        self.inner
-            .provider
-            .revisions
-            .wait(&request.at_least)
-            .await?;
-        let projection = request.projection;
-        let through = request.durable_through;
-        let (mut view, revision) = self
-            .accepted(async {
-                let mut view = self.inner.provider.capture_heads(&request, false).await?;
-                let revision = *self.inner.revision.borrow();
-                if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
-                    return Ok::<_, StreamError>((view, revision));
-                }
-                let synced = self
-                    .inner
-                    .synced
-                    .borrow()
-                    .flushed
-                    .is_some_and(|cut| cut >= revision);
-                let mut tails = self
-                    .inner
-                    .durable_tails
-                    .lock()
-                    .map_err(|_| StreamError::Unavailable)?;
-                for (path, head) in request.paths.iter().zip(&mut view.heads) {
-                    if let Some(head) = head {
-                        let mut durable = tails.get(path).copied().unwrap_or(0);
-                        if synced && head.tail > durable {
-                            durable = head.tail;
-                            tails.insert(path.clone(), durable);
+        acyclic_observability::async_operation!(
+            "acyclic.stream.heads",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                request.validate()?;
+                self.inner
+                    .provider
+                    .revisions
+                    .wait(&request.at_least)
+                    .await?;
+                let projection = request.projection;
+                let through = request.durable_through;
+                let (mut view, revision) = self
+                    .accepted(async {
+                        let mut view = self.inner.provider.capture_heads(&request, false).await?;
+                        let revision = *self.inner.revision.borrow();
+                        if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
+                            return Ok::<_, StreamError>((view, revision));
                         }
-                        head.durable = durable.min(head.tail);
-                        head.retained_through = through.filter(|through| *through <= head.durable);
+                        let synced = self
+                            .inner
+                            .synced
+                            .borrow()
+                            .flushed
+                            .is_some_and(|cut| cut >= revision);
+                        let mut tails = self
+                            .inner
+                            .durable_tails
+                            .lock()
+                            .map_err(|_| StreamError::Unavailable)?;
+                        for (path, head) in request.paths.iter().zip(&mut view.heads) {
+                            if let Some(head) = head {
+                                let mut durable = tails.get(path).copied().unwrap_or(0);
+                                if synced && head.tail > durable {
+                                    durable = head.tail;
+                                    tails.insert(path.clone(), durable);
+                                }
+                                head.durable = durable.min(head.tail);
+                                head.retained_through =
+                                    through.filter(|through| *through <= head.durable);
+                            }
+                        }
+                        Ok((view, revision))
+                    })
+                    .await??;
+                if through.is_some_and(|through| {
+                    view.heads
+                        .iter()
+                        .flatten()
+                        .any(|head| through <= head.tail && head.retained_through.is_none())
+                }) {
+                    // Flush exactly the captured publication cut, outside its read lock.
+                    // Concurrent appends cannot change the view or enlarge its proof.
+                    let flushed = self.await_flushed(revision).await?;
+                    let mut tails = self
+                        .inner
+                        .durable_tails
+                        .lock()
+                        .map_err(|_| StreamError::Unavailable)?;
+                    for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
+                        if let Some(head) = head {
+                            let durable = tails.entry(path).or_default();
+                            let marks = flushed_watermarks(durable, head.tail, flushed);
+                            head.durable = marks.durable;
+                            head.retained_through =
+                                through.filter(|through| *through <= marks.durable);
+                        }
                     }
                 }
-                Ok((view, revision))
-            })
-            .await??;
-        if through.is_some_and(|through| {
-            view.heads
-                .iter()
-                .flatten()
-                .any(|head| through <= head.tail && head.retained_through.is_none())
-        }) {
-            // Flush exactly the captured publication cut, outside its read lock.
-            // Concurrent appends cannot change the view or enlarge its proof.
-            let flushed = self.await_flushed(revision).await?;
-            let mut tails = self
-                .inner
-                .durable_tails
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
-                if let Some(head) = head {
-                    let durable = tails.entry(path).or_default();
-                    let marks = flushed_watermarks(durable, head.tail, flushed);
-                    head.durable = marks.durable;
-                    head.retained_through = through.filter(|through| *through <= marks.durable);
-                }
+                Ok(view)
             }
-        }
-        Ok(view)
+        )
     }
 
     fn write(
@@ -154,7 +179,8 @@ impl StreamProvider for LocalStream {
                     .revisions
                     .wait(&request.at_least)
                     .await?;
-                self.accepted(self.inner.provider.read(request)).await?
+                self.accepted(self.inner.provider.read_inner(request))
+                    .await?
             })
             .await;
         observation.finished = true;
@@ -165,39 +191,53 @@ impl StreamProvider for LocalStream {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest {
-            path,
-            from,
-            preceding,
-            filter,
-            progress,
-            when_absent,
-            at_least,
-        } = request;
-        // Parks before any visibility guard, so no writer waits on a parked read.
-        self.inner.provider.revisions.wait(&at_least).await?;
-        if progress {
-            self.progress_from(path, from, preceding, when_absent, filter)
-                .await
-        } else {
-            self.follow_from(path, from, preceding, when_absent, filter)
-                .await
-        }
+        acyclic_observability::async_operation!(
+            "acyclic.stream.follow",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let crate::FollowRequest {
+                    path,
+                    from,
+                    preceding,
+                    filter,
+                    progress,
+                    when_absent,
+                    at_least,
+                } = request;
+                // Parks before any visibility guard, so no writer waits on a parked read.
+                self.inner.provider.revisions.wait(&at_least).await?;
+                if progress {
+                    self.progress_from(path, from, preceding, when_absent, filter)
+                        .await
+                } else {
+                    self.follow_from(path, from, preceding, when_absent, filter)
+                        .await
+                }
+            }
+        )
     }
 
     async fn read_commit(
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.check_available()?;
-        match self.inner.provider.read_commit(commit_id).await {
-            Err(StreamError::NotFound) => {}
-            result => return result,
-        }
-        // A retained envelope is immutable. Only absence must join publication
-        // before it can be reported as authoritative.
-        self.accepted(self.inner.provider.read_commit(commit_id))
-            .await?
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read_commit",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.check_available()?;
+                match self.inner.provider.read_commit_inner(commit_id).await {
+                    Err(StreamError::NotFound) => {}
+                    result => return result,
+                }
+                // A retained envelope is immutable. Only absence must join publication
+                // before it can be reported as authoritative.
+                self.accepted(self.inner.provider.read_commit_inner(commit_id))
+                    .await?
+            }
+        )
     }
 }
 

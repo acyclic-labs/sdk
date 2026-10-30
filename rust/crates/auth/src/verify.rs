@@ -355,53 +355,57 @@ impl VerifiedCapability {
         caveats: Vec<Caveat>,
         next_secret: &[u8; 32],
     ) -> Result<Self, VerifyError> {
-        let Proof::Append(signer) = &self.proof else {
-            return Err(VerifyError::Sealed);
-        };
-        let next = SigningKey::from_bytes(next_secret);
-        let public = next.verifying_key().to_bytes();
-        if self.signing_keys.contains(&public) {
-            return Err(VerifyError::RepeatedKey);
-        }
-        let blocks = authority::attenuate(&self.blocks, caveats, public.to_vec())?;
-        let block = blocks.last().ok_or(VerifyError::Malformed)?;
-        let payload = BlockProto::from(block.clone()).encode_to_vec();
-        let previous = self.ids.last().ok_or(VerifyError::Malformed)?;
-        let message = block_transcript(self.blocks.len() as u64, previous, &payload);
-        let signature = signer.sign(&message).to_bytes();
-        let mut signed = self.signed.clone();
-        signed.push(SignedBlockProto {
-            payload,
-            signature: signature.to_vec(),
-        });
-        let mut ids = self.ids.clone();
-        ids.push(block_id(&message, &signature));
-        let mut signing_keys = self.signing_keys.clone();
-        signing_keys.insert(public);
-        let mut child = Self {
-            blocks,
-            signed,
-            ids,
-            issuers: self.issuers.clone(),
-            environment_issuer: self.environment_issuer,
-            signing_keys,
-            proof: Proof::Append(next),
-            principal: self.principal.clone(),
-            limits: self.limits.clone(),
-            not_before: self.not_before,
-            expires_at: self.expires_at,
-        };
-        child.evaluate();
-        Ok(child)
+        acyclic_observability::operation!("acyclic.auth.attenuate", VerifyError::kind, || {
+            let Proof::Append(signer) = &self.proof else {
+                return Err(VerifyError::Sealed);
+            };
+            let next = SigningKey::from_bytes(next_secret);
+            let public = next.verifying_key().to_bytes();
+            if self.signing_keys.contains(&public) {
+                return Err(VerifyError::RepeatedKey);
+            }
+            let blocks = authority::attenuate(&self.blocks, caveats, public.to_vec())?;
+            let block = blocks.last().ok_or(VerifyError::Malformed)?;
+            let payload = BlockProto::from(block.clone()).encode_to_vec();
+            let previous = self.ids.last().ok_or(VerifyError::Malformed)?;
+            let message = block_transcript(self.blocks.len() as u64, previous, &payload);
+            let signature = signer.sign(&message).to_bytes();
+            let mut signed = self.signed.clone();
+            signed.push(SignedBlockProto {
+                payload,
+                signature: signature.to_vec(),
+            });
+            let mut ids = self.ids.clone();
+            ids.push(block_id(&message, &signature));
+            let mut signing_keys = self.signing_keys.clone();
+            signing_keys.insert(public);
+            let mut child = Self {
+                blocks,
+                signed,
+                ids,
+                issuers: self.issuers.clone(),
+                environment_issuer: self.environment_issuer,
+                signing_keys,
+                proof: Proof::Append(next),
+                principal: self.principal.clone(),
+                limits: self.limits.clone(),
+                not_before: self.not_before,
+                expires_at: self.expires_at,
+            };
+            child.evaluate();
+            Ok(child)
+        })
     }
 
     /// Consume append authority and replace it with a final tip signature.
     pub fn seal(mut self) -> Result<Self, VerifyError> {
-        if self.is_sealed() {
-            return Err(VerifyError::Sealed);
-        }
-        self.proof = Proof::Sealed(self.seal_signature()?);
-        Ok(self)
+        acyclic_observability::operation!("acyclic.auth.seal", VerifyError::kind, || {
+            if self.is_sealed() {
+                return Err(VerifyError::Sealed);
+            }
+            self.proof = Proof::Sealed(self.seal_signature()?);
+            Ok(self)
+        })
     }
 
     fn seal_signature(&self) -> Result<[u8; 64], VerifyError> {

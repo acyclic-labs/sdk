@@ -1,4 +1,71 @@
 impl MemoryStream {
+    pub(crate) async fn heads_inner(
+        &self,
+        request: crate::HeadsRequest,
+    ) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        self.revisions.wait(&request.at_least).await?;
+        let view = self.capture_heads(&request, false).await?;
+        Ok(view)
+    }
+
+    pub(crate) async fn inspect_idempotency_inner(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        let state = self.state.read().await;
+        Ok(self
+            .replay(&state, idempotency_key.as_bytes())?
+            .map(|replay| IdempotencyObservation {
+                idempotency_key,
+                request_digest: replay.digest,
+                outcome: replay.result.clone(),
+                revision: Some(self.revisions.at(replay.index)),
+            }))
+    }
+
+    pub(crate) async fn read_inner(
+        &self,
+        request: ReadRequest,
+    ) -> Result<RecordStream, StreamError> {
+        validate_limit(request.limit)?;
+        if let Some(key) = &request.key {
+            key.validate()?;
+        }
+        self.revisions.wait(&request.at_least).await?;
+        let state = self.state.read().await;
+        let path = state
+            .paths
+            .get(&request.path)
+            .ok_or(StreamError::NotFound)?;
+        if request.from > path.tail {
+            return Err(StreamError::OutOfRange);
+        }
+        let cursor = FiniteRead::new(path, request);
+        drop(state);
+        Ok(stream::iter(cursor).boxed())
+    }
+
+    pub(crate) async fn read_commit_inner(
+        &self,
+        commit_id: CommitId,
+    ) -> Result<CommittedEnvelope, StreamError> {
+        self.state
+            .read()
+            .await
+            .find_commit(&commit_id, || {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(work) = &self.work {
+                    work.record(work.meter.examine(1, 0))?;
+                }
+                Ok::<_, StreamError>(())
+            })?
+            .cloned()
+            .ok_or(StreamError::NotFound)
+    }
+}
+
+impl MemoryStream {
     /// Captures an already validated request whose minimum cut was awaited
     /// outside any adapter publication lock. There is no boxed inner dispatch.
     /// `durable` confirms this captured state was durably published; deferred
@@ -256,25 +323,24 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        request.validate()?;
-        self.revisions.wait(&request.at_least).await?;
-        let view = self.capture_heads(&request, false).await?;
-        Ok(view)
+        acyclic_observability::async_operation!(
+            "acyclic.stream.heads",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.heads_inner(request)
+        )
     }
 
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        let state = self.state.read().await;
-        Ok(self
-            .replay(&state, idempotency_key.as_bytes())?
-            .map(|replay| IdempotencyObservation {
-                idempotency_key,
-                request_digest: replay.digest,
-                outcome: replay.result.clone(),
-                revision: Some(self.revisions.at(replay.index)),
-            }))
+        acyclic_observability::async_operation!(
+            "acyclic.stream.inspect_idempotency",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.inspect_idempotency_inner(idempotency_key)
+        )
     }
 
     fn write(
@@ -283,81 +349,93 @@ impl StreamProvider for MemoryStream {
     ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
     {
         match request {
-            crate::WriteRequest::Append(request) => Box::pin(async move {
-                self.append_inner(request)
-                    .await
-                    .map(|(outcome, _)| crate::WriteOutcome::Append(outcome))
-            }),
-            crate::WriteRequest::Fork(request) => Box::pin(async move {
-                let _publication = self.publication.lock().await;
-                let mut state = self.state.write().await;
-                self.plan_fork_locked(&mut state, &request)?
-                    .install(self, &mut state, false)
-                    .map(crate::WriteOutcome::Fork)
-            }),
-            crate::WriteRequest::Commit(request) => Box::pin(async move {
-                self.commit_inner(request, None)
-                    .await
-                    .map(|(outcome, _)| crate::WriteOutcome::Commit(outcome))
-            }),
+            crate::WriteRequest::Append(request) => {
+                Box::pin(acyclic_observability::operation_future!(
+                    "acyclic.stream.append",
+                    StreamError::code,
+                    acyclic_native_runtime::obs::OperationSpan::new,
+                    async move {
+                        self.append_inner(request)
+                            .await
+                            .map(|(outcome, _)| crate::WriteOutcome::Append(outcome))
+                    }
+                ))
+            }
+            crate::WriteRequest::Fork(request) => {
+                Box::pin(acyclic_observability::operation_future!(
+                    "acyclic.stream.fork",
+                    StreamError::code,
+                    acyclic_native_runtime::obs::OperationSpan::new,
+                    async move {
+                        let _publication = self.publication.lock().await;
+                        let mut state = self.state.write().await;
+                        self.plan_fork_locked(&mut state, &request)?
+                            .install(self, &mut state, false)
+                            .map(crate::WriteOutcome::Fork)
+                    }
+                ))
+            }
+            crate::WriteRequest::Commit(request) => {
+                Box::pin(acyclic_observability::operation_future!(
+                    "acyclic.stream.commit",
+                    StreamError::code,
+                    acyclic_native_runtime::obs::OperationSpan::new,
+                    async move {
+                        self.commit_inner(request, None)
+                            .await
+                            .map(|(outcome, _)| crate::WriteOutcome::Commit(outcome))
+                    }
+                ))
+            }
         }
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        validate_limit(request.limit)?;
-        if let Some(key) = &request.key {
-            key.validate()?;
-        }
-        self.revisions.wait(&request.at_least).await?;
-        let state = self.state.read().await;
-        let path = state
-            .paths
-            .get(&request.path)
-            .ok_or(StreamError::NotFound)?;
-        if request.from > path.tail {
-            return Err(StreamError::OutOfRange);
-        }
-        let cursor = FiniteRead::new(path, request);
-        drop(state);
-        Ok(stream::iter(cursor).boxed())
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.read_inner(request)
+        )
     }
 
     async fn follow(
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest {
-            path,
-            from,
-            preceding,
-            filter,
-            progress,
-            when_absent,
-            at_least,
-        } = request;
-        self.revisions.wait(&at_least).await?;
-        if progress {
-            self.progress_from(path, from, preceding, when_absent, filter)
-                .await
-        } else {
-            self.follow_from(path, from, preceding, when_absent, filter)
-                .await
-        }
+        acyclic_observability::async_operation!(
+            "acyclic.stream.follow",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let crate::FollowRequest {
+                    path,
+                    from,
+                    preceding,
+                    filter,
+                    progress,
+                    when_absent,
+                    at_least,
+                } = request;
+                self.revisions.wait(&at_least).await?;
+                if progress {
+                    self.progress_from(path, from, preceding, when_absent, filter)
+                        .await
+                } else {
+                    self.follow_from(path, from, preceding, when_absent, filter)
+                        .await
+                }
+            }
+        )
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.state
-            .read()
-            .await
-            .find_commit(&commit_id, || {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = &self.work {
-                    work.record(work.meter.examine(1, 0))?;
-                }
-                Ok::<_, StreamError>(())
-            })?
-            .cloned()
-            .ok_or(StreamError::NotFound)
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read_commit",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            self.read_commit_inner(commit_id)
+        )
     }
 }
 

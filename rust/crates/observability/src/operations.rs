@@ -35,6 +35,57 @@ pub fn finish<T, E>(
     result
 }
 
+/// Owns the terminal observation, independently of retained child span handles.
+/// Dropping unfinished work records `incomplete`; it never invents a failed
+/// result for an operation whose effect may already have been accepted.
+pub struct Completion(Option<Span>);
+
+impl Completion {
+    /// Bind the observation to the explicitly owned operation span.
+    pub fn new(span: &Span) -> Self {
+        Self(Some(span.clone()))
+    }
+
+    /// Complete once and return the unchanged result, including uncertain errors.
+    pub fn finish<T, E>(
+        mut self,
+        result: Result<T, E>,
+        kind: impl FnOnce(&E) -> &'static str,
+    ) -> Result<T, E> {
+        if let Some(span) = self.0.take() {
+            finish(&span, result, kind)
+        } else {
+            result
+        }
+    }
+}
+
+impl Drop for Completion {
+    fn drop(&mut self) {
+        if let Some(span) = &self.0
+            && !span.is_disabled()
+        {
+            span.record("outcome", "incomplete");
+        }
+    }
+}
+
+/// Observe a future in place, retaining one producer and one completion owner.
+/// The caller scopes it with the shared native operation context when needed.
+pub fn observe<T, E, F, K>(
+    span: &Span,
+    future: F,
+    kind: K,
+) -> impl std::future::Future<Output = Result<T, E>> + use<T, E, F, K>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+    K: FnOnce(&E) -> &'static str,
+{
+    use futures::FutureExt as _;
+    let completion = Completion::new(span);
+    future.map(move |result| completion.finish(result, kind))
+}
+
 /// Counts and a base-two nanosecond latency histogram from one operation span.
 ///
 /// Bucket zero contains 0 ns, bucket i contains [2^(i-1), 2^i) ns.
@@ -275,6 +326,7 @@ impl Visit for Terminal {
             self.0 = match value {
                 "ok" => Some(Outcome::Ok),
                 "err" => Some(Outcome::Err),
+                "incomplete" => Some(Outcome::Incomplete),
                 _ => None,
             };
         }

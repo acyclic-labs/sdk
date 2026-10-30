@@ -130,77 +130,93 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// different bytes under that identity fail with IdempotencyMismatch.
     /// This never drives a handler, so paused actors retain queued requests.
     pub async fn invoke(&self, invocation: &Invocation) -> Result<CommittedInvocation, Error> {
-        let ticket = self.enqueue_invoke(invocation).await?;
-        self.wait_invocation(ticket).await
+        acyclic_observability::async_operation!(
+            "acyclic.actors.invoke",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let ticket = self.enqueue_invoke(invocation).await?;
+                self.wait_invocation(ticket).await
+            }
+        )
     }
 
     /// Enqueue without waiting. Uncertain transport failures are retried with
     /// the identical Invocation, whose key and complete request stay stable.
     pub async fn enqueue_invoke(&self, invocation: &Invocation) -> Result<InvocationTicket, Error> {
-        let snapshot = self.load(invocation.actor()).await?;
-        let input = snapshot
-            .state
-            .as_ref()
-            .and_then(|state| state.subscriptions.get(invocation.subscription()))
-            .ok_or(Error::Invalid("invocation subscription is missing"))?
-            .path
-            .clone();
-        let mut publication = super::PreparedPublish::foreign(IdempotencyKey::new(
-            invocation.identity(snapshot.path.as_str()).to_vec(),
-        )?);
-        publication.join(Effect {
-            conditions: Vec::new(),
-            mutation: CommitMutation::Append {
-                path: input.clone(),
-                records: vec![invocation.record(&snapshot.path)?],
-            },
-        })?;
-        publication.join(self.activation(invocation.actor()))?;
-        let mut request = publication.into_request()?;
-        let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
-            Ok::<(), StreamError>(())
-        })??;
-        let CommitOutcome::Committed(receipt) = self.provider.commit(request).await? else {
-            return Err(Error::Conflict);
-        };
-        // Compact receipts carry no authenticated bodies. Recover the original
-        // immutable fact and join it to the canonical request, never caller bytes.
-        let envelope = self.provider.read_commit(receipt.commit_id).await?;
-        if envelope.commit_id != receipt.commit_id
-            || envelope.committed_at_micros != receipt.committed_at_micros
-            || !binding.matches_with(&envelope, |_| Ok::<(), StreamError>(()))??
-            || !receipt.forks.is_empty()
-            || !receipt
-                .appends
-                .iter()
-                .map(|range| (&range.path, range.start, range.tail))
-                .eq(envelope
+        acyclic_observability::async_operation!(
+            "acyclic.actors.enqueue_invoke",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let snapshot = self.load(invocation.actor()).await?;
+                let input = snapshot
+                    .state
+                    .as_ref()
+                    .and_then(|state| state.subscriptions.get(invocation.subscription()))
+                    .ok_or(Error::Invalid("invocation subscription is missing"))?
+                    .path
+                    .clone();
+                let mut publication = super::PreparedPublish::foreign(IdempotencyKey::new(
+                    invocation.identity(snapshot.path.as_str()).to_vec(),
+                )?);
+                publication.join(Effect {
+                    conditions: Vec::new(),
+                    mutation: CommitMutation::Append {
+                        path: input.clone(),
+                        records: vec![invocation.record(&snapshot.path)?],
+                    },
+                })?;
+                publication.join(self.activation(invocation.actor()))?;
+                let mut request = publication.into_request()?;
+                let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
+                    Ok::<(), StreamError>(())
+                })??;
+                let CommitOutcome::Committed(receipt) = self.provider.commit(request).await? else {
+                    return Err(Error::Conflict);
+                };
+                // Compact receipts carry no authenticated bodies. Recover the original
+                // immutable fact and join it to the canonical request, never caller bytes.
+                let envelope = self.provider.read_commit(receipt.commit_id).await?;
+                if envelope.commit_id != receipt.commit_id
+                    || envelope.committed_at_micros != receipt.committed_at_micros
+                    || !binding.matches_with(&envelope, |_| Ok::<(), StreamError>(()))??
+                    || !receipt.forks.is_empty()
+                    || !receipt
+                        .appends
+                        .iter()
+                        .map(|range| (&range.path, range.start, range.tail))
+                        .eq(envelope
+                            .mutations
+                            .iter()
+                            .filter_map(|mutation| match mutation {
+                                CommittedMutation::Append(append) => {
+                                    Some((&append.path, append.start, append.tail))
+                                }
+                                CommittedMutation::Fork(_) => None,
+                            }))
+                {
+                    return Err(Error::Invalid("invocation receipt changes its input"));
+                }
+                let record = envelope
                     .mutations
                     .iter()
-                    .filter_map(|mutation| match mutation {
-                        CommittedMutation::Append(append) => {
-                            Some((&append.path, append.start, append.tail))
+                    .find_map(|mutation| match mutation {
+                        CommittedMutation::Append(append) if append.path == input => {
+                            append.records.first()
                         }
-                        CommittedMutation::Fork(_) => None,
-                    }))
-        {
-            return Err(Error::Invalid("invocation receipt changes its input"));
-        }
-        let record = envelope
-            .mutations
-            .iter()
-            .find_map(|mutation| match mutation {
-                CommittedMutation::Append(append) if append.path == input => append.records.first(),
-                _ => None,
-            })
-            .ok_or(Error::Invalid("invocation receipt omits its input"))?;
-        Ok(InvocationTicket {
-            invocation: invocation.clone(),
-            state: snapshot.path,
-            input,
-            record: record.clone(),
-            revision: receipt.revision,
-        })
+                        _ => None,
+                    })
+                    .ok_or(Error::Invalid("invocation receipt omits its input"))?;
+                Ok(InvocationTicket {
+                    invocation: invocation.clone(),
+                    state: snapshot.path,
+                    input,
+                    record: record.clone(),
+                    revision: receipt.revision,
+                })
+            }
+        )
     }
 
     /// Observe the original reply after its explicit committed input cut. The
@@ -210,77 +226,85 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         &self,
         ticket: InvocationTicket,
     ) -> Result<CommittedInvocation, Error> {
-        if self.path(ticket.invocation.actor())? != ticket.state {
-            return Err(Error::Conflict);
-        }
-        let cut = AppliedCut::through(
-            ticket.invocation.subscription().into(),
-            ticket.input.clone(),
-            &ticket.record,
-        )?
-        .at_least(RevisionCut::of(ticket.revision.clone()));
-        let applied = self.wait_applied(ticket.invocation.actor(), cut).await?;
-        // Consumption and reply creation share a transaction, so this path
-        // exists once the cut is applied; a missing path is a protocol failure.
-        let reply = acyclic_stream::records_only(
-            self.provider
-                .follow(FollowRequest {
-                    at_least: RevisionCut::of(ticket.revision.clone()),
-                    ..FollowRequest::new(reply_path(&ticket.state, &ticket.invocation)?, 0)
+        acyclic_observability::async_operation!(
+            "acyclic.actors.wait_invocation",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if self.path(ticket.invocation.actor())? != ticket.state {
+                    return Err(Error::Conflict);
+                }
+                let cut = AppliedCut::through(
+                    ticket.invocation.subscription().into(),
+                    ticket.input.clone(),
+                    &ticket.record,
+                )?
+                .at_least(RevisionCut::of(ticket.revision.clone()));
+                let applied = self.wait_applied(ticket.invocation.actor(), cut).await?;
+                // Consumption and reply creation share a transaction, so this path
+                // exists once the cut is applied; a missing path is a protocol failure.
+                let reply = acyclic_stream::records_only(
+                    self.provider
+                        .follow(FollowRequest {
+                            at_least: RevisionCut::of(ticket.revision.clone()),
+                            ..FollowRequest::new(reply_path(&ticket.state, &ticket.invocation)?, 0)
+                        })
+                        .await?,
+                )
+                .try_next()
+                .await?
+                .ok_or(StreamError::Unavailable)?;
+                let wire = ReplyWire::decode(reply.value.as_ref())
+                    .map_err(|_| Error::Invalid("invalid invocation reply"))?;
+                if wire.encode_to_vec().as_slice() != reply.value.as_ref()
+                    || reply.sequence != 0
+                    || wire.request_digest.as_ref()
+                        != Sha256::digest(&ticket.record.value).as_slice()
+                    || wire.input_commit.as_ref() != ticket.record.commit_id.as_bytes()
+                    || wire.input_sequence != ticket.record.sequence
+                    || wire.revision == 0
+                    || wire.revision > applied.revision()
+                {
+                    return Err(Error::Invalid(
+                        "invocation reply changes its input or revision",
+                    ));
+                }
+                let state = self
+                    .provider
+                    .read(ReadRequest {
+                        key: None,
+                        path: ticket.state.clone(),
+                        from: wire.revision - 1,
+                        limit: 1,
+                        at_least: RevisionCut::of(ticket.revision.clone()),
+                    })
+                    .await?
+                    .try_next()
+                    .await?
+                    .ok_or(Error::Invalid("invocation state receipt is missing"))?;
+                if state.sequence.checked_add(1) != Some(wire.revision)
+                    || state.commit_id != reply.commit_id
+                    || state.committed_at_micros != reply.committed_at_micros
+                    || State::decode(&state.value)?
+                        .subscriptions
+                        .get(ticket.invocation.subscription())
+                        .filter(|subscription| subscription.path == ticket.input)
+                        .is_none_or(|subscription| subscription.cursor <= ticket.record.sequence)
+                {
+                    return Err(Error::Invalid(
+                        "invocation reply is not co-committed with consumed input",
+                    ));
+                }
+                Ok(CommittedInvocation {
+                    response: wire.response,
+                    receipt: InvocationReceipt {
+                        ticket,
+                        state,
+                        reply,
+                    },
                 })
-                .await?,
+            }
         )
-        .try_next()
-        .await?
-        .ok_or(StreamError::Unavailable)?;
-        let wire = ReplyWire::decode(reply.value.as_ref())
-            .map_err(|_| Error::Invalid("invalid invocation reply"))?;
-        if wire.encode_to_vec().as_slice() != reply.value.as_ref()
-            || reply.sequence != 0
-            || wire.request_digest.as_ref() != Sha256::digest(&ticket.record.value).as_slice()
-            || wire.input_commit.as_ref() != ticket.record.commit_id.as_bytes()
-            || wire.input_sequence != ticket.record.sequence
-            || wire.revision == 0
-            || wire.revision > applied.revision()
-        {
-            return Err(Error::Invalid(
-                "invocation reply changes its input or revision",
-            ));
-        }
-        let state = self
-            .provider
-            .read(ReadRequest {
-                key: None,
-                path: ticket.state.clone(),
-                from: wire.revision - 1,
-                limit: 1,
-                at_least: RevisionCut::of(ticket.revision.clone()),
-            })
-            .await?
-            .try_next()
-            .await?
-            .ok_or(Error::Invalid("invocation state receipt is missing"))?;
-        if state.sequence.checked_add(1) != Some(wire.revision)
-            || state.commit_id != reply.commit_id
-            || state.committed_at_micros != reply.committed_at_micros
-            || State::decode(&state.value)?
-                .subscriptions
-                .get(ticket.invocation.subscription())
-                .filter(|subscription| subscription.path == ticket.input)
-                .is_none_or(|subscription| subscription.cursor <= ticket.record.sequence)
-        {
-            return Err(Error::Invalid(
-                "invocation reply is not co-committed with consumed input",
-            ));
-        }
-        Ok(CommittedInvocation {
-            response: wire.response,
-            receipt: InvocationReceipt {
-                ticket,
-                state,
-                reply,
-            },
-        })
     }
 
     pub(super) fn invocation_reply(

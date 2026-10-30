@@ -1,3 +1,4 @@
+//! Independent terminal, progress and physical disabled-path witnesses.
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_observability::{Metrics, Operations};
@@ -88,6 +89,30 @@ fn one_terminal_sample_survives_retained_handles_and_producer_loss()
     let last = ready(query.changed())??;
     assert_eq!((last.ok, last.err, last.incomplete), (1, 1, 1));
     assert_eq!(last.latency_ns.iter().sum::<u64>(), 3);
+    // Negative schedule: a child retains the span after its producer future is
+    // abandoned. The owner, rather than the last tracing handle, must notify.
+    let (retained, abandoned) = tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!("acyclic.test.operation", outcome = tracing::field::Empty);
+        let future = acyclic_observability::observe(
+            &span,
+            std::future::pending::<Result<(), ()>>(),
+            |()| "refused",
+        );
+        (span, future)
+    });
+    let mut pending = Box::pin(query.changed());
+    assert!(pending.as_mut().poll(&mut context).is_pending());
+    drop(abandoned);
+    let abandoned = ready(pending.as_mut())??;
+    drop(pending);
+    assert_eq!(abandoned.incomplete, 2);
+    drop(retained);
+    assert!(
+        pin!(query.changed())
+            .as_mut()
+            .poll(&mut context)
+            .is_pending()
+    );
     // The negative schedule omits every completion. Losing its producer must
     // settle by the same watch-close event instead of waiting for another sample.
     let mut closed = Box::pin(query.changed());
@@ -122,6 +147,10 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
                 }
             });
             assert_eq!(work.count_total, 0, "disabled instrumentation allocated");
+            eprintln!(
+                "disabled operations={count}, allocations={}",
+                work.count_total
+            );
         }
     });
     let metrics = Metrics::default();
@@ -134,8 +163,30 @@ fn disabled_operation_allocates_nothing_with_enabled_negative_control()
         enabled.count_total > 0,
         "negative control failed to detect an attached subscriber"
     );
+    eprintln!("enabled operation allocations={}", enabled.count_total);
     assert_eq!(query.snapshot().ok, 1);
     Ok(())
+}
+
+#[test]
+fn filtered_operation_cannot_complete_its_enabled_parent() {
+    let metrics = Metrics::default();
+    let parent = metrics.query("acyclic.test.parent");
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(
+        Operations(metrics).with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+            metadata.name() != "acyclic.test.operation"
+        })),
+    ));
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!("acyclic.test.parent", outcome = tracing::field::Empty);
+        span.in_scope(|| operation(true));
+        assert_eq!(parent.snapshot().err, 0);
+        // The former current-span completion path would mutate this parent.
+        span.in_scope(|| {
+            acyclic_observability::record_outcome(&tracing::Span::current(), Some("refused"));
+        });
+        assert_eq!(parent.snapshot().err, 1);
+    });
 }
 
 #[test]
@@ -143,6 +194,21 @@ fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::er
     use acyclic_observability::{Slo, Snapshot};
     let file = br#"{"version":1,"operation":"acyclic.test.operation","success_ppm":990000,"latency":{"maximum_ns":10,"target_ppm":990000}}"#;
     let mut slo: Slo = serde_json::from_slice(file)?;
+    let metrics = Metrics::default();
+    let mut live = metrics.query_slo(slo.clone())?;
+    assert_eq!(live.snapshot().verdict.success, None);
+    let dispatch =
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics.clone())));
+    tracing::dispatcher::with_default(&dispatch, || operation(false));
+    assert_eq!(ready(live.changed())??.verdict.success, Some(true));
+    // Replacing the file selects its new operation; the previous operation's
+    // successful cohort must not leak into the new file's view.
+    let mut replacement = slo.clone();
+    replacement.operation = "acyclic.test.unrelated".into();
+    assert_eq!(
+        metrics.query_slo(replacement)?.snapshot().verdict.success,
+        None
+    );
     let mut snapshot = Snapshot {
         operation: slo.operation.clone(),
         latency_ns: vec![0; 129],
@@ -243,6 +309,7 @@ fn disabled_operation_has_zero_syscalls_with_real_io_negative_control()
             }
         }
         assert!(ended, "missing trace end marker");
+        eprintln!("operations=100000, real_io_negative={negative}, syscalls={calls}");
         assert_eq!(
             calls == 0,
             !negative,
