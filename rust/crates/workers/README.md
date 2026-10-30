@@ -1,13 +1,19 @@
 # acyclic-workers
 
-Workers are named script deployments, alongside actor namespace deployments. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), deploys a named script, invokes it and deletes it.
+Workers are named script deployments, alongside actor namespace deployments.
+The native lifecycle client exposes the shared `EntryStore` over its original
+account-scoped Objects provider. Prepare the selected manifest entry and all its
+declared modules, retain that closure under the deployment's stable intent root,
+then submit the returned canonical Actors request.
 
-Uses the canonical Objects and Actors contracts. Publication stores exact module bytes at `sha256/<digest>`. No mutation is automatically retried.
+This example selects `production/example-worker` from `deployment.json`, whose
+artifact is `worker.mjs` and whose module assets include `worker_bg.wasm`.
+`worker.mjs` exports `default.fetch`. No mutation is automatically retried.
 
 ```rust,no_run
 use acyclic_actors::{http, wire};
-use acyclic_objects::HttpObjects;
-use acyclic_workers::deployment::Client;
+use acyclic_objects::{HttpObjects, RootId};
+use acyclic_workers::{deployment::Client, manifest::{self, PreparedEntry}};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -15,21 +21,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let token = std::env::var("ACYCLIC_API_KEY")?;
     let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
         HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?);
-    let digest = workers.publish(std::fs::read("worker.mjs")?.into()).await?;
-    let deployment = workers.deploy(&wire::DeploymentRequest {
-        name: "example-worker".into(), code_sha256: digest.to_vec(),
-        worker_limits: Some(wire::WorkerLimits { timeout_millis: 30000, memory_bytes: 268435456, cpu_millis: 1048576 }),
-        idempotency_key: "deploy-worker".into(), ..Default::default()
-    }).await?.deployment.ok_or("deploy returned no deployment")?;
+    let prepared = PreparedEntry::new(
+        manifest::parse(&std::fs::read("deployment.json")?)?,
+        "production", "example-worker", std::fs::read("worker.mjs")?.into(),
+        vec![("worker_bg.wasm".into(), std::fs::read("worker_bg.wasm")?.into())],
+    )?;
+    let root = RootId::new(b"deployment:deploy-example-worker".to_vec())?;
+    let published = workers.entries()
+        .publish_deployment(&root, prepared, "deploy-example-worker").await?;
+    let request = published.request.into();
+    let deployment = workers.deploy(&request).await?
+        .deployment.ok_or("deploy returned no deployment")?;
     println!("{:?}", workers.invoke(&wire::InvokeWorkerRequest {
         worker_name: deployment.name.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
     }).await?);
     workers.delete(&wire::DeleteWorkerRequest { worker_name: deployment.name, idempotency_key: "delete-worker".into(), ..Default::default() }).await?;
+    workers.entries().release(&root).await?;
     Ok(())
 }
 ```
 
-Golden fixture provenance is recorded in `rust/crates/workers/tests/fixtures/cloud-workers/golden.json`. Local tests verify serialization and client composition; live deployment qualification belongs to the coordinator.
+Keep the same intent root and request when reconciling a lost deployment
+acknowledgement. Release that root only after confirmed deletion; another
+deployment retaining the same bytes has its own root. The shared real Objects
+conformance case covers publication, lazy loading, independent retention and
+typed provider refusals.
 
 `manifest::PreparedEntry` admits one environment and entry, its code and its
 declared sibling modules. It moves the selected configuration and owned payload

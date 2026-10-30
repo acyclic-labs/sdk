@@ -6,6 +6,7 @@ use acyclic_manifest::{
 };
 use acyclic_objects::{Blobs, Digest, MemoryMedium, Put, RootId, Store, Verified, wire::ErrorCode};
 use acyclic_stream::{OwnedBytes, testing::Counted};
+use acyclic_workers::deployment::{Client, CredentialProvider};
 use acyclic_workers::entry::{EntryStore, Error};
 use prost::Message as _;
 use serde_json::json;
@@ -451,7 +452,13 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     let medium = Store::new(durable.clone());
     let account = medium.account(b"selected")?;
     let provider = Counted::new(account.clone());
-    let store = EntryStore::new(provider.clone());
+    let actors = acyclic_actors::http::Client::with_credential_provider(
+        "https://actors.invalid",
+        CredentialProvider::new(|| std::future::ready(Ok(String::new()))),
+        1024,
+    )?;
+    let client = Client::new(actors, provider.clone());
+    let store = client.entries();
     let first_root = RootId::new(b"deployment:first".to_vec())?;
     let second_root = RootId::new(b"deployment:second".to_vec())?;
     let first = store.publish(&first_root, prepare(MODULE)?).await?;
@@ -462,7 +469,7 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     );
     assert_eq!(provider.requests().control(), 0);
     assert_eq!(first.retention.references, 1);
-    accepted_configuration(&store, &provider).await?;
+    accepted_configuration(store, &provider).await?;
     let mut oversized = first.object.clone();
     oversized.length = u64::try_from(EntryClosure::MAX_ENCODED_BYTES)? + 1;
     let before = provider.requests();
@@ -518,7 +525,7 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     assert_eq!(provider.requests().since(before).data(), 1);
     assert_eq!(provider.requests().control(), 0);
     let artifact = Digest::from_bytes(loaded.closure().artifact().digest);
-    untrusted_descriptor(&store, &provider, loaded.descriptor().body(), artifact).await?;
+    untrusted_descriptor(store, &provider, loaded.descriptor().body(), artifact).await?;
     let changed = store
         .publish(
             &RootId::new(b"deployment:changed".to_vec())?,
@@ -556,6 +563,26 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
         refusing.requests().data(),
         1,
         "failed batch has no descriptor or retention follow-up"
+    );
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let denied = Client::with_credential_provider(
+        "https://actors.invalid",
+        "https://objects.invalid",
+        CredentialProvider::new(move || {
+            observed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            std::future::ready(Ok(String::new()))
+        }),
+        1024,
+    )?;
+    assert!(matches!(
+        denied.entries().publish_deployment(&first_root, prepare(MODULE)?, "denied-intent").await,
+        Err(Error::Objects(error)) if error.code == ErrorCode::AccessDenied
+    ));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "each payload uses its original credential producer; no descriptor or retain follows"
     );
     restored_selection(&durable).await
 }

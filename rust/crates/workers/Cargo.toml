@@ -19,18 +19,15 @@ thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["http"] }
-bytes.workspace = true
-hex.workspace = true
-sha2.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 proptest.workspace = true
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["http", "conformance"] }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance", "test-support"] }
-axum.workspace = true
+hex.workspace = true
 prost.workspace = true
-prost-reflect = { workspace = true, features = ["serde"] }
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 
 [lints]

@@ -1,13 +1,13 @@
-//! Named Worker script deployments; module bytes are retained in Objects.
+//! Named Worker deployments over the shared immutable entry store and Actors client.
+use crate::entry::EntryStore;
 pub use acyclic_actors::client::CredentialProvider;
 use acyclic_actors::{http, wire};
 use acyclic_objects::Blobs;
-use sha2::{Digest, Sha256};
 
-/// Publication or lifecycle failure from the existing canonical service clients.
+/// Construction or lifecycle failure from the existing canonical service clients.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Objects publication failed.
+    /// Objects client construction failed.
     #[error(transparent)]
     Objects(#[from] acyclic_objects::Error),
     /// Actors lifecycle operation failed.
@@ -18,7 +18,7 @@ pub enum Error {
 /// Worker lifecycle over the existing Objects provider and Actors HTTP client.
 pub struct Client<P> {
     actors: http::Client,
-    objects: P,
+    entries: EntryStore<P>,
 }
 
 impl Client<acyclic_objects::http::HttpObjects> {
@@ -47,55 +47,21 @@ impl Client<acyclic_objects::http::HttpObjects> {
 #[cfg(test)]
 mod credential_tests;
 
-/// The root retaining one published module.
-fn code_root(digest: &[u8; 32]) -> Result<acyclic_objects::RootId, Error> {
-    Ok(acyclic_objects::RootId::new(
-        format!("worker-code:sha256:{}", hex::encode(digest)).into_bytes(),
-    )?)
-}
-
 impl<P: Blobs> Client<P> {
     /// Compose clients over the account's Objects and Actors services.
     pub fn new(actors: http::Client, objects: P) -> Self {
-        Self { actors, objects }
+        Self {
+            actors,
+            entries: EntryStore::new(objects),
+        }
     }
 
-    /// Publish exact module bytes as an account blob, retained under the
-    /// code's own root until [`Client::unpublish`], and return the SHA-256
-    /// that deployments name.
-    ///
-    /// Publication is idempotent by content.
-    ///
-    /// # Errors
-    /// Returns the Objects publication failure, or `OutcomeUnknown` when the
-    /// store could not confirm it; repeating the call is safe.
-    pub async fn publish(&self, code: bytes::Bytes) -> Result<[u8; 32], Error> {
-        let digest: [u8; 32] = Sha256::digest(&code).into();
-        let Some(blob) = self
-            .objects
-            .put(code.into(), Vec::new())
-            .await?
-            .verified()
-            .map(|verified| verified.digest)
-        else {
-            return Err(acyclic_objects::Error::from(
-                acyclic_objects::wire::ErrorCode::OutcomeUnknown,
-            )
-            .into());
-        };
-        self.objects
-            .retain(&code_root(&digest)?, vec![blob])
-            .await?;
-        Ok(digest)
-    }
-
-    /// Release published module bytes once no deployment names them; a
-    /// later collection then reclaims them.
-    ///
-    /// # Errors
-    /// Returns the Objects release failure.
-    pub async fn unpublish(&self, digest: &[u8; 32]) -> Result<bool, Error> {
-        Ok(self.objects.release(&code_root(digest)?).await?.existed)
+    /// Publish, restore and release selected entry closures through the original
+    /// account provider. Each deployment retains its own stable intent root.
+    /// This borrow performs no allocation, connection or request.
+    #[must_use]
+    pub const fn entries(&self) -> &EntryStore<P> {
+        &self.entries
     }
 
     /// Deploy a named module exporting default.fetch without an actor export.
