@@ -83,19 +83,38 @@ mod version {
     #[kani::unwind(16)]
     fn version_admission_borrows_payload_and_refuses_before_decoding() {
         use acyclic_stream::{StreamError, persistence::header};
+        use std::cell::Cell;
         let bytes: [u8; 12] = kani::any();
         let length: usize = kani::any();
         kani::assume(length <= bytes.len());
         let input = &bytes[..length];
-        let result = header(input, b"kind-v", b"1\0");
+        let invalid = Cell::new(0);
+        let unsupported = Cell::new(0);
+        let result = acyclic_auth::format::header(
+            input,
+            b"kind-v",
+            b"1\0",
+            || {
+                invalid.set(invalid.get() + 1);
+                StreamError::InvalidArgument
+            },
+            || {
+                unsupported.set(unsupported.get() + 1);
+                StreamError::Unsupported
+            },
+        );
+        assert_eq!(result, header(input, b"kind-v", b"1\0"));
         if let Ok(payload) = result {
             assert!(input.starts_with(b"kind-v1\0"));
             assert_eq!(payload, &input[8..]);
             assert_eq!(payload.as_ptr(), input[8..].as_ptr());
+            assert_eq!((invalid.get(), unsupported.get()), (0, 0));
         } else if input.starts_with(b"kind-v") {
             assert_eq!(result, Err(StreamError::Unsupported));
+            assert_eq!((invalid.get(), unsupported.get()), (0, 1));
         } else {
             assert_eq!(result, Err(StreamError::InvalidArgument));
+            assert_eq!((invalid.get(), unsupported.get()), (1, 0));
         }
         for version in [b'0', b'2', u8::MAX] {
             let mut obsolete = *b"kind-v1\0";
