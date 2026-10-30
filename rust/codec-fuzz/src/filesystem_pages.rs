@@ -1,6 +1,7 @@
 //! Immutable filesystem decoders use their production admission and encoders.
 use acyclic_fs::{FsError, kernel::*};
 mod evidence;
+mod historical;
 mod populated;
 
 #[derive(Debug)]
@@ -178,6 +179,7 @@ pub fn check(bytes: &[u8]) {
         );
     }
     evidence::check(bytes);
+    historical::check(bytes);
 }
 
 /// Produce SDK encoder output; the capture executable records its provenance.
