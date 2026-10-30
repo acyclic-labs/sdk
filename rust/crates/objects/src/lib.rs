@@ -89,6 +89,7 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Canonical HTTP route, input message, and output message inventory, relative to `/v1/objects/`.
 pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("blobs/put", "PutBlobRequest", "PutResponse"),
+    ("blobs/put-batch", "PutBlobsRequest", "PutBlobsResponse"),
     ("blobs/put-manifest", "PutManifestRequest", "PutResponse"),
     ("blobs/get", "GetBlobRequest", "GetBlobResponse"),
     ("blobs/head", "HeadBlobRequest", "BlobInfo"),

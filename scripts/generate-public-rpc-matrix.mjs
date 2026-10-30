@@ -6,12 +6,12 @@ import { StreamService } from "../typescript/packages/stream/generated/proto/str
 import { BlobsService as BlobsV1 } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
 
 const objects = {
-  PutBlob: "blobs/put", PutManifest: "blobs/put-manifest", GetBlob: "blobs/get", HeadBlob: "blobs/head",
+  Availability: "blobs/availability", PutBlob: "blobs/put", PutBlobs: "blobs/put-batch", PutManifest: "blobs/put-manifest", GetBlob: "blobs/get", HeadBlob: "blobs/head",
   DeleteBlob: "blobs/delete", ListBlobs: "blobs/list", Retain: "blobs/retain", Release: "blobs/release",
   Collect: "blobs/collect", Usage: "blobs/usage",
 };
 const stream = {
-  InspectIdempotency: "idempotency/inspect", Append: "append", Head: "head", Tail: "tail", Fork: "fork",
+  InspectIdempotency: "idempotency/inspect", Append: "append", Head: "head", Heads: "heads", Tail: "tail", Fork: "fork",
   Read: "read", Children: "children", ChildrenPage: "children/page",
   Commit: "commit", ReadCommit: "commits/read",
 };
@@ -24,14 +24,21 @@ const inspectSource = createSourceInspector(new URL("..", import.meta.url));
 // Rows describe the sole current SDK contract.
 // Implementation fields describe source presence, not package or live acceptance.
 const services = [ActorsService, StreamService, BlobsV1];
-const objectsRoutes = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8").split("pub const HTTP_ROUTES")[1] ?? "";
+// Objects v1 routes are exactly the first fields of these Rust tables, however rustfmt lays them out.
+const objectsTables = ["HTTP_ROUTES", "HTTP_STREAM_ROUTES"];
+const objectsSource = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8");
+const objectsRoutes = new Set(objectsTables.flatMap(table => {
+  const body = new RegExp(String.raw`\bpub\s+const\s+${table}\s*:[^=]*=\s*&\[([\s\S]*?)\];`).exec(objectsSource)?.[1];
+  if (body === undefined) throw new Error(`Objects v1 Rust route table missing: ${table}`);
+  return [...body.matchAll(/\(\s*"([^"]+)"\s*,/g)].map(match => match[1]);
+}));
 const rows = services.flatMap(service => service.methods.map(method => {
   const family = service.typeName.split(".")[1];
   const version = service.typeName.split(".")[2];
   const objectsV1 = family === "objects" && version === "v1";
   const http = family === "actors" ? actors[method.localName] : (family === "stream" ? stream : objects)[method.name];
   if (!http) throw new Error(`missing HTTP mapping for ${service.typeName}/${method.name}`);
-  if (objectsV1 && !objectsRoutes.includes(`("${http}",`)) throw new Error(`Objects v1 Rust route missing: ${http}`);
+  if (objectsV1 && !objectsRoutes.has(http)) throw new Error(`Objects v1 Rust route missing from ${objectsTables.join(" and ")}: ${http}`);
   return {
     rpc: `${service.typeName}/${method.name}`,
     kind: method.methodKind,

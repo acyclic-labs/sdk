@@ -386,12 +386,26 @@ impl Blobs for GrpcObjects {
                 },
                 self.transfer_timeout
             )?;
-            Ok(committed(
-                convert::verified_put(&reply.0, digest, body.len() as u64)?,
-                reply.1,
-            ))
+            Ok(convert::verified_put(&reply.0, digest, body.len() as u64)?.committed_at(reply.1))
         })
         .await
+    }
+
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let members = requests.len();
+        if members == 0 {
+            return Vec::new();
+        }
+        crate::operation::admit(self.context.as_ref(), async {
+            let (request, expected) = convert::put_blobs(requests);
+            let (reply, revision) = call!(self, put_blobs, request, self.transfer_timeout)?;
+            convert::verified_puts(&reply, &expected, revision.as_ref())
+        })
+        .await
+        .unwrap_or_else(|error| vec![Err(error); members])
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
@@ -406,10 +420,7 @@ impl Blobs for GrpcObjects {
                 },
                 REQUEST_TIMEOUT
             )?;
-            Ok(committed(
-                convert::verified_put(&reply.0, digest, length)?,
-                reply.1,
-            ))
+            Ok(convert::verified_put(&reply.0, digest, length)?.committed_at(reply.1))
         })
         .await
     }
@@ -558,20 +569,6 @@ impl Blobs for GrpcObjects {
 }
 
 /// Stamps a durable put with the revision its reply committed.
-fn committed(put: Put, revision: Option<Revision>) -> Put {
-    match put {
-        Put::Created { mut verified } => {
-            verified.revision = revision;
-            Put::Created { verified }
-        }
-        Put::AlreadyExists { mut verified } => {
-            verified.revision = revision;
-            Put::AlreadyExists { verified }
-        }
-        Put::Unknown => Put::Unknown,
-    }
-}
-
 /// Resolves the verified caller's account namespace from request metadata.
 pub type AccountResolver = Arc<dyn Fn(&MetadataMap) -> Result<Arc<dyn Blobs>, Error> + Send + Sync>;
 
@@ -756,6 +753,12 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
 
     async fn put_blob(&self, request: Request<wire::PutBlobRequest>) -> Reply<wire::PutResponse> {
         serve!(self, request, put_blob, false)
+    }
+    async fn put_blobs(
+        &self,
+        request: Request<wire::PutBlobsRequest>,
+    ) -> Reply<wire::PutBlobsResponse> {
+        serve!(self, request, put_blobs, false)
     }
     async fn put_manifest(
         &self,

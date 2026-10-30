@@ -63,6 +63,7 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
     try {
       switch (route) {
         case "blobs/put": return await unary(wire.PutBlobRequestSchema, wire.PutResponseSchema, value => blobs.putBlob(value, { signal }));
+        case "blobs/put-batch": return await unary(wire.PutBlobsRequestSchema, wire.PutBlobsResponseSchema, value => blobs.putBlobs(value, { signal }));
         case "blobs/put-manifest": return await unary(wire.PutManifestRequestSchema, wire.PutResponseSchema, value => blobs.putManifest(value, { signal }));
         case "blobs/get": return await unary(wire.GetBlobRequestSchema, wire.GetBlobResponseSchema, value => blobs.getBlob(value, { signal }));
         case "blobs/head": return await unary(wire.HeadBlobRequestSchema, wire.BlobInfoSchema, value => blobs.headBlob(value, { signal }));

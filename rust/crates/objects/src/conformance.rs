@@ -220,6 +220,66 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         conflict
     );
 
+    // put-batch-ordered-members-fail-alone-and-repeat-writes-nothing
+    let base = bytes(&format!("{run}/batch-base"), 300);
+    let base_digest = Digest::of(&base);
+    let child = bytes(&format!("{run}/batch-child"), 200);
+    let dangling = bytes(&format!("{run}/batch-dangling"), 20);
+    let members = [&base, &dangling, &child, &base].map(|body| Digest::of(body));
+    let puts = first
+        .put_batch(vec![
+            (base.clone(), Vec::new()),
+            (dangling.clone(), vec![Digest::of(b"never stored")]),
+            (child.clone(), vec![base_digest]),
+            (base.clone(), Vec::new()),
+        ])
+        .await;
+    let outcome = |put: &Result<Put, Error>, digest: Digest| match put {
+        Ok(Put::Created { verified }) if verified.digest == digest => "created",
+        Ok(Put::AlreadyExists { verified }) if verified.digest == digest => "exists",
+        Err(error) if error.code == ErrorCode::MissingReference => "missing",
+        _ => "other",
+    };
+    let outcomes: Vec<_> = puts
+        .iter()
+        .zip(members)
+        .map(|(put, digest)| outcome(put, digest))
+        .collect();
+    expect!(
+        "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
+        outcomes == ["created", "missing", "created", "exists"],
+        puts
+    );
+    let committed = first.head(members[2]).await;
+    let failed = first.head(members[1]).await;
+    expect!(
+        "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
+        committed.is_ok() && code(&failed) == Some(ErrorCode::NotFound),
+        (committed, failed)
+    );
+    let before = first.usage().await;
+    let repeated = first
+        .put_batch(vec![(base, Vec::new()), (child, vec![base_digest])])
+        .await;
+    let after = first.usage().await;
+    let outcomes: Vec<_> = repeated
+        .iter()
+        .zip([members[0], members[2]])
+        .map(|(put, digest)| outcome(put, digest))
+        .collect();
+    expect!(
+        "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
+        outcomes == ["exists", "exists"]
+            && matches!((&before, &after), (Ok(before), Ok(after)) if before == after),
+        (repeated, before, after)
+    );
+    let empty = first.put_batch(Vec::new()).await;
+    expect!(
+        "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
+        empty.is_empty(),
+        empty
+    );
+
     // manifest-ranges-select-intersecting-parts
     let left = bytes(&format!("{run}/left"), 1000);
     let right = bytes(&format!("{run}/right"), 1500);

@@ -31,6 +31,13 @@ export async function lifecycle(provider) {
   await assert.rejects(provider.put(tail), fail(wire.ErrorCode.CONFLICT));
   assert.equal((await provider.delete(digest)).status, wire.DeleteStatus.REFERENCED);
 
+  // One call, answered member by member in order: a failed member stands alone.
+  const batched = new Uint8Array([4, 5, 6]);
+  const batch = await provider.putBlobs([{ body: batched, references: [child] }, { body: new Uint8Array([7]), references: [absent] }, { body: tail, references: [digest] }]);
+  assert.deepEqual(batch.map(result => result.outcome.case === "put" ? result.outcome.value.outcome.case : wire.ErrorCode[result.outcome.value]), ["created", "MISSING_REFERENCE", "alreadyExists"]);
+  assert.deepEqual((await provider.head(verified(batch[0].outcome.value).digest)).references.map(value => value.blake3), [child.blake3]);
+  assert.deepEqual(await provider.putBlobs([]), []);
+
   const manifest = verified(await provider.putManifest({ parts: [{ digest, length: BigInt(bytes.length) }, { digest: child, length: 3n }] }));
   assert.equal(manifest.length, BigInt(bytes.length + 3));
   const joined = await provider.get({ digest: manifest.digest, range: { start: BigInt(bytes.length - 2) }, maximumBytes: 5n });

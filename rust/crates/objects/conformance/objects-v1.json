@@ -9,6 +9,7 @@
     "head-and-exact-ranges",
     "range-and-allocation-bounds",
     "references-must-exist-and-match",
+    "put-batch-ordered-members-fail-alone-and-repeat-writes-nothing",
     "manifest-ranges-select-intersecting-parts",
     "delete-refuses-live-references",
     "collection-keeps-retained-closures",

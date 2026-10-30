@@ -270,6 +270,56 @@ pub(crate) fn verified_put(
     Ok(put)
 }
 
+/// One put batch's request, and the acknowledgement each member must carry.
+#[cfg(objects_client)]
+pub(crate) fn put_blobs(
+    requests: Vec<(crate::Sealed, Vec<Digest>)>,
+) -> (wire::PutBlobsRequest, Vec<(Digest, u64)>) {
+    let mut expected = Vec::with_capacity(requests.len());
+    let puts = requests
+        .into_iter()
+        .map(|(body, references)| {
+            let digest = Digest::sealed(&body);
+            expected.push((digest, body.bytes().len() as u64));
+            wire::PutBlobRequest {
+                digest: Some(digest.into()),
+                body: bytes::Bytes::from_owner(body.into_bytes()),
+                references: wire_digests(&references),
+            }
+        })
+        .collect();
+    (wire::PutBlobsRequest { puts }, expected)
+}
+
+/// Checks a put batch acknowledgement member by member against the bytes
+/// each member was for, stamping each durable member with the revision
+/// covering the batch. A reply that misanswers any member answers none.
+pub(crate) fn verified_puts(
+    value: &wire::PutBlobsResponse,
+    expected: &[(Digest, u64)],
+    revision: Option<&acyclic_stream::Revision>,
+) -> Result<Vec<Result<Put, Error>>, Error> {
+    if value.results.len() != expected.len() {
+        return Err(wire::ErrorCode::Unavailable.into());
+    }
+    value
+        .results
+        .iter()
+        .zip(expected)
+        .map(|(result, &(digest, length))| match &result.outcome {
+            Some(wire::put_result::Outcome::Put(put)) => Ok(Ok(
+                verified_put(put, digest, length)?.committed_at(revision.cloned())
+            )),
+            Some(wire::put_result::Outcome::Error(code)) => wire::ErrorCode::try_from(*code)
+                .ok()
+                .filter(|code| *code != wire::ErrorCode::Unspecified)
+                .map(|code| Err(code.into()))
+                .ok_or_else(|| wire::ErrorCode::Unavailable.into()),
+            None => Err(wire::ErrorCode::Unavailable.into()),
+        })
+        .collect()
+}
+
 /// Checks an envelope against the digest it was read for.
 pub(crate) fn headed(value: &wire::BlobInfo, requested: Digest) -> Result<Head, Error> {
     let head = head(value)?;

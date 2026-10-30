@@ -48,6 +48,7 @@ export function settled(port) { return port.last.catch(() => {}); }
 export function truncateReply(port) { port.truncate = true; }
 export function malformedRevision(port) { port.badRevision = true; }
 export function ownersBalanced(port) { return port.opened === port.closed; }
+export function opened(port) { return port.opened; }
 ")]
 extern "C" {
     #[wasm_bindgen(js_name = accountPort)]
@@ -61,6 +62,7 @@ extern "C" {
     fn malformed_revision(port: &JsValue);
     #[wasm_bindgen(js_name = ownersBalanced)]
     fn owners_balanced(port: &JsValue) -> bool;
+    fn opened(port: &JsValue) -> u32;
 }
 
 #[wasm_bindgen_test::wasm_bindgen_test]
@@ -90,6 +92,28 @@ async fn original_javascript_account_preserves_results_and_cancellation() {
             .unwrap()
             .body(),
         &body
+    );
+    // A batch of puts is one call, answered member by member in order.
+    let calls = opened(&port);
+    let batch = client
+        .put_batch(vec![
+            (OwnedBytes::from_static(b"batch member"), vec![digest]),
+            (
+                OwnedBytes::from_static(b"batch dangling"),
+                vec![Digest::of(b"never stored")],
+            ),
+            (body.clone(), Vec::new()),
+        ])
+        .await;
+    assert_eq!(opened(&port), calls + 1);
+    assert!(matches!(batch[0], Ok(acyclic_objects::Put::Created { .. })));
+    assert_eq!(
+        batch[1].as_ref().unwrap_err().code,
+        wire::ErrorCode::MissingReference
+    );
+    assert_eq!(
+        batch[2].as_ref().unwrap().verified().unwrap().revision,
+        account.head(digest).await.unwrap().revision
     );
     let root = RootId::new(b"original-js-entry".to_vec()).unwrap();
     client.retain(&root, vec![digest]).await.unwrap();

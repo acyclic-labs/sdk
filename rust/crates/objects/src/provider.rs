@@ -50,6 +50,15 @@ impl Put {
             Self::Unknown => None,
         }
     }
+
+    /// This outcome stamped with the revision committing it, when durable.
+    #[must_use]
+    pub fn committed_at(mut self, revision: Option<Revision>) -> Self {
+        if let Self::Created { verified } | Self::AlreadyExists { verified } = &mut self {
+            verified.revision = revision;
+        }
+        self
+    }
 }
 
 /// One blob's envelope.
