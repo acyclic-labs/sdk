@@ -37,7 +37,7 @@ The generated table links all thirty-six Actors message types to the actual
 semantic conversions, including their nested validation and post-admission
 checks. Its only public naming alias is wire `Error` to semantic `ServiceError`.
 Both protobuf syntax targets additionally call public semantic conversions for
-18 Stream message types, 20 Objects message types, nine Inference message types
+22 Stream message types, 20 Objects message types, nine Inference message types
 and twelve Harness value/protocol message types. Harness provider, volume, file,
 attachment and conversation projections check their actual reverse codecs and
 missing-required-field refusal. Twenty admitted writer producers cover all
@@ -59,7 +59,11 @@ its typed failure, and durable flush adds no invocation. Eleven actual client
 operations produce 22 request/response payloads awaiting capture, for 44 inputs
 across the two protobuf syntaxes. Accepted Stream projections use
 their actual reverse codec and preserve the complete semantic value, including
-record origins under explicit, matching and foreign follow contexts. Accepted
+record origins under explicit, matching and foreign follow contexts. All eight
+public hosted response decoder/JSON writer branches check normalization and
+exact, short and zero byte ceilings. Twelve additional writer producers reuse
+retained publications; head/child metadata derives from the actual committed
+record and its original revision (24 pending binary/JSON inputs). Accepted
 Inference views must refuse a changed caller-selected identity. Generated Run
 views additionally bind the original input context and refuse a missing or
 changed context. Warm responses also reach retention and renewal admission for
