@@ -3,7 +3,7 @@
 export const HARNESS_BINDINGS = {
   storage: "eventStorage",
   objects: "immutableObjects",
-  journal: "streamJournal",
+  streams: "sharedStreams",
   access: "hostAccess",
   authority: "platformAuthority",
   workspace: "machinesWorkspace",

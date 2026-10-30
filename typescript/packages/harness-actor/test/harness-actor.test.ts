@@ -71,7 +71,8 @@ test("the entry is a public guest ABI definition", async () => {
 const actorState = {};
 const caller = Uint8Array.of(9, 9);
 const env = { ...Object.fromEntries(Object.values(HARNESS_BINDINGS).map(name => [name, {}])),
-  [HARNESS_BINDINGS.storage]: actorState, [HARNESS_BINDINGS.journal]: actorState,
+  [HARNESS_BINDINGS.storage]: actorState,
+  [HARNESS_BINDINGS.streams]: { register() {}, dispatch() {}, open() {} },
   [HARNESS_BINDINGS.access]: { credential: caller }, [MODEL_FETCH]: {} };
 
 /** One opened Actor whose host serves the given session frames after the upload ends,
