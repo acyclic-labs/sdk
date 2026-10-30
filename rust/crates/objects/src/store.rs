@@ -1087,8 +1087,9 @@ impl<M: Medium> Account<M> {
                     .await
                 {
                     Ok(true) => {}
-                    // Moved since: the next pass decides.
-                    Ok(false) | Err(MediumError::Ambiguous(_)) => continue,
+                    // A definite conflict names a different envelope cut.
+                    Ok(false) => continue,
+                    Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
                     Err(error) => return Err(medium(error)),
                 }
                 self.track(&digest, &live);

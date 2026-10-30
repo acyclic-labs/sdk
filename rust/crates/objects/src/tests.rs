@@ -4,7 +4,7 @@ use crate::{
 };
 use acyclic_stream::OwnedBytes;
 use std::ops::Range;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 pub(crate) mod availability;
 
@@ -267,11 +267,14 @@ async fn a_dropped_root_reopens_while_a_forked_copy_of_its_lock_lives()
     Ok(())
 }
 
-/// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails reads of root batches.
+/// Fails selected operations: bit 0 makes creates ambiguous, bit 1 fails root
+/// reads, and bit 2 loses one replacement reply. Bit 3 applies that replacement
+/// before losing its reply; otherwise the original value remains.
 #[derive(Default)]
 struct Faulty {
     inner: MemoryMedium,
     faults: AtomicU8,
+    replacements: AtomicUsize,
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
@@ -302,6 +305,16 @@ impl Medium for Faulty {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<bool, MediumError> {
+        self.replacements.fetch_add(1, Ordering::SeqCst);
+        let faults = self.faults.fetch_and(!4, Ordering::SeqCst);
+        if faults & 4 != 0 {
+            if faults & 8 != 0 {
+                self.inner.replace(key, expected, bytes).await?;
+            }
+            return Err(MediumError::Ambiguous(
+                std::io::ErrorKind::ConnectionReset.into(),
+            ));
+        }
         self.inner.replace(key, expected, bytes).await
     }
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
@@ -344,6 +357,64 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
         blobs.put(body, Vec::new()).await?,
         Put::Created { .. }
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn ambiguous_revival_stops_at_its_original_conditional_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    for applied in [false, true] {
+        let store = Store::new(Faulty::default());
+        let blobs = store.account(b"revival")?;
+        let body = OwnedBytes::from(vec![19; 64]);
+        let digest = blobs
+            .put(body.clone(), Vec::new())
+            .await?
+            .verified()
+            .ok_or("initial publication was not acknowledged")?
+            .digest;
+        // The actual collector creates the revival candidate; no stored
+        // envelope or conditional-write outcome is manufactured by the test.
+        assert_eq!(blobs.collect().await?.swept, 0);
+        let before = store.medium().replacements.load(Ordering::SeqCst);
+        store
+            .medium()
+            .faults
+            .store(4 | if applied { 8 } else { 0 }, Ordering::SeqCst);
+        assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+        assert_eq!(
+            store.medium().replacements.load(Ordering::SeqCst) - before,
+            1,
+            "a lost reply cannot start another conditional write",
+        );
+        store.medium().faults.store(0, Ordering::SeqCst);
+        let hex = digest.to_hex();
+        let envelope = store
+            .medium()
+            .inner
+            .read(
+                &format!("{}/e/{}/{hex}", Digest::of(b"revival").to_hex(), &hex[..2]),
+                None,
+            )
+            .await?
+            .ok_or("original envelope disappeared")?;
+        assert_eq!(
+            crate::blob::Envelope::decode(&envelope)?.condemned == 0,
+            applied
+        );
+        // Both real storage outcomes admit an exact caller resend. The
+        // unapplied case is the negative control for a falsely acknowledged revival.
+        let resent = blobs.put(body.clone(), Vec::new()).await?;
+        assert!(matches!(resent, Put::AlreadyExists { .. }));
+        assert_eq!(
+            resent
+                .verified()
+                .ok_or("resend was not acknowledged")?
+                .digest,
+            digest
+        );
+        assert_eq!(blobs.get(digest, ByteRange::FULL, 64).await?.body(), &body);
+    }
     Ok(())
 }
 
