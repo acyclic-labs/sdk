@@ -69,12 +69,16 @@ async fn racing_fork(protected: bool, action: Action) -> Result<(), Box<dyn Erro
             .map_err(|_| "fork abandoned its storage read")?;
         Ok::<_, Box<dyn Error>>((result, policy))
     };
-    let (copied, publication) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        futures::join!(copy, publish)
-    })
-    .await?;
-    copied?;
-    let (publication, policy) = publication?;
+    futures::pin_mut!(copy, publish);
+    let (publication, copy) = match futures::future::select(publish, copy).await {
+        futures::future::Either::Left((publication, copy)) => (publication?, copy),
+        futures::future::Either::Right((copied, _)) => {
+            copied?;
+            return Err("fork finished without reaching its publication gate".into());
+        }
+    };
+    copy.await?;
+    let (publication, policy) = publication;
     let forked = fixture
         .fs
         .open_workspace(
