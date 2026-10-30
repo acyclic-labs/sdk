@@ -18,9 +18,16 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "filesystem_codecs" => filesystem_codecs(bytes),
         "filesystem_pages" => filesystem_pages::check(bytes),
         "machine_journal" => assert!(acyclic_machines::codec_fuzz::check(bytes)),
+        "harness_codecs" => harness_codecs(bytes),
         _ => return Err(format!("unknown corpus target {target}")),
     }
     Ok(())
+}
+
+pub fn harness_codecs(bytes: &[u8]) {
+    acyclic_harness_core::agent::codec_fuzz::check(bytes);
+    acyclic_harness_core::mcp::http::codec_fuzz::check(bytes);
+    acyclic_harness_core::mcp::stdio::codec_fuzz::check(bytes);
 }
 
 pub struct Decoder {

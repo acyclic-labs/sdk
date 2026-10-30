@@ -92,6 +92,31 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     capture_semantic(&mut manifest)?;
+    for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
+        save(
+            "harness_codecs",
+            name,
+            &bytes,
+            "harness-core canonical agent record, effect and checkpoint encoders",
+            &mut manifest,
+        )?;
+    }
+    for (name, bytes) in acyclic_harness_core::mcp::http::codec_fuzz::seeds()? {
+        save(
+            "harness_codecs",
+            name,
+            &bytes,
+            "canonical JSON, JSON-RPC and Sse::encode writers",
+            &mut manifest,
+        )?;
+    }
+    save(
+        "harness_codecs",
+        "mcp-stdio-transcript",
+        &acyclic_harness_core::mcp::stdio::codec_fuzz::seed()?,
+        "MCP stdio production encode_line writer",
+        &mut manifest,
+    )?;
     for (name, bytes) in acyclic_fs::distributed::state_record::codec_fuzz::seeds()? {
         save(
             "filesystem_codecs",

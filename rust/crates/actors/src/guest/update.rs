@@ -40,7 +40,9 @@ pub fn prepare_update<State>(
         .transpose()
 }
 
-pub(super) fn admit_checkpoint(
+/// Refuse a checkpoint of any other codec before interpreting its state bytes.
+/// Admission borrows the checkpoint and never migrates or rewrites it.
+pub fn admit_checkpoint(
     checkpoint: Option<&Checkpoint>,
     identity: &CodecIdentity,
 ) -> Result<(), GuestError> {

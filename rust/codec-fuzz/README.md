@@ -3,7 +3,7 @@ target here does not register a scheduled check.
 
 | Target | Production decoders exercised |
 | --- | --- |
-| `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects and Streams, including session messages and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. |
+| `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects, Streams and Harness, including session messages, the protocol handshake and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. |
 | `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
 | `session_protocol` | Actual session admission and dispatch, including arbitrary first Hello, typed version refusal before credentials, initial interests and request-producer closure. |
@@ -16,6 +16,7 @@ target here does not register a scheduled check.
 | `filesystem_codecs` | Authority and durable records, plain/sealed distributed state records, workspace context records, JSON join/control projections, funded private core-state JSON/checksum recovery and the portable Windows USN checkpoint codec. |
 | `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests and publication evidence. Immutable nodes use the production default decode limits. |
 | `machine_journal` | Retained Machine observations and operation envelopes through the shared journal decoder, with version admission before the JSON payload. |
+| `harness_codecs` | Agent inbox, status, close and conversation records, retained turn effects, compact checkpoints, and the actual MCP JSON/SSE and stdio exchange decoders with chunk invariance and typed EOF. |
 
 The protobuf oracle compares encoded fixed points, rather than Rust equality:
 valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
@@ -69,6 +70,7 @@ cargo +nightly fuzz run actor_codecs -- -max_total_time=30
 cargo +nightly fuzz run filesystem_codecs -- -max_total_time=30
 cargo +nightly fuzz run filesystem_pages -- -max_total_time=30
 cargo +nightly fuzz run machine_journal -- -max_total_time=30
+cargo +nightly fuzz run harness_codecs -- -max_total_time=30
 ```
 
 The time budget belongs to the fuzz campaign. Targets impose no input-length
@@ -82,6 +84,10 @@ live in [the proof package](../proofs/id-codecs/README.md). Existing end-to-end
 session and follow state-machine targets remain in `../crates/stream/fuzz`;
 filesystem object accounting and cancellation oracles remain in
 `../crates/filesystem/fuzz`. Those checks exercise different contracts.
+Harness transport, bounded JSON and model-request targets remain in
+`../crates/harness-fuzz`; provider streaming and projection targets remain in
+`../crates/harness-providers/fuzz`. The shared inventory maps these existing
+oracles rather than replacing their production parsers.
 
 The private-codec support entry points require `test-support`. The file frame
 reader accepts `impl Read`, so fuzz input and recovery call the same statically
