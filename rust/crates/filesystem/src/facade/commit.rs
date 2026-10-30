@@ -48,9 +48,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         .await
     }
 
-    /// Seals the original companion operation even when its authored root is unchanged.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[cfg(any(test, feature = "native-watch"))]
+    /// Seals the original operation even when its authored root is unchanged.
     pub(crate) async fn commit_even_if_clean<E, F, Fut>(
         &mut self,
         operation_id: OperationId,
