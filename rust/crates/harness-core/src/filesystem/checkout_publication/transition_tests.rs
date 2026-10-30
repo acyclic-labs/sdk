@@ -5,19 +5,19 @@ use proptest::prelude::*;
 fn generation_associations(digest: [u8; 32], root: [u8; 16]) -> [acyclic_fs::GenerationId; 5] {
     use acyclic_fs::{Digest, FileId, GenerationId, ObjectId, ObjectKind, ObjectStorage};
     let plain = GenerationId::new(Digest::from_bytes(digest));
+    let association = ObjectStorage {
+        locator: Digest::from_bytes(digest),
+        root_file_id: FileId::from_bytes(root),
+        origin_generation: Digest::from_bytes(digest),
+    };
     let sealed = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: plain.digest(),
-        storage: Some(ObjectStorage {
-            locator: Digest::from_bytes(digest),
-            root_file_id: FileId::from_bytes(root),
-            origin_generation: Digest::from_bytes(digest),
-        }),
+        storage: Some(association),
     };
     let mut variants = [plain, GenerationId::from_root(sealed), plain, plain, plain];
     for field in 0..3 {
-        let mut other = sealed;
-        let storage = other.storage.as_mut().unwrap();
+        let mut storage = association;
         let mut changed = digest;
         changed[0] ^= 1;
         match field {
@@ -29,7 +29,10 @@ fn generation_associations(digest: [u8; 32], root: [u8; 16]) -> [acyclic_fs::Gen
             }
             _ => storage.origin_generation = Digest::from_bytes(changed),
         }
-        variants[field + 2] = GenerationId::from_root(other);
+        variants[field + 2] = GenerationId::from_root(ObjectId {
+            storage: Some(storage),
+            ..sealed
+        });
     }
     variants
 }
