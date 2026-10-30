@@ -49,7 +49,15 @@ fn reader(mut input: impl Read + Send + 'static) -> io::Result<Stdin> {
             loop {
                 let chunk = match input.read(&mut buffer) {
                     Ok(0) => return,
-                    Ok(read) => Ok(Bytes::copy_from_slice(&buffer[..read])),
+                    Ok(read) => buffer
+                        .get(..read)
+                        .map(Bytes::copy_from_slice)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "stdin reader returned an oversized byte count",
+                            )
+                        }),
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => Err(error),
                 };

@@ -116,7 +116,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
     }
 
     fn on_close(&self, id: Id, context: Context<'_, S>) {
-        self.retire(&id, context);
+        self.retire(&id, &context);
     }
 
     fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
@@ -144,7 +144,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         let mut finished = Finished::default();
         values.record(&mut finished);
         if finished.finished {
-            self.retire(id, context);
+            self.retire(id, &context);
             return;
         }
         if let Some(span) = context.span(id)
@@ -163,7 +163,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
 }
 
 impl WaitReport {
-    fn retire<S: Subscriber + for<'a> LookupSpan<'a>>(&self, id: &Id, context: Context<'_, S>) {
+    fn retire<S: Subscriber + for<'a> LookupSpan<'a>>(&self, id: &Id, context: &Context<'_, S>) {
         let Some(span) = context.span(id) else {
             return;
         };
