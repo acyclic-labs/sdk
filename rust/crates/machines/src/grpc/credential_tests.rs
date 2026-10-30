@@ -47,7 +47,7 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_before_rpc() {
                     let key =
                         IdempotencyKey::parse("00000000-0000-0000-0000-000000000041").unwrap();
                     prop_assert!(matches!(
-                        recovery::recovered_admission(&provider, key).await,
+                        recovery::recovered_admission(&provider, key, &tracing::Span::none()).await,
                         Err(ProviderError::Indeterminate(found)) if found == key
                     ));
                     Ok(())

@@ -6,6 +6,7 @@ impl<E: RpcEndpoint> Provider<E> {
         machine: MachineId,
         access: FileAccess,
         limit: u32,
+        observation: &obs::Span,
     ) -> Result<FileRead, ProviderError> {
         if limit == 0 {
             return Err(ProviderError::Invalid(
@@ -27,7 +28,10 @@ impl<E: RpcEndpoint> Provider<E> {
             .run(client.read_file(request))
             .await
             .ok_or(ProviderError::FileIndeterminate(machine))?
-            .map_err(|error| file_error(machine, &error))?
+            .map_err(|error| {
+                obs::failed_rpc(observation, &error);
+                file_error(machine, &error)
+            })?
             .into_inner();
         let response = deadline
             .run(output.message())
@@ -54,6 +58,7 @@ impl<E: RpcEndpoint> Provider<E> {
         access: FileAccess,
         data: Vec<u8>,
         truncate: bool,
+        observation: &obs::Span,
     ) -> Result<FileWrite, ProviderError> {
         access.validate_range(data.len())?;
         if truncate && access.offset != 0 {
@@ -75,7 +80,10 @@ impl<E: RpcEndpoint> Provider<E> {
             .run(client.write_file(request))
             .await
             .ok_or(ProviderError::FileIndeterminate(machine))?
-            .map_err(|error| file_error(machine, &error))?
+            .map_err(|error| {
+                obs::failed_rpc(observation, &error);
+                file_error(machine, &error)
+            })?
             .into_inner();
         let response = deadline
             .run(output.message())

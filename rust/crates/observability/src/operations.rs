@@ -61,15 +61,22 @@ impl Completion {
 
     /// Complete once and return the unchanged result, including uncertain errors.
     pub fn finish<T, E>(
-        mut self,
+        self,
         result: Result<T, E>,
         kind: impl FnOnce(&E) -> &'static str,
     ) -> Result<T, E> {
-        if let Some(span) = self.span.take() {
-            finish(&span, result, kind)
-        } else {
-            result
+        self.complete(result, |result| result.as_ref().err().map(kind))
+    }
+
+    /// Observe an unchanged output with separately retained provider and
+    /// observer errors. Classification is skipped for a disabled span.
+    pub fn complete<T>(mut self, output: T, error: impl FnOnce(&T) -> Option<&'static str>) -> T {
+        if let Some(span) = self.span.take()
+            && !span.is_disabled()
+        {
+            record_outcome(&span, error(&output));
         }
+        output
     }
 }
 
@@ -99,9 +106,23 @@ where
     F: std::future::Future<Output = Result<T, E>>,
     K: FnOnce(&E) -> &'static str,
 {
+    observe_output(span, future, |result| result.as_ref().err().map(kind))
+}
+
+/// Observe outputs that keep physical and observer failures separate, without
+/// translating, cloning or reconstructing their original terminal evidence.
+pub fn observe_output<T, F, K>(
+    span: &Span,
+    future: F,
+    error: K,
+) -> impl std::future::Future<Output = T> + use<T, F, K>
+where
+    F: std::future::Future<Output = T>,
+    K: FnOnce(&T) -> Option<&'static str>,
+{
     use futures::FutureExt as _;
     let completion = Completion::new(span);
-    future.map(move |result| completion.finish(result, kind))
+    future.map(move |output| completion.complete(output, error))
 }
 
 /// Counts and a base-two nanosecond latency histogram from one operation span.

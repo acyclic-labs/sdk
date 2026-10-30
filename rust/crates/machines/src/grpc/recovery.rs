@@ -49,6 +49,7 @@ fn settled_machine(
 pub(super) async fn recovered_admission<E: RpcEndpoint>(
     provider: &Provider<E>,
     key: IdempotencyKey,
+    observation: &obs::Span,
 ) -> Result<(OperationId, wire::RecoveredAdmission), ProviderError> {
     let value = provider
         .client()
@@ -59,49 +60,49 @@ pub(super) async fn recovered_admission<E: RpcEndpoint>(
             idempotency_key: Some(encode_key(key)),
         })
         .await
-        .map_err(|error| recovery_error(key, &error))?
+        .map_err(|error| {
+            obs::failed_rpc(observation, &error);
+            recovery_error(key, &error)
+        })?
         .into_inner();
     let operation =
         validate_recovered_admission(&value).map_err(|_| ProviderError::Indeterminate(key))?;
     Ok((operation, value))
 }
 
-#[cfg_attr(not(target_arch = "wasm32"), tracing::instrument(name = "acyclic.machines.wait", level = "debug", skip_all,
-    fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)))]
 pub(super) async fn wait<E: RpcEndpoint>(
     provider: &Provider<E>,
     key: IdempotencyKey,
     operation: OperationId,
 ) -> Result<Option<wire::MutationOutcome>, ProviderError> {
-    obs::finish(
-        async {
-            let mut stream = provider
-                .client()
-                .await
+    obs::operation!(@tracing::Level::DEBUG, "acyclic.machines.wait", observation, async {
+        let mut stream = provider
+            .client()
+            .await
+            .map_err(|_| ProviderError::Indeterminate(key))?
+            .watch_operation(operation_request(operation))
+            .await
+            .map_err(|error| {
+                obs::failed_rpc(&observation, &error);
+                watch_error(key, &error)
+            })?
+            .into_inner();
+        // The server owns completion. Quiet output does not authorize an
+        // inspection, another subscription or another mutation dispatch.
+        while let Some(value) = stream.message().await.map_err(|error| {
+            obs::failed_rpc(&observation, &error);
+            watch_error(key, &error)
+        })? {
+            let phase = decode_operation_observation(&value, operation)
                 .map_err(|_| ProviderError::Indeterminate(key))?
-                .watch_operation(operation_request(operation))
-                .await
-                .map_err(|error| watch_error(key, &error))?
-                .into_inner();
-            // The server owns completion. Quiet output does not authorize an
-            // inspection, another subscription or another mutation dispatch.
-            while let Some(value) = stream
-                .message()
-                .await
-                .map_err(|error| watch_error(key, &error))?
-            {
-                let phase = decode_operation_observation(&value, operation)
-                    .map_err(|_| ProviderError::Indeterminate(key))?
-                    .phase;
-                if let Some(outcome) = observed_outcome(key, phase) {
-                    outcome?;
-                    return Ok(value.outcome);
-                }
+                .phase;
+            if let Some(outcome) = observed_outcome(key, phase) {
+                outcome?;
+                return Ok(value.outcome);
             }
-            Err(ProviderError::Indeterminate(key))
         }
-        .await,
-    )
+        Err(ProviderError::Indeterminate(key))
+    })
 }
 
 pub(super) fn decode_recovered(

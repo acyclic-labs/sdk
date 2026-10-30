@@ -345,26 +345,33 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         machine: MachineId,
         command: ExecCommand,
     ) -> Result<ExecStream, ProviderError> {
-        let deadline = GuestDeadline::new(
-            Duration::from_millis(command.timeout_ms),
-            command.expiry_unix_ms,
-        )?;
-        let busy = self.busy();
-        let output = deadline
-            .run(async {
-                self.running(machine).await?;
-                self.backend.exec(command, deadline.until()).await
-            })
-            .await
-            .unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))?;
-        Ok(match busy {
-            None => output,
-            // The Machine stays busy for as long as its output is observable.
-            Some(busy) => Box::pin(output.map(move |frame| {
-                let _busy = &busy;
-                frame
-            })) as ExecStream,
-        })
+        acyclic_observability::async_operation!(
+            "acyclic.machines.exec",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let deadline = GuestDeadline::new(
+                    Duration::from_millis(command.timeout_ms),
+                    command.expiry_unix_ms,
+                )?;
+                let busy = self.busy();
+                let output = deadline
+                    .run(async {
+                        self.running(machine).await?;
+                        self.backend.exec(command, deadline.until()).await
+                    })
+                    .await
+                    .unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))?;
+                Ok(match busy {
+                    None => output,
+                    // The Machine stays busy for as long as its output is observable.
+                    Some(busy) => Box::pin(output.map(move |frame| {
+                        let _busy = &busy;
+                        frame
+                    })) as ExecStream,
+                })
+            }
+        )
     }
     async fn read_file(
         &self,
@@ -372,13 +379,20 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         access: FileAccess,
         limit: u32,
     ) -> Result<FileRead, ProviderError> {
-        let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let _busy = self.busy();
-        deadline
+        acyclic_observability::async_operation!(
+            "acyclic.machines.read_file",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
+                let _busy = self.busy();
+                deadline
             .run(self.running(machine))
             .await
             .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
-        self.backend.read(access, limit, &deadline).await
+                self.backend.read(access, limit, &deadline).await
+            }
+        )
     }
     async fn write_file(
         &self,
@@ -387,92 +401,127 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         data: Vec<u8>,
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
-        let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let _busy = self.busy();
-        deadline
+        acyclic_observability::async_operation!(
+            "acyclic.machines.write_file",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
+                let _busy = self.busy();
+                deadline
             .run(self.running(machine))
             .await
             .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))??;
-        self.backend.write(access, data, truncate, &deadline).await
+                self.backend.write(access, data, truncate, &deadline).await
+            }
+        )
     }
     async fn inspect_machine(
         &self,
         machine: MachineId,
     ) -> Result<MachineObservation, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
-        Self::select(value, machine)?;
-        Ok(value.clone())
+        acyclic_observability::async_operation!(
+            "acyclic.machines.inspect_machine",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let (value, _) = &*self.observation.lock().await;
+                Self::select(value, machine)?;
+                Ok(value.clone())
+            }
+        )
     }
     async fn list_machines(
         &self,
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 {
-            return Err(ProviderError::Invalid(
-                "empty Machine page credit; recovery: supply positive credit".into(),
-            ));
-        }
-        let (value, _) = &*self.observation.lock().await;
-        Ok(MachinePage {
-            machines: if after.is_none_or(|after| after < value.id) {
-                vec![value.clone()]
-            } else {
-                Vec::new()
-            },
-            next: None,
-        })
+        acyclic_observability::async_operation!(
+            "acyclic.machines.list_machines",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                if limit == 0 {
+                    return Err(ProviderError::Invalid(
+                        "empty Machine page credit; recovery: supply positive credit".into(),
+                    ));
+                }
+                let (value, _) = &*self.observation.lock().await;
+                Ok(MachinePage {
+                    machines: if after.is_none_or(|after| after < value.id) {
+                        vec![value.clone()]
+                    } else {
+                        Vec::new()
+                    },
+                    next: None,
+                })
+            }
+        )
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
-        if image != value.contract.image {
-            return Err(unsupported("replace the admitted host image"));
-        }
-        Ok(ImageQualification {
-            image,
-            capabilities: value.contract.capabilities.clone(),
-            compatibility_revision: value.contract.compatibility_revision,
-        })
+        acyclic_observability::async_operation!(
+            "acyclic.machines.qualify_image",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let (value, _) = &*self.observation.lock().await;
+                if image != value.contract.image {
+                    return Err(unsupported("replace the admitted host image"));
+                }
+                Ok(ImageQualification {
+                    image,
+                    capabilities: value.contract.capabilities.clone(),
+                    compatibility_revision: value.contract.compatibility_revision,
+                })
+            }
+        )
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let admitted = self.admit(&Intent::Create(&request)).await?;
-        let (value, _) = &*admitted;
-        let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
-        // The local factory enrolls an existing workspace. It never fabricates
-        // another filesystem view or an immutable image capture.
-        if request
-            .image
-            .as_ref()
-            .is_some_and(|image| image != &value.contract.image)
-            || request.selected_volume_ref != value.contract.selected_volume_ref
-            || request.network_policy_digest != value.contract.network_policy_digest
-            || request.suspension != value.contract.suspension
-            || request.expiration != value.contract.expiration
-            || request.budgets != value.contract.budgets
-            || request.compatibility != value.contract.compatibility
-        {
-            return Err(unsupported("change the enrolled workspace contract"));
-        }
-        match self
-            .journal
-            .begin(request.idempotency_key, digest, None, || {
-                settled(value, request.idempotency_key).map(|()| || {})
-            })
-            .await?
-        {
-            Admission::Replay(original) => Ok(original),
-            Admission::Original(head) => {
-                self.journal
-                    .finish(
-                        request.idempotency_key,
-                        digest,
-                        head,
-                        value,
-                        MutationOutcome::Created(value.clone()),
-                    )
-                    .await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.create",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let admitted = self.admit(&Intent::Create(&request)).await?;
+                let (value, _) = &*admitted;
+                let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
+                // The local factory enrolls an existing workspace. It never fabricates
+                // another filesystem view or an immutable image capture.
+                if request
+                    .image
+                    .as_ref()
+                    .is_some_and(|image| image != &value.contract.image)
+                    || request.selected_volume_ref != value.contract.selected_volume_ref
+                    || request.network_policy_digest != value.contract.network_policy_digest
+                    || request.suspension != value.contract.suspension
+                    || request.expiration != value.contract.expiration
+                    || request.budgets != value.contract.budgets
+                    || request.compatibility != value.contract.compatibility
+                {
+                    return Err(unsupported("change the enrolled workspace contract"));
+                }
+                match self
+                    .journal
+                    .begin(request.idempotency_key, digest, None, || {
+                        settled(value, request.idempotency_key).map(|()| || {})
+                    })
+                    .await?
+                {
+                    Admission::Replay(original) => Ok(original),
+                    Admission::Original(head) => {
+                        self.journal
+                            .finish(
+                                request.idempotency_key,
+                                digest,
+                                head,
+                                value,
+                                MutationOutcome::Created(value.clone()),
+                            )
+                            .await
+                    }
+                }
             }
-        }
+        )
     }
     async fn attach_volume(
         &self,
@@ -480,52 +529,74 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         volume: wire::selection::VolumeRef,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let admitted = self.admit(&Intent::Attach(machine, &volume)).await?;
-        let (value, _) = &*admitted;
-        Self::select(value, machine)?;
-        if value.contract.selected_volume_ref.as_ref() != Some(&volume) {
-            return Err(unsupported("replace the admitted selected volume"));
-        }
-        let digest = intent_digest(&(value.id, &Intent::Attach(machine, &volume)))?;
-        match self
-            .journal
-            .begin(key, digest, None, || settled(value, key).map(|()| || {}))
-            .await?
-        {
-            Admission::Replay(original) => Ok(original),
-            Admission::Original(head) => {
-                self.journal
-                    .finish(
-                        key,
-                        digest,
-                        head,
-                        value,
-                        MutationOutcome::VolumeAttached(value.clone()),
-                    )
-                    .await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.attach_volume",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let admitted = self.admit(&Intent::Attach(machine, &volume)).await?;
+                let (value, _) = &*admitted;
+                Self::select(value, machine)?;
+                if value.contract.selected_volume_ref.as_ref() != Some(&volume) {
+                    return Err(unsupported("replace the admitted selected volume"));
+                }
+                let digest = intent_digest(&(value.id, &Intent::Attach(machine, &volume)))?;
+                match self
+                    .journal
+                    .begin(key, digest, None, || settled(value, key).map(|()| || {}))
+                    .await?
+                {
+                    Admission::Replay(original) => Ok(original),
+                    Admission::Original(head) => {
+                        self.journal
+                            .finish(
+                                key,
+                                digest,
+                                head,
+                                value,
+                                MutationOutcome::VolumeAttached(value.clone()),
+                            )
+                            .await
+                    }
+                }
             }
-        }
+        )
     }
     async fn suspend(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.change(machine, key, MachineState::Suspended).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.suspend",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.change(machine, key, MachineState::Suspended).await }
+        )
     }
     async fn wake(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.change(machine, key, MachineState::Running).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.wake",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.change(machine, key, MachineState::Running).await }
+        )
     }
     async fn destroy_machine(
         &self,
         machine: MachineId,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        self.change(machine, key, MachineState::Destroyed).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.destroy_machine",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.change(machine, key, MachineState::Destroyed).await }
+        )
     }
     async fn set_suspension_policy(
         &self,
@@ -533,31 +604,38 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let admitted = self.admit(&Intent::Policy(machine, policy)).await?;
-        let (value, _) = &*admitted;
-        Self::select(value, machine)?;
-        if policy != value.contract.suspension {
-            return Err(unsupported("install an automatic suspension producer"));
-        }
-        let digest = intent_digest(&(value.id, &Intent::Policy(machine, policy)))?;
-        match self
-            .journal
-            .begin(key, digest, None, || settled(value, key).map(|()| || {}))
-            .await?
-        {
-            Admission::Replay(original) => Ok(original),
-            Admission::Original(head) => {
-                self.journal
-                    .finish(
-                        key,
-                        digest,
-                        head,
-                        value,
-                        MutationOutcome::SuspensionPolicySet(machine, policy),
-                    )
-                    .await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.set_suspension_policy",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let admitted = self.admit(&Intent::Policy(machine, policy)).await?;
+                let (value, _) = &*admitted;
+                Self::select(value, machine)?;
+                if policy != value.contract.suspension {
+                    return Err(unsupported("install an automatic suspension producer"));
+                }
+                let digest = intent_digest(&(value.id, &Intent::Policy(machine, policy)))?;
+                match self
+                    .journal
+                    .begin(key, digest, None, || settled(value, key).map(|()| || {}))
+                    .await?
+                {
+                    Admission::Replay(original) => Ok(original),
+                    Admission::Original(head) => {
+                        self.journal
+                            .finish(
+                                key,
+                                digest,
+                                head,
+                                value,
+                                MutationOutcome::SuspensionPolicySet(machine, policy),
+                            )
+                            .await
+                    }
+                }
             }
-        }
+        )
     }
     async fn events(
         &self,
@@ -565,33 +643,69 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         after: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        Self::select(&self.observation.lock().await.0, machine)?;
-        self.journal.events(after, limit).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.events",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                Self::select(&self.observation.lock().await.0, machine)?;
+                self.journal.events(after, limit).await
+            }
+        )
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        let outcome = self.journal.recover(key).await?;
-        self.reconcile(key, outcome, self.observation.lock().await)
-            .await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.recover",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let outcome = self.journal.recover(key).await?;
+                self.reconcile(key, outcome, self.observation.lock().await)
+                    .await
+            }
+        )
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        let operation = OperationId(key.0);
-        self.journal.inspect(operation).await?;
-        Ok(operation)
+        acyclic_observability::async_operation!(
+            "acyclic.machines.recover_operation",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                let operation = OperationId(key.0);
+                self.journal.inspect(operation).await?;
+                Ok(operation)
+            }
+        )
     }
     async fn inspect_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
-        self.journal.inspect(operation).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.inspect_operation",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.journal.inspect(operation).await }
+        )
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        self.journal.inspect(operation).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.cancel",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.journal.inspect(operation).await }
+        )
     }
     async fn watch_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        self.journal.watch(operation).await
+        acyclic_observability::async_operation!(
+            "acyclic.machines.watch_operation",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { self.journal.watch(operation).await }
+        )
     }
     async fn read_output(
         &self,
@@ -599,20 +713,35 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         _: u64,
         _: u32,
     ) -> Result<MachineOutput, ProviderError> {
-        Err(unsupported("replay an unretained console"))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.read_output",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { Err(unsupported("replay an unretained console")) }
+        )
     }
     async fn checkpoint(
         &self,
         _: MachineId,
         _: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        Err(unsupported("snapshot a mutable host workspace"))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.checkpoint",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { Err(unsupported("snapshot a mutable host workspace")) }
+        )
     }
     async fn inspect_checkpoint(
         &self,
         _: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        Err(unsupported("inspect an uncreated snapshot"))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.inspect_checkpoint",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { Err(unsupported("inspect an uncreated snapshot")) }
+        )
     }
     async fn fork(
         &self,
@@ -620,19 +749,36 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         _: NonZeroU32,
         _: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        Err(unsupported(
-            "fork without an immutable filesystem generation",
-        ))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.fork",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                Err(unsupported(
+                    "fork without an immutable filesystem generation",
+                ))
+            }
+        )
     }
     async fn destroy_checkpoint(
         &self,
         _: CheckpointId,
         _: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        Err(unsupported("destroy an uncreated snapshot"))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.destroy_checkpoint",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { Err(unsupported("destroy an uncreated snapshot")) }
+        )
     }
     async fn usage(&self, _: MachineId, _: u64, _: u64) -> Result<UsageReceipt, ProviderError> {
-        Err(unsupported("attest unmeasured host usage"))
+        acyclic_observability::async_operation!(
+            "acyclic.machines.usage",
+            ProviderError::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async { Err(unsupported("attest unmeasured host usage")) }
+        )
     }
 }
 

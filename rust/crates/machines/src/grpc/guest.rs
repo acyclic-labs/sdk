@@ -1,7 +1,6 @@
 use super::*;
 
 pub(super) fn command_error(machine: MachineId, value: &tonic::Status) -> ProviderError {
-    obs::failed_rpc(value);
     match value.code() {
         tonic::Code::Unavailable
         | tonic::Code::DeadlineExceeded
@@ -18,7 +17,6 @@ pub(super) fn command_stream_error(
     exited: bool,
     value: &tonic::Status,
 ) -> ProviderError {
-    obs::failed_rpc(value);
     if exited {
         ProviderError::Rejected("exec stream failed after its terminal result".into())
     } else {

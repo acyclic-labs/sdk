@@ -12,7 +12,7 @@ mod operations;
 #[cfg(not(target_arch = "wasm32"))]
 pub use operations::{
     Completion, Metrics, Operations, Outcome, Query, QueryError, Sample, Sink, Snapshot, finish,
-    observe, record_outcome,
+    observe, observe_output, record_outcome,
 };
 
 mod slo;
@@ -37,7 +37,21 @@ macro_rules! async_operation {
 /// Own and observe a single future without a forwarding async frame or box.
 #[macro_export]
 macro_rules! operation_future {
-    ($name:literal, $kind:expr, $context:path, $work:expr) => {{
+    ($name:literal, $kind:expr, $context:path, $work:expr) => {
+        $crate::operation_output_future!(
+            $name,
+            |result| result.as_ref().err().map($kind),
+            $context,
+            $work
+        )
+    };
+}
+
+/// Observe an unchanged future output, including separately retained physical
+/// and observer errors, using the same span and completion owner.
+#[macro_export]
+macro_rules! operation_output_future {
+    ($name:literal, $error:expr, $context:path, $work:expr) => {{
         #[cfg(not(target_arch = "wasm32"))]
         {
             let operation = $context($crate::__tracing::info_span!(
@@ -45,7 +59,7 @@ macro_rules! operation_future {
                 outcome = $crate::__tracing::field::Empty,
                 error.kind = $crate::__tracing::field::Empty,
             ));
-            operation.scope($crate::observe(&operation, $work, $kind))
+            operation.scope($crate::observe_output(&operation, $work, $error))
         }
         #[cfg(target_arch = "wasm32")]
         ($work)

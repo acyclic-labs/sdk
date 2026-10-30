@@ -12,6 +12,7 @@ pub(crate) fn traced_on_poll<'a, T: 'a>(
         PollTrace {
             future: Some(future),
             span: None,
+            completion: None,
             build,
         }
     }
@@ -28,13 +29,17 @@ pin_project_lite::pin_project! {
         #[pin]
         future: Option<F>,
         span: Option<OperationSpan>,
+        completion: Option<acyclic_observability::Completion>,
         build: B,
     }
     impl<F, B> PinnedDrop for PollTrace<F, B> {
         fn drop(this: Pin<&mut Self>) {
             let mut this = this.project();
             match this.span.as_ref() {
-                Some(span) => span.in_scope(|| this.future.set(None)),
+                Some(span) => span.in_scope(|| {
+                    this.future.set(None);
+                    this.completion.take();
+                }),
                 None => this.future.set(None),
             }
         }
@@ -54,18 +59,24 @@ where
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         let this = self.project();
-        let span = this.span.get_or_insert_with(this.build);
+        let span = this.span.get_or_insert_with(|| {
+            let span = (this.build)();
+            *this.completion = Some(acyclic_observability::Completion::new(&span));
+            span
+        });
         let Some(mut future) = this.future.as_pin_mut() else {
             return std::task::Poll::Pending;
         };
         let result = span.in_scope(|| future.as_mut().poll(cx));
-        if let std::task::Poll::Ready(result) = &result {
-            acyclic_observability::record_outcome(
-                span,
-                result.as_ref().err().map(crate::Error::kind),
-            );
+        match result {
+            std::task::Poll::Ready(result) => {
+                std::task::Poll::Ready(match this.completion.take() {
+                    Some(completion) => completion.finish(result, crate::Error::kind),
+                    None => result,
+                })
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
         }
-        result
     }
 }
 
