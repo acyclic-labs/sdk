@@ -63,6 +63,15 @@ fn invalid() -> RestoreError {
     RestoreError::State(StreamError::InvalidArgument)
 }
 
+#[cfg(feature = "test-support")]
+pub(crate) fn check_codec(bytes: &[u8]) -> bool {
+    if let Ok(state) = decode(bytes) {
+        let canonical = encode(&state);
+        return decode(&canonical).is_ok_and(|restored| encode(&restored) == canonical);
+    }
+    true
+}
+
 impl MemoryStream {
     pub(crate) async fn capture_state(&self) -> Snapshot {
         Snapshot::capture(&*self.state.read().await)

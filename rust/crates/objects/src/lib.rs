@@ -7,6 +7,9 @@ mod batch;
 #[cfg(feature = "binary")]
 pub mod binary;
 mod blob;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod codec_fuzz;
 pub mod conformance;
 #[cfg(any(objects_client, objects_server))]
 mod convert;

@@ -1,0 +1,66 @@
+Run these checks on demand. This is an independent Cargo workspace; adding a
+target here does not register a scheduled check.
+
+| Target | Production decoders exercised |
+| --- | --- |
+| `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects and Streams, including session messages and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. |
+| `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
+| `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, snapshots, retained retry observations, committed envelopes and change records. File and memory frame readers must agree. |
+| `object_persistence` | Manifests, stored HEAD envelopes and retained reference batches. |
+| `ids` | Every ObjectId kind and GenerationId, with both 33-byte plain and 113-byte sealed encodings. |
+| `auth` | Canonical blocks, capabilities, caveats, typed grant unions and cryptographic capability verification using the SDK's deterministic test trust. |
+
+The protobuf oracle compares encoded fixed points, rather than Rust equality:
+valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
+fields may be discarded at a service boundary. Persisted canonical codecs also
+check byte equality wherever their contract requires it.
+
+From this directory, capture seeds with the SDK's actual encoders:
+
+```sh
+cargo run --example capture
+```
+
+The producer writes `corpus/SOURCES.tsv` with each path, length, SHA-256 and
+producing call. Protobuf seeds are emitted by each generated message's default
+encoder and carry an eight-byte little-endian decoder index. Journal facts and
+snapshots come from real MemoryStream append, fork and commit operations.
+Objects metadata, manifests, ID references and session envelopes come from
+their production encoders. The signed token uses only deterministic test keys;
+it contains no account credential. These are SDK output captures, not hosted
+service traffic. Regenerate the complete protobuf corpus when schemas change,
+because the decoder indices can change.
+
+With cargo-fuzz and its supported Rust toolchain installed, choose a target and
+an explicit run budget:
+
+```sh
+cargo +nightly fuzz run session_frames -- -max_total_time=30
+cargo +nightly fuzz run protobuf -- -max_total_time=30
+cargo +nightly fuzz run stream_persistence -- -max_total_time=30
+cargo +nightly fuzz run object_persistence -- -max_total_time=30
+cargo +nightly fuzz run ids -- -max_total_time=30
+cargo +nightly fuzz run auth -- -max_total_time=30
+```
+
+The time budget belongs to the fuzz campaign. Targets impose no input-length
+cutoff. Increase libFuzzer's `-max_len` to explore larger frames or snapshots.
+Replay a crash with `cargo +nightly fuzz run TARGET artifacts/TARGET/crash-HASH`.
+Keep a reproducer and fix its production decoder before treating the campaign
+as complete.
+
+Bounded proofs of the same ID codecs, incremental framing and receive credit
+live in [the proof package](../proofs/id-codecs/README.md). Existing end-to-end
+session and follow state-machine targets remain in `../crates/stream/fuzz`;
+filesystem object accounting and cancellation oracles remain in
+`../crates/filesystem/fuzz`. Those checks exercise different contracts.
+
+The support entry points are compiled only with `test-support`. The sole
+ordinary-runtime adjustment changes `read_frame(&File, ...)` to
+`read_frame(impl Read, ...)`, so the exact file parser also accepts a memory
+cursor. The existing file call is still statically dispatched: before/after
+syscalls, durability barriers, round trips, allocations and payload copies are
+unchanged. Input decoding is linear in bytes and returned items, independent of
+agent population or retained history outside the supplied input. Fixed ID work
+is bounded by 113 bytes and allocates nothing. No decoder waits on an event;
+EOF is a typed framing result.

@@ -34,6 +34,8 @@ pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
 #[cfg(any(test, feature = "local"))]
 mod snapshot;
+#[cfg(all(feature = "test-support", feature = "local"))]
+pub(crate) use snapshot::check_codec as check_snapshot_codec;
 #[cfg(feature = "local")]
 pub(crate) use snapshot::RestoreError;
 
