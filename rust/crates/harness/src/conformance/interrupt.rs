@@ -53,14 +53,7 @@ impl TurnDriver for Waiting {
 }
 
 pub(crate) async fn verify(backend: &dyn Backend) -> Result {
-    use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
-    let work = interrupted(backend);
-    let timeout = PlatformExecutor.sleep(5_000);
-    futures::pin_mut!(work, timeout);
-    match futures::future::select(work, timeout).await {
-        futures::future::Either::Left((result, _)) => result,
-        futures::future::Either::Right(_) => Err("runtime interrupt timed out".into()),
-    }
+    interrupted(backend).await
 }
 
 async fn interrupted(backend: &dyn Backend) -> Result {
