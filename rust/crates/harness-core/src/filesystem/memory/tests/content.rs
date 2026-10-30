@@ -60,6 +60,58 @@ async fn stock_publisher_finite_once_observes_original_metadata_after_head_chang
         )?
         .await?;
     assert!(committed_io.receipt().backend_write_operations > 0);
+    let replacement_operation = OperationId::new();
+    let (replacement, _replacement_hold) = storage
+        .publisher
+        .stage_at(
+            replacement_operation,
+            &committed,
+            b"replacement",
+            None,
+            Some(&committed_io),
+        )?
+        .await?;
+    assert_eq!(
+        storage
+            .content_verifier
+            .read(&replacement, 1024, None, Some(&committed_io))?
+            .await?
+            .as_ref(),
+        b"replacement"
+    );
+    assert_eq!(
+        storage
+            .publisher
+            .stage_at(
+                replacement_operation,
+                &committed,
+                b"replacement",
+                None,
+                Some(&committed_io),
+            )?
+            .await?
+            .0,
+        replacement
+    );
+    // A digest-only projection of this actual reference must fail before IO.
+    let mut digest_only = committed.clone();
+    let generation = crate::filesystem::bounded_io::generation_version(committed.version(), None)?;
+    digest_only.pin_version(hex::encode(generation.digest().as_bytes()), &mut None)?;
+    let writes = committed_io.receipt().backend_write_operations;
+    assert!(matches!(
+        storage
+            .publisher
+            .stage_at(
+                OperationId::new(),
+                &digest_only,
+                b"never",
+                None,
+                Some(&committed_io),
+            )?
+            .await,
+        Err(error) if error.code() == crate::wire::ErrorCode::Invalid
+    ));
+    assert_eq!(committed_io.receipt().backend_write_operations, writes);
     storage
         .publisher
         .stage_once(
