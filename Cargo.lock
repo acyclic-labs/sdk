@@ -748,6 +748,7 @@ dependencies = [
 name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
+ "acyclic-native-runtime",
  "acyclic-auth",
  "acyclic-observability",
  "acyclic-proto-build",

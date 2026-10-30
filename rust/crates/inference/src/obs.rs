@@ -3,21 +3,16 @@
 use crate::Error;
 use tracing::Span;
 
-pub(crate) use tracing::field::Empty;
-
-/// Records `outcome`, `error.kind` and, for an RPC failure, `rpc.code` on the
-/// current span. A success means every RPC in it returned `OK`.
-pub(crate) fn finish<T>(result: Result<T, Error>) -> Result<T, Error> {
-    let span = Span::current();
-    match &result {
+/// Adapts original RPC status evidence to the shared completion observer.
+pub(crate) fn outcome<T>(span: &Span, result: &Result<T, Error>) -> Option<&'static str> {
+    match result {
         Ok(_) => {
             span.record("rpc.code", 0);
         }
-        Err(error) => {
-            if let Error::Observation(status) = error {
-                span.record("rpc.code", i32::from(status.code()));
-            }
+        Err(Error::Observation(status)) => {
+            span.record("rpc.code", i32::from(status.code()));
         }
-    };
-    acyclic_observability::finish(&span, result, Error::kind)
+        Err(_) => {}
+    }
+    result.as_ref().err().map(Error::kind)
 }
