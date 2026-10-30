@@ -890,8 +890,12 @@ mod runtime {
                         );
                     }
                 }
-                assert!(seen.events.iter().all(|(parent, _)| parent.as_deref()
-                    == Some(if filtered { "caller" } else { "test.grpc.call" })));
+                assert!(
+                    seen.events.iter().all(|(parent, _)| parent.as_deref()
+                        == Some(if filtered { "caller" } else { "test.grpc.call" })),
+                    "filtered={filtered}, stage={stage}, events={:?}",
+                    seen.events
+                );
                 assert!(other.0.lock().unwrap().events.is_empty());
             }
         }
