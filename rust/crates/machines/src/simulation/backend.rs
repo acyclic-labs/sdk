@@ -527,7 +527,6 @@ impl MachinesProvider for SimulatedMachines {
             start_unix_ms,
             end_unix_ms,
             elastic_cpu_ns: 0,
-            dedicated_cpu_ns: 0,
             private_resident_byte_seconds: 0,
             durable_private_bytes: 0,
             lineage_receipt_sha256: [0; 32],

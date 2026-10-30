@@ -433,7 +433,9 @@ message UsageReceipt {
   uint64 start_unix_ms = 2;
   uint64 end_unix_ms = 3;
   uint64 elastic_cpu_ns = 4;
-  uint64 dedicated_cpu_ns = 5;
+  // CPU is billed on actual CPU time only; reserved cores are not metered.
+  reserved 5;
+  reserved "dedicated_cpu_ns";
   uint64 private_resident_byte_seconds = 6;
   uint64 durable_private_bytes = 7;
   reserved 8;

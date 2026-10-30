@@ -731,8 +731,6 @@ pub struct UsageOut {
     #[tsify(type = "bigint")]
     elastic_cpu_ns: u64,
     #[tsify(type = "bigint")]
-    dedicated_cpu_ns: u64,
-    #[tsify(type = "bigint")]
     private_resident_byte_seconds: u64,
     #[tsify(type = "bigint")]
     durable_private_bytes: u64,
@@ -751,7 +749,6 @@ fn usage_out(value: UsageReceipt) -> UsageOut {
         start_unix_ms: SafeNumber(value.start_unix_ms),
         end_unix_ms: SafeNumber(value.end_unix_ms),
         elastic_cpu_ns: value.elastic_cpu_ns,
-        dedicated_cpu_ns: value.dedicated_cpu_ns,
         private_resident_byte_seconds: value.private_resident_byte_seconds,
         durable_private_bytes: value.durable_private_bytes,
         lineage_receipt_sha256: value.lineage_receipt_sha256.to_vec(),
