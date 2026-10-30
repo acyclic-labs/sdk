@@ -10,6 +10,7 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
             let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
                 .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
             let baseline = work.live_allocation_bytes();
+            let encoded = work.remaining()?.bytes_encoded;
             let (copied, custody) = if encode {
                 let (copied, custody) = value(&source, policy, Some(&work))?;
                 (
@@ -20,6 +21,9 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
                 clone_value(&source, policy, &work)?
             };
             assert_eq!(copied, source);
+            if encode {
+                assert!(work.remaining()?.bytes_encoded < encoded);
+            }
             let retained = retained_value_bytes(&copied)?;
             assert_eq!(work.live_allocation_bytes(), baseline + retained);
             // The old handoff resized custody to logical entries, losing the
@@ -35,10 +39,12 @@ fn tool_json_handoffs_keep_sparse_map_custody_until_value_destruction() -> Resul
     let original =
         acyclic_fs::NativeMaterializationWork::new(budget, &acyclic_fs::CancellationToken::new())
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-    assert!(matches!(
-        value(&source, None, Some(&original)),
-        Err(Error::NativeWork { .. })
-    ));
+    for policy in [None, Some(4096)] {
+        assert!(matches!(
+            value(&source, policy, Some(&original)),
+            Err(Error::NativeWork { .. })
+        ));
+    }
     assert!(value(&source, Some(0), None).is_err());
     Ok(())
 }

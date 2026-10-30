@@ -78,8 +78,7 @@ pub fn value<T: Serialize>(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let remaining = work.remaining()?.bytes_encoded;
-        let value = io.value_json(value, maximum_bytes.map(|maximum| maximum.min(remaining)))?;
+        let value = io.value_json(value, maximum_bytes)?;
         let retained = retained_value_bytes(&value)?;
         let custody = io.into_native_custody(retained)?;
         return Ok((value, Some(custody)));
