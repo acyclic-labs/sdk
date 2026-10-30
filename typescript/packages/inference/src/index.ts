@@ -510,15 +510,16 @@ export class HttpInferenceTransport implements InferenceTransport {
         original.throwIfAborted();
       }
       if (!response.ok) {
-        // The response's original body completes before exact rejection can
-        // notify source watchers and retire this attempt's child signal.
-        let message: string;
-        try {
-          message = await readBoundedText(response, this.maximumMessageBytes, "error response", () => original?.throwIfAborted(), original);
-        } finally { if (response.status === 401 && !original?.aborted) lease?.reject(); }
+        if (response.status === 401) {
+          // Rejection belongs to the authenticated headers. An uncompleted
+          // diagnostic body cannot keep the exact rejected lease reusable.
+          lease?.reject();
+          await response.body?.cancel().catch(() => undefined);
+          throw new InferenceTransportError(401, "credential rejected");
+        }
         throw new InferenceTransportError(
           response.status,
-          message,
+          await readBoundedText(response, this.maximumMessageBytes, "error response", () => original?.throwIfAborted(), original),
         );
       }
       retained = true;

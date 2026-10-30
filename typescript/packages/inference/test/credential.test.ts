@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { create, toJsonString } from "@bufbuild/protobuf";
-import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/actors/credential";
+import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
 import {
   HttpInferenceTransport, InferenceTransportError, InspectRunRequestSchema,
   ListModelsResponseSchema, RunEventSchema, WatchRunRequestSchema,
@@ -163,6 +163,35 @@ test("changed source and absolute expiry refuse unary bodies before JSON decodin
       expect(await result).toMatchObject({ message: "credential source changed or expired" });
       expect(owner.refreshes()).toBe(1);
     } finally { reply.resolve(); await server.stop(true); }
+  }
+});
+
+test("authenticated rejection retires its exact lease before a diagnostic body can block", async () => {
+  const owner = source();
+  const lease = await resolveCredential(owner.cache.provider);
+  const pulled = Promise.withResolvers<void>();
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    start(value) { controller = value; },
+    pull() { pulled.resolve(); },
+    cancel() { cancelled += 1; },
+  }, { highWaterMark: 0 });
+  const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, async () => new Response(body, { status: 401 }));
+  const result = rejected(transport.listModels());
+  try {
+    // The former diagnostic read admits pull; current rejection finishes
+    // without reading. Either original event makes the assertion decisive.
+    await Promise.race([result, pulled.promise]);
+    expect(() => lease.check()).toThrow();
+    expect(cancelled).toBe(1);
+    expect(await result).toMatchObject({ status: 401 });
+    expect(owner.active()).toBe(0);
+    await resolveCredential(owner.cache.provider);
+    expect(owner.refreshes()).toBe(2);
+  } finally {
+    if (!cancelled) controller?.close();
+    await result;
   }
 });
 
