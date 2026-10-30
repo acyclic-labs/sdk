@@ -644,7 +644,7 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
             .unwrap();
         let attributes = RecordAttributes::try_new(vec![]).unwrap();
         for checks in [1, 100, 1000] {
-            let measured = acyclic_test_support::measure(|| {
+            let authorize = || {
                 for _ in 0..checks {
                     assert_eq!(
                         context.authorize(
@@ -656,18 +656,24 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
                         Ok(())
                     );
                 }
-            });
-            assert_eq!(measured.count_total, 0);
-            // The former per-check reconstruction must fail the same oracle.
-            let copied = acyclic_test_support::measure(|| {
-                for _ in 0..checks {
-                    std::hint::black_box(ResourcePattern {
-                        name: context.resource.name.clone(),
-                        prefix: true,
-                    });
-                }
-            });
-            assert_eq!(copied.count_total, checks);
+            };
+            #[cfg(target_arch = "wasm32")]
+            authorize();
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let measured = acyclic_test_support::measure(authorize);
+                assert_eq!(measured.count_total, 0);
+                // The former per-check reconstruction must fail the same oracle.
+                let copied = acyclic_test_support::measure(|| {
+                    for _ in 0..checks {
+                        std::hint::black_box(ResourcePattern {
+                            name: context.resource.name.clone(),
+                            prefix: true,
+                        });
+                    }
+                });
+                assert_eq!(copied.count_total, checks);
+            }
         }
         let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
         state.publish(
