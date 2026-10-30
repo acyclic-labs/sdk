@@ -57,8 +57,18 @@ impl CommandJournal for BrowserPort<'_> {
             }
         };
         if from > head
-            || head > self.stream.inner.limits.commands
-            || bytes > self.stream.inner.limits.journal_bytes
+            || self
+                .stream
+                .inner
+                .limits
+                .commands
+                .is_some_and(|limit| head > limit)
+            || self
+                .stream
+                .inner
+                .limits
+                .journal_bytes
+                .is_some_and(|limit| bytes > limit)
         {
             return Err(StreamError::InvalidResponse);
         }
@@ -112,14 +122,26 @@ impl CommandJournal for BrowserPort<'_> {
         }
         let next = expected
             .checked_add(frames.len() as u64)
-            .filter(|head| *head <= self.stream.inner.limits.commands)
+            .filter(|head| {
+                self.stream
+                    .inner
+                    .limits
+                    .commands
+                    .is_none_or(|limit| *head <= limit)
+            })
             .ok_or(StreamError::Capacity)?;
         let bytes = frames
             .iter()
             .try_fold(self.bytes, |total, frame| {
                 total.checked_add(frame.command.encoded_len() as u64 + 8)
             })
-            .filter(|bytes| *bytes <= self.stream.inner.limits.journal_bytes)
+            .filter(|bytes| {
+                self.stream
+                    .inner
+                    .limits
+                    .journal_bytes
+                    .is_none_or(|limit| *bytes <= limit)
+            })
             .ok_or(StreamError::Capacity)?;
         let store = self
             .transaction

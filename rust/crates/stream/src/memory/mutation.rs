@@ -1,5 +1,7 @@
 fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
-    if state.decision.saturating_add(reserved(state).0 as u64) >= limits.commits as u64 {
+    if limits.commits.is_some_and(|limit| {
+        state.decision.saturating_add(reserved(state).0 as u64) >= limit as u64
+    }) {
         Err(StreamError::Capacity)
     } else {
         Ok(())
@@ -74,7 +76,10 @@ impl MemoryStream {
 }
 
 fn admit_replay(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
-    if state.replay_count().saturating_add(reserved(state).0) >= limits.idempotency_results {
+    if limits
+        .idempotency_results
+        .is_some_and(|limit| state.replay_count().saturating_add(reserved(state).0) >= limit)
+    {
         Err(StreamError::Capacity)
     } else {
         Ok(())

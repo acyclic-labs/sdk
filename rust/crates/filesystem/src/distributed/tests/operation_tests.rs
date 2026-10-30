@@ -728,7 +728,7 @@ async fn operation_index_shares_its_parent_across_authorities_at_capacity() -> T
         let stream = Arc::new(MemoryStream::new(acyclic_stream::MemoryLimits {
             // Two common authority prefixes, four paths per authority, and
             // one common operation-index prefix plus one locator per authority.
-            paths: 2 + 8 * 4 + 1 + 8,
+            paths: Some(2 + 8 * 4 + 1 + 8),
             ..acyclic_stream::MemoryLimits::default()
         }));
         let store = StreamAuthorityStore::new(stream);

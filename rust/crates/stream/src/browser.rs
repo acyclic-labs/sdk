@@ -28,15 +28,15 @@ const METADATA: &str = "metadata";
 /// database itself, so every opener shares one identity and a deleted or
 /// cleared database mints a new one.
 const INCARNATION: &str = "incarnation";
-const METADATA_WORDS: usize = 10;
+const METADATA_WORDS: usize = 18;
 
-/// Finite durable recovery/retention and canonical in-memory admission limits.
+/// Caller-selected durable recovery and canonical state capacities; omission is unbounded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BrowserStreamLimits {
     /// Maximum retained successful journal commands.
-    pub commands: u64,
+    pub commands: Option<u64>,
     /// Maximum retained journal bytes, including sampled times.
-    pub journal_bytes: u64,
+    pub journal_bytes: Option<u64>,
     /// Canonical Rust state capacity; must match on every opener.
     pub memory: MemoryLimits,
 }
@@ -44,8 +44,8 @@ pub struct BrowserStreamLimits {
 impl Default for BrowserStreamLimits {
     fn default() -> Self {
         Self {
-            commands: 65_536,
-            journal_bytes: 256 * 1024 * 1024,
+            commands: None,
+            journal_bytes: None,
             memory: MemoryLimits::default(),
         }
     }
@@ -110,7 +110,7 @@ fn backend<T>(_: T) -> StreamError {
 impl BrowserStream {
     /// Opens one browser-local database. Construction acquires no runtime lease.
     pub async fn open(name: &str, limits: BrowserStreamLimits) -> Result<Self, StreamError> {
-        if name.is_empty() || limits.words().contains(&0) || limits.commands > u64::from(u32::MAX) {
+        if name.is_empty() || limits.capacities().contains(&Some(0)) {
             return Err(StreamError::InvalidArgument);
         }
         let minted = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
@@ -290,17 +290,29 @@ fn staged(
     provider
 }
 impl BrowserStreamLimits {
-    fn words(self) -> [u64; 8] {
+    fn capacities(self) -> [Option<u64>; 8] {
         [
             self.commands,
             self.journal_bytes,
-            self.memory.paths as u64,
-            self.memory.path_bytes as u64,
-            self.memory.records as u64,
-            self.memory.payload_bytes as u64,
-            self.memory.commits as u64,
-            self.memory.idempotency_results as u64,
+            self.memory.paths.map(|value| value as u64),
+            self.memory.path_bytes.map(|value| value as u64),
+            self.memory.records.map(|value| value as u64),
+            self.memory.payload_bytes.map(|value| value as u64),
+            self.memory.commits.map(|value| value as u64),
+            self.memory.idempotency_results.map(|value| value as u64),
         ]
+    }
+
+    fn words(self) -> [u64; 16] {
+        let mut words = [0; 16];
+        for (word, encoded) in words.iter_mut().zip(
+            self.capacities()
+                .into_iter()
+                .flat_map(|value| [u64::from(value.is_some()), value.unwrap_or_default()]),
+        ) {
+            *word = encoded;
+        }
+        words
     }
 }
 

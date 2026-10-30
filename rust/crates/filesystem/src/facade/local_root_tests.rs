@@ -52,7 +52,7 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     let owner = OwnershipAnchor::new(directory);
     let retained = owner.clone();
     let mut invalid = LocalOptions::new(&root);
-    invalid.stream.journal_operations = 0;
+    invalid.stream.compaction_operations = 0;
     assert!(
         Fs::local_with_ownership_anchor(invalid, owner.clone())
             .await

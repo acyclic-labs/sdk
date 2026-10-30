@@ -84,12 +84,30 @@ impl MemoryStream {
 
     pub(crate) async fn restore_state(&self, encoded: &[u8]) -> Result<(), RestoreError> {
         let decoded = decode(encoded)?;
-        if decoded.paths.len() > self.limits.paths
-            || decoded.path_bytes > self.limits.path_bytes
-            || decoded.record_count > self.limits.records
-            || decoded.payload_bytes > self.limits.payload_bytes
-            || decoded.decision > self.limits.commits as u64
-            || decoded.replay_count() > self.limits.idempotency_results
+        if self
+            .limits
+            .paths
+            .is_some_and(|limit| decoded.paths.len() > limit)
+            || self
+                .limits
+                .path_bytes
+                .is_some_and(|limit| decoded.path_bytes > limit)
+            || self
+                .limits
+                .records
+                .is_some_and(|limit| decoded.record_count > limit)
+            || self
+                .limits
+                .payload_bytes
+                .is_some_and(|limit| decoded.payload_bytes > limit)
+            || self
+                .limits
+                .commits
+                .is_some_and(|limit| decoded.decision > limit as u64)
+            || self
+                .limits
+                .idempotency_results
+                .is_some_and(|limit| decoded.replay_count() > limit)
         {
             return Err(StreamError::Capacity.into());
         }

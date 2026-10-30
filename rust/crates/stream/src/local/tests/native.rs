@@ -563,7 +563,7 @@ async fn native_compaction_drains_accepted_controls_and_actual_close()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
-        journal_operations: 2,
+        compaction_operations: 2,
         ..LocalStreamLimits::default()
     };
     let provider = LocalStream::open(directory.path(), limits).await?;

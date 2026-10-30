@@ -274,22 +274,6 @@ impl LocalStream {
                 },
                 _ => StreamError::Unavailable,
             })?;
-        self.inner
-            .journal
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .admit(&frame)
-            .map_err(|error| match error {
-                LocalStreamError::InvalidLimits => StreamError::Capacity,
-                LocalStreamError::Io(error) => match &self.work {
-                    Some(work) => {
-                        let _ = work.record::<()>(Err(error));
-                        StreamError::Unavailable
-                    }
-                    None => StreamError::Unavailable,
-                },
-                _ => StreamError::Unavailable,
-            })?;
         self.inner.commit_clock.pin(committed_at_millis);
         Ok(frame)
     }

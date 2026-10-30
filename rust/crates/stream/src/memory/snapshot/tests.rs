@@ -174,7 +174,7 @@ impl UnixMillisClock for TestClock {
 #[tokio::test]
 async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError> {
     let limits = MemoryLimits {
-        idempotency_results: 1,
+        idempotency_results: Some(1),
         ..MemoryLimits::default()
     };
     let stream = MemoryStream::new(limits);
@@ -451,27 +451,27 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
     }
     for limits in [
         MemoryLimits {
-            paths: 0,
+            paths: Some(0),
             ..MemoryLimits::default()
         },
         MemoryLimits {
-            path_bytes: 0,
+            path_bytes: Some(0),
             ..MemoryLimits::default()
         },
         MemoryLimits {
-            records: 0,
+            records: Some(0),
             ..MemoryLimits::default()
         },
         MemoryLimits {
-            payload_bytes: 0,
+            payload_bytes: Some(0),
             ..MemoryLimits::default()
         },
         MemoryLimits {
-            commits: 0,
+            commits: Some(0),
             ..MemoryLimits::default()
         },
         MemoryLimits {
-            idempotency_results: 0,
+            idempotency_results: Some(0),
             ..MemoryLimits::default()
         },
     ] {
