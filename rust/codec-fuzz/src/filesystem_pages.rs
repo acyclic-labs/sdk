@@ -8,13 +8,21 @@ fn allocation_error(_: std::collections::TryReserveError) -> FsError {
 fn refuses_other_versions(mut decode: impl FnMut(&[u8]) -> Result<(), FsError>, bytes: &[u8]) {
     // These seven immutable object formats share an eight-byte domain followed
     // by a little-endian u16 version. No payload is needed to refuse a version.
-    let mut header: [u8; 10] = bytes[..10].try_into().unwrap();
+    refuses_versions(bytes, 8, |header, version| {
+        matches!(decode(header),
+            Err(FsError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+    });
+}
+
+fn refuses_versions(
+    bytes: &[u8],
+    version_offset: usize,
+    mut unsupported: impl FnMut(&[u8], u16) -> bool,
+) {
+    let mut header = bytes[..version_offset + 2].to_vec();
     for version in [0_u16, 2, u16::MAX] {
-        header[8..].copy_from_slice(&version.to_le_bytes());
-        assert!(matches!(
-            decode(&header),
-            Err(FsError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version
-        ));
+        header[version_offset..].copy_from_slice(&version.to_le_bytes());
+        assert!(unsupported(&header, version));
     }
 }
 
@@ -64,18 +72,62 @@ pub fn check(bytes: &[u8]) {
             bytes,
         );
     }
-    let _ = decode_volume_created::<VolumeCreatedError>(bytes, u64::MAX, &mut |_| Ok(()));
+    if decode_volume_created::<VolumeCreatedError>(bytes, u64::MAX, &mut |_| Ok(())).is_ok() {
+        refuses_versions(
+            bytes,
+            b"acyclic-fs-volume-created-v1\0".len(),
+            |header, version| {
+                matches!(decode_volume_created::<VolumeCreatedError>(header, u64::MAX, &mut |_| Ok(())),
+                Err(VolumeCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+            },
+        );
+    }
     let _ = decode_published_generation::<CanonicalDecodeError>(bytes, u64::MAX, |_| Ok(()));
-    let _ = decode_retention_created(bytes, u64::MAX);
-    let _ = decode_workspace_deleted(bytes, u64::MAX);
-    let _ = decode_generation_export_manifest(bytes, u64::MAX, u64::MAX);
+    if decode_retention_created(bytes, u64::MAX).is_ok() {
+        refuses_versions(
+            bytes,
+            b"acyclic-fs-retention-created-v1\0".len(),
+            |header, version| {
+                matches!(decode_retention_created(header, u64::MAX),
+                Err(RetentionCreatedError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+            },
+        );
+    }
+    if let Ok(value) = decode_workspace_deleted(bytes, u64::MAX) {
+        assert_eq!(
+            encode_workspace_deleted(value, |_| Ok::<_, FsError>(()), allocation_error).unwrap(),
+            bytes
+        );
+        refuses_versions(
+            bytes,
+            b"acyclic-fs-workspace-deleted-v1\0".len(),
+            |header, version| {
+                matches!(decode_workspace_deleted(header, u64::MAX),
+                Err(CanonicalDecodeError::UnsupportedVersion(found)) if found == version)
+            },
+        );
+    }
+    if let Ok(value) = decode_generation_export_manifest(bytes, u64::MAX, u64::MAX) {
+        assert_eq!(encode_generation_export_manifest(&value).unwrap(), bytes);
+        refuses_versions(
+            bytes,
+            b"acyclic-fs-generation-export-v1\0".len(),
+            |header, version| {
+                matches!(decode_generation_export_manifest(header, u64::MAX, u64::MAX),
+                Err(GenerationExportManifestError::Decode(CanonicalDecodeError::UnsupportedVersion(found))) if found == version)
+            },
+        );
+    }
     let sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(bytes).into();
     let _ = decode_generation_publication_evidence(bytes, &sha256, u64::MAX, u64::MAX);
 }
 
 /// Produce SDK encoder output; the capture executable records its provenance.
-pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, FsError> {
-    use acyclic_fs::{Digest, FileId, ObjectId, ObjectKind, VolumeId};
+pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    use acyclic_fs::{
+        Digest, FileId, GenerationId, Lifecycle, ObjectId, ObjectKind, ObjectStorage, VolumeConfig,
+        VolumeId,
+    };
     let maximum = DecodeLimits::default().maximum_page_items;
     let mut seeds = Vec::new();
     macro_rules! page {
@@ -145,5 +197,29 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, FsError> {
         "workspace-deleted",
         encode_workspace_deleted(VolumeId::from_bytes([1; 16]), |_| Ok(()), allocation_error)?,
     ));
+    let volume_id = VolumeId::from_bytes([1; 16]);
+    let config = VolumeConfig::portable(Lifecycle::Durable);
+    for sealed in [false, true] {
+        let generation_root = ObjectId {
+            kind: ObjectKind::GenerationRoot,
+            digest: Digest::from_bytes([2; 32]),
+            storage: sealed.then_some(ObjectStorage {
+                locator: Digest::from_bytes([3; 32]),
+                root_file_id: FileId::from_bytes([4; 16]),
+                origin_generation: Digest::from_bytes([5; 32]),
+            }),
+        };
+        seeds.push((
+            if sealed { "export-sealed" } else { "export" },
+            encode_generation_export_manifest(&GenerationExportManifest {
+                volume_id,
+                config,
+                generation_root,
+                generation_id: GenerationId::from_root(generation_root),
+                objects: vec![generation_root],
+                file_count: 0,
+            })?,
+        ));
+    }
     Ok(seeds)
 }

@@ -359,7 +359,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         ),
         record: wire
             .record
-            .map(wire_codec::record)
+            .map(|record| wire_codec::record(record, None))
             .transpose()
             .map_err(|_| invalid("record"))?,
     };

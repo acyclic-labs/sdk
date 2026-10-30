@@ -56,31 +56,12 @@ pub fn check(input: &[u8]) {
     }
 }
 
-/// Capture the actual canonical JSON and SSE writers, using deterministic IDs.
+/// Capture the actual client request writer. Server response seeds require
+/// retained output from a running server.
 pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     let operation = OperationId::from_bytes([7; 16]);
-    let response =
-        serde_json::json!({ "jsonrpc": "2.0", "id": operation, "result": { "ok": true } });
-    let json = crate::contract::canonical_json_bytes(&response)?;
-    let sse = sse_stream::Sse::default()
-        .data(String::from_utf8(json.clone())?)
-        .encode()?
-        .to_vec();
-    let initialization = serde_json::json!({
-        "protocolVersion": crate::mcp::PROTOCOL_VERSION,
-        "serverInfo": { "name": "capture", "version": "1" },
-        "capabilities": {}
-    });
-    Ok(vec![
-        ("mcp-result-json", json),
-        ("mcp-result-sse", sse),
-        (
-            "mcp-initialization",
-            crate::contract::canonical_json_bytes(&initialization)?,
-        ),
-        (
-            "mcp-request",
-            rpc::request(operation, "ping", serde_json::json!({}))?,
-        ),
-    ])
+    Ok(vec![(
+        "mcp-request",
+        rpc::request(operation, "ping", serde_json::json!({}))?,
+    )])
 }

@@ -106,15 +106,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "harness_codecs",
             name,
             &bytes,
-            "canonical JSON, JSON-RPC and Sse::encode writers",
+            "mcp::rpc::request production client writer",
             &mut manifest,
         )?;
     }
     save(
         "harness_codecs",
-        "mcp-stdio-transcript",
+        "mcp-stdio-initialize-request",
         &acyclic_harness_core::mcp::stdio::codec_fuzz::seed()?,
-        "MCP stdio production encode_line writer",
+        "McpStdioRequest::exchange production initialization write",
         &mut manifest,
     )?;
     for (name, bytes) in acyclic_fs::distributed::state_record::codec_fuzz::seeds()? {
@@ -216,6 +216,19 @@ fn capture() -> Result<(), Box<dyn Error>> {
         &mut manifest,
     )?;
     let capability = acyclic_auth::authority::decode_capability(&token)?;
+    let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![
+        acyclic_auth::contract::Attribute {
+            name: "content-type".into(),
+            value: b"application/octet-stream".to_vec(),
+        },
+    ])?;
+    save(
+        "auth",
+        "record-attributes",
+        &acyclic_auth::contract::RecordAttributesProto::from(attributes).encode_to_vec(),
+        "RecordAttributes::try_new and RecordAttributesProto::encode_to_vec",
+        &mut manifest,
+    )?;
     for (index, signed) in capability.blocks.into_iter().enumerate() {
         save(
             "auth",
