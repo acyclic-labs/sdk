@@ -1,6 +1,7 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
 pub mod auth_addressing;
+pub mod auth_capability;
 mod auth_resource;
 pub mod auth_socket;
 pub mod filesystem_pages;
@@ -331,10 +332,7 @@ pub fn auth(bytes: &[u8]) {
             );
         }
     }
-    let trust = acyclic_auth::testing::Snapshot::default();
-    if let Ok(value) = acyclic_auth::verify::verify(bytes, &trust, acyclic_auth::testing::NOW) {
-        assert_eq!(value.encode().as_slice(), bytes);
-    }
+    auth_capability::check(bytes);
 }
 
 pub fn identities(bytes: &[u8]) {

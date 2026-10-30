@@ -253,6 +253,16 @@ a body. Self-bound hashes and constructed record digests establish codec
 properties, not protected custody or settlement. Original volume/retention
 preparation producers and their contextual admission still await capture.
 
+Capability fuzzing also reuses the actual certificate/workload verifier after
+successful authentication. An input-selected block signature or tip-proof
+mutation refuses through the warmed verifier, as do missing proof, withdrawn
+current trust, missing environment/issuer roots, original-block revocation and
+expired time. Refusals cannot poison subsequent original authentication.
+The actual sealed writer preserves the original block identities and account
+while removing append authority. Three additional actual sealing/attenuation
+writer outputs require positive readmission before capture; capture and runtime
+execution remain pending. Signing keys are deterministic SDK test keys.
+
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.
