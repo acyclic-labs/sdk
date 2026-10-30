@@ -49,13 +49,17 @@ macro_rules! timed {
         // Allocate the sampler's future before the interval; construction of
         // the operation itself remains inside it.
         let future = Box::pin(async { $future.await });
-        let before = $rows.start();
-        let start = Instant::now();
-        let result = future.await;
-        let elapsed = start.elapsed();
-        let observed = $rows.stop(before);
-        $rows.record($name, $floor, elapsed, observed)?;
-        result
+        if $rows.includes($name) {
+            let before = $rows.start();
+            let start = Instant::now();
+            let result = future.await;
+            let elapsed = start.elapsed();
+            let observed = $rows.stop(before);
+            $rows.record($name, $floor, elapsed, observed)?;
+            result
+        } else {
+            future.await
+        }
     }};
 }
 
@@ -83,14 +87,49 @@ pub(super) async fn run(
     samples: usize,
     floors: &Floors,
     recovery: &str,
+    operations: &[Operation],
 ) -> Result<(bool, acyclic_test_support::scale::Point)> {
-    let mut rows = Measurements::new(agents, fixture.requests.clone(), recovery);
-    objects(fixture, samples, &mut rows).await?;
-    streams(fixture, samples, &mut rows).await?;
-    actors(fixture, samples, &mut rows).await?;
-    actor_delivery(fixture, agents, samples, &mut rows).await?;
-    filesystem(fixture, samples, &mut rows).await?;
-    sessions(fixture, agents, samples, &mut rows).await?;
+    let mut rows = Measurements::new(agents, fixture.requests.clone(), recovery, operations);
+    let any = |family: &[Operation]| {
+        operations
+            .iter()
+            .any(|operation| family.contains(operation))
+    };
+    if any(&[
+        Operation::ObjectPut,
+        Operation::ObjectGet,
+        Operation::ObjectHead,
+        Operation::ObjectList,
+    ]) {
+        objects(fixture, samples, &mut rows).await?;
+    }
+    if any(&[
+        Operation::StreamAppend,
+        Operation::StreamRead,
+        Operation::StreamFollow,
+    ]) {
+        streams(fixture, samples, &mut rows).await?;
+    }
+    if any(&[
+        Operation::ActorCreate,
+        Operation::ActorDurableWrite,
+        Operation::ActorWarmRead,
+    ]) {
+        actors(fixture, samples, &mut rows).await?;
+    }
+    if rows.includes(Operation::ActorWake) {
+        actor_delivery(fixture, agents, samples, &mut rows).await?;
+    }
+    if any(&[
+        Operation::PinnedRead,
+        Operation::StagedWrite,
+        Operation::Fsync,
+    ]) {
+        filesystem(fixture, samples, &mut rows).await?;
+    }
+    if rows.includes(Operation::SessionStart) {
+        sessions(fixture, agents, samples, &mut rows).await?;
+    }
     rows.finish(floors)
 }
 
@@ -270,7 +309,12 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
 async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {
     let store = Store::new(fixture.stream.clone(), StreamPath::new("benchmark/actors")?);
     let mut address = None;
-    for index in 0..samples {
+    let creates = if rows.includes(Operation::ActorCreate) {
+        samples
+    } else {
+        1
+    };
+    for index in 0..creates {
         let actor = ActorReference::new(
             b"benchmark",
             b"measure",
@@ -297,6 +341,9 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
         serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real actor after placement claim", "result": "rejected"}),
     )?;
 
+    if !rows.includes(Operation::ActorDurableWrite) && !rows.includes(Operation::ActorWarmRead) {
+        return Ok(());
+    }
     // Creation samples retain their empty-state oracle. This separate actor
     // declares its input once and retains each confirmed publication cut.
     let address = ActorReference::new(b"benchmark", b"measure", b"durable")?;

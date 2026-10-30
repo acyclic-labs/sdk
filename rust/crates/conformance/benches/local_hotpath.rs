@@ -10,7 +10,7 @@ mod report;
 #[path = "local_hotpath/storage.rs"]
 mod storage;
 
-use acyclic_test_support::scale::{CORE_OPERATIONS, POPULATIONS, Report};
+use acyclic_test_support::scale::{CORE_OPERATIONS, Operation, POPULATIONS, Report};
 use report::{Result, emit};
 use std::path::PathBuf;
 
@@ -20,6 +20,7 @@ struct Options {
     root: PathBuf,
     samples: usize,
     source: String,
+    operations: Vec<Operation>,
 }
 
 impl Options {
@@ -34,10 +35,18 @@ impl Options {
         let mut root = self.root.as_os_str().to_owned();
         root.push(".retry");
         format!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {}",
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root {} --source {} --samples {} --operations {}",
             quoted(&root.to_string_lossy()),
             quoted(&self.source),
             self.samples,
+            quoted(
+                &self
+                    .operations
+                    .iter()
+                    .map(|operation| operation.name())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
         )
     }
 
@@ -46,11 +55,29 @@ impl Options {
         let mut root = None;
         let mut samples = 200;
         let mut source = None;
+        let mut operations = CORE_OPERATIONS.to_vec();
         while let Some(argument) = arguments.next() {
             match argument.as_str() {
                 "--root" => root = arguments.next().map(PathBuf::from),
                 "--samples" => samples = arguments.next().ok_or("missing sample count")?.parse()?,
                 "--source" => source = arguments.next(),
+                "--operations" => {
+                    let names = arguments
+                        .next()
+                        .ok_or("missing comma-separated operation names")?;
+                    operations.clear();
+                    for name in names.split(',') {
+                        let operation = CORE_OPERATIONS
+                            .iter()
+                            .copied()
+                            .find(|operation| operation.name() == name)
+                            .ok_or_else(|| format!("unknown core operation {name}"))?;
+                        if operations.contains(&operation) {
+                            return Err(format!("duplicate operation {name}").into());
+                        }
+                        operations.push(operation);
+                    }
+                }
                 // Cargo passes this flag to harness=false benchmarks.
                 "--bench" => {}
                 _ => return Err(format!("unknown option {argument}").into()),
@@ -63,6 +90,7 @@ impl Options {
             root: root.ok_or("--root <fresh directory on the measured device> is required")?,
             samples,
             source: source.ok_or("--source <source revision> is required")?,
+            operations,
         })
     }
 }
@@ -70,7 +98,7 @@ impl Options {
 fn main() {
     if std::env::args().any(|argument| argument == "--help") {
         println!(
-            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200]"
+            "cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root <fresh-directory> --source <revision> [--samples 200] [--operations comma-separated-core-operation-names]"
         );
         return;
     }
@@ -101,6 +129,7 @@ fn run() -> Result {
         "durability": "full", "batch": 1,
         "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
         "populations": POPULATIONS,
+        "operations": options.operations.iter().map(|operation| operation.name()).collect::<Vec<_>>(),
     }))?;
     let floors = calibrate::run(&options.root, options.samples)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -116,8 +145,15 @@ fn run() -> Result {
                 let root = options.root.join(agents.to_string());
                 std::fs::create_dir(&root)?;
                 let fixture = population::Fixture::open(&root, agents).await?;
-                let (observed, point) =
-                    storage::run(&fixture, agents, options.samples, &floors, &recovery).await?;
+                let (observed, point) = storage::run(
+                    &fixture,
+                    agents,
+                    options.samples,
+                    &floors,
+                    &recovery,
+                    &options.operations,
+                )
+                .await?;
                 complete &= observed;
                 counts.points.push(point);
             }
@@ -125,17 +161,18 @@ fn run() -> Result {
         }));
     });
     let (latency_complete, counts) = measured.ok_or("measurement scope did not execute")??;
-    for finding in counts.findings(&CORE_OPERATIONS, &recovery) {
+    for finding in counts.findings(&options.operations, &recovery) {
         emit(serde_json::json!({
             "schema": 1, "kind": "counting_refused", "step": finding.step,
             "evidence": finding.evidence, "recovery": finding.recovery,
         }))?;
     }
-    let counts_complete = counts.qualify(&CORE_OPERATIONS, &recovery).is_ok();
+    let counts_complete = counts.qualify(&options.operations, &recovery).is_ok();
     let complete = latency_complete && counts_complete;
     emit(serde_json::json!({
         "schema": 1, "kind": "run_end", "complete": complete,
         "latency_complete": latency_complete, "counts_complete": counts_complete,
+        "full_core_coverage": options.operations.len() == CORE_OPERATIONS.len(),
     }))?;
     if complete {
         Ok(())

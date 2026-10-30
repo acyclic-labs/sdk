@@ -1,7 +1,7 @@
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_test_support::{
     AllocationInfo,
-    scale::{CORE_OPERATIONS, Idle, Operation, Point, Sample, Work},
+    scale::{Idle, Operation, Point, Sample, Work},
 };
 use serde::Serialize;
 use std::{collections::BTreeMap, io::Write, time::Duration};
@@ -90,6 +90,7 @@ pub(super) struct Measurements {
     requests: RequestLedger,
     recovery: String,
     rows: BTreeMap<Operation, Row>,
+    operations: Vec<Operation>,
 }
 
 struct Row {
@@ -111,13 +112,23 @@ pub(super) struct Observation {
 }
 
 impl Measurements {
-    pub(super) fn new(agents: usize, requests: RequestLedger, recovery: &str) -> Self {
+    pub(super) fn new(
+        agents: usize,
+        requests: RequestLedger,
+        recovery: &str,
+        operations: &[Operation],
+    ) -> Self {
         Self {
             agents,
             requests,
             recovery: recovery.into(),
             rows: BTreeMap::new(),
+            operations: operations.to_vec(),
         }
+    }
+
+    pub(super) fn includes(&self, operation: Operation) -> bool {
+        self.operations.contains(&operation)
     }
 
     pub(super) fn start(&self) -> Before {
@@ -154,6 +165,9 @@ impl Measurements {
         elapsed: Duration,
         observation: Observation,
     ) -> Result {
+        if !self.includes(operation) {
+            return Ok(());
+        }
         let row = self.rows.entry(operation).or_insert_with(|| Row {
             terms: floor,
             raw_ns: Vec::new(),
@@ -171,11 +185,11 @@ impl Measurements {
         let mut complete = true;
         let mut point = Point {
             agents: u64::try_from(self.agents)?,
-            samples: Vec::with_capacity(CORE_OPERATIONS.len()),
+            samples: Vec::with_capacity(self.operations.len()),
             // Original physical retained-resource observers are required.
             idle: Idle::default(),
         };
-        for operation in CORE_OPERATIONS {
+        for operation in self.operations {
             let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {
