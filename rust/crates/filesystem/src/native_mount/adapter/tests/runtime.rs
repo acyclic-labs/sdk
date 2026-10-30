@@ -111,6 +111,29 @@ impl AsyncObjectStore for MetadataRefusingObjects {
     }
 }
 
+/// The actual bridge observes Pending before this original producer settles.
+/// Losing that producer returns a typed pipe failure through the same bridge.
+async fn callback_handoff(deliver: bool) -> Result<(), MountSourceError> {
+    let (producer, completion) = futures::channel::oneshot::channel();
+    super::runtime::BEFORE_PARK.with_borrow_mut(|hook| {
+        assert!(
+            hook.is_none(),
+            "the previous callback did not reach its wait"
+        );
+        *hook = Some(Box::new(move || {
+            if deliver {
+                let _ = producer.send(());
+            }
+        }));
+    });
+    completion.await.map_err(|_| {
+        capture_io_error(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "callback completion producer was dropped",
+        ))
+    })
+}
+
 #[test]
 fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CallbackRuntime::create()?;
@@ -121,10 +144,10 @@ fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::spawn(move || {
                     let driver = std::thread::current().id();
                     runtime.wait(|| async {
-                        tokio::time::sleep(Duration::from_millis(1)).await;
+                        callback_handoff(true).await?;
                         let observed = if nested {
                             runtime.wait(|| async {
-                                tokio::time::sleep(Duration::from_millis(1)).await;
+                                callback_handoff(true).await?;
                                 Ok(std::thread::current().id())
                             })?
                         } else {
@@ -142,6 +165,9 @@ fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
                 .map_err(|_| "native driver callback panicked")??;
         }
     }
+    let lost = runtime.wait(|| callback_handoff(false));
+    assert!(matches!(lost, Err(MountSourceError::Io(ref error, _))
+        if error.kind() == std::io::ErrorKind::BrokenPipe));
     Ok(())
 }
 
@@ -180,25 +206,13 @@ fn abandoning_a_blocked_change_never_applies_and_leaves_other_callers_live()
         let held = source.checkout.lock().await;
         let mut drainer = Box::pin(source.create(&abandoned, &work, create));
         assert!(futures::poll!(drainer.as_mut()).is_pending());
-        let waiter_source = Arc::clone(&source);
-        let waiter_work = work.clone();
-        let waiter_path = kept.clone();
-        let waiter = tokio::spawn(async move {
-            waiter_source
-                .create(&waiter_path, &waiter_work, create)
-                .await
-        });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), drainer.as_mut())
-                .await
-                .is_err()
-        );
+        let mut waiter = Box::pin(source.create(&kept, &work, create));
+        assert!(futures::poll!(waiter.as_mut()).is_pending());
+        // Both original mutations reached the held checkout. Dropping the
+        // first unregisters its wait before the same lock releases the second.
         drop(drainer);
         drop(held);
-        tokio::time::timeout(Duration::from_secs(5), waiter)
-            .await
-            .map_err(|_| MountSourceError::Stale)?
-            .map_err(|_| MountSourceError::Stale)?
+        waiter.await
     })?;
     assert!(source.lookup(&kept)?.is_some());
     assert!(source.lookup(&abandoned)?.is_none());
@@ -222,14 +236,14 @@ fn callback_runtime_completes_ready_work_without_parking_current_thread()
         let value = callback
             .block_on(
                 || async {
-                    // This future is deliberately non-Send across a real reactor wait.
+                    // The non-Send owner crosses a real registered callback wait.
                     let local = std::rc::Rc::new(42_u8);
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                    *local
+                    callback_handoff(true).await?;
+                    Ok::<_, MountSourceError>(*local)
                 },
                 None,
             )
-            .map_err(capture_io_error)?;
+            .map_err(capture_io_error)??;
         assert_eq!(value, 42);
         Ok::<(), MountSourceError>(())
     })?;
