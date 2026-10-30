@@ -77,9 +77,11 @@ export async function* credentialStream<T>(
   stream: AsyncIterable<T>, lease: CredentialRequest, rejected: (error: unknown) => boolean,
 ): AsyncIterable<T> {
   try {
+    lease.check();
     for await (const value of stream) {
       lease.check();
       yield value;
+      lease.check();
     }
     lease.check();
   }
@@ -268,7 +270,11 @@ export function credentialProvider(options: CredentialOptions): CredentialProvid
       validateCredential(token);
       return token;
     }, {
-      resolveRequest: (signal?: AbortSignal) => resolveCredential(provider, signal),
+      // Preserve the owner's request; the transport's resolveCredential performs
+      // the one boundary validation instead of wrapping and validating twice.
+      resolveRequest: provider.resolveRequest
+        ? (signal?: AbortSignal) => provider.resolveRequest!(signal)
+        : (signal?: AbortSignal) => resolveCredential(provider, signal),
       ...(provider.watch ? { watch: () => provider.watch!() } : {}),
     });
   }

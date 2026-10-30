@@ -235,9 +235,10 @@ test("stream trailers reject only their exact lease; denial and cancellation pre
   const rejected = (error: unknown) => error === unauthenticated;
   const stream = credentialStream(response(unauthenticated), old, rejected)[Symbol.asyncIterator]();
   expect((await stream.next()).value).toBe(1);
+  const lateRejection = stream.next().then(() => undefined, error => error);
   old.reject();
   const current = await resolveCredential(cache.provider);
-  await expect(stream.next()).rejects.toBe(unauthenticated);
+  expect(await lateRejection).toBe(unauthenticated);
   current.check();
   for (const failure of [new Error("policy denial"), new DOMException("cancelled", "AbortError")]) {
     await expect(Array.fromAsync(credentialStream(response(failure), current, rejected))).rejects.toBe(failure);
@@ -248,6 +249,20 @@ test("stream trailers reject only their exact lease; denial and cancellation pre
 });
 
 test("stream custody refuses changed records and completion and retires its iterator", async () => {
+  for (const paused of [false, true]) {
+    let revision = "first";
+    let pulls = 0;
+    const cache = new CredentialCache(async () => new CredentialSnapshot("synthetic", revision, 100),
+      () => ({ nowUnixSeconds: 1, revision }));
+    const lease = await resolveCredential(cache.provider);
+    async function* records() { pulls++; yield 1; pulls++; yield 2; }
+    const stream = credentialStream(records(), lease, () => false)[Symbol.asyncIterator]();
+    if (paused) expect((await stream.next()).value).toBe(1);
+    revision = "second";
+    await expect(stream.next()).rejects.toThrow("source changed or expired");
+    // Refusal must precede the source's first pull or next side effect.
+    expect(pulls).toBe(paused ? 1 : 0);
+  }
   for (const completion of [false, true]) {
     let revision = "first";
     let retired = false;
