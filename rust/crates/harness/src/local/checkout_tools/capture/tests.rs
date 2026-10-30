@@ -582,6 +582,86 @@ proptest::proptest! {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (directory, harness, tools) = fixture().await?;
+    let marker = directory.path().join("marker");
+    let permissions = std::fs::metadata(&marker).map_err(storage)?.permissions();
+    std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0)).map_err(storage)?;
+    let outcome = async {
+        assert_eq!(
+            std::fs::read(&marker).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the real source must refuse its before-image"
+        );
+        let mut slot = Some(Cursor::initial(&tools.workspace, &tools.capture_policy)?);
+        run(&tools, &mut slot).await?;
+        assert!(!slot.as_ref().unwrap().before_images_complete);
+        // A complete, retained watcher still permits another command despite
+        // the same unavailable display before-image.
+        run(&tools, &mut slot).await?;
+        assert!(!slot.as_ref().unwrap().before_images_complete);
+        let workspace = tools.workspace.view().workspace();
+        let cancellation = CancellationToken::new();
+        assert!(
+            workspace
+                .operation_generation(
+                    acyclic_fs::IdempotencyKey::from_bytes(
+                        baseline_operation(workspace.id()).into_bytes()
+                    ),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await
+                .map_err(storage)?
+                .value
+                .is_none()
+        );
+        slot.as_mut().unwrap().initial = Some(WatchBatch::RescanRequired {
+            epoch: 1,
+            reason: WatchInvalidationReason::QueueOverflow,
+        });
+        // The same unreadable source cannot recover lost continuity or a
+        // discarded watcher. Neither failure may publish a baseline receipt.
+        assert!(run(&tools, &mut slot).await.is_err());
+        assert!(slot.is_none());
+        assert!(run(&tools, &mut slot).await.is_err());
+        assert!(slot.is_none());
+        std::fs::set_permissions(&marker, permissions.clone()).map_err(storage)?;
+        run(&tools, &mut slot).await?;
+        let baseline = workspace
+            .operation_generation(
+                acyclic_fs::IdempotencyKey::from_bytes(
+                    baseline_operation(workspace.id()).into_bytes(),
+                ),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(storage)?
+            .value
+            .expect("complete recovered source import");
+        assert_eq!(
+            baseline
+                .read("/marker", 64, WorkBudget::UNBOUNDED, &cancellation)
+                .await
+                .map_err(storage)?
+                .value
+                .as_ref(),
+            b"before"
+        );
+        Ok(())
+    }
+    .await;
+    std::fs::set_permissions(&marker, permissions).map_err(storage)?;
+    drop(tools);
+    harness.disconnect().await?;
+    outcome
+}
+
+#[tokio::test]
 async fn an_empty_source_retains_its_baseline_before_later_creation() -> Result<()> {
     let (directory, harness, tools) = fixture().await?;
     std::fs::remove_file(directory.path().join("marker")).map_err(storage)?;

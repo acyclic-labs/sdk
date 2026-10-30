@@ -75,8 +75,9 @@ pub(super) fn capture<'a>(
 ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
     crate::conversation::BoundedContentFuture::new(None, || async move {
         let mut initial = cursor.initial.take();
-        let optional_before_images =
-            physical.import_source && matches!(initial, Some(WatchBatch::Changes { .. }));
+        let optional_before_images = physical.import_source
+            && (matches!(initial, Some(WatchBatch::Changes { .. }))
+                || initial.is_none() && cursor.baseline_pending && !cursor.before_images_complete);
         if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {
             require_rescan(reason)?;
         }
