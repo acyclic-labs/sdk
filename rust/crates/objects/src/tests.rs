@@ -1491,6 +1491,8 @@ enum Survivors {
     TornOnly(&'static str),
     /// All, with those matching at full length but zeroed.
     Damaged(&'static str),
+    /// All, with only the first unflushed match at full length but zeroed.
+    DamagedOne(&'static str),
     Only(&'static str),
     AllBut(&'static str),
 }
@@ -1507,14 +1509,16 @@ impl Survivors {
     fn keep(self, key: &str) -> bool {
         match self {
             Self::None => false,
-            Self::All | Self::Torn | Self::TornOnly(_) | Self::Damaged(_) => true,
+            Self::All | Self::Torn | Self::TornOnly(_) | Self::Damaged(_) | Self::DamagedOne(_) => {
+                true
+            }
             Self::Only(fragment) => key.contains(fragment),
             Self::AllBut(fragment) => !key.contains(fragment),
         }
     }
 }
 
-const SURVIVORS: [Survivors; 10] = [
+const SURVIVORS: [Survivors; 12] = [
     Survivors::None,
     Survivors::All,
     Survivors::Torn,
@@ -1523,6 +1527,10 @@ const SURVIVORS: [Survivors; 10] = [
     // A flush syncs directories concurrently with their files' data, so a
     // crash inside it may keep any key's name with none of its bytes.
     Survivors::Damaged("/"),
+    // A batch and its index keys may survive while one member's payload,
+    // or one index key, does not.
+    Survivors::DamagedOne("/p/"),
+    Survivors::DamagedOne("/i/"),
     Survivors::Only("/e/"),
     Survivors::Only("/p/"),
     Survivors::Only("/i/"),
@@ -1595,6 +1603,7 @@ impl Crashing {
         let mut found = disk.durable.clone();
         let keys: std::collections::BTreeSet<_> =
             disk.visible.keys().chain(disk.durable.keys()).collect();
+        let mut damaged_one = false;
         for key in keys {
             if disk.visible.get(key) == disk.durable.get(key) || !survivors.keep(key) {
                 continue;
@@ -1607,6 +1616,14 @@ impl Crashing {
                     if matches!(survivors, Survivors::Damaged(fragment) if key.contains(fragment))
                         && !disk.swapped.contains(key) =>
                 {
+                    found.insert(key.clone(), vec![0; bytes.len()].into())
+                }
+                Some(bytes)
+                    if !damaged_one
+                        && matches!(survivors, Survivors::DamagedOne(fragment) if key.contains(fragment))
+                        && !disk.swapped.contains(key) =>
+                {
+                    damaged_one = true;
                     found.insert(key.clone(), vec![0; bytes.len()].into())
                 }
                 Some(bytes) => found.insert(key.clone(), bytes.clone()),
@@ -1737,9 +1754,11 @@ impl Medium for Crashing {
 /// Puts a child and a parent referencing it and retains the parent; puts
 /// another blob over the child and commits it as a stream entry, flushing
 /// first unless `append_first`; then collects.
+/// `acknowledged` names the root's members once its retain returned.
 async fn commit_scenario(
     medium: &Crashing,
     append_first: bool,
+    acknowledged: &mut Option<[Digest; 2]>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let blobs = Store::new(medium.clone()).account(b"account")?;
     let digest = |put: Put| {
@@ -1750,6 +1769,7 @@ async fn commit_scenario(
     let child = digest(blobs.put(vec![1; 48].into(), Vec::new()).await?)?;
     let parent = digest(blobs.put(vec![2; 48].into(), vec![child]).await?)?;
     blobs.retain(&RootId::new(*b"root")?, vec![parent]).await?;
+    *acknowledged = Some([parent, child]);
     let gone = RootId::new(*b"gone")?;
     blobs.retain(&gone, vec![child]).await?;
     blobs.release(&gone).await?;
@@ -1849,13 +1869,14 @@ async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
             ..Crashing::new(flushes, swaps, budget)
         };
         let whole = configured(None);
-        commit_scenario(&whole, append_first).await?;
+        commit_scenario(&whole, append_first, &mut None).await?;
         let steps = whole.disk.lock().unwrap().operations;
         let mut violations = Vec::new();
         for budget in 0..=steps {
             for survivors in SURVIVORS {
                 let crashed = configured(Some(budget));
-                let _ = commit_scenario(&crashed, append_first).await;
+                let mut acknowledged = None;
+                let _ = commit_scenario(&crashed, append_first, &mut acknowledged).await;
                 let restarted = Crashing::restart(crashed.recover(survivors));
                 let repaired = Store::new(restarted.clone())
                     .account(b"account")?
@@ -1868,10 +1889,25 @@ async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
                     violations.push(format!("crash at {budget}, {survivors:?}: {broken}"));
                     continue;
                 }
+                // Repair keeps every acknowledged root: a collection of the
+                // repaired store leaves its members whole.
+                if let Some(members) = acknowledged {
+                    let blobs = Store::new(Crashing::restart(restarted.recover(Survivors::None)))
+                        .account(b"account")?;
+                    let collected = blobs.collect().await.is_ok();
+                    for member in members {
+                        if !collected || blobs.get(member, ByteRange::FULL, 64).await.is_err() {
+                            violations.push(format!(
+                                "crash at {budget}, {survivors:?}: acknowledged {} lost",
+                                member.to_hex()
+                            ));
+                        }
+                    }
+                }
                 if correct {
                     // The repaired store commits again.
                     let restarted = Crashing::restart(disk);
-                    commit_scenario(&restarted, false)
+                    commit_scenario(&restarted, false, &mut None)
                         .await
                         .map_err(|error| format!("crash at {budget}, {survivors:?}: {error}"))?;
                     committed_blobs_are_whole(&restarted.recover(Survivors::None))?;
@@ -1948,7 +1984,9 @@ async fn a_crash_inside_a_put_leaves_no_blob_until_a_reput_completes_it()
         let mut violations = Vec::new();
         for budget in 0..=steps {
             for survivors in SURVIVORS {
-                if short_reads && matches!(survivors, Survivors::Damaged(_)) {
+                if short_reads
+                    && matches!(survivors, Survivors::Damaged(_) | Survivors::DamagedOne(_))
+                {
                     // That control injects a torn payload only.
                     continue;
                 }
