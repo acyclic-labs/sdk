@@ -170,3 +170,15 @@ test("a caller IO error cannot substitute for the selected process completion ev
     assert.equal(scope.children.size, 0);
   } finally { await scope.close(); }
 });
+
+test("closing the original scope joins its in-flight native pipe admission", { skip: process.platform !== "win32", timeout: 5000 }, async () => {
+  const scope = new Processes();
+  let settled = false;
+  const admission = scope.startReported(process.execPath, ["--version"]);
+  const rejected = assert.rejects(admission, /scope is closed/).then(() => { settled = true; });
+  try {
+    await scope.close();
+    assert.equal(scope.started, 0, "closing cannot admit a later process");
+    assert.equal(settled, true, "scope closure must join the original pending admission");
+  } finally { await rejected; await scope.close(); }
+});

@@ -28,6 +28,7 @@ export class Processes {
   #transcripts;
   #closing;
   #onReport;
+  #admissions = new Set();
   constructor({ transcripts, onReport } = {}) { this.#transcripts = transcripts; this.#onReport = onReport; }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
@@ -36,7 +37,14 @@ export class Processes {
     }
     return this.#start(program, args, options);
   }
-  async startReported(program, args, options = {}) {
+  startReported(program, args, options = {}) {
+    const admission = this.#startReported(program, args, options);
+    this.#admissions.add(admission);
+    const settled = () => this.#admissions.delete(admission);
+    admission.then(settled, settled);
+    return admission;
+  }
+  async #startReported(program, args, options) {
     if (process.platform !== "win32") return this.start(program, args, { ...options, scopeReport: true });
     const report = new ProcessReport();
     const endpoint = await listenReportPipe(report.generation);
@@ -157,6 +165,7 @@ export class Processes {
   }
   async #close() {
     this.stopping = true;
+    await Promise.allSettled(this.#admissions);
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
     let observationError;
