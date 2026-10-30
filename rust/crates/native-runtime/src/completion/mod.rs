@@ -120,7 +120,7 @@ impl<T> NativeCompletion<T> {
         let meter =
             measured_completion_meter(self.state.as_ref().ok_or(io::ErrorKind::InvalidInput)?)?;
         if self.prepared_wake.is_none() {
-            self.prepared_wake = Some(allocate_blocking_wait_wake(&meter)?);
+            self.prepared_wake = Some(crate::blocking::allocate_blocking_wait_wake(&meter)?);
         }
         let wake = self.prepared_wake.clone();
         let mut cancellation = std::pin::pin!(cancellation);
