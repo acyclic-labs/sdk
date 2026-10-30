@@ -38,7 +38,14 @@ operations produce 22 request/response payloads awaiting capture, for 44 inputs
 across the two protobuf syntaxes. Accepted Stream projections use
 their actual reverse codec and preserve the complete semantic value, including
 record origins under explicit, matching and foreign follow contexts. Accepted
-Inference views must refuse a changed caller-selected identity. The one
+Inference views must refuse a changed caller-selected identity. Generated Run
+views additionally bind the original input context and refuse a missing or
+changed context. Warm responses also reach retention and renewal admission for
+absolute and idle policies: malformed related messages, absent request identity,
+foreign context/commitment and changed expiry/timeout must refuse. Six additional
+writer producers require positive pair admission before capture (12 binary/JSON
+inputs). Normalization comparisons respect the transport byte ceiling for both
+encodings. The one
 round-trip helper also serves Auth; no service codec is reimplemented here.
 Run views also reach both public watch-start projections. Run events exercise
 the actual watch state: admission advances it atomically, refused gaps,

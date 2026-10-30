@@ -3,6 +3,7 @@ use prost::Message;
 use std::fmt::Debug;
 mod actors;
 mod objects;
+mod warm;
 
 pub(super) fn project<W, S, E>(
     bytes: &[u8],
@@ -38,13 +39,43 @@ fn inference<W: Message + Default>(bytes: &[u8], kind: &str, identity: impl FnOn
     };
     let expected = identity(&wire);
     if validate_customer_wire(kind, bytes, expected, &[]).is_ok() {
-        assert!(validate_customer_wire(kind, &wire.encode_to_vec(), expected, &[]).is_ok());
+        let canonical = wire.encode_to_vec();
+        // Equivalent protobuf encodings can have different widths. Semantic
+        // agreement applies only while both fit the transport's domain.
+        if canonical.len() <= acyclic_inference::MAXIMUM_MESSAGE_BYTES {
+            assert!(validate_customer_wire(kind, &canonical, expected, &[]).is_ok());
+        }
         // A view is never transferable to a different caller-selected identity.
         if !expected.is_empty() {
             let mut foreign = expected.to_vec();
             foreign[0] ^= 1;
             assert!(validate_customer_wire(kind, bytes, &foreign, &[]).is_err());
         }
+    }
+}
+
+fn generated_run(bytes: &[u8]) {
+    use acyclic_inference::{validate_customer_wire, wire};
+    let Ok(view) = wire::RunView::decode(bytes) else {
+        return;
+    };
+    if validate_customer_wire("generated_run_view", bytes, &view.run_id, &view.input).is_ok() {
+        let canonical = view.encode_to_vec();
+        if canonical.len() <= acyclic_inference::MAXIMUM_MESSAGE_BYTES {
+            assert!(
+                validate_customer_wire("generated_run_view", &canonical, &view.run_id, &view.input)
+                    .is_ok()
+            );
+        }
+        // A generated result must answer the caller's original input context.
+        let mut foreign = view.input.clone();
+        *foreign
+            .first_mut()
+            .expect("admission requires a 32-byte context") ^= 1;
+        assert!(
+            validate_customer_wire("generated_run_view", bytes, &view.run_id, &foreign).is_err()
+        );
+        assert!(validate_customer_wire("generated_run_view", bytes, &view.run_id, &[]).is_err());
     }
 }
 
@@ -269,6 +300,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             });
         }
         "inference.customer.v1.WarmView" => {
+            warm::check(bytes);
             inference::<acyclic_inference::wire::WarmView>(bytes, "warm_view", |_| &[]);
             inference::<acyclic_inference::wire::WarmView>(bytes, "warm_commitment", |wire| {
                 &wire.commitment
@@ -276,6 +308,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         "inference.customer.v1.RunView" => {
             inference::<acyclic_inference::wire::RunView>(bytes, "run_view", |wire| &wire.run_id);
+            generated_run(bytes);
             watch_view(bytes);
         }
         "inference.customer.v1.EvaluationSpec" => {
@@ -323,11 +356,16 @@ pub(super) fn seeds(
         }
         seeds.push((message, "semantic", bytes.clone()));
     }
-    seeds.push((
-        "inference.customer.v1.RunView",
-        "watch-pending",
-        pending_run().encode_to_vec(),
-    ));
+    let pending = pending_run();
+    let encoded = pending.encode_to_vec();
+    acyclic_inference::validate_customer_wire(
+        "generated_run_view",
+        &encoded,
+        &pending.run_id,
+        &pending.input,
+    )
+    .map_err(|error| format!("pending RunView seed admission failed: {error}; recovery: review semantic::pending_run, then run cargo run --example capture"))?;
+    seeds.push(("inference.customer.v1.RunView", "watch-pending", encoded));
     use acyclic_inference::wire as i;
     for (name, sequence, event) in [
         (
@@ -360,5 +398,6 @@ pub(super) fn seeds(
     }
     seeds.extend(actors::seeds()?);
     seeds.extend(objects::seeds()?);
+    seeds.extend(warm::seeds()?);
     Ok(seeds)
 }
