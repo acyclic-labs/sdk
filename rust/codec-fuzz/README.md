@@ -242,3 +242,9 @@ changed original content refuse. Trailing content with a fresh hash and
 old/unknown outer-version headers also refuse. These controls establish codec
 properties only; projected preparation is neither fresh closure proof nor
 native custody. Actual preparation capture and execution remain pending.
+
+The Auth target also calls the resource component codec shared with grants:
+arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
+incomplete escape refuses, and an opaque Objects key retains its separators.
+Resource/action grammar validators receive arbitrary UTF-8 input. Two actual
+SDK writer producers and a bounded component proof await capture/execution.

@@ -1,5 +1,32 @@
 //! Bounded proofs call the owning types' actual codecs, including seal custody.
 #[cfg(kani)]
+mod resource_component {
+    #[kani::proof]
+    #[kani::unwind(32)]
+    fn bounded_resource_components_are_lossless_and_have_one_spelling() {
+        use acyclic_auth::{decode_component, encode_component};
+        let bytes: [u8; 4] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let mut encoded = encode_component(&bytes[..length]);
+        assert_eq!(decode_component(&encoded).unwrap(), &bytes[..length]);
+        encoded.push('%');
+        assert!(matches!(
+            decode_component(&encoded),
+            Err(acyclic_auth::Error::Invalid)
+        ));
+        let input: [u8; 12] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= input.len());
+        if let Ok(text) = std::str::from_utf8(&input[..length])
+            && let Ok(decoded) = decode_component(text)
+        {
+            assert_eq!(encode_component(&decoded), text);
+        }
+    }
+}
+
+#[cfg(kani)]
 mod journal_prefix {
     #[kani::proof]
     #[kani::unwind(9)]
