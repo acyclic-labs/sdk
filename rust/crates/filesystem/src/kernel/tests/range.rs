@@ -40,13 +40,11 @@ async fn range_reads_only_intersecting_leaf_pages() -> Result<(), Box<dyn std::e
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 100,
+                first: 0,
                 page: first,
             },
             ExtentChild {
-                first_offset: 100,
-                end_offset: 200,
+                first: 100,
                 page: second,
             },
         ]),
@@ -195,13 +193,11 @@ async fn range_plan_exposes_nearest_authenticated_unvisited_page()
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 100,
+                first: 0,
                 page: first,
             },
             ExtentChild {
-                first_offset: 100,
-                end_offset: 200,
+                first: 100,
                 page: second,
             },
         ]),
@@ -285,18 +281,15 @@ async fn sparse_seek_traverses_each_forward_frontier_once() -> Result<(), Box<dy
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 100,
+                first: 0,
                 page: first,
             },
             ExtentChild {
-                first_offset: 100,
-                end_offset: 200,
+                first: 100,
                 page: second,
             },
             ExtentChild {
-                first_offset: 200,
-                end_offset: 300,
+                first: 200,
                 page: third,
             },
         ]),
@@ -791,8 +784,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
     let nested = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 1,
+            first: 0,
             page: leaf,
         }]),
         16,
@@ -801,8 +793,7 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
     let root = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 2,
+            first: 0,
             page: nested,
         }]),
         16,
@@ -833,7 +824,9 @@ async fn nested_extent_pages_reject_forged_parent_bounds() -> Result<(), Box<dyn
         failure.error,
         ExtentReadError::ChildBoundsMismatch
     ));
-    assert_eq!(failure.work.page_reads, 2);
+    // Children carry no end of their own: the leaf under the forged
+    // parent is what disagrees.
+    assert_eq!(failure.work.page_reads, 3);
     Ok(())
 }
 
@@ -854,8 +847,7 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
     let one_child = put_page(
         &store,
         &ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 2,
+            first: 0,
             page: leaf,
         }]),
         16,
@@ -904,13 +896,11 @@ async fn authenticated_range_traversal_rejects_height_alias_and_child_bound_forg
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 1,
+                first: 0,
                 page: leaf,
             },
             ExtentChild {
-                first_offset: 1,
-                end_offset: 2,
+                first: 1,
                 page: leaf,
             },
         ]),

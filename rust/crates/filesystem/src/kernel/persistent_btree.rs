@@ -20,12 +20,14 @@ use std::ops::Range;
 mod support;
 pub use support::Child;
 #[cfg(test)]
+use support::PageChunks;
+#[cfg(test)]
 pub(crate) use support::TARGET_PAGE_BYTES;
 pub(crate) use support::{
-    Error, Format, Mutation, Page, PageChunks, PageRef, children_within, leaf_within, stable_hash,
+    Error, Format, Mutation, Page, PageRef, children_within, leaf_within, stable_hash,
 };
 use support::{
-    PAGE_HEADER_BYTES, PAGE_WRITE, append_owned, push_summary, push_value, sort_indexed,
+    PAGE_HEADER_BYTES, PAGE_WRITE, append_owned, push_summary, push_value, reaches, sort_indexed,
     storage_error, validate,
 };
 
@@ -555,8 +557,6 @@ where
                 ) {
                     return Err(Self::error(Error::ChildBoundsMismatch));
                 }
-                request.lower.retire(self.accounting)?;
-                request.upper.retire(self.accounting)?;
                 // A balanced tree holds every leaf at one depth.
                 if *self.leaf_depth.get_or_insert(request.height) != request.height {
                     return Err(Self::error(Error::MutationContract));
@@ -564,16 +564,19 @@ where
                 let selected = mutations
                     .get(request.mutations)
                     .ok_or_else(|| Self::error(Error::MutationContract))?;
-                Ok(EnteredNode::Complete(
-                    self.rewrite_leaf(
+                let result = self
+                    .rewrite_leaf(
                         request.page,
                         entries,
                         selected,
+                        (request.lower.value.as_ref(), request.upper.value.as_ref()),
                         request.rightmost,
                         request.revisit_tail,
                     )
-                    .await?,
-                ))
+                    .await?;
+                request.lower.retire(self.accounting)?;
+                request.upper.retire(self.accounting)?;
+                Ok(EnteredNode::Complete(result))
             }
             Page::Internal(children) => {
                 let children = Owned::new(children, allocation, bytes);
@@ -610,6 +613,13 @@ where
         frame: &mut InternalFrame<F>,
         mutations: &[(usize, &M)],
     ) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
+        let remaining = frame.selection.remaining();
+        let removed = remaining
+            .end
+            .checked_sub(1)
+            .filter(|last| *last >= remaining.start)
+            .and_then(|last| mutations.get(last))
+            .and_then(|(_, mutation)| mutation.removes_from());
         while let Some(selected) = frame.selection.select(
             &frame.children.value,
             |index| {
@@ -618,6 +628,13 @@ where
                     .map(|(_, mutation)| mutation.key())
                     .ok_or_else(|| Self::error(Error::MutationContract))
             },
+            |index, upper| {
+                mutations
+                    .get(index)
+                    .map(|(_, mutation)| reaches(mutation.last(), upper))
+                    .ok_or_else(|| Self::error(Error::MutationContract))
+            },
+            removed,
             || self.charge_items(1),
         )? {
             let child = selected.child;
@@ -646,7 +663,10 @@ where
                 revisit_tail,
                 height: child_depth,
                 leftmost: frame.leftmost && selected.index == 0,
-                rightmost: frame.rightmost && selected.index + 1 == frame.children.value.len(),
+                rightmost: frame.rightmost
+                    && selected
+                        .upper
+                        .is_none_or(|upper| removed.is_some_and(|removed| upper >= removed)),
             }));
         }
         Ok(None)
@@ -755,11 +775,28 @@ where
         original: ObjectId,
         mut entries: Owned<Vec<F::Value>>,
         mutations: &[(usize, &M)],
+        (lower, upper): (Option<&F::Key>, Option<&F::Key>),
         rightmost: bool,
         revisit_tail: bool,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let mut changed;
-        if mutations
+        // A ranged mutation reaching the next leaf may join items across the
+        // boundary, so this leaf's items carry right into it, closed or not.
+        if M::RANGED {
+            let empty = Owned::allocate(0, self.accounting)?;
+            let carried = std::mem::replace(&mut self.carry_values, empty);
+            let rewritten = self.apply_range_mutations(
+                &carried.value,
+                &entries.value,
+                mutations,
+                lower,
+                upper,
+            )?;
+            changed = !carried.value.is_empty() || rewritten.value != entries.value;
+            carried.retire(self.accounting)?;
+            entries.retire(self.accounting)?;
+            entries = rewritten;
+        } else if mutations
             .iter()
             .all(|(_, mutation)| !mutation.changes_cardinality())
         {
@@ -800,6 +837,38 @@ where
         };
         entries.retire(self.accounting)?;
         Ok(result)
+    }
+
+    fn apply_range_mutations(
+        &mut self,
+        carried: &[F::Value],
+        entries: &[F::Value],
+        mutations: &[(usize, &M)],
+        lower: Option<&F::Key>,
+        upper: Option<&F::Key>,
+    ) -> Result<Owned<Vec<F::Value>>, crate::FsError> {
+        let capacity = mutations
+            .len()
+            .checked_mul(3)
+            .and_then(|room| room.checked_add(carried.len()))
+            .and_then(|room| room.checked_add(entries.len()))
+            .ok_or_else(|| Self::error(Error::AllocationFailed))?;
+        let mut output = Owned::allocate(capacity, self.accounting)?;
+        let room = output.value.capacity();
+        M::rewrite_range(
+            carried,
+            entries,
+            mutations,
+            lower,
+            upper,
+            &mut output.value,
+            self.accounting,
+        )?;
+        // The rewrite stays inside its admitted room.
+        if output.value.capacity() != room {
+            return Err(Self::error(Error::MutationContract));
+        }
+        Ok(output)
     }
 
     fn apply_mutation(
@@ -891,7 +960,7 @@ where
             entries,
             0,
             close || local_rewrite(),
-            hold_last && !local_rewrite(),
+            (hold_last || (!close && M::RANGED)) && !local_rewrite(),
         )
         .await
     }
@@ -1054,9 +1123,17 @@ where
         }
     }
 
+    /// Whether this operation read `object`. A rewritten page whose bytes
+    /// equal a page already read is that page, already stored: re-chunking
+    /// has resynchronised with the old boundaries, so nothing is written.
+    fn read_this_operation(&mut self, object: ObjectId) -> Result<bool, crate::FsError> {
+        self.visited
+            .value
+            .contains_with_accounting(object, self.accounting)
+    }
+
     async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, crate::FsError> {
         self.accounting.check()?;
-        self.accounting.admit(PAGE_WRITE)?;
         let encoded_length = F::page_encoded_length(page, self.limits.maximum_page_items)?;
         if usize_to_u64(encoded_length) > self.limits.maximum_object_bytes {
             return Err(Self::error(Error::PageItemTooLarge));
@@ -1089,6 +1166,10 @@ where
             )
             .await?;
             let object = hashed.object_id();
+            if self.read_this_operation(object)? {
+                self.last_written = Some(object);
+                return Ok(object);
+            }
             self.accounting.charge(PAGE_WRITE)?;
             {
                 let mut work = crate::AuthorityWork::native(work, self.cancellation);
@@ -1114,6 +1195,11 @@ where
         .await?;
         let object = hashed.object_id();
         self.accounting.charge(hashing)?;
+        if self.read_this_operation(object)? {
+            encoded.retire(self.accounting)?;
+            self.last_written = Some(object);
+            return Ok(object);
+        }
         self.accounting.charge(PAGE_WRITE)?;
         let remaining = self.accounting.remaining()?;
         let res = {

@@ -1,11 +1,12 @@
 //! Sparse persistent extent mutation without file-body materialization.
 
-use super::allocation::{AllocationError, KernelAccounting, VisitedObjectSet};
-#[cfg(test)]
-use super::extent::extent_page_encoded_length;
+use super::allocation::{AllocationError, KernelAccounting, KernelOwnedAllocation};
+use super::codec::DecodedPageShape;
+use super::persistent_btree::{self, Format, Page, PageRef};
 use super::persistent_point::{Owned, retire_allocation};
-use super::search::{binary_search_with_accounting, partition_point_with_accounting};
-use super::{CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage};
+use super::search::binary_search_with_accounting;
+use super::types::ExtentItems;
+use super::{CanonicalDecodeError, DecodeLimits, Extent, ExtentKind, ExtentPage};
 use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -47,30 +48,6 @@ struct CompiledPatchPlan {
     final_size: u64,
 }
 
-struct NodeRequest {
-    page: ObjectId,
-    original_first: u64,
-    original_end: u64,
-    output_end: u64,
-    height: u16,
-}
-
-struct InternalFrame {
-    original: ObjectId,
-    children: Owned<Vec<ExtentChild>>,
-    original_first: u64,
-    original_end: u64,
-    output_end: u64,
-    height: u16,
-    next_child: usize,
-    rewritten: Owned<Vec<ExtentChild>>,
-}
-
-enum EnteredNode {
-    Complete(Owned<Vec<ExtentChild>>),
-    Internal(InternalFrame),
-}
-
 /// New extent root, logical size, and exact path-copy evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExtentMutationReceipt {
@@ -85,17 +62,7 @@ pub struct ExtentMutationReceipt {
 /// Extent mutation failure retaining spent work and safe orphan writes.
 pub type ExtentMutationFailure = OperationFailure<ExtentMutationError>;
 
-struct Context<'a, 'b, S> {
-    store: &'a S,
-    limits: DecodeLimits,
-    accounting: &'a mut KernelAccounting<'b>,
-    visited: Owned<VisitedObjectSet>,
-    patches: Owned<Vec<Patch>>,
-    maximum_seen_height: u16,
-    cancellation: &'a CancellationToken,
-}
-
-/// Applies ordered extent mutations by rewriting only intersecting frontiers.
+/// Applies ordered extent mutations on the shared B+tree engine.
 #[allow(
     clippy::too_many_arguments,
     reason = "Store, bounds, accounting and cancellation are independent inputs to this operation."
@@ -141,33 +108,54 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
     validate_request(root, mutations, maximum_mutations, limits).map_err(extent_error)?;
     let plan = compile_patch_plan(old_logical_bytes, mutations, accounting)?;
     let final_size = plan.final_size;
-    let maximum = usize::try_from(limits.maximum_visited_pages)
-        .map_err(|_| extent_error(ExtentMutationError::InvalidLimits))?;
-    let visited = VisitedObjectSet::new_with_accounting(maximum, accounting)?;
-    let mut context = Context {
-        store,
-        limits,
+    let truncated = final_size < old_logical_bytes;
+    let mut edits = Owned::<Vec<ExtentEdit>>::allocate(
+        plan.patches
+            .value
+            .len()
+            .checked_add(usize::from(truncated))
+            .ok_or(WorkError::Overflow)?,
         accounting,
-        visited,
-        patches: plan.patches,
-        maximum_seen_height: 0,
-        cancellation,
-    };
-    let result = async {
-        let summaries = context
-            .rewrite(root, 0, old_logical_bytes, final_size)
-            .await?;
-        context.finish_root(summaries).await
+    )?;
+    for patch in &plan.patches.value {
+        edits.value.push(ExtentEdit {
+            route: patch.offset.saturating_sub(1),
+            change: Change::Write(patch.clone()),
+        });
     }
-    .await;
-    let Context {
-        visited,
-        patches,
-        accounting,
-        ..
-    } = context;
-    visited.retire(accounting)?;
-    patches.retire(accounting)?;
+    if truncated {
+        edits.value.push(ExtentEdit {
+            route: final_size.saturating_sub(1),
+            change: Change::Truncate(final_size),
+        });
+    }
+    plan.patches.retire(accounting)?;
+    let result = if edits.value.is_empty() {
+        Ok(root)
+    } else if final_size == 0 {
+        // Nothing survives, so no old page needs reading.
+        put_extent_page_with_accounting(
+            store,
+            &ExtentPage::Leaf(Vec::new()),
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await
+    } else {
+        persistent_btree::apply_with_accounting::<S, ExtentFormat, ExtentEdit>(
+            store,
+            root,
+            &edits.value,
+            u32::MAX,
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await
+        .map(|receipt| receipt.value)
+    };
+    edits.retire(accounting)?;
     Ok(ExtentMutationReceipt {
         root: result?,
         logical_bytes: final_size,
@@ -318,30 +306,332 @@ fn validate_kind(kind: &ExtentKind, length: u64) -> Result<(), ExtentMutationErr
     Ok(())
 }
 
-fn extent_leaf_item_length(extent: &Extent) -> Result<usize, CanonicalDecodeError> {
-    Ok(match extent.kind {
-        ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
-        ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
+/// The shared engine's view of extent pages: leaves keyed by offset.
+pub(crate) struct ExtentFormat;
+
+impl acyclic_collections::page::Format for ExtentFormat {
+    type Key = u64;
+    type Value = Extent;
+    type Reference = ObjectId;
+    fn key(value: &Extent) -> &u64 {
+        &value.offset
+    }
+}
+
+impl Format for ExtentFormat {
+    fn kind() -> ObjectKind {
+        ObjectKind::ExtentPage
+    }
+
+    fn key_hash(key: &u64) -> u64 {
+        persistent_btree::stable_hash(&key.to_le_bytes())
+    }
+
+    fn decode<E: From<CanonicalDecodeError>>(
+        bytes: &[u8],
+        limits: DecodeLimits,
+        observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Page<Self>, E> {
+        Ok(
+            match super::extent::decode_extent_page(bytes, limits, observe)? {
+                ExtentPage::Leaf(extents) => Page::Leaf(extents),
+                ExtentPage::Internal(children) => Page::Internal(children),
+            },
+        )
+    }
+
+    fn decode_shape(
+        bytes: &[u8],
+        limits: DecodeLimits,
+    ) -> Result<DecodedPageShape, CanonicalDecodeError> {
+        super::extent::decode_extent_page_shape(bytes, limits)
+    }
+
+    fn encode_with_accounting(
+        page: &PageRef<'_, Self>,
+        maximum_items: u32,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(Vec<u8>, KernelOwnedAllocation), FsError> {
+        let items = match page {
+            PageRef::Leaf(extents) => ExtentItems::Leaf(extents),
+            PageRef::Internal(children) => ExtentItems::Internal(children),
+        };
+        super::codec::encode_owned(accounting, |observe, reserve_error| {
+            super::extent::encode_extent_items(items, maximum_items, observe, reserve_error)
+        })
+    }
+
+    fn leaf_item_encoded_length(value: &Extent) -> Result<usize, CanonicalDecodeError> {
+        Ok(super::extent::extent_encoded_length(value))
+    }
+
+    fn internal_item_encoded_length(
+        _key: &u64,
+        page: ObjectId,
+    ) -> Result<usize, CanonicalDecodeError> {
+        Ok(super::extent::extent_child_encoded_length(page))
+    }
+
+    fn key_nested_bytes(_key: &u64) -> u64 {
+        0
+    }
+
+    fn value_nested_bytes(_value: &Extent) -> u64 {
+        0
+    }
+
+    fn key_owned_bytes(_key: &u64) -> u64 {
+        0
+    }
+
+    fn value_owned_bytes(_value: &Extent) -> u64 {
+        0
+    }
+
+    fn try_clone_key<E: From<CanonicalDecodeError>>(
+        key: &u64,
+        _maximum_bytes: u32,
+        _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<u64, E> {
+        Ok(*key)
+    }
+
+    fn try_clone_value<E: From<CanonicalDecodeError>>(
+        value: &Extent,
+        _maximum_bytes: u32,
+        _steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Extent, E> {
+        Ok(value.clone())
+    }
+}
+
+/// One normalized range edit, routed from the byte before it so that the
+/// extent it may join on the left is rewritten with it.
+pub(crate) struct ExtentEdit {
+    route: u64,
+    change: Change,
+}
+
+enum Change {
+    /// Replaces `[offset, end)`, reaching the extent at `end` it may join.
+    Write(Patch),
+    /// Removes every byte at or after this logical length.
+    Truncate(u64),
+}
+
+impl persistent_btree::Mutation<ExtentFormat> for ExtentEdit {
+    type Error = ExtentMutationError;
+
+    const RANGED: bool = true;
+
+    fn key(&self) -> &u64 {
+        &self.route
+    }
+
+    fn last(&self) -> Option<&u64> {
+        match &self.change {
+            Change::Write(patch) => Some(&patch.end),
+            Change::Truncate(_) => None,
+        }
+    }
+
+    fn removes_from(&self) -> Option<&u64> {
+        match &self.change {
+            Change::Write(_) => None,
+            Change::Truncate(size) => Some(size),
+        }
+    }
+
+    fn changes_cardinality(&self) -> bool {
+        true
+    }
+
+    fn replacement<'a>(
+        &'a self,
+        _current: Option<&Extent>,
+    ) -> Result<Option<&'a Extent>, Self::Error> {
+        Err(ExtentMutationError::PatchInvariant)
+    }
+
+    fn map_error(error: persistent_btree::Error<Self::Error>) -> FsError {
+        use persistent_btree::Error;
+        extent_error(match error {
+            Error::Empty => ExtentMutationError::Empty,
+            Error::TooManyMutations => ExtentMutationError::TooManyMutations,
+            Error::WrongRootKind => ExtentMutationError::WrongRootKind,
+            Error::InvalidLimits => ExtentMutationError::InvalidLimits,
+            Error::PageItemTooLarge => ExtentMutationError::PageItemTooLarge,
+            Error::HeightExceeded => ExtentMutationError::HeightExceeded,
+            Error::CycleOrAlias => ExtentMutationError::CycleOrAlias,
+            Error::ChildBoundsMismatch => ExtentMutationError::ChildBoundsMismatch,
+            Error::MutationContract => ExtentMutationError::PatchInvariant,
+            Error::AllocationFailed => ExtentMutationError::AllocationFailed,
+            Error::Allocation(error) => return extent_allocation_error(error),
+            Error::Work(error) => return error.into(),
+            Error::Semantic(error) => error,
+            Error::Storage(error) => error.into(),
+            Error::Decode(error) => error.into(),
+        })
+    }
+
+    fn rewrite_range(
+        carried: &[Extent],
+        entries: &[Extent],
+        edits: &[(usize, &Self)],
+        lower: Option<&u64>,
+        upper: Option<&u64>,
+        output: &mut Vec<Extent>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let first = lower.copied().unwrap_or(0);
+        let end = match (entries.first(), entries.last()) {
+            (Some(head), Some(tail)) => {
+                let end = extent_end(tail).map_err(extent_error)?;
+                if head.offset != first || upper.is_some_and(|upper| *upper != end) {
+                    return Err(extent_error(ExtentMutationError::ChildBoundsMismatch));
+                }
+                end
+            }
+            _ if lower.is_some() || upper.is_some() => {
+                return Err(extent_error(ExtentMutationError::ChildBoundsMismatch));
+            }
+            _ => first,
+        };
+        for extent in carried {
+            charge_items(accounting, 1)?;
+            push_joined(output, extent.clone()).map_err(extent_error)?;
+        }
+        let mut next_edit = 0;
+        let mut write = next_write(edits, &mut next_edit, first, upper.copied(), accounting)?;
+        for extent in entries {
+            charge_items(accounting, 1)?;
+            let extent_end = extent_end(extent).map_err(extent_error)?;
+            let mut cursor = extent.offset;
+            while cursor < extent_end {
+                charge_items(accounting, 1)?;
+                while write.is_some_and(|patch| patch.end <= cursor) {
+                    write = next_write(edits, &mut next_edit, first, upper.copied(), accounting)?;
+                }
+                let piece_end = match write {
+                    Some(patch) if patch.offset <= cursor => {
+                        let piece_end = patch.end.min(extent_end);
+                        push_joined(
+                            output,
+                            piece(&patch.kind, patch.offset, cursor, piece_end)
+                                .map_err(extent_error)?,
+                        )
+                        .map_err(extent_error)?;
+                        cursor = piece_end;
+                        continue;
+                    }
+                    Some(patch) if patch.offset < extent_end => patch.offset,
+                    _ => extent_end,
+                };
+                push_joined(
+                    output,
+                    piece(&extent.kind, extent.offset, cursor, piece_end).map_err(extent_error)?,
+                )
+                .map_err(extent_error)?;
+                cursor = piece_end;
+            }
+        }
+        // Only the last leaf grows; the patch plan leaves no gap past its end.
+        if upper.is_none() {
+            let mut cursor = end;
+            while let Some(patch) = write {
+                charge_items(accounting, 1)?;
+                write = next_write(edits, &mut next_edit, first, upper.copied(), accounting)?;
+                if patch.end <= cursor {
+                    continue;
+                }
+                if patch.offset > cursor {
+                    return Err(extent_error(ExtentMutationError::PatchInvariant));
+                }
+                push_joined(
+                    output,
+                    piece(&patch.kind, patch.offset, cursor, patch.end).map_err(extent_error)?,
+                )
+                .map_err(extent_error)?;
+                cursor = patch.end;
+            }
+        }
+        for (_, edit) in edits {
+            charge_items(accounting, 1)?;
+            if let Change::Truncate(size) = edit.change {
+                charge_items(accounting, 1)?;
+                while output.last().is_some_and(|extent| extent.offset >= size) {
+                    charge_items(accounting, 1)?;
+                    output.pop();
+                }
+                if let Some(last) = output.last_mut()
+                    && extent_end(last).map_err(extent_error)? > size
+                {
+                    last.length = size - last.offset;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Advances the original sorted edit slice, admitting each inspection before it
+/// can be filtered or projected. No per-leaf patch container is allocated.
+fn next_write<'a>(
+    edits: &[(usize, &'a ExtentEdit)],
+    next: &mut usize,
+    first: u64,
+    upper: Option<u64>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<Option<&'a Patch>, FsError> {
+    while let Some((_, edit)) = edits.get(*next) {
+        charge_items(accounting, 1)?;
+        *next += 1;
+        if let Change::Write(patch) = &edit.change
+            && patch.end > first
+            && upper.is_none_or(|upper| patch.offset < upper)
+        {
+            return Ok(Some(patch));
+        }
+    }
+    Ok(None)
+}
+
+/// The part `[start, end)` of a run of `kind` that begins at `base`.
+fn piece(
+    kind: &ExtentKind,
+    base: u64,
+    start: u64,
+    end: u64,
+) -> Result<Extent, ExtentMutationError> {
+    Ok(Extent {
+        offset: start,
+        length: end - start,
+        kind: offset_kind(kind, start - base)?,
     })
 }
 
-fn extent_internal_item_length(child: &ExtentChild) -> Result<usize, CanonicalDecodeError> {
-    Ok(8 + 8 + child.page.encoded_len())
+/// Appends `extent`, joining it to the last extent when it continues it, so
+/// the extent list stays maximal and therefore canonical. Never grows past
+/// the room the caller admitted.
+pub(super) fn push_joined(
+    output: &mut Vec<Extent>,
+    extent: Extent,
+) -> Result<(), ExtentMutationError> {
+    if let Some(previous) = output.last_mut()
+        && equivalent_continuation(previous, &extent)?
+    {
+        previous.length = previous
+            .length
+            .checked_add(extent.length)
+            .ok_or(ExtentMutationError::RangeOverflow)?;
+        return Ok(());
+    }
+    if output.len() == output.capacity() {
+        return Err(ExtentMutationError::PatchInvariant);
+    }
+    output.push(extent);
+    Ok(())
 }
-
-fn offset_hash(offset: u64) -> u64 {
-    super::persistent_btree::stable_hash(&offset.to_le_bytes())
-}
-
-/// The shared chunker can refuse only invalid limits or an encoder contract.
-fn chunk_error(error: super::persistent_btree::Error<ExtentMutationError>) -> FsError {
-    extent_error(match error {
-        super::persistent_btree::Error::Decode(error) => error.into(),
-        _ => ExtentMutationError::InvalidLimits,
-    })
-}
-
-mod context;
 
 pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
     store: &S,
@@ -457,117 +747,6 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
     Ok(object)
 }
 
-fn clip_and_grow(
-    extents: &[Extent],
-    output_end: u64,
-    original_end: u64,
-    result: &mut Vec<Extent>,
-) -> Result<(), ExtentMutationError> {
-    for mut extent in extents.iter().cloned() {
-        if extent.offset >= output_end {
-            break;
-        }
-        let end = extent_end(&extent)?.min(output_end);
-        extent.length = end - extent.offset;
-        result.push(extent);
-    }
-    if output_end > original_end {
-        result.push(Extent {
-            offset: original_end,
-            length: output_end - original_end,
-            kind: ExtentKind::Hole,
-        });
-    }
-    Ok(())
-}
-
-fn apply_patches_linear(
-    extents: &[Extent],
-    patches: &[Patch],
-    result: &mut Vec<Extent>,
-) -> Result<u64, ExtentMutationError> {
-    let mut patch_index = 0;
-    let mut examined = 0_u64;
-    for extent in extents {
-        examined = examined.saturating_add(1);
-        let extent_end = extent_end(extent)?;
-        let mut cursor = extent.offset;
-        while patches
-            .get(patch_index)
-            .is_some_and(|patch| patch.end <= cursor)
-        {
-            patch_index += 1;
-            examined = examined.saturating_add(1);
-        }
-        while let Some(patch) = patches.get(patch_index) {
-            examined = examined.saturating_add(1);
-            if patch.offset >= extent_end {
-                break;
-            }
-            if cursor < patch.offset {
-                let unchanged_end = patch.offset.min(extent_end);
-                result.push(Extent {
-                    offset: cursor,
-                    length: unchanged_end - cursor,
-                    kind: offset_kind(&extent.kind, cursor - extent.offset)?,
-                });
-                cursor = unchanged_end;
-            }
-            let replacement_start = cursor.max(patch.offset);
-            let replacement_end = extent_end.min(patch.end);
-            if replacement_start < replacement_end {
-                result.push(Extent {
-                    offset: replacement_start,
-                    length: replacement_end - replacement_start,
-                    kind: offset_kind(&patch.kind, replacement_start - patch.offset)?,
-                });
-                cursor = replacement_end;
-            }
-            if patch.end <= cursor {
-                patch_index += 1;
-            } else {
-                break;
-            }
-        }
-        if cursor < extent_end {
-            result.push(Extent {
-                offset: cursor,
-                length: extent_end - cursor,
-                kind: offset_kind(&extent.kind, cursor - extent.offset)?,
-            });
-        }
-    }
-    Ok(examined)
-}
-
-fn coalesce(extents: &mut Vec<Extent>) -> Result<(), ExtentMutationError> {
-    let mut output = 0_usize;
-    for index in 0..extents.len() {
-        let extent = extents
-            .get(index)
-            .ok_or(ExtentMutationError::PatchInvariant)?
-            .clone();
-        if output != 0 {
-            let previous = extents
-                .get_mut(output - 1)
-                .ok_or(ExtentMutationError::PatchInvariant)?;
-            if equivalent_continuation(previous, &extent)? {
-                previous.length = previous
-                    .length
-                    .checked_add(extent.length)
-                    .ok_or(ExtentMutationError::RangeOverflow)?;
-                continue;
-            }
-        }
-        *extents
-            .get_mut(output)
-            .ok_or(ExtentMutationError::PatchInvariant)? = extent;
-        output += 1;
-    }
-    extents.truncate(output);
-    Ok(())
-}
-
 fn equivalent_continuation(left: &Extent, right: &Extent) -> Result<bool, ExtentMutationError> {
     if extent_end(left)? != right.offset {
         return Ok(false);
@@ -605,47 +784,6 @@ fn offset_kind(kind: &ExtentKind, delta: u64) -> Result<ExtentKind, ExtentMutati
         }),
         value => Ok(value.clone()),
     }
-}
-
-fn validate_leaf(
-    extents: &[Extent],
-    expected_first: u64,
-    expected_end: u64,
-) -> Result<(), ExtentMutationError> {
-    if expected_first == expected_end && extents.is_empty() {
-        return Ok(());
-    }
-    if extents.first().map(|extent| extent.offset) != Some(expected_first)
-        || extents.last().map(extent_end).transpose()? != Some(expected_end)
-    {
-        return Err(ExtentMutationError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children(
-    children: &[ExtentChild],
-    expected_first: u64,
-    expected_end: u64,
-) -> Result<(), ExtentMutationError> {
-    if children.first().map(|child| child.first_offset) != Some(expected_first)
-        || children.last().map(|child| child.end_offset) != Some(expected_end)
-    {
-        return Err(ExtentMutationError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn overlapping_patch_range(
-    patches: &[Patch],
-    start: u64,
-    end: u64,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(usize, usize), FsError> {
-    let first = partition_point_with_accounting(patches, accounting, |patch| patch.end <= start)?;
-    let after_last =
-        partition_point_with_accounting(patches, accounting, |patch| patch.offset < end)?;
-    Ok((first, after_last.max(first)))
 }
 
 fn extent_end(extent: &Extent) -> Result<u64, ExtentMutationError> {

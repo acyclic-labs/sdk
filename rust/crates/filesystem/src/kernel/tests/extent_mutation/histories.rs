@@ -8,7 +8,7 @@ enum ByteKind {
 }
 
 fn bytes_to_extents(bytes: &[ByteKind]) -> Result<Vec<Extent>, ExtentMutationError> {
-    let mut extents = Vec::new();
+    let mut extents = Vec::with_capacity(bytes.len());
     for (index, byte) in bytes.iter().enumerate() {
         let offset = u64::try_from(index).map_err(|_| ExtentMutationError::RangeOverflow)?;
         let kind = match byte {
@@ -19,13 +19,15 @@ fn bytes_to_extents(bytes: &[ByteKind]) -> Result<Vec<Extent>, ExtentMutationErr
                 object_offset: *offset,
             },
         };
-        extents.push(Extent {
-            offset,
-            length: 1,
-            kind,
-        });
+        push_joined(
+            &mut extents,
+            Extent {
+                offset,
+                length: 1,
+                kind,
+            },
+        )?;
     }
-    coalesce(&mut extents)?;
     Ok(extents)
 }
 
@@ -62,8 +64,7 @@ async fn build_extent_tree(
     let mut level = Vec::new();
     for chunk in extents.chunks(width) {
         level.push(ExtentChild {
-            first_offset: chunk[0].offset,
-            end_offset: extent_end(&chunk[chunk.len() - 1])?,
+            first: chunk[0].offset,
             page: put(
                 store,
                 &ExtentPage::Leaf(chunk.to_vec()),
@@ -76,8 +77,7 @@ async fn build_extent_tree(
         let mut parent = Vec::new();
         for chunk in level.chunks(width) {
             parent.push(ExtentChild {
-                first_offset: chunk[0].first_offset,
-                end_offset: chunk[chunk.len() - 1].end_offset,
+                first: chunk[0].first,
                 page: put(
                     store,
                     &ExtentPage::Internal(chunk.to_vec()),
@@ -405,3 +405,6 @@ async fn native_extent_compilation_denial_restores_original_scratch_before_backe
     );
     Ok(())
 }
+
+#[path = "canonical_history.rs"]
+mod canonical_history;

@@ -139,8 +139,7 @@ fn fixture(kind: u8, payload: &[u8], number: u64) -> Vec<u8> {
         4 => {
             let page = if internal {
                 ExtentPage::Internal(vec![ExtentChild {
-                    first_offset: 0,
-                    end_offset: 1,
+                    first: 0,
                     page: object(crate::ObjectKind::ExtentPage, 2, sealed),
                 }])
             } else {

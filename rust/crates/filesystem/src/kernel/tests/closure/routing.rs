@@ -266,13 +266,11 @@ async fn extent_page_aliases_cannot_enter_a_generation_closure()
         &extent_store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 1,
+                first: 0,
                 page: extent_leaf,
             },
             ExtentChild {
-                first_offset: 1,
-                end_offset: 2,
+                first: 1,
                 page: extent_leaf,
             },
         ]),
@@ -382,13 +380,11 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
         &store,
         &ExtentPage::Internal(vec![
             ExtentChild {
-                first_offset: 0,
-                end_offset: 2,
+                first: 0,
                 page: first_extent_leaf,
             },
             ExtentChild {
-                first_offset: 2,
-                end_offset: 4,
+                first: 2,
                 page: second_extent_leaf,
             },
         ]),

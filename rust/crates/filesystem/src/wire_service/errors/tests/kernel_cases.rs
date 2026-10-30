@@ -196,7 +196,7 @@ kernel_cases! { manifest: GenerationExportManifestError {
 }}
 kernel_cases! { decode: CanonicalDecodeError {
     ResourceExhausted => [E::AllocationFailed, E::ObjectTooLarge {observed: 2, maximum: 1}, E::FieldTooLarge {observed: 2, maximum: 1}, E::LengthOverflow, E::Invariant(CanonicalInvariant::Work(WorkError::Overflow))];
-    DataLoss => [E::WrongDomain, E::UnsupportedVersion(0), E::Truncated, E::TrailingBytes, E::UnknownTag {field: "kind", tag: 255}, E::Invariant(CanonicalInvariant::Static("invalid"))];
+    DataLoss => [E::WrongDomain, E::UnsupportedVersion { found: 0, expected: 1 }, E::Truncated, E::TrailingBytes, E::UnknownTag {field: "kind", tag: 255}, E::Invariant(CanonicalInvariant::Static("invalid"))];
 }}
 
 #[test]

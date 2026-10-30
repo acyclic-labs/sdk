@@ -214,7 +214,7 @@ mod tests {
             obsolete[DOMAIN.len()..DOMAIN.len() + 2].copy_from_slice(&version.to_le_bytes());
             assert!(matches!(
                 decode_source_fact(&obsolete, 4096),
-                Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion(actual)))
+                Err(SourceFactError::Decode(CanonicalDecodeError::UnsupportedVersion { found: actual, .. }))
                     if actual == version
             ));
         }
