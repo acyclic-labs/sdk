@@ -7,7 +7,6 @@ use acyclic_fs::{
     kernel::NamespacePath,
     model::{CheckoutMode, GenerationSelector},
 };
-use std::time::Duration;
 
 mod converge;
 #[cfg(test)]
@@ -21,7 +20,6 @@ const EXCLUDED: &[&str] = &[
     ".system",
     crate::local::workspace::HOST_VIEW_ROOT,
 ];
-const WATCH_FENCE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(in crate::local) struct Cursor {
     watcher: NativeWatch,
