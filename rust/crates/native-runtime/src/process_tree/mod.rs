@@ -624,6 +624,10 @@ impl ProcessTree {
         if let Some(child) = self.child.as_mut() {
             drop(child.stdin.take());
         }
+        // IOCP retains an accepted transfer until its physical completion;
+        // a closed stdin no longer needs the tree's writer/storage reference.
+        #[cfg(windows)]
+        drop(self.writer.0.take());
     }
 
     /// Polls the direct child without releasing ownership of its descendants.
