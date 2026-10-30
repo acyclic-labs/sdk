@@ -300,10 +300,7 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
     // Creation samples retain their empty-state oracle. This separate actor
     // declares its input once and retains each confirmed publication cut.
     let address = ActorReference::new(b"benchmark", b"measure", b"durable")?;
-    let inbox = Stream::new(
-        fixture.stream.clone(),
-        StreamPath::new("benchmark/actor-input")?,
-    );
+    let inbox = Stream::new(fixture.stream.clone(), "benchmark/actor-input")?;
     let mut creation = PreparedPublish::foreign(key("durable-create")?);
     for effect in store.create(
         &address,
