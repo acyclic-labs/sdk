@@ -4,6 +4,8 @@ pub use acyclic_auth::addressing;
 
 mod availability;
 mod batch;
+#[cfg(feature = "binary")]
+pub mod binary;
 mod blob;
 pub mod conformance;
 #[cfg(any(objects_client, objects_server))]

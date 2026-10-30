@@ -20,6 +20,8 @@ harness = false
 required-features = ["local"]
 
 [features]
+# Canonical binary messages over an already admitted account transport.
+binary = []
 # Request accounting over `acyclic_stream::testing::Counted`.
 conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
@@ -66,16 +68,16 @@ wasm-bindgen-test = "=0.3.67"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3.27.0"
+axum.workspace = true
+divan.workspace = true
+hyper-util.workspace = true
+tower = { workspace = true, features = ["util"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
-axum.workspace = true
-divan.workspace = true
-hyper-util.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
-tower = { workspace = true, features = ["util"] }
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

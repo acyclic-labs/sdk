@@ -6,7 +6,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc = feature("GRPC") && native;
     println!("cargo::rustc-check-cfg=cfg(objects_client, objects_server)");
     // Wire decoding for remote clients; wire serving for gRPC and binary adapters.
-    if (grpc || feature("HTTP")) && native {
+    if feature("BINARY") || (grpc || feature("HTTP")) && native {
         println!("cargo::rustc-cfg=objects_client");
     }
     if grpc || feature("JSON") {
