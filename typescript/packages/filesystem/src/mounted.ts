@@ -1,4 +1,5 @@
 import type { FsCheckout, MutationResult, TransactionOperation, TransactionResult } from "./contracts.js";
+import { PathPrefixIndex } from "./path_prefix.js";
 
 export interface MountedCheckout {
   readonly mountId: Uint8Array;
@@ -34,7 +35,8 @@ export class CrossVolumeError extends Error {
  */
 export class MountedView {
   readonly #mounts: readonly MountedCheckout[];
-  readonly #byPath: ReadonlyMap<string, MountedCheckout>;
+  readonly #byPath = new PathPrefixIndex<MountedCheckout>();
+  readonly #root: MountedCheckout;
 
   constructor(mounts: readonly MountedCheckout[]) {
     const normalized = mounts.map((mount) => ({
@@ -43,19 +45,21 @@ export class MountedView {
       volumeId: identity(mount.volumeId, "volume"),
       path: namespacePath(mount.path),
     }));
-    if (!normalized.some((mount) => mount.path === "/")) {
-      throw new RangeError("a mounted view requires a root mount");
+    let root: MountedCheckout | undefined;
+    for (const mount of normalized) {
+      if (this.#byPath.insert(mount.path, mount) !== undefined) {
+        throw new RangeError("mounted view paths must be unique");
+      }
+      if (mount.path === "/") root = mount;
     }
-    if (new Set(normalized.map((mount) => mount.path)).size !== normalized.length) {
-      throw new RangeError("mounted view paths must be unique");
-    }
+    if (root === undefined) throw new RangeError("a mounted view requires a root mount");
+    this.#root = root;
     this.#mounts = Object.freeze(normalized.sort((left, right) => right.path.length - left.path.length));
-    this.#byPath = new Map(this.#mounts.map(mount => [mount.path, mount]));
   }
 
   applyTransaction(operations: readonly TransactionOperation[]): Promise<TransactionResult> {
     const routed = operations.map(operation => this.#routeOperation(operation));
-    const mount = routed[0]?.mount ?? this.#byPath.get("/")!;
+    const mount = routed[0]?.mount ?? this.#root;
     if (routed.some(value => value.mount !== mount)) throw new CrossVolumeError("transaction");
     return mount.checkout.applyTransaction(routed.map(value => value.operation));
   }
@@ -159,12 +163,7 @@ export class MountedView {
 
   #route(path: string): { readonly mount: MountedCheckout; readonly path: string } {
     const canonical = namespacePath(path);
-    let prefix = canonical;
-    let mount = this.#byPath.get(prefix);
-    while (mount === undefined && prefix !== "/") {
-      prefix = prefix.slice(0, prefix.lastIndexOf("/")) || "/";
-      mount = this.#byPath.get(prefix);
-    }
+    const mount = this.#byPath.longest(canonical);
     if (mount === undefined) throw new RangeError("path is outside the mounted view");
     const routed = mount.path === "/" ? canonical : canonical.slice(mount.path.length) || "/";
     return { mount, path: routed };
@@ -187,9 +186,19 @@ function identity(value: Uint8Array, label: string): Uint8Array {
 }
 
 function namespacePath(value: string): string {
-  if (!value.startsWith("/")) throw new RangeError("mounted paths must be absolute");
-  if (value.includes("\\") || value.includes("//") || (value !== "/" && value.endsWith("/")) || value.split("/").some((part) => part === "." || part === "..")) {
-    throw new RangeError("mounted paths must be canonical");
+  if (value.charCodeAt(0) !== 47) throw new RangeError("mounted paths must be absolute");
+  if (value.length === 1) return value;
+  let start = 1;
+  for (let offset = 1; offset <= value.length; offset += 1) {
+    const code = offset === value.length ? 47 : value.charCodeAt(offset);
+    if (code === 92) throw new RangeError("mounted paths must be canonical");
+    if (code !== 47) continue;
+    const length = offset - start;
+    if (length === 0 || (value.charCodeAt(start) === 46
+      && (length === 1 || (length === 2 && value.charCodeAt(start + 1) === 46)))) {
+      throw new RangeError("mounted paths must be canonical");
+    }
+    start = offset + 1;
   }
   return value;
 }

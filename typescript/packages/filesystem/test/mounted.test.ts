@@ -140,5 +140,11 @@ describe("mounted checkpoint snapshots", () => {
     expect(calls).toEqual(["/:/file", "/work:/file", "/work/深い:/file", "/work/深い:/", "/:/worker/file", "/work:/深い別/file"]);
     expect(() => view.rename("/work/file", "/work/深い/file", false)).toThrow();
     expect(() => view.hardLink("/work/file", "/work/深い/file")).toThrow();
+    for (const path of ["relative", "//work", "/work/", "/work/./file", "/work/../file", "/work\\file"]) {
+      expect(() => view.createFile(path, new Uint8Array())).toThrow(RangeError);
+    }
+    expect(() => new MountedView(["/", "/work", "/work"].map(path => ({
+      mountId: identity(1), volumeId: identity(2), path, checkout: checkout(path),
+    })))).toThrow("mounted view paths must be unique");
   });
 });
