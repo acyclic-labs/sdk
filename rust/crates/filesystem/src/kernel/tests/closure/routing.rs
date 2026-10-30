@@ -398,7 +398,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
     let records = [
         directory_record(root_id, 1, metadata_id, tree),
         FileRecord {
-            bindings: None,
+            bindings: Some(direct_bindings(&store, root_id, &["a"]).await?),
             file_id: first_id,
             kind: FileKind::Regular,
             link_count: 1,
@@ -409,7 +409,7 @@ async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_u
             },
         },
         FileRecord {
-            bindings: None,
+            bindings: Some(direct_bindings(&store, root_id, &["z"]).await?),
             file_id: second_id,
             kind: FileKind::Regular,
             link_count: 1,

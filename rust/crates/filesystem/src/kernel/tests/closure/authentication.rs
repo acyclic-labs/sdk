@@ -66,7 +66,7 @@ async fn authenticated_generation_counts_hardlinked_inline_file_once()
         vec![
             directory_record(root_id, 1, metadata_id, entries),
             FileRecord {
-                bindings: None,
+                bindings: Some(direct_bindings(&store, root_id, &["first", "second"]).await?),
                 file_id,
                 kind: FileKind::Regular,
                 link_count: 2,
@@ -307,11 +307,13 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
         8,
     )
     .await?;
+    let symlink_bindings = direct_bindings(&store, root_id, &["link"]).await?;
+    let reparse_bindings = direct_bindings(&store, root_id, &["reparse"]).await?;
     let records = |symlink_bytes, reparse_bytes| {
         vec![
             directory_record(root_id, 1, metadata_id, tree),
             FileRecord {
-                bindings: None,
+                bindings: Some(symlink_bindings),
                 file_id: symlink_id,
                 kind: FileKind::SymbolicLink,
                 link_count: 1,
@@ -322,7 +324,7 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
                 },
             },
             FileRecord {
-                bindings: None,
+                bindings: Some(reparse_bindings),
                 file_id: reparse_id,
                 kind: FileKind::ReparsePoint,
                 link_count: 1,
@@ -422,9 +424,13 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
     )
     .await?;
     let mut records = vec![directory_record(root_id, 1, metadata_id, tree)];
-    for file_id in child_ids {
+    let relation_roots = [
+        direct_bindings(&store, root_id, &["first"]).await?,
+        direct_bindings(&store, root_id, &["second"]).await?,
+    ];
+    for (file_id, bindings) in child_ids.into_iter().zip(relation_roots) {
         records.push(FileRecord {
-            bindings: None,
+            bindings: Some(bindings),
             file_id,
             kind: FileKind::Regular,
             link_count: 1,
@@ -445,9 +451,15 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
     )
     .await?;
     assert_eq!(proof.file_count, 3);
-    assert_eq!(u64::try_from(proof.objects.len()).unwrap_or(u64::MAX), 7);
-    assert_eq!(proof.work.object_probes, 7);
-    assert_eq!(proof.work.backend_read_operations, 7);
+    for root in relation_roots {
+        assert!(proof.objects.contains(&root));
+    }
+    // The original seven shared objects plus two distinct direct-edge pages.
+    let relation_objects = u64::try_from(relation_roots.len())?;
+    let proven_objects = u64::try_from(proof.objects.len())?;
+    assert_eq!(proven_objects - relation_objects, 7);
+    assert_eq!(proof.work.object_probes - relation_objects, 7);
+    assert_eq!(proof.work.backend_read_operations - relation_objects, 7);
 
     // A previously proven extent root must still reject a conflicting file size.
     records[2].payload = FilePayload::Regular {
