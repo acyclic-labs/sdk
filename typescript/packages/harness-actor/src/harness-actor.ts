@@ -1,19 +1,19 @@
 /** The shared harness as one Actor application: the same event host and
  * session engine as every other deployment, behind the public guest ABI. */
 import { defineActor, GUEST_ABI_VERSION, type CheckpointCodec, type GuestState } from "@acyclic-labs/actors";
-import { ActorStateStorage, EventAgentHost, EventStreamLedger, WasmStream, streamProviderPort, initializeHosting, serveActorFetch,
-  type ActorState, type EventHostAccess, type ImmutableObjects } from "@acyclic-labs/harness/hosting";
+import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch,
+  type ActorState, type EventHostAccess, type ImmutableObjects, type StreamLedger } from "@acyclic-labs/harness/hosting";
 import { BrowserAgentAuthority, BrowserAgentRegistry, type BrowserAgentOptions,
   type BrowserMachinesWorkspace, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
 import { ModelRegistry, type CompactionPolicy, type ModelCredentialResolver, type ProviderSpec } from "@acyclic-labs/harness";
-import { HARNESS_BINDINGS, MODEL_FETCH } from "./bindings.js";
+import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js";
+import { harnessStreamLedger } from "./streams.js";
+export { HarnessActorError } from "./bindings.js";
 
 /** The artifact owner's configuration. Credentials appear only as protected
  * `secrets:/` references inside `model.spec.authentication`. */
 export interface HarnessActorConfig {
   readonly options: BrowserAgentOptions;
-  /** Capacities of the one journal domain shared by every agent of this Actor. */
-  readonly ledger_limits: ConstructorParameters<typeof EventStreamLedger>[4];
   readonly model: {
     readonly provider: string;
     readonly spec: ProviderSpec;
@@ -24,10 +24,11 @@ export interface HarnessActorConfig {
 }
 
 interface Values {
-  /** Both names select the executing actor's one Binding.stateTransaction. */
+  /** Only host metadata belongs to the executing Actor. */
   storage: ActorState;
   objects: ImmutableObjects;
-  journal: ActorState;
+  /** Original shared publication and durable placement owner. */
+  streams: Pick<StreamLedger, "register" | "dispatch" | "open">;
   access: EventHostAccess;
   authority: WasmAuthorityCapability;
   workspace: BrowserMachinesWorkspace;
@@ -37,13 +38,6 @@ type Bound = Values & { model: ModelCredentialResolver };
 /** Environment selected by the manifest entry, keyed by the descriptor names. */
 export type HarnessBindings = { readonly [K in keyof Values as (typeof HARNESS_BINDINGS)[K]]: Values[K] }
   & { readonly [MODEL_FETCH]: ModelCredentialResolver };
-
-/** Typed refusal: a required platform binding or primitive is not available. */
-export class HarnessActorError extends Error {
-  constructor(readonly code: "failed_precondition", readonly subject: string) {
-    super(`STEP harness-actor failed: ${subject} is not available; recovery: deploy the generated manifest, which selects every harness binding`);
-  }
-}
 
 const required: readonly (readonly [keyof Bound, string])[] = [
   ...(Object.entries(HARNESS_BINDINGS) as [keyof Values, string][]), ["model", MODEL_FETCH]];
@@ -55,8 +49,6 @@ function bindings(env: Partial<HarnessBindings>): Bound {
     if (value === undefined || value === null) throw new HarnessActorError("failed_precondition", name);
     values[key] = value;
   }
-  // One state owner: metadata, wake rows and journal frames commit together.
-  if (values.journal !== values.storage) throw new HarnessActorError("failed_precondition", HARNESS_BINDINGS.journal);
   return values as Bound;
 }
 
@@ -64,7 +56,7 @@ function bindings(env: Partial<HarnessBindings>): Bound {
  * module the bundle loads is a declared manifest asset beside this entry. */
 declare const HARNESS_ACTOR: { readonly config: HarnessActorConfig };
 
-interface Opened { readonly host: EventAgentHost; readonly ledger: EventStreamLedger }
+interface Opened { readonly host: EventAgentHost }
 function opened(state: GuestState<Opened>): Opened {
   let value: Opened | undefined;
   state.with(current => { value = current; return undefined; });
@@ -89,11 +81,12 @@ export const actor = defineActor<Opened, HarnessBindings>({
   async restore(_checkpoint, context) {
     await initializeHosting();
     const env = bindings(context.env);
+    const ledger = harnessStreamLedger(env.streams, env.objects);
     const name = context.actor.id;
     if (name === null) {
       throw new Error("STEP harness-actor-restore failed: no actor identity; recovery: deploy as an Actor namespace entry");
     }
-    const { options, ledger_limits, model } = HARNESS_ACTOR.config;
+    const { options, model } = HARNESS_ACTOR.config;
     const owner = new BrowserAgentAuthority(env.authority);
     const registry = new BrowserAgentRegistry();
     const models = new ModelRegistry({}, model.limits);
@@ -105,22 +98,16 @@ export const actor = defineActor<Opened, HarnessBindings>({
     } finally { models.free(); }
     registry.bindMachinesWorkspace(env.workspace);
     const state = new ActorStateStorage(env.storage);
-    let host: EventAgentHost | undefined;
-    const ledger = new EventStreamLedger(state.domain("wakes"), env.objects,
-      appended => WasmStream.openJournal(state.journal(appended), ledger_limits).then(streamProviderPort),
-      async () => { await host?.wake(); }, ledger_limits);
-    // The tree's Stream is this Actor's own journal, which runs only this
-    // actor's agent. With no Streams provider bound the host runs no children:
-    // both spawn entrances refuse, rather than create a child that never runs.
+    // Shared history alone does not admit a child Actor's placement and wake.
+    // Keep both spawn entrances closed until the original producer owns them.
     const childless = { ...options, preset: { ...options.preset, max_children: 0 } };
-    host = new EventAgentHost(state.domain("actor"), ledger, name, childless, owner, registry, env.access);
+    const host = new EventAgentHost(state.domain("actor"), ledger, name, childless, owner, registry, env.access);
     await host.create(name);
-    return { host, ledger };
+    return { host };
   },
   async event(state, event) {
-    const { host, ledger } = opened(state);
+    const { host } = opened(state);
     if (event.type === "stream" || event.type === "timer" || event.type === "alarm") {
-      await ledger.alarm();
       await host.wake();
     }
     return null;

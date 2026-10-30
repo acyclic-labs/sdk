@@ -18,10 +18,6 @@
       "approval_policy": { "approvers": [{ "kind": "rules", "principal": "owner", "rules": [], "fallback": "allow" }] }
     }
   },
-  "ledger_limits": {
-    "commands": 65536, "journal_bytes": 268435456, "paths": 1000, "path_bytes": 262144,
-    "records": 10000, "payload_bytes": 16777216, "commits": 10000, "idempotency_results": 10000
-  },
   "model": {
     "provider": "anthropic",
     "selection": "anthropic/claude-haiku-5-5",
@@ -46,13 +42,14 @@
     "subscriptions": [{ "subscriptionId": "inbox", "streamPath": "harness/inbox", "start": { "cursor": "0" }, "placementAnchor": true }],
     "bindings": [
       { "name": "eventStorage", "capability": "", "resource": "", "stateTransaction": true },
-      { "name": "streamJournal", "capability": "", "resource": "", "stateTransaction": true },
+      { "name": "sharedStreams", "capability": "harnessStreams", "resource": "streams:/" },
       { "name": "immutableObjects", "capability": "harnessObjects", "resource": "objects:/harness" },
       { "name": "hostAccess", "capability": "", "resource": "", "guestAdmission": "hostAccess" },
       { "name": "platformAuthority", "capability": "", "resource": "", "guestAdmission": "platformAuthority" },
       { "name": "machinesWorkspace", "capability": "harnessMachines", "resource": "machines:/harness" }
     ],
     "grants": [
+      { "name": "harnessStreams", "grant": { "resource": { "name": "streams:/", "prefix": true }, "actions": ["streams/append", "streams/follow", "streams/fork", "streams/list"] }, "limits": null },
       { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/get", "objects/put"] }, "limits": null },
       { "name": "harnessMachines", "grant": { "resource": { "name": "machines:/harness", "prefix": true }, "actions": ["machines/exec", "machines/read"] }, "limits": null }
     ]

@@ -3,7 +3,7 @@
 export const HARNESS_BINDINGS = {
   storage: "eventStorage",
   objects: "immutableObjects",
-  journal: "streamJournal",
+  streams: "sharedStreams",
   access: "hostAccess",
   authority: "platformAuthority",
   workspace: "machinesWorkspace",
@@ -14,3 +14,10 @@ export const MODEL_FETCH = "modelFetch";
 
 /** The bundled module file and its logical manifest module identifier. */
 export const HARNESS_MODULE = { file: "harness-actor.mjs", id: "harness_actor" } as const;
+
+/** Typed refusal: a required platform binding or primitive is not available. */
+export class HarnessActorError extends Error {
+  constructor(readonly code: "failed_precondition", readonly subject: string) {
+    super(`STEP harness-actor failed: ${subject} is not available; recovery: materialize every selected binding from its original admitted producer`);
+  }
+}
