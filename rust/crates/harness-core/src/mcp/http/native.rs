@@ -104,6 +104,7 @@ mod tests {
                 .local_addr()
                 .map_err(|e| Error::Storage(e.to_string()))?;
             let operation = OperationId::from_bytes([9; 16]);
+            let (completed, completion) = tokio::sync::oneshot::channel();
             let server = tokio::spawn(async move {
                 let (mut socket, _) = listener
                     .accept()
@@ -146,49 +147,49 @@ mod tests {
                 assert!(request.contains("tools/call"));
                 if mode == "lost" {
                     drop(socket);
-                    assert!(
-                        tokio::time::timeout(Duration::from_millis(100), listener.accept())
-                            .await
-                            .is_err()
-                    );
-                    return Ok(());
-                }
-                let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
-                let response = if mode == "redirect" {
-                    format!(
-                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    )
                 } else {
-                    let body = if mode == "sse" {
-                        format!("data: {result}\r\n\r\n")
+                    let result=json!({"jsonrpc":"2.0","id":operation.to_string(),"result":{"content":[{"type":"text","text":"local"}],"isError":false}}).to_string();
+                    let response = if mode == "redirect" {
+                        format!(
+                            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{address}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
                     } else {
-                        result
+                        let body = if mode == "sse" {
+                            format!("data: {result}\r\n\r\n")
+                        } else {
+                            result
+                        };
+                        let media = if mode == "sse" {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        };
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
                     };
-                    let media = if mode == "sse" {
-                        "text/event-stream"
-                    } else {
-                        "application/json"
-                    };
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: {media}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    )
-                };
-                socket
-                    .write_all(response.as_bytes())
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-                socket
-                    .shutdown()
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-                // A second connection would prove an implicit retry/redirect.
-                assert!(
-                    tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                    socket
+                        .write_all(response.as_bytes())
                         .await
-                        .is_err()
-                );
-                Ok::<_, Error>(())
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                    socket
+                        .shutdown()
+                        .await
+                        .map_err(|e| Error::Storage(e.to_string()))?;
+                }
+                // A second connection would prove an implicit retry/redirect.
+                // Check queued admission before the original call's completion.
+                tokio::select! {
+                    biased;
+                    accepted = listener.accept() => {
+                        accepted.map_err(|error| Error::Storage(error.to_string()))?;
+                        Err(Error::Invalid("HTTP call opened another connection".into()))
+                    },
+                    completed = completion => {
+                        completed.map_err(|_| Error::Invalid("HTTP call completion was dropped".into()))
+                    },
+                }
             });
             let provider = Arc::new(NativeMcpHttpProvider::new(
                 reqwest::header::HeaderMap::new(),
@@ -203,6 +204,7 @@ mod tests {
             )?;
             let result = transport.call(operation, "echo", json!({}), None).await;
             assert!(transport.reconcile(operation, None).await?.is_none());
+            let _ = completed.send(());
             server.await.map_err(|e| Error::Storage(e.to_string()))??;
             if matches!(mode, "json" | "sse") {
                 assert_eq!(result?.content, [rmcp::model::ContentBlock::text("local")]);
