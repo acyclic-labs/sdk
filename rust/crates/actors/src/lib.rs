@@ -7,8 +7,8 @@ pub use acyclic_auth::addressing;
 
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
-    ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, domain, validate_add_subscription,
-    validate_delete, validate_deployment, validate_update,
+    ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,
+    validate_update,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.

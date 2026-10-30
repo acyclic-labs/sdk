@@ -1,9 +1,5 @@
 // Generated from acyclic_actors::guest. Do not edit.
 export const GUEST_ABI_VERSION = 1 as const;
-export const WEB_SOCKET_TAG_COUNT = 10 as const;
-export const WEB_SOCKET_TAG_CHARACTERS = 256 as const;
-export const WEB_SOCKET_ATTACHMENT_BYTES = 2048 as const;
-export const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS = 2048 as const;
 /** Original streaming response. Trailers are terminal metadata, never initial headers.
  * The host must retain close through EOF, failure and cancellation. */
 export type GuestResponseStream = { readonly status: number; readonly headers: Headers; readonly body: ReadableStream<Uint8Array> | null; readonly trailers: Promise<Headers>; close(): void; };

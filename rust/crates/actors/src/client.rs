@@ -760,10 +760,6 @@ mod tests {
         );
         assert_eq!(Error::Transport(String::new()).code_name(), "unavailable");
         assert_eq!(
-            Error::Semantic(crate::ContractError::LimitExceeded.into()).code_name(),
-            "limit_exceeded"
-        );
-        assert_eq!(
             Error::Semantic(domain::DomainError::InvalidBinding).code_name(),
             "invalid_binding"
         );

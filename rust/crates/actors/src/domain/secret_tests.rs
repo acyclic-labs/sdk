@@ -16,11 +16,18 @@ fn secret_selections_round_trip_and_replace_without_inheritance()
 -> Result<(), Box<dyn std::error::Error>> {
     let secret =
         SecretSelection::new("MODEL_KEY".to_owned(), "secrets:/models/primary".to_owned())?;
-    let request = deployment()?.with_secrets(vec![secret.clone()])?;
+    let mut secrets = vec![secret.clone()];
+    for index in 1..65 {
+        secrets.push(SecretSelection::new(
+            format!("MODEL_KEY_{index}"),
+            format!("secrets:/models/key-{index}"),
+        )?);
+    }
+    let request = deployment()?.with_secrets(secrets.clone())?;
     let wire: wire::DeploymentRequest = request.clone().into();
     let decoded = wire::DeploymentRequest::decode(wire.encode_to_vec().as_slice())?;
     assert_eq!(DeploymentRequest::try_from(decoded)?, request);
-    assert_eq!(request.secrets(), std::slice::from_ref(&secret));
+    assert_eq!(request.secrets(), secrets.as_slice());
     assert!(request.with_secrets(vec![])?.secrets().is_empty());
 
     let update = UpdateNamespaceRequest::new(
@@ -31,7 +38,7 @@ fn secret_selections_round_trip_and_replace_without_inheritance()
         2,
         "update".to_owned(),
     )?
-    .with_secrets(vec![secret])?;
+    .with_secrets(secrets)?;
     let wire: wire::UpdateNamespaceRequest = update.clone().into();
     assert_eq!(
         UpdateNamespaceRequest::try_from(wire::UpdateNamespaceRequest::decode(
