@@ -41,6 +41,57 @@ struct Platform {
     checkpoint: Function,
 }
 
+struct Clock {
+    owner: JsValue,
+    now: Function,
+    expires: Function,
+}
+
+impl acyclic_auth::operation::Clock for Clock {
+    fn now_unix_millis(&self) -> std::result::Result<u64, Stopped> {
+        self.now
+            .call0(&self.owner)
+            .ok()
+            .and_then(|value| from_js(value).ok())
+            .ok_or(Stopped::Cancelled)
+    }
+
+    fn expires_at(
+        &self,
+        deadline: u64,
+    ) -> std::result::Result<acyclic_auth::operation::StopFuture, Stopped> {
+        // Register eagerly on the original owner; cancellation owns exactly this
+        // registration, never the invocation or remote physical operation.
+        let registration = crate::wasm::cancel::Cancel::new().map_err(|_| Stopped::Cancelled)?;
+        let promise = self
+            .expires
+            .call2(
+                &self.owner,
+                &js_sys::BigInt::from(deadline),
+                &registration.signal,
+            )
+            .map_err(|_| Stopped::Cancelled)?
+            .dyn_into::<Promise>()
+            .map_err(|_| Stopped::Cancelled)?;
+        Ok(Box::pin(async move {
+            let _registration = registration;
+            stop(promise).await
+        }))
+    }
+}
+
+async fn stop(promise: Promise) -> Stopped {
+    match JsFuture::from(promise)
+        .await
+        .ok()
+        .and_then(|value| value.as_string())
+        .as_deref()
+    {
+        Some("deadline") => Stopped::Deadline,
+        _ => Stopped::Cancelled,
+    }
+}
+
 impl Platform {
     async fn call<T: DeserializeOwned>(
         &self,
@@ -206,18 +257,25 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
         )));
     }
     let stopped = field("stopped")?.dyn_into::<Promise>()?;
-    let context = Context::from_stopped(admission.deadline_unix_millis, async move {
-        match JsFuture::from(stopped)
-            .await
-            .ok()
-            .and_then(|value| value.as_string())
-            .as_deref()
-        {
-            Some("deadline") => Stopped::Deadline,
-            // Rejection and producer loss end the original invocation too.
-            _ => Stopped::Cancelled,
-        }
-    });
+    let clock = field("clock")?;
+    let context = if clock.is_undefined() {
+        // Event-only authority remains explicitly unqualified for child budgets.
+        Context::from_stopped(admission.deadline_unix_millis, stop(stopped))
+    } else {
+        let method = |name: &str| {
+            js_sys::Reflect::get(&clock, &JsValue::from_str(name))?.dyn_into::<Function>()
+        };
+        let clock = Clock {
+            now: method("nowUnixMilliseconds")?,
+            expires: method("expiresAt")?,
+            owner: clock,
+        };
+        Context::from_clock(
+            admission.deadline_unix_millis,
+            stop(stopped),
+            Arc::new(clock),
+        )
+    };
     let platform = Arc::new(Platform {
         check: field("check")?.dyn_into()?,
         trust_changed: field("trustChanged")?.dyn_into()?,
@@ -236,8 +294,6 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
         platform.clone(),
     )
     .map_err(js_error)?;
-    #[cfg(feature = "browser")]
-    let retained_context = context.clone();
     let authority = crate::core::AdmittedAuthority::from_platform(
         verifier,
         admission.scope,
@@ -249,8 +305,6 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
     Ok(WasmAgentAuthority {
         issuer: crate::core::RuntimeAuthority::admitted(authority, admission.operation),
         caller,
-        #[cfg(feature = "browser")]
-        context: retained_context,
     })
 }
 
@@ -300,6 +354,10 @@ export interface WasmAuthorityCapability {
     /** Original deadline/cancel event; producer loss rejects or resolves cancelled.
      * This is the platform's existing event, never a guest timer or polling loop. */
     readonly stopped: Promise<"deadline" | "cancelled">;
+    /** SAME invocation clock. Event-only owners without this port explicitly
+     * refuse remaining-time and child-budget qualification. Never substitute a
+     * resource transport's clock, Date.now or a guest timer. */
+    readonly clock?: WasmOperationClock;
     /** Synchronous, non-dispatching owner observation, including original expiry,
      * source revocation and exact rejection. Async-only owners are unsupported. */
     check(scope: Scope): "current" | "denied" | "closed";
@@ -318,5 +376,14 @@ export interface WasmAuthorityCapability {
     derive(request: WasmAuthorityDerivation, signal: AbortSignal): WasmAuthorityReply<Scope> | Promise<WasmAuthorityReply<Scope>>;
     /** Sign the typed checkpoint under the retained issuer and audience. */
     checkpoint(request: WasmAuthorityCheckpoint, signal: AbortSignal): WasmAuthorityReply<number[]> | Promise<WasmAuthorityReply<number[]>>;
+}
+/** Retained only from authenticated platform admission. Its monotonic wall-time
+ * projection and expiry registration share the original invocation's clock. */
+export interface WasmOperationClock {
+    /** No IO; throw after owner loss. */
+    nowUnixMilliseconds(): bigint;
+    /** Eager registration on the original clock. Abort unregisters it; owner
+     * loss must settle cancelled or reject. No timer renewal between frames. */
+    expiresAt(deadlineUnixMilliseconds: bigint, signal: AbortSignal): Promise<"deadline" | "cancelled">;
 }
 "#;

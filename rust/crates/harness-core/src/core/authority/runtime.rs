@@ -69,8 +69,7 @@ impl RuntimeAuthority {
     }
 
     /// Original invocation stop, when custody belongs to an admitted platform.
-    #[cfg(all(target_os = "linux", feature = "native-execution"))]
-    pub(crate) fn operation_context(&self) -> Option<&acyclic_auth::operation::Context> {
+    pub fn operation_context(&self) -> Option<&acyclic_auth::operation::Context> {
         match &self.custody {
             Custody::Native(_) => None,
             Custody::Platform { authority, .. } => Some(&authority.context),
