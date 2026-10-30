@@ -1,4 +1,4 @@
-//! Restore the original sealed generation through the shipping command.
+//! Restore a real generation and retain its full reference at the shipping command.
 use acyclic_fs::{
     AuthoredMutation, CancellationToken, Fs, Lifecycle, LivePublicationObservation, LocalOptions,
     OperationId, PublicationPermit, VolumeConfig, WorkBudget,
@@ -28,7 +28,7 @@ fn restore(
 }
 
 #[test]
-fn restore_gen_preserves_sealed_storage_and_refuses_invalid_references_before_io() -> Result {
+fn restore_gen_preserves_storage_identity_and_refuses_invalid_references_before_io() -> Result {
     let directory = tempfile::tempdir()?;
     let store = directory.path().join("store");
     let runtime = tokio::runtime::Runtime::new()?;
@@ -67,7 +67,7 @@ fn restore_gen_preserves_sealed_storage_and_refuses_invalid_references_before_io
                         )?],
                         config.limits,
                     )?,
-                    bytes: acyclic_stream::OwnedBytes::from_static(b"sealed generation contents"),
+                    bytes: acyclic_stream::OwnedBytes::from_static(b"original generation contents"),
                     metadata: FileMetadata::default(),
                 },
                 WorkBudget::UNBOUNDED,
@@ -104,10 +104,6 @@ fn restore_gen_preserves_sealed_storage_and_refuses_invalid_references_before_io
     runtime.block_on(runtime.spawn_blocking(move || {
         released.wait_until(std::time::Instant::now() + Duration::from_secs(5))
     }))??;
-    assert!(
-        generation.object_id().storage.is_some(),
-        "fixture must require the sealed association"
-    );
     let volume = uuid::Uuid::from_bytes(volume.into_bytes()).to_string();
     let destination = directory.path().join("restored");
     let output = restore(
@@ -123,8 +119,28 @@ fn restore_gen_preserves_sealed_storage_and_refuses_invalid_references_before_io
     );
     assert_eq!(
         std::fs::read(destination.join("original"))?,
-        b"sealed generation contents"
+        b"original generation contents"
     );
+
+    // The local composition is plaintext. A different full storage identity
+    // must fail; discarding its association would restore the valid object.
+    let mut associated = generation.object_id();
+    associated.storage = Some(acyclic_fs::ObjectStorage {
+        locator: generation.digest(),
+        root_file_id: acyclic_fs::FileId::from_bytes([1; 16]),
+        origin_generation: generation.digest(),
+    });
+    let refused = directory.path().join("different-storage");
+    let output = restore(
+        &store,
+        &volume,
+        &hex::encode(associated.to_bytes().as_slice()),
+        &refused,
+    )?;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error = String::from_utf8(output.stderr)?;
+    assert!(!error.contains("step=restore-gen admission:"), "{error}");
+    assert!(!refused.join("original").exists());
 
     let missing_store = directory.path().join("must-not-open");
     let rejected = directory.path().join("must-not-create");
