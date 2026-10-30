@@ -134,30 +134,38 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
         crate::kernel::Owned::new(search, allocation, bytes).retire(&mut work)?;
         assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
     }
-    let cancel = CancellationToken::new();
-    let mut refused = KernelAccounting::standalone(
-        WorkBudget {
-            allocation_operations: full_allocations
-                .checked_sub(1)
-                .ok_or("no actual allocations")?,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancel,
-    );
-    let selected = DirectOnly(&store);
-    let view = crate::workspace::NamespaceView {
-        objects: &selected,
-        root: &linked,
-        config: config(),
-    };
-    assert!(matches!(
-        view.records(&[file], 2, &mut refused, &cancel).await,
-        Err(FsError::Work(crate::WorkError::BudgetExceeded {
-            counter: "allocation_operations",
-            ..
-        }))
-    ));
-    assert_eq!(refused.standalone_parts().unwrap().0.live_bytes(), 0);
+    assert!(full_allocations > 0);
+    for maximum in 0..full_allocations {
+        let cancel = CancellationToken::new();
+        let mut refused = KernelAccounting::standalone(
+            WorkBudget {
+                allocation_operations: maximum,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancel,
+        );
+        let selected = DirectOnly(&store);
+        let view = crate::workspace::NamespaceView {
+            objects: &selected,
+            root: &linked,
+            config: config(),
+        };
+        assert!(
+            matches!(
+                view.records(&[file], 2, &mut refused, &cancel).await,
+                Err(FsError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "allocation_operations",
+                    ..
+                }))
+            ),
+            "allocation refusal at {maximum}/{full_allocations}"
+        );
+        assert_eq!(
+            refused.standalone_parts().unwrap().0.live_bytes(),
+            0,
+            "allocation refusal at {maximum}/{full_allocations} lost custody"
+        );
+    }
     let moved = apply_generation_mutations(
         &store,
         &linked,

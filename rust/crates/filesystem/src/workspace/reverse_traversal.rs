@@ -153,16 +153,36 @@ fn merge_reverse_group(
     allocation: &mut KernelOwnedAllocation,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    let mut source = std::mem::take(&mut records.get_mut(source).ok_or(FsError::InvalidDiff)?.1);
-    let bytes = workspace_vec_bytes(&source);
-    let entries = &mut records.get_mut(target).ok_or(FsError::InvalidDiff)?.1;
-    for entry in source.drain(..) {
-        reverse_grow(entries, allocation, accounting)?;
+    // Keep both groups reachable by their original aggregate owner until the
+    // destination is funded. A refused growth must still retire every alias.
+    while !records
+        .get(source)
+        .ok_or(FsError::InvalidDiff)?
+        .1
+        .is_empty()
+    {
+        reverse_grow(
+            &mut records.get_mut(target).ok_or(FsError::InvalidDiff)?.1,
+            allocation,
+            accounting,
+        )?;
         accounting.charge(copy_work(
             std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>() as u64,
         ))?;
-        entries.push(entry);
+        let entry = records
+            .get_mut(source)
+            .ok_or(FsError::InvalidDiff)?
+            .1
+            .pop()
+            .ok_or(FsError::InvalidDiff)?;
+        records
+            .get_mut(target)
+            .ok_or(FsError::InvalidDiff)?
+            .1
+            .push(entry);
     }
+    let source = std::mem::take(&mut records.get_mut(source).ok_or(FsError::InvalidDiff)?.1);
+    let bytes = workspace_vec_bytes(&source);
     drop(source);
     accounting.release_owned(allocation, bytes)
 }

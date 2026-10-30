@@ -27,9 +27,10 @@ impl<F: Format> Frame<F> {
             _native_custody,
             ..
         } = self;
+        let retired = node.retire(accounting);
         #[cfg(not(target_arch = "wasm32"))]
         drop(_native_custody);
-        node.retire(accounting)
+        retired
     }
 
     fn children(&self) -> Option<&[Child<F::Key>]> {
