@@ -234,7 +234,7 @@ test("a pending mutation deadline cancels server work without redispatch", async
   assert.equal(calls, 1);
 });
 
-test("transport requires HTTPS, a bounded bearer and bounded messages", async t => {
+test("transport requires HTTPS and enforces explicit caller message capacity", async t => {
   for (const overrides of [{ endpoint: "http://localhost" }, { token: "" }, { token: "x\ny" }, { token: "x".repeat(12289) }, { maximumMessageBytes: 0 }, { caCertificate: "" }]) {
     assert.throws(() => createFilesystemGrpcClient({ endpoint: "https://localhost", token: "fixture", ...overrides }));
   }

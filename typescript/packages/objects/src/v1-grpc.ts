@@ -3,7 +3,7 @@ import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors
 import { rootCertificates } from "node:tls";
 import { createClient, Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
+import { createGrpcTransport, Http2SessionManager, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
@@ -44,7 +44,13 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const authenticate = credentialInterceptor(credential);
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: timeoutMs, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), readMaxBytes: maximum, writeMaxBytes: maximum });
+  const transportOptions: GrpcTransportOptions = { sessionManager: session, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects") };
+  if (timeoutMs !== undefined) transportOptions.defaultTimeoutMs = timeoutMs;
+  if (maximum !== undefined) {
+    transportOptions.readMaxBytes = maximum;
+    transportOptions.writeMaxBytes = maximum;
+  }
+  const transport = createGrpcTransport(transportOptions);
   return { blobs: createClient(BlobsService, transport), close: () => session.abort() };
 }
 

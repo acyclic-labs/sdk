@@ -16,13 +16,14 @@ import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
-import { createGrpcTransport } from "@connectrpc/connect-node";
+import { createGrpcTransport, type GrpcTransportOptions } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
 export interface StreamGrpcOptions extends CredentialOptions {
   readonly endpoint: string;
   readonly caCertificate?: string;
+  /** Optional caller message capacity; omission retains the wire encoding maximum. */
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
   /** Translating servers acknowledge their own downstream receipt. */
@@ -64,11 +65,11 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
 function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof CredentialOptions>, credential: CredentialProvider) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate = credentialInterceptor(credential);
-  return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
+  const transportOptions: GrpcTransportOptions = { baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), nodeOptions: {
     ...(options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] }),
     createConnection(authority, tlsOptions) {
       const address = new URL(authority);
@@ -77,7 +78,12 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
       socket.setNoDelay(true);
       return socket;
     },
-  } });
+  } };
+  if (maximum !== undefined) {
+    transportOptions.readMaxBytes = maximum;
+    transportOptions.writeMaxBytes = maximum;
+  }
+  return createGrpcTransport(transportOptions);
 }
 
 function streamGrpc(options: StreamGrpcOptions) {
