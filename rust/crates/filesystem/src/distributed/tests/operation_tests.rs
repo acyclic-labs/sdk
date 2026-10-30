@@ -10,6 +10,32 @@ fn fork() -> WorkspaceForkCommit {
     }
 }
 
+async fn indexed_operation(
+    store: &StreamAuthorityStore<MemoryStream>,
+    authority: AuthorityId,
+    operation: OperationId,
+    before: u64,
+    work: &mut AuthorityWork<'_>,
+) -> Result<acyclic_stream::Record, Box<dyn std::error::Error>> {
+    let key = work.stream_bytes(OPERATION_INDEX_DOMAIN, &[&operation.into_bytes()])?;
+    let mut records = store
+        .provider
+        .read(ReadRequest {
+            key: Some(acyclic_stream::ReadKeySeek {
+                key: Bytes::from_owner(key),
+                before,
+            }),
+            path: stream_path(authority, "/records")?,
+            from: 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    let record = records.next().await.ok_or("operation index missing")??;
+    assert!(records.next().await.is_none());
+    Ok(record)
+}
+
 #[tokio::test]
 async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> TestResult {
     for native in [false, true] {
@@ -35,6 +61,10 @@ async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> Test
             .ok_or("first-record operation locator is missing")?;
         assert_eq!(located.0.sequence, Sequence::new(1));
         assert_eq!(located.0.fingerprint, proposed(70).fingerprint);
+        let indexed =
+            indexed_operation(&store, id, proposed(70).operation_id, 2, &mut work).await?;
+        assert_eq!(indexed.sequence, located.0.sequence.get());
+        assert_eq!(indexed.commit_id, located.1);
         assert!(matches!(
             store
                 .compare_and_append(
@@ -80,6 +110,31 @@ async fn operation_locators_cover_first_records_and_atomic_fork_replay() -> Test
         );
         assert_eq!(retained.0.sequence, Sequence::new(1));
         assert_eq!(created.0.sequence, Sequence::new(1));
+        for (authority, operation) in [
+            (fork.retention, fork.retained.operation_id),
+            (fork.destination, fork.creation.operation_id),
+        ] {
+            let indexed = indexed_operation(&store, authority, operation, 2, &mut work).await?;
+            assert_eq!(indexed.commit_id, retained.1);
+        }
+
+        let commit = proposed(71);
+        let appended = store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: id,
+                    epoch: Epoch::GENESIS,
+                    expected: store.head(id, &mut work).await?,
+                    commit: commit.clone(),
+                    permit: PublicationPermit::Unrestricted,
+                },
+                &mut work,
+                None::<&mut ()>,
+            )
+            .await?;
+        assert!(matches!(appended, FsAppendOutcome::Committed(_)));
+        let indexed = indexed_operation(&store, id, commit.operation_id, 3, &mut work).await?;
+        assert_eq!(indexed.sequence, 2);
         let mut changed = fork.clone();
         changed.creation.fingerprint = Digest::from_bytes([75; 32]);
         assert_eq!(

@@ -9,6 +9,7 @@ struct AppendFences {
 struct PublicationAppend<'a> {
     request: &'a crate::GuardedAppend,
     sequence: Sequence,
+    generation: Option<GenerationId>,
     conditions: &'a mut Vec<CommitCondition>,
     mutations: &'a mut Vec<CommitMutation>,
     fresh_lineage: bool,
@@ -46,6 +47,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let commit = &request.commit;
         let (durable, encoded) = prepare_record(request, work)?;
         let sequence = durable.sequence;
+        let generation = generation_from_payload(authority_id, sequence, &commit.payload, work)?;
+        let encoded = work.publication_record(encoded, commit.operation_id, generation)?;
         let records = work.path(&self.placement, authority_id, "/records", None)?;
         let epochs = work.path(&self.placement, authority_id, "/epochs", None)?;
         let retirement = work.path(&self.placement, authority_id, "/retirement", None)?;
@@ -85,6 +88,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             PublicationAppend {
                 request,
                 sequence,
+                generation,
                 conditions: &mut conditions,
                 mutations: &mut mutations,
                 fresh_lineage: M::FRESH_LINEAGE,
@@ -255,6 +259,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let PublicationAppend {
             request,
             sequence,
+            generation,
             conditions,
             mutations,
             fresh_lineage,
@@ -262,9 +267,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let authority_id = request.authority_id;
         let expected = request.expected;
         let commit = &request.commit;
-        let Some(generation) =
-            generation_from_payload(authority_id, sequence, &commit.payload, work)?
-        else {
+        let Some(generation) = generation else {
             return Ok(());
         };
         let (path, records) = self.publication_changes(

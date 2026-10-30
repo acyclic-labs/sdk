@@ -57,6 +57,39 @@ impl RecordHeaders {
             drop(attributes);
             return Ok(Err(error));
         }
+        Self::native_parts(keys, attributes, allocation, meter).map(Ok)
+    }
+
+    /// Retains canonical keys under the original native meter, admitting the
+    /// key vector and shared control before allocation. Byte owners are moved
+    /// unchanged; foreign or unmetered byte owners are refused.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_keys_native<const N: usize>(
+        keys: [OwnedBytes; N],
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Result<Self, StreamError>> {
+        if let Err(error) = Self::validate_parts(&keys, &[]) {
+            return Ok(Err(error));
+        }
+        if keys.iter().any(|key| !key.matches_meter(meter)) {
+            return Ok(Err(StreamError::InvalidArgument));
+        }
+        if N == 0 {
+            return Ok(Ok(Self::default()));
+        }
+        let mut allocation = acyclic_native_runtime::ReadAllocation::empty(meter);
+        let mut owned = crate::native::vector(N, meter, &mut allocation)?;
+        owned.extend(keys);
+        Self::native_parts(owned, Vec::new(), allocation, meter).map(Ok)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_parts(
+        keys: Vec<OwnedBytes>,
+        attributes: Vec<Attribute>,
+        allocation: acyclic_native_runtime::ReadAllocation,
+        meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<Self> {
         let mut data = HeaderData {
             keys,
             attributes: AttributeStorage::Owned(attributes),
@@ -68,7 +101,7 @@ impl RecordHeaders {
             .as_mut()
             .ok_or(std::io::ErrorKind::InvalidInput)?
             .absorb(&mut control)?;
-        Ok(Ok(Self(Some(Arc::new(data)))))
+        Ok(Self(Some(Arc::new(data))))
     }
 
     /// Admit strictly sorted unique keys and attribute names. Producers supply
@@ -239,6 +272,75 @@ mod native_tests {
         );
         drop(headers);
         owner.assert_refunded();
+
+        // The key-only producer owns both its vector and shared control after
+        // its caller disappears. Each physical allocation can refuse first.
+        for limit in 0..=2 {
+            let owner = Arc::new(Meter::default());
+            let meter = owner.original();
+            let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
+            let mut bytes = crate::native::vector(19, &meter, &mut allocation)?;
+            bytes.extend_from_slice(b"generationoperation");
+            let bytes = OwnedBytes::from_vec_with_guard_in_place(
+                &mut bytes,
+                &mut Some(allocation),
+                &meter,
+            )?;
+            let keys = [bytes.slice(..10), bytes.slice(10..)];
+            drop(bytes);
+            owner.limit.store(
+                owner.allocations.load(Ordering::SeqCst) + limit,
+                Ordering::SeqCst,
+            );
+            let baseline = owner.held.load(Ordering::SeqCst);
+            let mut result = None;
+            let created = acyclic_test_support::measure(|| {
+                result = Some(RecordHeaders::from_keys_native(keys, &meter));
+            });
+            let result = result.ok_or("key construction was not called")?;
+            if limit < 2 {
+                assert!(result.is_err());
+            } else {
+                let headers = result??;
+                assert_eq!(created.count_current, 2);
+                assert_eq!(
+                    owner.held.load(Ordering::SeqCst) - baseline,
+                    created.bytes_current as u64
+                );
+                let foreign = Arc::new(Meter::default());
+                assert_eq!(
+                    RecordHeaders::from_keys_native(
+                        [headers.keys()[0].clone()],
+                        &foreign.original(),
+                    )?,
+                    Err(StreamError::InvalidArgument),
+                );
+                assert_eq!(foreign.allocations.load(Ordering::SeqCst), 0);
+                let retained = headers.clone();
+                drop(headers);
+                assert!(owner.held.load(Ordering::SeqCst) > 0);
+                drop(retained);
+            }
+            owner.assert_refunded();
+            assert_eq!(owner.held.load(Ordering::SeqCst), 0);
+        }
+        let invalid = Arc::new(Meter::default());
+        assert_eq!(
+            RecordHeaders::from_keys_native(
+                [OwnedBytes::from_static(b"z"), OwnedBytes::from_static(b"a")],
+                &invalid.original(),
+            )?,
+            Err(StreamError::InvalidArgument),
+        );
+        assert_eq!(invalid.allocations.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            RecordHeaders::from_keys_native(
+                [OwnedBytes::from_static(b"unmetered")],
+                &invalid.original()
+            )?,
+            Err(StreamError::InvalidArgument),
+        );
+        assert_eq!(invalid.allocations.load(Ordering::SeqCst), 0);
         Ok(())
     }
 
