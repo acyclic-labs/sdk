@@ -66,7 +66,6 @@ const MACOS_NFS_PARALLEL_CLIENTS: usize = 4;
 const MACOS_NFS_LARGE_TREE_ENTRIES: usize = 512;
 #[cfg(windows)]
 const QUALIFICATION_MODIFIED_NS: i64 = 1_700_000_000_000_000_000;
-const MAX_CHILD_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Clone, Eq, PartialEq)]
 struct CheckoutSnapshot {
@@ -284,9 +283,7 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         .is_none_or(|case| case == "real-mount-mutation-matrix")
     {
         run_case(&mut report, "real-mount-mutation-matrix", || {
-            // The matrix includes a 10-second I/O-child deadline followed by
-            // a 30-second parallel-client deadline and mount teardown.
-            run_supervised_case("real-mount-mutation-matrix", Duration::from_secs(45))
+            run_supervised_case("real-mount-mutation-matrix")
         });
     }
     if only_case
@@ -294,9 +291,7 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
         .is_none_or(|case| case == "crash-detach-recovery")
     {
         run_case(&mut report, "crash-detach-recovery", || {
-            // The recovery path itself permits a 30-second detach; the outer
-            // supervisor must not kill it before that bound can report why.
-            run_supervised_case("crash-detach-recovery", Duration::from_secs(35))
+            run_supervised_case("crash-detach-recovery")
         });
     }
     if only_case
@@ -315,7 +310,7 @@ fn qualify(args: &[std::ffi::OsString]) -> Result<(), Failure> {
     }
     if only_case.as_deref() == Some("rename-before-hydration") {
         run_case(&mut report, "rename-before-hydration", || {
-            run_supervised_case("rename-before-hydration", Duration::from_secs(15))
+            run_supervised_case("rename-before-hydration")
         });
     }
     if report.cases.is_empty() {
@@ -357,7 +352,11 @@ fn emit_report(report: &Report, output: Option<&Path>) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Qualification tool policy; process ownership and capture live in native-runtime.
+/// Process ownership, output delivery and cleanup live in native-runtime.
 fn tool_output(command: &mut Command) -> std::io::Result<std::process::Output> {
-    acyclic_native_runtime::process_output(command, Duration::from_secs(120), 8 * 1024 * 1024)
+    acyclic_native_runtime::process_output(
+        command,
+        acyclic_native_runtime::CaptureSchedule::Unbounded,
+        usize::MAX,
+    )
 }

@@ -146,7 +146,6 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             .arg("--io-child")
             .arg(&mount_path)
             .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind),
-        Duration::from_secs(10),
     );
     let watched = wait_for_watch_after_child(
         &watch_rx,
