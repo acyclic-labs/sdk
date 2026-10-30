@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex, PoisonError, Weak},
+    sync::{
+        Arc, Mutex, PoisonError, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -219,11 +222,16 @@ impl Snapshot {
     }
 }
 
-struct Series(watch::Sender<Snapshot>);
+struct Series {
+    sender: watch::Sender<Snapshot>,
+    // Changed only while the index is locked. Receiver fields can outlive a
+    // Query destructor, so watch receiver_count is not its registration count.
+    selections: AtomicUsize,
+}
 
 impl Series {
     fn complete(&self, sample: &Sample<'_>) {
-        self.0
+        self.sender
             .send_modify(|value| value.sample(sample.outcome, sample.elapsed.as_nanos()));
     }
 }
@@ -283,18 +291,20 @@ impl Metrics {
             node = node.methods.get_or_insert_with(Box::default).select(rpc);
         }
         let series = node.series.get_or_insert_with(|| {
-            Arc::new(Series(
-                watch::channel(Snapshot {
+            Arc::new(Series {
+                sender: watch::channel(Snapshot {
                     operation: operation.to_owned(),
                     rpc: rpc.map(str::to_owned),
                     latency_ns: vec![0; 129],
                     ..Snapshot::default()
                 })
                 .0,
-            ))
+                selections: AtomicUsize::new(0),
+            })
         });
+        series.selections.fetch_add(1, Ordering::Relaxed);
         Query {
-            receiver: series.0.subscribe(),
+            receiver: series.sender.subscribe(),
             producer: Arc::downgrade(&self.0),
             operation: operation.to_owned(),
             rpc: rpc.map(str::to_owned),
@@ -422,6 +432,46 @@ mod tests {
     }
 
     #[test]
+    fn cohort_release_precedes_deferred_receiver_destruction()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::prelude::*;
+        let metrics = Metrics::default();
+        let first = metrics.query("acyclic.selected");
+        let second = metrics.query("acyclic.selected");
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Operations(metrics.clone())),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!("acyclic.selected", outcome = tracing::field::Empty);
+            record_outcome(&span, None);
+        });
+        assert_eq!(first.snapshot().ok, 1);
+        // Retain the receiver fields across both logical deregistrations: the
+        // exact concurrent schedule where both destructors finish before either
+        // receiver field is destroyed. No thread timing or readiness probe.
+        let receivers = [first.receiver.clone(), second.receiver.clone()];
+        {
+            let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
+            let series = names
+                .find("acyclic.selected", None)
+                .and_then(|node| node.series.as_ref())
+                .ok_or("selected cohort absent")?;
+            // Negative control: both former receiver-count decisions retain
+            // the cohort in this schedule, even though no query will remain.
+            assert!(series.sender.receiver_count() > 1);
+        }
+        drop(first);
+        drop(second);
+        let reopened = metrics.query("acyclic.selected");
+        assert_eq!(reopened.snapshot().ok, 0);
+        drop(receivers);
+        drop(reopened);
+        let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(names.empty());
+        Ok(())
+    }
+
+    #[test]
     fn selected_series_cost_is_independent_of_unrelated_series() {
         use tracing_subscriber::prelude::*;
         let metrics = Metrics::default();
@@ -486,7 +536,7 @@ impl Drop for Query {
         else {
             return;
         };
-        if series.0.receiver_count() != 1 {
+        if series.selections.fetch_sub(1, Ordering::Relaxed) != 1 {
             return;
         }
         names.edit(&self.operation, |node| match &self.rpc {

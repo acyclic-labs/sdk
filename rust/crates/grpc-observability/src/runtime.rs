@@ -106,13 +106,14 @@ trait ObservedOutput: Sized {
 }
 impl<M> ObservedOutput for Result<tonic::Response<M>, Status> {
     fn complete(self, origin: &mut Option<OperationSpan>, span: &mut Option<Span>) -> Self {
-        if let Some(origin) = origin.as_ref() {
+        if let Some(origin) = origin.as_mut() {
             origin.in_scope(|| {
                 finish(
                     span,
                     Ok(self.as_ref().map_or_else(|e| e.code() as u8, |_| 0)),
                 );
             });
+            origin.release_operation();
         }
         self
     }
@@ -121,8 +122,9 @@ impl<E> ObservedOutput for Result<http::Response<Body>, E> {
     fn complete(self, origin: &mut Option<OperationSpan>, span: &mut Option<Span>) -> Self {
         match self {
             Err(error) => {
-                if let Some(origin) = origin.as_ref() {
+                if let Some(origin) = origin.as_mut() {
                     origin.in_scope(|| finish(span, Err("transport")));
+                    origin.release_operation();
                 }
                 Err(error)
             }
@@ -134,11 +136,12 @@ impl<E> ObservedOutput for Result<http::Response<Body>, E> {
                     .then(|| code(Some(response.headers()), status));
                 // Header OK does not suppress later body failure/cancellation.
                 if (response.body().is_end_stream() || header_code.is_some_and(|code| code != 0))
-                    && let Some(origin) = origin.as_ref()
+                    && let Some(origin) = origin.as_mut()
                 {
                     origin.in_scope(|| {
                         finish(span, Ok(header_code.unwrap_or_else(|| code(None, status))));
                     });
+                    origin.release_operation();
                 }
                 Ok(response.map(|body| {
                     Body::new(Observed {
@@ -183,10 +186,10 @@ impl http_body::Body for Observed<Body> {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<http_body::Frame<Bytes>, Status>>> {
         let mut this = self.project();
-        let Some(origin) = this.origin.as_ref() else {
+        let Some(origin) = this.origin.as_mut() else {
             return Poll::Ready(None);
         };
-        origin.in_scope(|| {
+        let result = origin.in_scope(|| {
             let frame = {
                 let Some(inner) = this.inner.as_mut().as_pin_mut() else {
                     return Poll::Ready(None);
@@ -226,7 +229,11 @@ impl http_body::Body for Observed<Body> {
                 _ => {}
             }
             Poll::Ready(frame)
-        })
+        });
+        if this.span.is_none() {
+            origin.release_operation();
+        }
+        result
     }
     fn is_end_stream(&self) -> bool {
         self.inner.as_ref().is_none_or(Body::is_end_stream)

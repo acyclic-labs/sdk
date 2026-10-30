@@ -117,6 +117,13 @@ impl OperationSpan {
             self.caller.in_scope(|| self.span.in_scope(work))
         })
     }
+    /// Release a completed operation while retaining its originating caller for
+    /// later cleanup. Call after leaving the operation's entered scope.
+    pub fn release_operation(&mut self) {
+        if !self.span.is_none() {
+            with_dispatch(&self.dispatch, || self.span = Span::none());
+        }
+    }
     /// Retains a producer's context through polling and destruction.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
         Scoped::with_context(inner, Some(self.clone()))
