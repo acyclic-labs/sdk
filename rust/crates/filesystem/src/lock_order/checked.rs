@@ -2,7 +2,7 @@
     all(test, not(target_arch = "wasm32")),
     all(feature = "native-mount", target_os = "linux")
 ))]
-use crate::sync::{Condvar as RawCondvar, WaitTimeoutResult};
+use crate::sync::Condvar as RawCondvar;
 use crate::sync::{Mutex as RawMutex, MutexGuard as RawMutexGuard};
 #[cfg(loom)]
 use loom::thread_local;
@@ -12,11 +12,6 @@ use std::panic::Location;
 use std::sync::{LockResult, PoisonError};
 #[cfg(not(loom))]
 use std::thread_local;
-#[cfg(any(
-    all(test, not(target_arch = "wasm32")),
-    all(feature = "native-mount", target_os = "linux")
-))]
-use std::time::Duration;
 
 #[cfg(not(loom))]
 thread_local! {
@@ -163,39 +158,13 @@ impl Condvar {
         Self(RawCondvar::new())
     }
 
-    #[cfg(any(loom, all(feature = "native-mount", target_os = "linux")))]
     pub(crate) fn notify_all(&self) {
         self.0.notify_all();
     }
 
-    #[cfg(any(loom, all(feature = "native-mount", target_os = "linux")))]
     #[track_caller]
     pub(crate) fn wait<'a, T>(&self, guard: MutexGuard<'a, T>) -> LockResult<MutexGuard<'a, T>> {
         wait_plain(guard, |inner| self.0.wait(inner))
-    }
-
-    #[track_caller]
-    pub(crate) fn wait_timeout<'a, T>(
-        &self,
-        guard: MutexGuard<'a, T>,
-        duration: Duration,
-    ) -> LockResult<(MutexGuard<'a, T>, WaitTimeoutResult)> {
-        wait(guard, |inner| self.0.wait_timeout(inner, duration))
-    }
-}
-
-#[track_caller]
-#[cfg(any(all(test, loom), all(feature = "native-mount", target_os = "linux")))]
-fn wait_plain<G>(
-    guard: TrackedGuard<G>,
-    operation: impl FnOnce(G) -> LockResult<G>,
-) -> LockResult<TrackedGuard<G>> {
-    match wait(guard, |inner| match operation(inner) {
-        Ok(inner) => Ok((inner, ())),
-        Err(error) => Err(PoisonError::new((error.into_inner(), ()))),
-    }) {
-        Ok((guard, ())) => Ok(guard),
-        Err(error) => Err(PoisonError::new(error.into_inner().0)),
     }
 }
 
@@ -204,17 +173,17 @@ fn wait_plain<G>(
     all(test, not(target_arch = "wasm32")),
     all(feature = "native-mount", target_os = "linux")
 ))]
-fn wait<G, R>(
+fn wait_plain<G>(
     guard: TrackedGuard<G>,
-    wait: impl FnOnce(G) -> LockResult<(G, R)>,
-) -> LockResult<(TrackedGuard<G>, R)> {
+    wait: impl FnOnce(G) -> LockResult<G>,
+) -> LockResult<TrackedGuard<G>> {
     let TrackedGuard { inner, _held: held } = guard;
     let rank = held.0;
     let site = held.1;
     drop(held);
     // Waiting releases this lock, then acquires it again under all other held locks.
     Held::check(rank);
-    let wrap = |(inner, timeout)| {
+    let wrap = |inner| {
         let held = Held(rank, site);
         #[cfg(all(test, loom))]
         let held = if model::fault() == model::Fault::MissingRestore {
@@ -224,7 +193,7 @@ fn wait<G, R>(
         };
         #[cfg(not(all(test, loom)))]
         let held = held.enter();
-        (TrackedGuard { inner, _held: held }, timeout)
+        TrackedGuard { inner, _held: held }
     };
     match wait(inner) {
         Ok(result) => Ok(wrap(result)),

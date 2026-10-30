@@ -29,7 +29,11 @@ fn batch_protocol_fixture(
             .join(",");
         let script = format!(
             "$ErrorActionPreference = 'Stop'\nif ([Console]::ReadLine() -ne '{object}') {{ exit 42 }}\n[byte[]]$bytes = @({bytes})\n$out = [Console]::OpenStandardOutput()\n$out.Write($bytes, 0, $bytes.Length)\n$out.Flush()\n{}\nexit 0\n",
-            if hold { "Start-Sleep -Seconds 10" } else { "" }
+            if hold {
+                "[Console]::ReadLine() | Out-Null"
+            } else {
+                ""
+            }
         );
         let executable =
             std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("Windows system root"))
@@ -50,7 +54,7 @@ fn batch_protocol_fixture(
             .collect::<String>();
         fs::write(&script, format!(
             "IFS= read -r object\n[ \"$object\" = '{object}' ] || exit 42\nprintf '%b' '{bytes}'\n{}\n",
-            if hold { "exec sleep 10" } else { "exit 0" }
+            if hold { "IFS= read -r release" } else { "exit 0" }
         )).unwrap();
         let mut command = Command::new("/bin/sh");
         command.arg(script);
@@ -61,6 +65,30 @@ fn batch_protocol_fixture(
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
+    // Keep the producer's read pending even when the parser drops its writer
+    // on failure. Only terminating the actual child can finish this hold.
+    #[cfg(unix)]
+    let _held_input = hold.then(|| {
+        use std::os::fd::AsFd as _;
+        child
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_fd()
+            .try_clone_to_owned()
+            .unwrap()
+    });
+    #[cfg(windows)]
+    let _held_input = hold.then(|| {
+        use std::os::windows::io::AsHandle as _;
+        child
+            .stdin
+            .as_ref()
+            .unwrap()
+            .as_handle()
+            .try_clone_to_owned()
+            .unwrap()
+    });
     let result = read_git_source_blobs(&mut child, listing.as_bytes(), consume);
     // Retain the actual child handle: a missing drain cannot masquerade as a returned parser error.
     let status = child
@@ -135,7 +163,8 @@ fn git_batch_reader_rejects_malformed_protocol_and_kills_waiting_child() {
             "wrong protocol failure branch"
         );
         assert!(!called, "malformed body reached consumer");
-        // The fixture would exit successfully after its hold; failure proves forced termination.
+        // The fixture can exit successfully only after its input is released;
+        // failure proves forced termination while that writer is still held.
         assert!(
             !status.success(),
             "reader waited for normal fixture exit instead of killing it"
@@ -251,9 +280,11 @@ fn original_git_links_are_opaque_and_cannot_supply_cargo_inputs() {
     assert_eq!(captured.symlink_paths, BTreeSet::from([link_path.into()]));
     assert_eq!(captured.owners, BTreeSet::from(["demo".into()]));
     assert_eq!(fs::read(export.join(link_path)).unwrap(), link_bytes);
-    assert!(fs::symlink_metadata(export.join(link_path))
-        .unwrap()
-        .is_file());
+    assert!(
+        fs::symlink_metadata(export.join(link_path))
+            .unwrap()
+            .is_file()
+    );
     assert_eq!(
         registry_owner_source_inner(&repository, &export, &revision, &cargo(), false, None)
             .unwrap(),
@@ -429,15 +460,17 @@ fn original_release_history_retains_retired_owner_and_rejects_missing_frontier()
         responses: BTreeMap::new(),
         publisher_anchors: BTreeMap::new(),
     };
-    assert!(verify_registry_corpus(
-        &corpus,
-        &fixture.path().join("frontier"),
-        Path::new("absent-cargo"),
-        "0.1.1",
-        fixture.path()
-    )
-    .unwrap_err()
-    .contains("empty"));
+    assert!(
+        verify_registry_corpus(
+            &corpus,
+            &fixture.path().join("frontier"),
+            Path::new("absent-cargo"),
+            "0.1.1",
+            fixture.path()
+        )
+        .unwrap_err()
+        .contains("empty")
+    );
 }
 
 #[test]
@@ -467,16 +500,20 @@ fn cohort_publisher_anchors_require_immutable_archive_checksum_lineage() {
         BTreeSet::from([publisher, "b".repeat(40)])
     );
     fs::write(&retained, "different published bytes").unwrap();
-    assert!(cohort_publishers(&inventory, "0.1.0", &archives)
-        .unwrap_err()
-        .contains("checksum"));
+    assert!(
+        cohort_publishers(&inventory, "0.1.0", &archives)
+            .unwrap_err()
+            .contains("checksum")
+    );
 }
 
 #[test]
 fn registry_frontier_rejects_missing_or_nonimmutable_history_before_git() {
-    assert!(frontier_revisions(Path::new("absent"), &BTreeSet::new())
-        .unwrap_err()
-        .contains("immutable Git"));
+    assert!(
+        frontier_revisions(Path::new("absent"), &BTreeSet::new())
+            .unwrap_err()
+            .contains("immutable Git")
+    );
     assert!(
         frontier_revisions(Path::new("absent"), &BTreeSet::from(["HEAD".into()]))
             .unwrap_err()
@@ -500,15 +537,17 @@ fn registry_frontier_rejects_missing_or_nonimmutable_history_before_git() {
         responses: BTreeMap::new(),
         publisher_anchors: BTreeMap::new(),
     };
-    assert!(verify_registry_corpus(
-        &corpus,
-        Path::new("absent"),
-        Path::new("absent-cargo"),
-        "0.1.0",
-        Path::new("absent")
-    )
-    .unwrap_err()
-    .contains("declared original history"));
+    assert!(
+        verify_registry_corpus(
+            &corpus,
+            Path::new("absent"),
+            Path::new("absent-cargo"),
+            "0.1.0",
+            Path::new("absent")
+        )
+        .unwrap_err()
+        .contains("declared original history")
+    );
 }
 use super::*;
 

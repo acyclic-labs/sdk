@@ -142,7 +142,7 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
         if old.counts.sent.load(Ordering::Relaxed) >= 3 {
             break;
         }
-        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+        changed.await;
     }
     old.controls.send(Ok(frame(
         1,
@@ -182,7 +182,7 @@ async fn wait_guard(fixture: &Fixture, generation: u64, expected: CommitId) -> T
             assert_eq!(guard.as_ref(), expected.as_bytes());
             return Ok(());
         }
-        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+        changed.await;
     }
 }
 
@@ -217,7 +217,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
         .install_state(&replacement.encode_state().await)
         .await?;
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(1), records.next()).await?,
+        records.next().await,
         Some(Err(StreamError::PrefixNotRetained))
     ));
     Ok(())

@@ -187,12 +187,14 @@ impl<P: StreamProvider> StreamSessionService for Host<P> {
         self.counts.changed.notify_one();
         if self.withhold_welcome {
             let input = request.into_inner();
+            let lifetime = CountSessionDrop(Arc::clone(&self.counts));
             return Ok(Reply::new(
-                stream::unfold(input, |mut input| async move {
+                stream::unfold((input, lifetime), |(mut input, lifetime)| async move {
+                    let _lifetime = lifetime;
                     while input.message().await.ok().flatten().is_some() {}
                     None::<(
                         Result<wire::SessionFrame, Status>,
-                        Streaming<wire::SessionFrame>,
+                        (Streaming<wire::SessionFrame>, CountSessionDrop),
                     )>
                 })
                 .boxed(),
@@ -265,6 +267,7 @@ pub(super) struct Fixture {
     pub(super) tls_client: Option<grpc::Client>,
     pub(super) counts: Arc<Counts>,
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    server_ended: tokio::sync::watch::Receiver<()>,
 }
 impl Fixture {
     pub(super) async fn with_options<P: StreamProvider>(
@@ -316,20 +319,23 @@ impl Fixture {
                 ),
             ))?;
         }
-        let server = tokio::spawn(
-            builder
-                .add_service(
-                    wire::stream_service_server::StreamServiceServer::with_interceptor(
-                        unary,
-                        move |request| {
-                            unary_counts.unary.fetch_add(1, Ordering::Relaxed);
-                            Ok(request)
-                        },
-                    ),
-                )
-                .add_service(StreamSessionServiceServer::new(host))
-                .serve_with_incoming(incoming),
-        );
+        let (alive, server_ended) = tokio::sync::watch::channel(());
+        let serving = builder
+            .add_service(
+                wire::stream_service_server::StreamServiceServer::with_interceptor(
+                    unary,
+                    move |request| {
+                        unary_counts.unary.fetch_add(1, Ordering::Relaxed);
+                        Ok(request)
+                    },
+                ),
+            )
+            .add_service(StreamSessionServiceServer::new(host))
+            .serve_with_incoming(incoming);
+        let server = tokio::spawn(async move {
+            let _alive = alive;
+            serving.await
+        });
         let tls_client = match pem.as_ref() {
             Some(pem) => Some(
                 grpc::Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await?,
@@ -354,6 +360,7 @@ impl Fixture {
             tls_client,
             counts,
             server,
+            server_ended,
         })
     }
     pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -361,13 +368,17 @@ impl Fixture {
             .send(Err(Status::unavailable("fixture Session reset")))?;
         Ok(())
     }
-    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) {
+    pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
+        let mut ended = self.server_ended.clone();
         loop {
             let changed = self.counts.changed.notified();
             if ready(&self.counts) {
-                return;
+                return Ok(());
             }
-            changed.await;
+            tokio::select! {
+                _ = changed => {},
+                _ = ended.changed() => return Err(StreamError::Unavailable),
+            }
         }
     }
 }

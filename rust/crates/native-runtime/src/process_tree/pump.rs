@@ -3,20 +3,17 @@
 //! A turn moves every byte that is ready, observes exit and checks intent.
 //! When nothing more can move, it returns, and the caller arms one wait on
 //! exactly the sources that can make progress: the open output pipes, stdin
-//! while input remains, the child's exit until it is observed, and the next
-//! check or the deadline. A synchronous caller parks on that wait; an async
-//! caller awaits it, holding no thread while the child runs.
+//! while input remains, the child's exit until it is observed, an explicit
+//! control signal or the caller's deadline. A synchronous caller parks on that
+//! wait; an async caller awaits it, holding no thread while the child runs.
 
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
 
-/// When a capture stops and how often it rechecks its owner.
+/// The original caller deadline for a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// Also run the check this often while nothing else happens. `None`
-    /// checks only when output, input, exit or the deadline wakes capture.
-    pub check_every: Option<Duration>,
     /// Original deadline, fixed before submission. `None` is unbounded.
     pub deadline: Option<Instant>,
     deadline_overflow: bool,
@@ -28,7 +25,6 @@ impl CaptureSchedule {
     pub fn new(timeout: Duration) -> Self {
         let deadline = capture_now().checked_add(timeout);
         Self {
-            check_every: None,
             deadline,
             deadline_overflow: deadline.is_none(),
         }
@@ -39,7 +35,6 @@ impl CaptureSchedule {
     #[must_use]
     pub const fn unbounded() -> Self {
         Self {
-            check_every: None,
             deadline: None,
             deadline_overflow: false,
         }
@@ -49,17 +44,9 @@ impl CaptureSchedule {
     #[must_use]
     pub const fn until(deadline: Instant) -> Self {
         Self {
-            check_every: None,
             deadline: Some(deadline),
             deadline_overflow: false,
         }
-    }
-
-    /// Also checks every `interval` while the child is quiet.
-    #[must_use]
-    pub const fn checking_every(mut self, interval: Duration) -> Self {
-        self.check_every = Some(interval);
-        self
     }
 }
 
@@ -153,8 +140,6 @@ impl<H: CaptureHandler> CaptureOutcome<H> {
 
 pub(super) struct Pump<'a> {
     deadline: Option<Instant>,
-    check_every: Option<Duration>,
-    next_check: Instant,
     remaining: usize,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
@@ -210,7 +195,6 @@ impl<'a> Pump<'a> {
                 "queued stdin already belongs to the native session",
             )));
         }
-        let now = capture_now();
         if schedule.deadline_overflow {
             return Err(ProcessCaptureFailure::before_capture(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -255,8 +239,6 @@ impl<'a> Pump<'a> {
         };
         Ok(Self {
             deadline,
-            check_every: schedule.check_every,
-            next_check: now,
             remaining: max_bytes,
             output,
             input,
@@ -347,13 +329,7 @@ impl<'a> Pump<'a> {
             if self.streaming {
                 self.check_deadline()?;
             }
-            let now = capture_now();
-            if self.check_every.is_none_or(|_| now >= self.next_check) {
-                check()?;
-                if let Some(interval) = self.check_every {
-                    self.next_check = capture_now() + interval;
-                }
-            }
+            check()?;
             let mut progressed = self
                 .input
                 .as_mut()
@@ -431,11 +407,7 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = match (self.check_every, self.deadline) {
-            (Some(_), Some(at)) => Some(self.next_check.min(at)),
-            (Some(_), None) => Some(self.next_check),
-            (None, at) => at,
-        };
+        let wake_at = self.deadline;
         // The capture clock is frozen in some tests; the hub runs on wall
         // time, so arm the same remaining interval from now.
         let wake_at =

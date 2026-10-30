@@ -139,7 +139,7 @@ fn appends_overlap_but_acknowledgements_and_cached_reads_wait() {
             }));
         }
         for _ in 0..2 {
-            ready.recv_timeout(Duration::from_secs(1)).unwrap();
+            ready.recv().unwrap();
         }
         let pending = {
             let slot = owner.log();

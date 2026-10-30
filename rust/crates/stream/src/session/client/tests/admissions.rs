@@ -9,7 +9,6 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     let client = Client {
         pool: PoolHandle {
             connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands: mpsc::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
@@ -123,6 +122,6 @@ async fn terminal_unpolled_cursor_cannot_authorize_a_completed_home_reconnect() 
     );
     fixture
         .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
-        .await;
+        .await?;
     Ok(())
 }

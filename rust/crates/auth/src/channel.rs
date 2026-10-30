@@ -242,6 +242,8 @@ pub async fn connect(
 /// host's event and timer; an unbound call retains its monotonic deadline.
 #[derive(Clone, Copy)]
 pub enum Budget<'a> {
+    /// No caller deadline. Dropping the call still cancels its local interest.
+    Unbounded,
     /// One monotonic deadline covering refresh, readiness and the response.
     Deadline(tokio::time::Instant),
     /// The original operation event and its projected wire deadline.
@@ -254,9 +256,10 @@ pub enum Budget<'a> {
 }
 
 impl Budget<'_> {
-    fn deadline(self) -> tokio::time::Instant {
+    fn deadline(self) -> Option<tokio::time::Instant> {
         match self {
-            Self::Deadline(deadline) | Self::Operation { deadline, .. } => deadline,
+            Self::Unbounded => None,
+            Self::Deadline(deadline) | Self::Operation { deadline, .. } => Some(deadline),
         }
     }
 
@@ -264,6 +267,7 @@ impl Budget<'_> {
     /// typed reason and establishes no remote mutation outcome.
     pub async fn run<T>(self, work: impl Future<Output = Result<T, Status>>) -> Result<T, Status> {
         match self {
+            Self::Unbounded => work.await,
             Self::Deadline(deadline) => {
                 if tokio::time::Instant::now() >= deadline {
                     return Err(Status::deadline_exceeded("operation deadline expired"));
@@ -304,10 +308,13 @@ where
             if let Budget::Operation { context, .. } = budget {
                 context.check().map_err(stopped_status)?;
             }
-            let request = request(body, &lease, deadline)?;
+            let request = match deadline {
+                Some(deadline) => request(body, &lease, deadline)?,
+                None => retained_request(body, &lease)?,
+            };
             let context = match budget {
                 Budget::Operation { context, .. } => Some(context.clone()),
-                Budget::Deadline(_) => None,
+                Budget::Deadline(_) | Budget::Unbounded => None,
             };
             let response = dispatch(guard(channel).with_context(context), request).await;
             if response.as_ref().is_err_and(|error| {

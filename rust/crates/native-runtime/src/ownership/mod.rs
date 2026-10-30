@@ -15,28 +15,13 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-struct ReleaseSignal {
-    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
-}
-
-impl Drop for ReleaseSignal {
-    fn drop(&mut self) {
-        let (lock, released) = &*self.released;
-        let mut complete = lock
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *complete = true;
-        released.notify_all();
-    }
-}
-
 // Field order is the boundary: final shared-owner cleanup precedes every fence.
 // Lock order: reopen fence -> `fences`; retain never acquires a reopen lock.
 // Final cleanup drops the fence list without locking it.
 struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
-    // Final field: signal only after physical cleanup and every retained fence.
+    // Last: signal after the owner's destructor and every retained fence.
     release: ReleaseSignal,
 }
 
@@ -45,9 +30,12 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
-            release: ReleaseSignal {
-                released: Arc::new((crate::sync::Mutex::new(false), crate::sync::Condvar::new())),
-            },
+            release: ReleaseSignal(Arc::new(ReleaseState {
+                complete: AtomicBool::new(false),
+                blocking_lock: Mutex::new(()),
+                blocking: Condvar::new(),
+                asynchronous: tokio::sync::Notify::new(),
+            })),
         }
     }
 
@@ -97,9 +85,11 @@ impl OwnershipAnchor {
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
         let owner = SharedOwner::<_, Box<dyn Send + Sync>>::new(owner);
-        let released = Arc::clone(&owner.release.released);
+        let release = OwnershipReleaseBarrier {
+            released: Arc::clone(&owner.release.0),
+        };
         Self {
-            release: OwnershipReleaseBarrier { released },
+            release,
             _owner: Arc::new(owner),
         }
     }
@@ -115,18 +105,49 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
+    released: Arc<ReleaseState>,
+}
+
+struct ReleaseState {
+    complete: AtomicBool,
+    blocking_lock: Mutex<()>,
+    blocking: Condvar,
+    asynchronous: tokio::sync::Notify,
+}
+
+struct ReleaseSignal(Arc<ReleaseState>);
+
+impl Drop for ReleaseSignal {
+    fn drop(&mut self) {
+        let guard = self
+            .0
+            .blocking_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.0.complete.store(true, Ordering::Release);
+        drop(guard);
+        self.0.blocking.notify_all();
+        self.0.asynchronous.notify_waiters();
+    }
 }
 
 impl OwnershipReleaseBarrier {
-    /// Returns whether the final owner's cleanup and retained fences completed.
+    /// Returns whether the final owner's cleanup and all fences have completed.
     #[must_use]
     pub fn is_released(&self) -> bool {
-        *self
-            .released
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.released.complete.load(Ordering::Acquire)
+    }
+
+    /// Awaits final owner cleanup without blocking a thread or starting a timer.
+    /// Dropping the last owner produces the event after its cleanup completes.
+    pub async fn released(&self) {
+        let changed = self.released.asynchronous.notified();
+        tokio::pin!(changed);
+        // Register before checking, including when cleanup runs concurrently.
+        changed.as_mut().enable();
+        if !self.is_released() {
+            changed.await;
+        }
     }
 
     /// Blocks until the final owner's cleanup and retained fences complete.
@@ -148,13 +169,16 @@ impl OwnershipReleaseBarrier {
     }
 
     fn wait_for(self, deadline: Option<std::time::Instant>) -> bool {
-        let (lock, released) = &*self.released;
-        let mut guard = lock
+        let mut guard = self
+            .released
+            .blocking_lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while !*guard {
+        while !self.is_released() {
             guard = match deadline {
-                None => released
+                None => self
+                    .released
+                    .blocking
                     .wait(guard)
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
                 Some(deadline) => {
@@ -163,7 +187,8 @@ impl OwnershipReleaseBarrier {
                     else {
                         return false;
                     };
-                    released
+                    self.released
+                        .blocking
                         .wait_timeout(guard, remaining)
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .0

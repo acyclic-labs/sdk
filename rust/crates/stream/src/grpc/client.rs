@@ -111,7 +111,7 @@ impl StreamProvider for Client {
             idempotency_key: Bytes::copy_from_slice(idempotency_key.as_bytes()),
         };
         let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+            .unary(body, |mut service, request| {
                 Box::pin(async move { service.inspect_idempotency(request).await })
             })
             .await?;
@@ -158,7 +158,7 @@ impl StreamProvider for Client {
                         idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
                     };
                     let response = self
-                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                        .unary(body, |mut service, request| {
                             Box::pin(async move { service.append(request).await })
                         })
                         .await?;
@@ -184,7 +184,7 @@ impl StreamProvider for Client {
                         idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
                     };
                     let response = self
-                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                        .unary(body, |mut service, request| {
                             Box::pin(async move { service.fork(request).await })
                         })
                         .await?;
@@ -199,7 +199,7 @@ impl StreamProvider for Client {
                 async move {
                     let body = commit_to_wire(&request);
                     let response = self
-                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                        .unary(body, |mut service, request| {
                             Box::pin(async move { service.commit(request).await })
                         })
                         .await?;
@@ -236,7 +236,7 @@ impl StreamProvider for Client {
             commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
         };
         let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+            .unary(body, |mut service, request| {
                 Box::pin(async move { service.read_commit(request).await })
             })
             .await?;

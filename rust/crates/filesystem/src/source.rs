@@ -324,49 +324,29 @@ async fn rescan_session<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     operation: SourceOperation,
     terminal_state: SourceState,
 ) -> Result<ReconcileOutcome<A, O>, SourceError> {
-    let trailing = {
-        let mut attempt = 0;
-        loop {
-            let rescan = session.watcher.begin_rescan().map_err(engine)?;
-            let policy = session.capture_policy.clone();
-            let capture = crate::capture_baseline(
-                &mut session.checkout,
-                &session.capture,
-                &policy,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await;
-            if let Err(error) = capture {
-                rescan.abort(WatchInvalidationReason::BackendError);
-                let _ = persist_session_state(
-                    session,
-                    SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
-                )
-                .await;
-                discard_unpublished_capture(session).await?;
-                return Err(engine(error));
-            }
-            let batch = session.watcher.finish_rescan(rescan).map_err(engine)?;
-            if matches!(
-                batch,
-                WatchBatch::RescanRequired {
-                    reason: WatchInvalidationReason::NativeRescanRequired,
-                    ..
-                }
-            ) && attempt < 3
-            {
-                // Native backends may deliver a coalesced hint from before
-                // this scan after it completes. Never publish the partial
-                // checkout; retry the baseline under the same operation key.
-                discard_unpublished_capture(session).await?;
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                attempt += 1;
-                continue;
-            }
-            break batch;
-        }
-    };
+    let rescan = session.watcher.begin_rescan().map_err(engine)?;
+    let policy = session.capture_policy.clone();
+    if let Err(error) = crate::capture_baseline(
+        &mut session.checkout,
+        &session.capture,
+        &policy,
+        WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
+    )
+    .await
+    {
+        rescan.abort(WatchInvalidationReason::BackendError);
+        let _ = persist_session_state(
+            session,
+            SourceState::NeedsRescan(WatchInvalidationReason::BackendError),
+        )
+        .await;
+        discard_unpublished_capture(session).await?;
+        return Err(engine(error));
+    }
+    // A concurrent native invalidation is an explicit outcome. Never hide it
+    // behind another capture or a wall-clock readiness window.
+    let trailing = session.watcher.finish_rescan(rescan).map_err(engine)?;
     if let WatchBatch::RescanRequired { reason, .. } = trailing {
         let fact =
             persist_source_operation(session, SourceState::NeedsRescan(reason), key, operation)

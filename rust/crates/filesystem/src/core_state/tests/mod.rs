@@ -2,6 +2,7 @@ use super::collection::content_address;
 use super::*;
 use crate::lazy_workspace::MemoryLazyNode;
 use crate::{Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceRootId};
+use std::time::{Duration, Instant};
 
 pub(super) fn unbounded_accounting(
     cancellation: &crate::CancellationToken,
@@ -139,9 +140,9 @@ pub(super) fn ownership_child_acts_on_its_namespace() -> Result<(), Box<dyn std:
     let Some(root) = std::env::var_os("ACYCLIC_CORE_STATE_CHILD_ROOT") else {
         return Ok(());
     };
-    if let Some(ready) = std::env::var_os("ACYCLIC_CORE_STATE_CHILD_READY") {
+    if std::env::var_os("ACYCLIC_CORE_STATE_CHILD_HOLD").is_some() {
         let _owner = LocalCoreStateStore::open_owned(&root)?;
-        std::fs::write(ready, b"ready")?;
+        acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "OWNER_READY")?;
         loop {
             std::thread::park();
         }

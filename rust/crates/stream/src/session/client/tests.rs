@@ -86,9 +86,7 @@ async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(),
 async fn next(
     records: &mut RecordStream,
 ) -> Result<crate::Record, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(tokio::time::timeout(Duration::from_secs(1), records.next())
-        .await?
-        .ok_or("follow ended")??)
+    Ok(records.next().await.ok_or("follow ended")??)
 }
 #[tokio::test]
 async fn public_follow_shares_one_session_and_slow_channels_do_not_block_others() -> TestResult {
@@ -237,20 +235,17 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
             resume: Some(cursor(999)),
         }),
     )))?;
-    tokio::time::timeout(Duration::from_secs(1), started.notified()).await?;
+    started.notified().await;
     // The destination dial is blocked. Unrelated follows must still be live.
     append(&provider, "stay", 1).await?;
     assert_eq!(next(&mut staying).await?.sequence, 1);
     release.send(()).map_err(|_| "dial gate dropped")?;
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        new.until(|counts| {
-            counts
-                .resumes
-                .lock()
-                .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
-        }),
-    )
+    new.until(|counts| {
+        counts
+            .resumes
+            .lock()
+            .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
+    })
     .await?;
     assert_eq!(
         new.counts
@@ -376,7 +371,7 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
     assert_eq!(next(&mut a).await?.sequence, 1);
     assert_eq!(next(&mut b).await?.sequence, 1);
     fixture.reset()?;
-    tokio::time::timeout(Duration::from_secs(1), async {
+    (async {
         loop {
             let changed = fixture.counts.changed.notified();
             if fixture
@@ -392,7 +387,7 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
             changed.await;
         }
     })
-    .await??;
+    .await?;
     let resumed = fixture
         .counts
         .resumes
@@ -503,7 +498,7 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
             .follow(crate::FollowRequest::new(StreamPath::new("unread")?, 0))
             .map_ok(crate::records_only)
             .await?;
-        tokio::time::timeout(Duration::from_secs(1), async {
+        (async {
             loop {
                 let changed = fixture.counts.changed.notified();
                 if fixture.counts.sent.load(Ordering::Relaxed) > before {
@@ -512,7 +507,7 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
                 changed.await;
             }
         })
-        .await?;
+        .await;
         // This marker follows the unread data on the same physical response.
         // Consuming it proves the earlier delivery is buffered in the client.
         append(&memory, "healthy", 1).await?;
@@ -529,33 +524,26 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
 }
 
 #[tokio::test]
-async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResult {
+async fn cancelling_pending_follows_releases_a_silent_handshake() -> TestResult {
     let fixture =
         Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
     let client = fixture.client()?;
-    let one = StreamPath::new("one")?;
-    let two = StreamPath::new("two")?;
-    let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
-        let first = client.follow(crate::FollowRequest::new(one, 0)).map_ok(crate::records_only);
-        let second = client.follow(crate::FollowRequest::new(two, 0)).map_ok(crate::records_only);
+    {
+        let first = client.follow(crate::FollowRequest::new(StreamPath::new("one")?, 0));
+        let second = client.follow(crate::FollowRequest::new(StreamPath::new("two")?, 0));
         futures::pin_mut!(first, second);
-        for attempt in 1..=3 {
-            // Neither logical follow may finish before all physical handshake
-            // attempts have begun. Ordering is independent of elapsed wall time.
-            tokio::select! {
-                biased;
-                _ = fixture.until(|counts| counts.sessions.load(Ordering::Relaxed) >= attempt) => {}
-                _ = &mut first => return Err("first follow ended before the final handshake attempt"),
-                _ = &mut second => return Err("second follow ended before the final handshake attempt"),
-            }
+        tokio::select! {
+            biased;
+            _ = &mut first => return Err("first follow completed without Welcome".into()),
+            _ = &mut second => return Err("second follow completed without Welcome".into()),
+            result = fixture.until(|counts| counts.sessions.load(Ordering::Relaxed) == 1) => result?,
         }
-        Ok(tokio::join!(first, second))
-    })
-    .await??;
-    assert!(matches!(first, Err(StreamError::Unavailable)));
-    assert!(matches!(second, Err(StreamError::Unavailable)));
+    }
+    fixture
+        .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
+        .await?;
     assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
-    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 3);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     Ok(())
 }
 

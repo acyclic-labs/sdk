@@ -21,12 +21,9 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockWriteGuard};
-use std::time::{Duration, Instant};
 use thiserror::Error;
 use uuid::Uuid;
 
-const RECORD_LOCK_DEADLINE: Duration = Duration::from_secs(5);
-const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
 const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
@@ -719,9 +716,6 @@ pub enum LocalCoreStateStoreError {
     /// Native filesystem operation failed.
     #[error("core state I/O failed: {0}")]
     Io(#[source] std::io::Error),
-    /// Another owner held a record lock beyond the bounded transaction deadline.
-    #[error("core state record lock timed out: {}", .0.display())]
-    LockTimeout(PathBuf),
     /// Another store owns the namespace or, when opening an owner, is using it.
     #[error("core state namespace is in use by another store: {}", .0.display())]
     OwnershipConflict(PathBuf),

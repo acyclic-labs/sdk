@@ -58,7 +58,7 @@ impl transport::Transport for ReplacedNode {
 
 #[tokio::test]
 async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    (async {
         let provider = Arc::new(MemoryStream::default());
         append(&provider, "events", 1).await?;
         let endpoint = Arc::new(ReplacedNode {
@@ -89,7 +89,7 @@ async fn same_client_discovers_replacement_after_idle_close() -> TestResult {
         assert_eq!(*endpoint.destinations.lock().unwrap(), ["", ""]);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
-    .await?
+    .await
 }
 
 #[tokio::test]
@@ -269,16 +269,14 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
         .lock()
         .map_err(|_| "fixture node poisoned")? = "replacement".into();
     fixture.reset()?;
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        fixture.until(|counts| {
+    fixture
+        .until(|counts| {
             counts
                 .resumes
                 .lock()
                 .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
-        }),
-    )
-    .await?;
+        })
+        .await?;
     for _ in 2..6 {
         assert_eq!(next(&mut records).await?, next(&mut expected).await?);
     }
@@ -340,7 +338,7 @@ async fn reconnect_pushes_a_generation_without_new_records() -> TestResult {
         .await?;
     let first = connections.changed(0).await?;
     fixture.reset()?;
-    let second = tokio::time::timeout(Duration::from_secs(1), connections.changed(first)).await??;
+    let second = connections.changed(first).await?;
     assert!(second > first);
     Ok(())
 }

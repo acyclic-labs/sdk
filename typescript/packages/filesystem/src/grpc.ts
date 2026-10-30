@@ -25,7 +25,7 @@ export function createFilesystemGrpcClient(options: FilesystemGrpcOptions) {
   };
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
   const transport = createGrpcTransport({
-    sessionManager: session, baseUrl: endpoint.href, defaultTimeoutMs: 30000,
+    sessionManager: session, baseUrl: endpoint.href,
     acceptCompression: [], interceptors: [authenticate],
     readMaxBytes: maximum, writeMaxBytes: maximum,
   });

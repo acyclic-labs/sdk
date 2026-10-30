@@ -321,17 +321,16 @@ impl Helper {
         Ok(())
     }
 
-    pub(in crate::native_mount) fn try_wait(
+    pub(in crate::native_mount) fn wait_exit(
         &mut self,
         meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> io::Result<Option<std::process::ExitStatus>> {
+    ) -> io::Result<std::process::ExitStatus> {
         if let Some(real) = &mut self.real {
-            return real.try_wait(meter);
+            return real.wait_exit(meter);
         }
-        // The child can finish umount while still alive. A pending observation
-        // makes the real wait loop retain custody across that interval. The
-        // separate modeled mutex transitions already explore both sides of
-        // unmount and exit; extra clock yields add only stuttering schedules.
+        // Unmount and exit are separate kernel transitions. The original
+        // recovery fence remains owned through both, including schedules
+        // where a competing opener runs after unmount and before exit.
         if !self.unmounted {
             let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
             if state.mount == Some(1) {
@@ -339,7 +338,6 @@ impl Helper {
             }
             state.mount = None;
             self.unmounted = true;
-            return Ok(None);
         }
         {
             let mut state = self.kernel.as_ref().unwrap().state.lock().unwrap();
@@ -347,7 +345,7 @@ impl Helper {
             state.helper_exited = true;
         }
         self.exited = true;
-        Ok(Some(std::process::ExitStatus::from_raw(0)))
+        Ok(std::process::ExitStatus::from_raw(0))
     }
 
     pub(in crate::native_mount) fn terminate(

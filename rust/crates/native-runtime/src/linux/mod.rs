@@ -8,7 +8,7 @@
 use std::fs::File;
 use std::io;
 use std::os::unix::fs::FileExt;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -152,7 +152,6 @@ pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
 
 const OWNER_THREADS: usize = 4;
 const OWNER_MAILBOX: usize = 16;
-const OWNER_IO_DEADLINE: Duration = Duration::from_secs(30);
 // Each owner retains at most one retired request and its original buffer.
 
 type OwnedReadOp = ReadAt<Slice<Vec<u8>>, SharedFd<Arc<NativeFilePayload>>>;
@@ -167,8 +166,60 @@ enum OwnerJob {
 }
 
 struct OwnerPool {
-    senders: Vec<SyncSender<OwnerJob>>,
+    senders: Vec<OwnerSender>,
     cursor: AtomicUsize,
+}
+
+#[derive(Default)]
+struct OwnerWake {
+    retiring: AtomicBool,
+    driver: Mutex<Option<std::task::Waker>>,
+}
+
+impl OwnerWake {
+    fn notify(&self) {
+        if self.retiring.load(Ordering::SeqCst)
+            && let Some(driver) = &*self
+                .driver
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            driver.wake_by_ref();
+        }
+    }
+}
+
+struct OwnerSender {
+    sender: Option<SyncSender<OwnerJob>>,
+    wake: Arc<OwnerWake>,
+}
+
+impl OwnerSender {
+    fn send(&self, job: OwnerJob) -> Result<(), mpsc::SendError<OwnerJob>> {
+        let Some(sender) = &self.sender else {
+            return Err(mpsc::SendError(job));
+        };
+        sender.send(job)?;
+        self.wake.notify();
+        Ok(())
+    }
+
+    fn try_send(&self, job: OwnerJob) -> Result<(), mpsc::TrySendError<OwnerJob>> {
+        let Some(sender) = &self.sender else {
+            return Err(mpsc::TrySendError::Disconnected(job));
+        };
+        sender.try_send(job)?;
+        self.wake.notify();
+        Ok(())
+    }
+}
+
+impl Drop for OwnerSender {
+    fn drop(&mut self) {
+        // Publish disconnection before waking a driver parked on completion.
+        drop(self.sender.take());
+        self.wake.notify();
+    }
 }
 
 fn owner_pool() -> io::Result<&'static OwnerPool> {
@@ -187,15 +238,20 @@ fn owner_pool() -> io::Result<&'static OwnerPool> {
     let mut threads = Vec::with_capacity(OWNER_THREADS);
     for index in 0..OWNER_THREADS {
         let (sender, receiver) = mpsc::sync_channel(OWNER_MAILBOX);
+        let wake = Arc::new(OwnerWake::default());
+        let runner_wake = Arc::clone(&wake);
         match std::thread::Builder::new()
             .name(format!("acyclic-compio-{index}"))
             .spawn(move || {
-                if std::panic::catch_unwind(|| Owner::new().run(&receiver)).is_err() {
+                if std::panic::catch_unwind(|| Owner::new().run(&receiver, &runner_wake)).is_err() {
                     std::process::abort();
                 }
             }) {
             Ok(thread) => {
-                senders.push(sender);
+                senders.push(OwnerSender {
+                    sender: Some(sender),
+                    wake,
+                });
                 threads.push(thread);
             }
             Err(error) => {

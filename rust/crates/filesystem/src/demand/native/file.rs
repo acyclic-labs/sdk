@@ -18,13 +18,6 @@ type SourceFile = crate::native_host::YieldingFile;
 #[cfg(not(windows))]
 type SourceFile = std::fs::File;
 
-/// How long a read of a file under a root that is not local may take
-const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
-/// Most reads of files under roots that are not local that may be
-const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
-static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
 impl NativeDemandFile {
     fn open(
         provider: NativeDemandSource,
@@ -292,30 +285,7 @@ impl DemandFile for NativeDemandFile {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
         let mut context = callback_work(accounting)?;
-        if self.provider.inner.inline {
-            let result = self.read(offset, length, &mut context);
-            return finish_context(result, context, accounting);
-        }
-        if BLOCKED_REMOTE_READS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_BLOCKED_REMOTE_READS {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-            return Err(DemandError::SourceUnavailable);
-        }
-        let file = self.clone();
-        let (answer, answered) = std::sync::mpsc::sync_channel(1);
-        let spawned = std::thread::Builder::new()
-            .name("acyclic-remote-read".to_owned())
-            .spawn(move || {
-                let result = file.read(offset, length, &mut context);
-                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-                let _ = answer.send((result, context));
-            });
-        if spawned.is_err() {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-            return Err(DemandError::SourceUnavailable);
-        }
-        let (result, context) = answered
-            .recv_timeout(REMOTE_READ_DEADLINE)
-            .map_err(|_| DemandError::SourceUnavailable)?;
+        let result = self.read(offset, length, &mut context);
         finish_context(result, context, accounting)
     }
 }
