@@ -367,13 +367,16 @@ async fn mixed_namespace_batch_uses_candidate_state_and_preserves_base()
     .await
     .err()
     .ok_or("unfunded relation edit succeeded")?;
-    assert!(matches!(
-        denied.error,
-        GenerationMutationError::Work(WorkError::BudgetExceeded {
-            counter: "backend_write_operations",
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            denied.error,
+            GenerationMutationError::Work(WorkError::BudgetExceeded {
+                counter: "backend_write_operations",
+                ..
+            })
+        ),
+        "lost the original write admission cause: {denied:?}"
+    );
     assert_eq!(
         candidate_record(&store, &merged, file_id).await?,
         merged_file

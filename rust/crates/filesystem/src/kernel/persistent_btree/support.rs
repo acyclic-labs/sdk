@@ -240,13 +240,7 @@ where
     }
 }
 
-pub(super) fn storage_error(error: ObjectStoreError) -> crate::FsError {
-    match error {
-        #[cfg(not(target_arch = "wasm32"))]
-        ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
-        error => error.into(),
-    }
-}
+pub(super) use crate::kernel::file_read::read_store_error as storage_error;
 
 pub(super) fn push_summary<K>(
     output: &mut Owned<Vec<Child<K>>>,
