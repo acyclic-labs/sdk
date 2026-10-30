@@ -321,8 +321,8 @@ impl Client {
         Self::tracking(channel, connect, executor, Arc::default())
     }
 
-    /// Like [`Self::with_transport`], raising `revisions`, which outlives this
-    /// pool: a credential change opens a new pool but keeps read-your-writes.
+    /// Like [`Self::with_transport`], raising the supplied causal context.
+    /// Retain it across pool or credential changes to keep read-your-writes.
     pub fn tracking(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,

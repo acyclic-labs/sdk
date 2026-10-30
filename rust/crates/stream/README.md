@@ -10,6 +10,20 @@ loop or connection pool. Forwarding adapters preserve filters, absence policy,
 history fences, deadlines and revisions, including across reconnects. Credentials
 remain transport-owned and never enter record payloads or persisted cursors.
 
+The physical connection is independent of an operation's causal context. Rust
+`grpc::Client::with_revisions` and `session::Client::with_revisions` attach an
+explicit `Arc<RevisionTracker>` while reusing the original transport, credentials
+and Session pool. Clones using the same tracker share observations. Independent
+operations can use distinct trackers on that same pool; their floors do not
+join merely because they share a connection. Active routes retain their original
+tracker through delivery and reconnect. The connection cache retains no tracker.
+
+Retain the same context through every dependent write, read and recovery of an
+ambiguous result. Starting a fresh context supplies no coverage of the previous
+operation's dependencies. Ending an operation releases its context only after
+its last client, route and explicit owner ends; it never resets another context
+or filters an explicit request minimum.
+
 Revision refusals never clear a client's requirements, and a new incarnation
 cannot prove the old incarnation's writes. Explicit reset adoption starts a new
 client frontier. A client spanning independent routes can use

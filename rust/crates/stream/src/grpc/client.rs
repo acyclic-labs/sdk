@@ -34,8 +34,8 @@ impl Client {
     pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
         self.session()
     }
-    /// The revision tracker every route and session pool of this client
-    /// shares, across credential changes.
+    /// This causal context's tracker, shared by its routes across credential
+    /// changes. The physical Session cache owns no revision tracker.
     #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
     pub(crate) fn revisions(
         &self,
