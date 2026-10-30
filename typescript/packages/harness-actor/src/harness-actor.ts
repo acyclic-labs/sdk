@@ -6,8 +6,9 @@ import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch,
 import { BrowserAgentAuthority, BrowserAgentRegistry, type BrowserAgentOptions,
   type BrowserMachinesWorkspace, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
 import { ModelRegistry, type CompactionPolicy, type ModelCredentialResolver, type ProviderSpec } from "@acyclic-labs/harness";
-import { HARNESS_BINDINGS, MODEL_FETCH } from "./bindings.js";
+import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js";
 import { harnessStreamLedger } from "./streams.js";
+export { HarnessActorError } from "./bindings.js";
 
 /** The artifact owner's configuration. Credentials appear only as protected
  * `secrets:/` references inside `model.spec.authentication`. */
@@ -37,13 +38,6 @@ type Bound = Values & { model: ModelCredentialResolver };
 /** Environment selected by the manifest entry, keyed by the descriptor names. */
 export type HarnessBindings = { readonly [K in keyof Values as (typeof HARNESS_BINDINGS)[K]]: Values[K] }
   & { readonly [MODEL_FETCH]: ModelCredentialResolver };
-
-/** Typed refusal: a required platform binding or primitive is not available. */
-export class HarnessActorError extends Error {
-  constructor(readonly code: "failed_precondition", readonly subject: string) {
-    super(`STEP harness-actor failed: ${subject} is not available; recovery: deploy the generated manifest, which selects every harness binding`);
-  }
-}
 
 const required: readonly (readonly [keyof Bound, string])[] = [
   ...(Object.entries(HARNESS_BINDINGS) as [keyof Values, string][]), ["model", MODEL_FETCH]];

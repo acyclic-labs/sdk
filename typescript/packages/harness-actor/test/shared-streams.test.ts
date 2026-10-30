@@ -4,7 +4,8 @@ import { EventStreamLedger, streamLedgerPort, streamProviderPort, WasmStream,
   type EventStorage, type ImmutableObjects, type StreamLedger } from "@acyclic-labs/harness/hosting";
 import { initializeClientQueries } from "../../harness/src/client-query.js";
 import { sharedProviderTree } from "../../harness/test/support/stream-provider-contract.js";
-import { HARNESS_BINDINGS } from "../src/bindings.js";
+import { HARNESS_BINDINGS, MODEL_FETCH } from "../src/bindings.js";
+import { actor } from "../src/harness-actor.js";
 import { harnessStreamLedger } from "../src/streams.js";
 
 beforeAll(initializeClientQueries);
@@ -25,7 +26,10 @@ test("Actor bindings retain the original shared ledger and refuse a port without
   try {
     // A transport-only port has no original placement owner. This refusal
     // precedes registration, publication and any attempt to create an Actor.
-    expect(() => harnessStreamLedger(provider as never, objects)).toThrow("shared placement authority");
+    const unplaced = { ...Object.fromEntries(Object.values(HARNESS_BINDINGS).map(name => [name, {}])),
+      [HARNESS_BINDINGS.streams]: provider, [MODEL_FETCH]: {} };
+    await expect(actor.restore(null, { env: unplaced, actor: { id: "root" } } as never)).rejects
+      .toMatchObject({ code: "failed_precondition", subject: HARNESS_BINDINGS.streams });
     const declaration = { name: HARNESS_BINDINGS.streams, capability: "shared-provider-grant", resource: "streams:/",
       targetAccount: new Uint8Array(), stateTransaction: false };
     const env = await materializeBindings<never, never, never, Pick<StreamLedger, "register" | "dispatch" | "open">>([declaration], {

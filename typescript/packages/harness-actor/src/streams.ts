@@ -1,5 +1,5 @@
 import type { ImmutableObjects, StreamLedger } from "@acyclic-labs/harness/hosting";
-import { HARNESS_BINDINGS } from "./bindings.js";
+import { HARNESS_BINDINGS, HarnessActorError } from "./bindings.js";
 
 /** Bind the original shared ledger and separately admitted Objects capability.
  * The consistency-domain owner retains change publication, placement and wakes;
@@ -7,8 +7,7 @@ import { HARNESS_BINDINGS } from "./bindings.js";
 export function harnessStreamLedger(streams: Pick<StreamLedger, "register" | "dispatch" | "open">,
   objects: ImmutableObjects): StreamLedger {
   if (typeof streams?.register !== "function" || typeof streams.dispatch !== "function" || typeof streams.open !== "function") {
-    throw Object.assign(new Error("STEP harness-streams failed: shared placement authority is unavailable; recovery: bind the admitted consistency domain's original StreamLedger"),
-      { code: "failed_precondition", subject: HARNESS_BINDINGS.streams });
+    throw new HarnessActorError("failed_precondition", HARNESS_BINDINGS.streams);
   }
   return {
     register: (actor, paths) => streams.register(actor, paths),
