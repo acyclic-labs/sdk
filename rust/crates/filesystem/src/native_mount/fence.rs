@@ -324,6 +324,21 @@ impl MountDestinationGuard {
         )
     }
 
+    /// A missing directory names the exact path that was opened.
+    fn missing_destination(
+        path: &Path,
+        error: crate::NativeTreeMaterializationError,
+    ) -> NativeMountError {
+        match &error {
+            crate::NativeTreeMaterializationError::Io(cause)
+                if cause.kind() == std::io::ErrorKind::NotFound =>
+            {
+                NativeMountError::MissingDestination(path.to_path_buf())
+            }
+            _ => error.into(),
+        }
+    }
+
     fn destination_directory(
         destination: &Path,
         allow_nonempty: bool,
@@ -345,7 +360,9 @@ impl MountDestinationGuard {
         };
         let (directory, parent) = if let Some(parent) = recovery_parent {
             (
-                crate::native_host::HostRoot::open(parent, work)?.directory,
+                crate::native_host::HostRoot::open(parent, work)
+                    .map_err(|error| Self::missing_destination(parent, error))?
+                    .directory,
                 None,
             )
         } else {
@@ -360,8 +377,11 @@ impl MountDestinationGuard {
             let leaf = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?;
-            let parent = crate::native_host::HostRoot::open(parent, work)?;
-            let child = parent.open_directory(Path::new(leaf), work)?;
+            let parent = crate::native_host::HostRoot::open(parent, work)
+                .map_err(|error| Self::missing_destination(parent, error))?;
+            let child = parent
+                .open_directory(Path::new(leaf), work)
+                .map_err(|error| Self::missing_destination(destination, error))?;
             (child.directory, Some(parent.directory))
         };
         if !allow_nonempty {

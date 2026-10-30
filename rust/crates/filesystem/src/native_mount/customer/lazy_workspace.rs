@@ -52,8 +52,13 @@ where
         options: MountOptions,
     ) -> Result<LazyMount<A, O, D, S>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view())
-            .await
+        let mount = self
+            .mount(destination.path(), options.for_task_view())
+            .await?;
+        // A failed startup has already dropped the issuance, removing what
+        // it created; from here the session owns it until it retires.
+        super::lifecycle::own_view_destination(&mount.session, destination);
+        Ok(mount)
     }
 
     /// Mounts the actual sparse source without scanning unresolved

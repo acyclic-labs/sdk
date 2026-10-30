@@ -21,6 +21,8 @@ pub struct NativeMountSession {
     pub(super) namespace_outcome: Option<projfs::ProjFsNamespaceOutcome>,
     // Destination data and all native owners physically drop before its guard.
     pub(super) _destination_custody: Option<crate::NativeAllocation>,
+    // A task view's issued directory drops last, after its mount has retired.
+    pub(super) view_destination: Option<super::IssuedDestination>,
 }
 
 /// Synchronous SDK controls that async callers submit to an owned worker.
@@ -68,6 +70,7 @@ impl NativeMountSession {
             #[cfg(windows)]
             namespace_outcome: None,
             _destination_custody: destination_custody,
+            view_destination: None,
         }
     }
 
@@ -419,14 +422,21 @@ impl NativeMountSession {
         self.measured_cleanup_failed = result.is_err();
         result
     }
+    /// Takes ownership of a task view's issued directory, which drops only
+    /// after this session's native namespace has retired.
+    pub(crate) fn own_view_destination(&mut self, destination: super::IssuedDestination) {
+        self.view_destination = Some(destination);
+    }
+
     pub(super) fn prepare_destination_cleanup(
         &mut self,
         work: &NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        if self.request.shared {
+        if self.request.shared || self.view_destination.is_some() {
             // A shared view owns a namespace lease, not a mount destination.
             // Its driver retires that lease; only the shared instance may
             // clean up the physical root and release its destination fence.
+            // An issued view directory is removed by its own issuance.
             return Ok(());
         }
         if let Some(guard) = self.destination_guard.as_mut() {

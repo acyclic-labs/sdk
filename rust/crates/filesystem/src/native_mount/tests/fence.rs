@@ -93,6 +93,43 @@ fn destination_fences_survive_ancestor_relocation_and_retire_through_original_pa
 }
 
 #[test]
+fn a_missing_destination_or_parent_is_named_exactly() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(error, _)| error)?;
+    let parent = root.path().join("parent");
+    let leaf = parent.join("mount");
+    let attempt = |destination: &Path| {
+        let mut guard = None;
+        let result =
+            MountDestinationGuard::acquire_with_work(destination, false, &work, &mut guard, false);
+        assert!(guard.is_none());
+        result
+    };
+    // Missing parent: the parent is the path that was opened.
+    match attempt(&leaf) {
+        Err(NativeMountError::MissingDestination(path)) => assert_eq!(path, parent),
+        other => panic!("missing parent was not named: {other:?}"),
+    }
+    // Missing leaf in an existing parent names the destination itself.
+    std::fs::create_dir(&parent)?;
+    match attempt(&leaf) {
+        Err(NativeMountError::MissingDestination(path)) => assert_eq!(path, leaf),
+        other => panic!("missing destination was not named: {other:?}"),
+    }
+    // Control: once it exists, the same destination is fenced.
+    std::fs::create_dir(&leaf)?;
+    let mut guard = None;
+    MountDestinationGuard::acquire_with_work(&leaf, false, &work, &mut guard, false)?;
+    let mut guard = guard.ok_or("destination was not fenced")?;
+    guard.prepare_destination_cleanup(&leaf, &work)?;
+    guard.remove_destination()?;
+    guard.release(&mut &work)?;
+    assert!(!leaf.exists());
+    Ok(())
+}
+
+#[test]
 fn a_mount_cannot_cover_its_ownership_registry() -> Result<(), Box<dyn std::error::Error>> {
     let registry = registry::path()?;
     let directory = registry.parent().unwrap();

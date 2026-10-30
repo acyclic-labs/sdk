@@ -45,5 +45,5 @@ pub(super) mod views;
 
 #[cfg(windows)]
 pub(super) use root::claim_issued_destination;
-pub(crate) use root::shared_view_destination;
+pub(crate) use root::{IssuedDestination, shared_view_destination};
 pub use root::{shared_view_namespace_contains, shared_view_root, shared_view_root_in};

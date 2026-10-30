@@ -115,9 +115,11 @@ async fn command_completion_publishes_once_with_an_independent_duplicate_sync_co
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+// Every task-view backend: Linux shares one instance, macOS mounts each view
+// at a directory issued for it. Each view's retirement removes only its path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test]
-async fn shared_command_completion_and_abandon_retire_only_their_view()
+async fn view_completion_unmount_and_abandon_retire_only_their_view()
 -> Result<(), Box<dyn std::error::Error>> {
     crate::initialize_native_mount_services()?;
     let cancellation = crate::CancellationToken::new();
@@ -139,10 +141,17 @@ async fn shared_command_completion_and_abandon_retire_only_their_view()
         &workspace,
         MountOptions::read_write()
             .publication(MountPublication::Manual)
-            .view_root(admission),
+            .view_root(admission.clone()),
     )
     .await?;
     let retained = workspace.mount_view(options.clone()).await?;
+    // A startup that fails after issuance leaves nothing behind: the view's
+    // issuance owns its directory from creation, not from a successful mount.
+    let listed = || std::fs::read_dir(root.path()).map(Iterator::count);
+    let before = listed()?;
+    let unauthorized = MountOptions::read_write().view_root(admission);
+    assert!(workspace.mount_view(unauthorized).await.is_err());
+    assert_eq!(listed()?, before);
     let completed = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), completed.path().parent());
     std::fs::write(retained.path().join("still-live.txt"), b"retained")?;
@@ -174,7 +183,7 @@ async fn shared_command_completion_and_abandon_retire_only_their_view()
         b"retained"
     );
 
-    let abandoned = workspace.mount_view(options).await?;
+    let abandoned = workspace.mount_view(options.clone()).await?;
     assert_eq!(retained.path().parent(), abandoned.path().parent());
     std::fs::write(abandoned.path().join("result.txt"), b"unverified")?;
     abandoned.abandon_command()?;
@@ -190,6 +199,11 @@ async fn shared_command_completion_and_abandon_retire_only_their_view()
         std::fs::read(retained.path().join("still-live.txt"))?,
         b"retained"
     );
+    let unmounted = workspace.mount_view(options).await?;
+    assert_eq!(retained.path().parent(), unmounted.path().parent());
+    assert!(unmounted.path().is_dir());
+    unmounted.unmount().await?;
+    assert!(!unmounted.path().exists());
     retained.abandon_command()?;
     assert!(!retained.path().exists());
     Ok(())

@@ -80,19 +80,7 @@ where
         self.sync().await?;
         self.advance_to_head().await?;
         if retire {
-            let work = self
-                .source
-                .native_original_work()?
-                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-            {
-                let mut owner = self
-                    .session
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if let Some(session) = owner.as_mut() {
-                    session.prepare_destination_cleanup(&work)?;
-                }
-            }
+            self.prepare_command_cleanup()?;
             self.detach()?;
         }
         Ok(())
@@ -121,18 +109,7 @@ where
     }
 
     fn prepare_command_cleanup(&self) -> Result<(), MountLifecycleError> {
-        let work = self
-            .source
-            .native_original_work()?
-            .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?;
-        let mut owner = self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(session) = owner.as_mut() {
-            session.prepare_destination_cleanup(&work)?;
-        }
-        Ok(())
+        prepare_destination_cleanup(&self.session, self.source.as_ref())
     }
 
     /// Synchronously publishes and detaches for foreign-runtime worker threads.
@@ -208,8 +185,13 @@ where
         options: MountOptions,
     ) -> Result<Mount<A, O>, MountLifecycleError> {
         let destination = super::super::shared_view_destination(options.view_root.as_deref())?;
-        self.mount(destination.path(), options.for_task_view())
-            .await
+        let mount = self
+            .mount(destination.path(), options.for_task_view())
+            .await?;
+        // A failed startup has already dropped the issuance, removing what
+        // it created; from here the session owns it until it retires.
+        own_view_destination(&mount.session, destination);
+        Ok(mount)
     }
 
     /// Mounts the complete workspace or one exact subtree as a native
