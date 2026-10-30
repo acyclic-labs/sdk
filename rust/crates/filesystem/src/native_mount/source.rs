@@ -600,9 +600,6 @@ pub enum MountSourceError {
     /// A native operation is unsupported before dispatch.
     #[error("native operation is unsupported")]
     NativeUnsupported,
-    /// Existing publication attempt exhausted its bounded rebase loop.
-    #[error("publication raced with repeated head advances; retry retained operation")]
-    PublicationRetryLimit,
     /// Original fallible allocation failure, without allocating a diagnostic.
     #[error("native source allocation failed: {0}")]
     Allocation(#[from] std::collections::TryReserveError),

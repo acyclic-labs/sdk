@@ -131,8 +131,8 @@ async function assertRawCheckoutInputBounds(checkout) {
     ["applyTransaction oversized", () => checkout.applyTransaction(oversizedOperations)],
     ["lookupBatchNoFollow null", () => checkout.lookupBatchNoFollow(null)],
     ["lookupBatchNoFollow oversized", () => checkout.lookupBatchNoFollow(oversizedPaths)],
-    ["mutateLive null", () => checkout.mutateLive(null, new Uint8Array(16), 1, 1)],
-    ["mutateLive oversized", () => checkout.mutateLive(oversizedOperations, new Uint8Array(16), 1, 1)],
+    ["mutateLive null", () => checkout.mutateLive(null, new Uint8Array(16))],
+    ["mutateLive oversized", () => checkout.mutateLive(oversizedOperations, new Uint8Array(16))],
     ["resolveFiles null", () => checkout.resolveFiles(null)],
     ["resolveFiles oversized", () => checkout.resolveFiles(oversizedPaths)],
   ];

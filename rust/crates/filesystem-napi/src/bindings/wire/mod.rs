@@ -315,6 +315,7 @@ pub(in crate::bindings) fn live_outcome_resolved(outcome: &LiveMutationOutcome) 
         LiveMutationOutcome::Committed { .. }
             | LiveMutationOutcome::AlreadyCommitted { .. }
             | LiveMutationOutcome::IdempotencyConflict { .. }
+            | LiveMutationOutcome::Conflict { .. }
     )
 }
 
