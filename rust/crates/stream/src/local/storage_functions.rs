@@ -16,11 +16,10 @@ fn lock_root(
 
 /// The largest frame the journal holds: length prefix, commit timestamp, command
 fn maximum_frame_bytes() -> usize {
-    JOURNAL_FRAME.maximum_frame_bytes() as usize
+    usize::try_from(JOURNAL_FRAME.maximum_frame_bytes()).unwrap_or(usize::MAX)
 }
 
 /// The bytes of the frame whose length prefix is `length_bytes`.
 fn frame_bytes(length_bytes: &[u8; 4]) -> u64 {
     JOURNAL_FRAME.frame_bytes(u64::from(u32::from_le_bytes(*length_bytes)))
 }
-

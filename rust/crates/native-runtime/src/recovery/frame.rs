@@ -70,10 +70,16 @@ impl LogFrame {
     /// The checksum of a frame whose prefix and body are given.
     #[must_use]
     pub fn checksum(&self, prefix: &[u8], body: &[u8]) -> [u8; Self::CHECKSUM_BYTES] {
+        self.checksum_parts(prefix, &[body])
+    }
+
+    fn checksum_parts(&self, prefix: &[u8], body: &[&[u8]]) -> [u8; Self::CHECKSUM_BYTES] {
         let mut hasher = Sha256::new();
         hasher.update(self.domain);
         hasher.update(prefix);
-        hasher.update(body);
+        for part in body {
+            hasher.update(part);
+        }
         hasher.finalize().into()
     }
 
@@ -81,14 +87,13 @@ impl LogFrame {
     pub fn encode(&self, parts: &[&[u8]], out: &mut Vec<u8>) -> io::Result<()> {
         let body = parts.iter().map(|part| part.len() as u64).sum::<u64>();
         let (prefix, width) = self.prefix(body).ok_or(io::ErrorKind::InvalidInput)?;
-        let start = out.len();
+        let prefix = prefix.get(..width).ok_or(io::ErrorKind::InvalidInput)?;
         out.reserve(usize::try_from(self.frame_bytes(body)).map_err(io::Error::other)?);
-        out.extend_from_slice(&prefix[..width]);
+        out.extend_from_slice(prefix);
         for part in parts {
             out.extend_from_slice(part);
         }
-        let checksum = self.checksum(&out[start..start + width], &out[start + width..]);
-        out.extend_from_slice(&checksum);
+        out.extend_from_slice(&self.checksum_parts(prefix, parts));
         Ok(())
     }
 
@@ -96,7 +101,10 @@ impl LogFrame {
     #[must_use]
     pub fn is_valid(&self, bytes: &[u8]) -> bool {
         let width = self.prefix_bytes();
-        let Some(length) = bytes.get(..width).and_then(|prefix| self.body_length(prefix)) else {
+        let Some(prefix) = bytes.get(..width) else {
+            return false;
+        };
+        let Some(length) = self.body_length(prefix) else {
             return false;
         };
         let Ok(length) = usize::try_from(length) else {
@@ -107,7 +115,7 @@ impl LogFrame {
         };
         bytes
             .get(width + length..width + length + Self::CHECKSUM_BYTES)
-            .is_some_and(|checksum| checksum == self.checksum(&bytes[..width], body))
+            .is_some_and(|checksum| checksum == self.checksum(prefix, body))
     }
 
     /// Reads the frame at `reader`'s cursor, `remaining` bytes before the
@@ -118,8 +126,9 @@ impl LogFrame {
             return Ok(None);
         }
         let mut prefix = [0; 8];
-        reader.read_exact(&mut prefix[..width])?;
-        let Some(length) = self.body_length(&prefix[..width]) else {
+        let prefix = prefix.get_mut(..width).ok_or(io::ErrorKind::InvalidInput)?;
+        reader.read_exact(prefix)?;
+        let Some(length) = self.body_length(prefix) else {
             return Ok(None);
         };
         if remaining < self.frame_bytes(length) {
@@ -129,7 +138,7 @@ impl LogFrame {
         reader.read_exact(&mut body)?;
         let mut checksum = [0; Self::CHECKSUM_BYTES];
         reader.read_exact(&mut checksum)?;
-        Ok((self.checksum(&prefix[..width], &body) == checksum).then_some(body))
+        Ok((self.checksum(prefix, &body) == checksum).then_some(body))
     }
 }
 
@@ -157,11 +166,11 @@ mod tests {
             assert_eq!(frame.len() as u64, format.frame_bytes(5));
             assert!(format.is_valid(&frame));
             for cut in 0..frame.len() {
-                assert!(!format.is_valid(&frame[..cut]), "cut at {cut}");
+                assert!(!format.is_valid(frame.get(..cut).unwrap()), "cut at {cut}");
             }
             for flipped in 0..frame.len() {
                 let mut damaged = frame.clone();
-                damaged[flipped] ^= 1;
+                *damaged.get_mut(flipped).unwrap() ^= 1;
                 assert!(!format.is_valid(&damaged), "flip at {flipped}");
             }
         }

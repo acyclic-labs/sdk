@@ -366,15 +366,14 @@ fn decode(body: &[u8]) -> Option<(u8, &str, Range<usize>)> {
     }
 }
 
-fn read_exact_at(file: &std::fs::File, offset: u64, mut out: &mut [u8]) -> std::io::Result<()> {
-    let mut offset = offset;
-    while !out.is_empty() {
-        let read = acyclic_native_runtime::read_at(file, offset, out)?;
+fn read_exact_at(file: &std::fs::File, offset: u64, out: &mut [u8]) -> std::io::Result<()> {
+    let mut done = 0;
+    while let Some(rest) = out.get_mut(done..).filter(|rest| !rest.is_empty()) {
+        let read = acyclic_native_runtime::read_at(file, offset + done as u64, rest)?;
         if read == 0 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
-        out = &mut out[read..];
-        offset += read as u64;
+        done += read;
     }
     Ok(())
 }
@@ -797,7 +796,7 @@ mod isolation_tests {
             std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
             // The owner never closed.
             std::fs::write(copy.path().join(OPEN), b"").unwrap();
-            std::fs::write(copy.path().join(LOG), &written[..cut]).unwrap();
+            std::fs::write(copy.path().join(LOG), written.get(..cut).unwrap()).unwrap();
             let reopened = LocalMedium::open(copy.path(), LocalObjectsLimits::default(), None)
                 .await
                 .unwrap();
@@ -828,7 +827,7 @@ mod isolation_tests {
         let written = std::fs::read(root.path().join(LOG)).unwrap();
         let damaged = |at: usize| {
             let mut damaged = written.clone();
-            damaged[at] ^= 1;
+            *damaged.get_mut(at).unwrap() ^= 1;
             std::fs::write(root.path().join(LOG), damaged).unwrap();
         };
         // A clean close leaves no torn frame, so damage at the end is corrupt.
