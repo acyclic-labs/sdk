@@ -254,7 +254,10 @@ name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
  "acyclic-proto-build",
+ "acyclic-protobuf-json",
  "prost",
+ "prost-reflect",
+ "serde_json",
  "sha2 0.11.1",
  "tracing",
 ]

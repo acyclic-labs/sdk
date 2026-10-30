@@ -5,6 +5,7 @@ target here does not register a scheduled check.
 | --- | --- |
 | `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects, Streams and Harness, including session messages, the protocol handshake and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. Every Auth and Actors entry also exercises its semantic admission and semantic decode/encode round trip, including grant, certificate, revocation, caller, attribute, deployment, binding, subscription and invocation validation. |
 | `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. The resulting binary projection reaches the same typed and semantic checks as `protobuf`, including every Auth and Actors conversion. |
+| `inference_http` | The actual route-specific HTTP request decoder and response wire decoder/JSON writer for every declared Inference route, including each watch event. Request/response normalization preserves JSON identity within both transport ceilings; trailing requests and impossible routes refuse. The first eight bytes select the route and direction. Public semantic joins remain distinct from HTTP serialization. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
 | `session_protocol` | Actual session admission and dispatch, including arbitrary first Hello, typed version refusal before credentials, initial interests and request-producer closure. |
 | `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, memory and local snapshot containers, incarnations, retained retry observations, committed envelopes, semantic records, compressed read batches and change records. File and memory frame readers must agree. |
@@ -157,6 +158,7 @@ cargo +nightly fuzz run ids -- -max_total_time=30
 cargo +nightly fuzz run auth -- -max_total_time=30
 cargo +nightly fuzz run identities -- -max_total_time=30
 cargo +nightly fuzz run actor_codecs -- -max_total_time=30
+cargo +nightly fuzz run inference_http -- -max_total_time=30
 cargo +nightly fuzz run filesystem_codecs -- -max_total_time=30
 cargo +nightly fuzz run filesystem_pages -- -max_total_time=30
 cargo +nightly fuzz run machine_journal -- -max_total_time=30
