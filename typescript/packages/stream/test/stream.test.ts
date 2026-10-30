@@ -896,7 +896,7 @@ describe("website Stream contract", () => {
       const next = iterator.next();
       await checkpoint();
       expect(timers.size).toBe(0);
-      expect(created).toBe(2); // Cleared Welcome and logical registration deadlines.
+      expect(created).toBe(0);
       socket.node.append("events");
       await expect(next).resolves.toMatchObject({ done: false, value: { sequence: 1n } });
       controller.abort();
@@ -904,7 +904,7 @@ describe("website Stream contract", () => {
       expect(added).toBe(removed);
       expect(socket.node.active).toBe(0);
       expect(timers.size).toBe(0);
-      expect(created).toBe(2);
+      expect(created).toBe(0);
     } finally {
       controller.abort(); socket.close();
       globalThis.setTimeout = originalTimeout;
