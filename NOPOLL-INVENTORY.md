@@ -2378,9 +2378,9 @@ Excluded: `harness`, `harness-core`, `harness-tui`, `harness-client`, and `types
 
 | Gap / audit finding | Code / mechanism | Existing arbitrary bound | Status |
 |---|---|---|---|
-| G63/G65, PLATFORM-7 | `stream/src/memory/memory_limits.rs`, `capacity.rs`, replay admission | 100k paths; 64 MiB path bytes; 1m records, commits and replay identities; 256 MiB payload | Open |
-| G63/G65, PLATFORM-7 | `stream/src/local/local_stream_limits.rs`, local journal/recovery | 1m commands; 1 GiB journal | Open |
-| G63/G65, clients-26 | Stream WASM/IndexedDB and TS `stream/src/memory.ts` | 65,536 commands; 256 MiB journal | Open |
+| G63/G65, PLATFORM-7 | `stream/src/memory/memory_limits.rs`, `capacity.rs`, replay admission | 100k paths; 64 MiB path bytes; 1m records, commits and replay identities; 256 MiB payload | Actioned: six optional caller capacities default to None through admission, snapshots and WASM. Explicit small-capacity atomicity/replay/funding controls retained. Fixed-key namespace/replay indexing obligations remain pending. |
+| G63/G65, PLATFORM-7 | `stream/src/local/local_stream_limits.rs`, local journal/recovery | 1m commands; 1 GiB journal | Actioned: removed journal admission/replay refusals; retained compaction_operations/compaction_bytes as maintenance triggers. Original append and exact replay survive reopen beyond a selected compaction target. Presence bits retain exact optional capacities in one header/snapshot format. |
+| G63/G65, clients-26 | Stream WASM/IndexedDB and TS `stream/src/memory.ts` | 65,536 commands; 256 MiB journal | Actioned: BrowserStreamLimits and JournalStreamLimits retain None through ports and original JS/WASM boundary. Persisted configuration encodes presence explicitly; no fallback totals. |
 | G63, PLATFORM-7/22 | Stream client/session/command envelopes | MAX_ITEMS applied to logical append/commit/membership; queue overload refusal instead of credit | Open; distinguish wire pages/frames |
 | G64, FS-21 | `filesystem/src/model.rs` and kernel consumers | path 32 KiB; depth 1,024; object 64 MiB; mutations 2,048; lookup batch 65,536; dependencies 262,144; read 16 MiB; files 16m; objects 64m; generation 1 TiB | Open |
 | G64, PLATFORM-10 / FS-21 | `filesystem/src/logical_objects` | 5 GiB object fallback | Open |
