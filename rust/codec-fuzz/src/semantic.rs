@@ -291,10 +291,11 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             admission!(w::ReadResponse, c::read_response_records);
         }
         "acyclic.objects.v1.AvailabilityCursor" => {
-            super::check_semantic::<
-                acyclic_objects::wire::AvailabilityCursor,
-                acyclic_objects::AvailabilityCursor,
-            >(bytes);
+            project(
+                bytes,
+                acyclic_objects::AvailabilityCursor::try_from,
+                acyclic_objects::wire::AvailabilityCursor::from,
+            );
         }
         "inference.customer.v1.RetainWarmRequest" => {
             inference::<acyclic_inference::wire::RetainWarmRequest>(
