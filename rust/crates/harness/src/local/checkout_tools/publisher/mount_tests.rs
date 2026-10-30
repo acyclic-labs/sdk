@@ -130,7 +130,7 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
         };
         super::tests::PUBLISH_TO_INITIAL_MOUNT.set(broken);
         let staged = publisher
-            .stage(
+            .stage_once(
                 operation,
                 "branch.txt",
                 bytes,
