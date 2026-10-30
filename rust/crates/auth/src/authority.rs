@@ -404,6 +404,10 @@ fn permits_canonical<const CURRENT: bool>(
                     })
             }
             CaveatKind::Limits(limits) => limits_allow(limits, r.usage),
+            CaveatKind::Allowance(signed) => {
+                (CURRENT || r.now_unix_seconds < signed.allowance.expires_at_unix_seconds)
+                    && r.usage.spend_micros.unwrap_or(0) <= signed.allowance.spend_micros
+            }
             CaveatKind::LineageAppend(_) | CaveatKind::MaxDepth(_) | CaveatKind::Label(_) => true,
         })
     })

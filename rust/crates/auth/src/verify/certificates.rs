@@ -113,7 +113,7 @@ impl CertificateVerifier {
             seen.insert(public_key(key)?.to_bytes());
         }
         seen.insert(public_key(&birth.genesis_public_key)?.to_bytes());
-        for key in trust.account(&birth.account_id)?.issuer_keys {
+        for key in trust.account(&birth.account_id)?.issuer_keys.iter() {
             seen.insert(public_key(key)?.to_bytes());
         }
         for certificate in &certificates.keys {

@@ -8,7 +8,12 @@
 // with the certified leaf, and block k with block k-1.next_public_key.
 // Certificate signatures use BIRTH_DOMAIN / KEY_DOMAIN followed by canonical
 // protobuf claims; snapshots use KEYRING_DOMAIN followed by canonical snapshot.
-// Domains are acyclic.auth.v1/{birth,key,keyring} followed by a NUL byte.
+// Domains are acyclic.auth.v1/{birth,key,keyring,environment,allowance}
+// followed by a NUL byte. Environment keys sign Births, account keyrings and
+// allowances; the single keyring root signs KeyCertificates and revocations.
+// Allowance caveats are verified offline against environment trust.
+// Trust Streams: trust/v1/<env> carries environment keyrings; its child
+// trust/v1/<env>/accounts/<account> carries keyrings and revocations in order.
 // Canonical ingress rejects unknown/duplicate fields and misplaced certificates.
 // Check ALL ancestor key ids/epochs and parent_revocation_ids, not just the leaf.
 // A revoked block or online key invalidates every descendant. Online issuance

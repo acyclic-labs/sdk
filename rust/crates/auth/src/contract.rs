@@ -276,7 +276,7 @@ pub struct Holder {
 #[derive(Clone, Debug, PartialEq, TS)]
 pub struct Caveat {
     /// Fixed caveat vocabulary.
-    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11")]
+    #[wire(oneof = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12")]
     pub kind: CaveatKind,
 }
 
@@ -407,6 +407,9 @@ pub enum CaveatKind {
     /// Advisory label scoped to this block revocation id; never authority.
     #[wire(tag = 11, string)]
     Label(String),
+    /// Environment-signed spend allowance; the minimum over all applies.
+    #[wire(tag = 12, message)]
+    Allowance(SignedAllowance),
 }
 
 /// Typed `TipProof` cases. Unknown wire cases are rejected.
@@ -438,10 +441,15 @@ pub enum TipProof {
         RevocationProto,
         KeyringSnapshotProto,
         SignedKeyringSnapshotProto,
+        EnvironmentKeyringProto,
+        SignedEnvironmentKeyringProto,
+        AllowanceProto,
+        SignedAllowanceProto,
         KeyRevocationProto,
         RevocationDeltaProto,
         RevocationCheckpointProto,
         SignedRevocationProto,
+        TrustRecordProto,
         AuditRecordProto,
         ResourcePatternProto,
         ResourceGrantProto,

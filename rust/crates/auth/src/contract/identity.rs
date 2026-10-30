@@ -193,7 +193,97 @@ pub struct SignedKeyringSnapshot {
     /// Canonical published state.
     #[wire(tag = 1, message)]
     pub snapshot: KeyringSnapshot,
-    /// Ed25519 account-root signature over `KEYRING_DOMAIN` and canonical snapshot.
+    /// Ed25519 environment-key signature over `KEYRING_DOMAIN` and canonical
+    /// snapshot. The environment attests each account root; rotation ends the
+    /// previous root.
+    #[wire(tag = 2, bytes)]
+    pub signature: Vec<u8>,
+}
+
+/// Followed environment anchor. Sequence 1 has a zero previous digest and is
+/// signed by a pinned anchor key; each later keyring is signed by a key of the
+/// previous one. `keys` replaces the trusted environment set.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::environment_keyring)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct EnvironmentKeyring {
+    /// Trust environment.
+    #[wire(tag = 1, string)]
+    pub environment: String,
+    /// Strictly consecutive, starting at 1.
+    #[wire(tag = 2, uint64)]
+    pub sequence: u64,
+    /// 32-byte digest of the previous signed keyring; zero at sequence 1.
+    #[wire(tag = 3, bytes)]
+    pub previous_digest: Vec<u8>,
+    /// Current and still-trusted historical environment keys, 32 bytes each.
+    #[wire(tag = 4, bytes)]
+    pub keys: Vec<Vec<u8>>,
+    /// Monotone Unix seconds, UTC.
+    #[wire(tag = 5, uint64)]
+    pub issued_at_unix_seconds: u64,
+}
+
+/// Authenticated environment anchor publication.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::signed_environment)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct SignedEnvironmentKeyring {
+    /// Canonical published anchor.
+    #[wire(tag = 1, message)]
+    pub keyring: EnvironmentKeyring,
+    /// Ed25519 over `ENVIRONMENT_DOMAIN` and canonical keyring.
+    #[wire(tag = 2, bytes)]
+    pub signature: Vec<u8>,
+}
+
+/// One record of a followed trust Stream. The environment Stream carries
+/// environment keyrings; each account Stream carries that account's keyring
+/// snapshots and revocations, totally ordered.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct TrustRecord {
+    /// Exactly one signed publication.
+    #[wire(oneof = "1, 2, 3")]
+    pub record: TrustRecordKind,
+}
+
+/// Signed trust publications.
+#[acyclic_contract_derive::oneof(error = Error, file = AuthFile)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub enum TrustRecordKind {
+    /// Environment anchor rotation.
+    #[wire(tag = 1, message)]
+    Environment(SignedEnvironmentKeyring),
+    /// Account root and epoch floor.
+    #[wire(tag = 2, message)]
+    Keyring(SignedKeyringSnapshot),
+    /// Account revocation delta or checkpoint.
+    #[wire(tag = 3, message)]
+    Revocation(SignedRevocation),
+}
+
+/// Environment-attested spend allowance, verified offline in the chain.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct Allowance {
+    /// Account whose Birth the chain presents.
+    #[wire(tag = 1, string)]
+    pub account_id: String,
+    /// Spend ceiling in account currency micros.
+    #[wire(tag = 2, uint64)]
+    pub spend_micros: u64,
+    /// Exclusive Unix seconds, UTC.
+    #[wire(tag = 3, uint64)]
+    pub expires_at_unix_seconds: u64,
+}
+
+/// Allowance signed by a trusted environment key.
+#[acyclic_contract_derive::message(error = Error, file = AuthFile, post = crate::validation::signed_allowance)]
+#[derive(Clone, Debug, PartialEq, TS)]
+pub struct SignedAllowance {
+    /// Canonical allowance.
+    #[wire(tag = 1, message)]
+    pub allowance: Allowance,
+    /// Ed25519 over `ALLOWANCE_DOMAIN` and canonical allowance.
     #[wire(tag = 2, bytes)]
     pub signature: Vec<u8>,
 }

@@ -8,7 +8,12 @@
 // with the certified leaf, and block k with block k-1.next_public_key.
 // Certificate signatures use BIRTH_DOMAIN / KEY_DOMAIN followed by canonical
 // protobuf claims; snapshots use KEYRING_DOMAIN followed by canonical snapshot.
-// Domains are acyclic.auth.v1/{birth,key,keyring} followed by a NUL byte.
+// Domains are acyclic.auth.v1/{birth,key,keyring,environment,allowance}
+// followed by a NUL byte. Environment keys sign Births, account keyrings and
+// allowances; the single keyring root signs KeyCertificates and revocations.
+// Allowance caveats are verified offline against environment trust.
+// Trust Streams: trust/v1/<env> carries environment keyrings; its child
+// trust/v1/<env>/accounts/<account> carries keyrings and revocations in order.
 // Canonical ingress rejects unknown/duplicate fields and misplaced certificates.
 // Check ALL ancestor key ids/epochs and parent_revocation_ids, not just the leaf.
 // A revoked block or online key invalidates every descendant. Online issuance
@@ -92,6 +97,12 @@ message AdmittedCapability {
   bytes workload = 1;
   bytes receipt = 2;
   uint64 admitted_at_unix_seconds = 3;
+}
+
+message Allowance {
+  string account_id = 1;
+  uint64 spend_micros = 2;
+  uint64 expires_at_unix_seconds = 3;
 }
 
 message Attribute {
@@ -194,6 +205,7 @@ message Caveat {
     Limits limits = 9;
     uint32 max_depth = 10;
     string label = 11;
+    SignedAllowance allowance = 12;
   }
 }
 
@@ -212,6 +224,14 @@ message CertifiedKey {
   Principal principal = 7;
   optional string parent_key_id = 8;
   repeated bytes parent_revocation_ids = 9;
+}
+
+message EnvironmentKeyring {
+  string environment = 1;
+  uint64 sequence = 2;
+  bytes previous_digest = 3;
+  repeated bytes keys = 4;
+  uint64 issued_at_unix_seconds = 5;
 }
 
 message ExecutionGrant {
@@ -345,8 +365,18 @@ message RevocationDelta {
   optional uint64 revoke_all_before_epoch = 7;
 }
 
+message SignedAllowance {
+  Allowance allowance = 1;
+  bytes signature = 2;
+}
+
 message SignedBlock {
   bytes payload = 1;
+  bytes signature = 2;
+}
+
+message SignedEnvironmentKeyring {
+  EnvironmentKeyring keyring = 1;
   bytes signature = 2;
 }
 
@@ -383,6 +413,14 @@ message SubjectReference {
   oneof kind {
     SubjectId id = 1;
     SubjectLineage lineage = 2;
+  }
+}
+
+message TrustRecord {
+  oneof record {
+    SignedEnvironmentKeyring environment = 1;
+    SignedKeyringSnapshot keyring = 2;
+    SignedRevocation revocation = 3;
   }
 }
 

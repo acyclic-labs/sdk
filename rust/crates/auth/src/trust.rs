@@ -1,6 +1,10 @@
 //! Public trust snapshots shared by native and WebAssembly capability holders.
 use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
+mod follower;
+mod issuer;
+pub use follower::{Applied, Follower, account_path, environment_path};
+pub use issuer::{AccountRoot, Certification, Issuer};
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -30,9 +34,9 @@ pub fn block_ids(bytes: &[u8]) -> Result<Vec<BlockId>, VerifyError> {
 }
 
 impl Trust for Snapshot {
-    fn environment_keys(&self, environment: &str) -> Result<&[BlockId], VerifyError> {
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
         if environment == self.environment && !self.environment_keys.is_empty() {
-            Ok(&self.environment_keys)
+            Ok((&self.environment_keys).into())
         } else {
             Err(VerifyError::Trust)
         }
@@ -41,7 +45,7 @@ impl Trust for Snapshot {
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
         if account == self.account && !self.issuer_keys.is_empty() {
             Ok(AccountState {
-                issuer_keys: &self.issuer_keys,
+                issuer_keys: (&self.issuer_keys).into(),
                 minimum_key_epoch: self.minimum_key_epoch,
                 not_before_unix_seconds: 0,
             })

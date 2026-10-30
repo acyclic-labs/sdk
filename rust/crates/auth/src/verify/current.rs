@@ -121,7 +121,7 @@ where
         if self.next_keys.any(|next| {
             environments
                 .iter()
-                .chain(account.issuer_keys)
+                .chain(account.issuer_keys.iter())
                 .any(|key| next == key)
         }) {
             return Err(VerifyError::RepeatedKey);
