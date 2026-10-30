@@ -102,6 +102,10 @@ pub struct Entry {
     pub runtime: EntryRuntime,
     /// Optional scoped HTTPS handle; absence denies outbound HTTPS.
     pub fetch: Option<FetchBinding>,
+    /// Credentialed HTTPS endpoints only the platform calls for this entry.
+    /// None enters the guest environment, its secrets or its fetch allow-list.
+    #[serde(default)]
+    pub host_fetch: Vec<HostFetch>,
 }
 
 /// File an entry loads beside its artifact, admitted only by exact digest and size.
@@ -169,8 +173,8 @@ pub struct TimerInbox {
     pub stream: Contract<ResourcePattern>,
 }
 
-/// One Machine per actor of the namespace, created by the platform under the
-/// deployment's own credential and presented to the actor as `binding`.
+/// One Machine per actor of the namespace, created by the platform through the
+/// host-only `endpoint` and presented to the actor as `binding`.
 ///
 /// The Machine's `selected_volume_ref` is the actor agent's private volume:
 /// `acyclic_harness::filesystem::private_volume(volumeProvider,
@@ -181,6 +185,8 @@ pub struct TimerInbox {
 pub struct ActorMachine {
     /// Selected environment binding whose grant resource is `machines:/`.
     pub binding: String,
+    /// The entry's host-only endpoint the platform calls to create the Machine.
+    pub endpoint: String,
     /// Filesystem provider of each actor agent's private volume.
     pub volume_provider: VolumeProvider,
 }
@@ -217,6 +223,38 @@ pub struct FetchBinding {
     pub name: String,
     /// Complete allow-list; an empty list is rejected.
     pub egress: Vec<EgressRule>,
+}
+
+/// Host-only HTTPS endpoint: one origin and the credential the platform
+/// attaches to each request. Admission refuses any declaration that lets the
+/// guest reach the credential or the origin.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostFetch {
+    /// Declaration name, unique among the entry's names; never a guest env property.
+    pub name: String,
+    /// The one TLS origin.
+    pub origin: EgressRule,
+    /// Credential attached by the platform.
+    pub credential: HostCredential,
+}
+
+/// One credential-store reference and its HTTP authentication scheme.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostCredential {
+    /// Authentication scheme of the `Authorization` header.
+    pub scheme: CredentialScheme,
+    /// Credential-store address; no environment secret may declare it.
+    pub reference: SecretReference,
+}
+
+/// HTTP authentication scheme of a host-only credential.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialScheme {
+    /// `Authorization: Bearer <credential>`.
+    Bearer,
 }
 
 /// Exact canonical DNS authority, resolved and pinned by the host before use.

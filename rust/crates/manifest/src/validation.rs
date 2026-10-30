@@ -401,6 +401,20 @@ fn validate_entries<'a>(
 ) -> Result<(Selections<'a>, Selections<'a>), ManifestError> {
     let mut selected = HashMap::new();
     let mut subscribed = HashMap::new();
+    // Everything any guest of this environment can reach: host-only endpoints exclude both.
+    let guest_references: HashSet<&str> = environment
+        .secrets
+        .iter()
+        .map(|secret| secret.reference.as_str())
+        .collect();
+    let guest_origins: HashSet<(&str, u16)> = environment
+        .entries
+        .iter()
+        .filter_map(|entry| entry.fetch.as_ref())
+        .flat_map(|fetch| &fetch.egress)
+        .map(|rule| (rule.host.as_str(), rule.port))
+        .collect();
+    *work += guest_references.len() + guest_origins.len();
     for (ii, entry) in environment.entries.iter().enumerate() {
         let ep = format!("{p}.entries[{ii}]");
         require(
@@ -452,6 +466,40 @@ fn validate_entries<'a>(
             deployment_fetch(entry)?;
             *work += fetch.egress.len();
         }
+        let mut host_names = HashSet::new();
+        for host in &entry.host_fetch {
+            require(
+                identifier(&host.name)
+                    && !selection.contains(host.name.as_str())
+                    && !secret_names.contains(host.name.as_str())
+                    && entry
+                        .fetch
+                        .as_ref()
+                        .is_none_or(|fetch| fetch.name != host.name)
+                    && host_names.insert(host.name.as_str()),
+                &ep,
+                "host-fetch-name",
+            )?;
+            acyclic_actors::domain::EgressRule::new(
+                host.origin.host.clone(),
+                u32::from(host.origin.port),
+            )
+            .map_err(|_| ManifestError::invalid(&ep, "https-authority"))?;
+            require(
+                acyclic_actors::domain::SecretSelection::valid_reference(
+                    host.credential.reference.as_str(),
+                ),
+                &ep,
+                "secret-reference",
+            )?;
+            require(
+                !guest_references.contains(host.credential.reference.as_str())
+                    && !guest_origins.contains(&(host.origin.host.as_str(), host.origin.port)),
+                &ep,
+                "host-fetch-exposed",
+            )?;
+            *work += 4;
+        }
         match &entry.runtime {
             EntryRuntime::ActorNamespace {
                 subscriptions,
@@ -465,7 +513,8 @@ fn validate_entries<'a>(
                         version,
                     } = &machine.volume_provider;
                     require(
-                        selection.contains(machine.binding.as_str())
+                        host_names.contains(machine.endpoint.as_str())
+                            && selection.contains(machine.binding.as_str())
                             && bindings
                                 .get(machine.binding.as_str())
                                 .is_some_and(|b| b.resource().starts_with("machines:/"))

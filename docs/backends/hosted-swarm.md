@@ -242,12 +242,16 @@ with `max_children: 0`, its spawn tool answers `unsupported capability`, and a
 spawn command is refused as `spawn_refused` before anything commits.
 
 `machinesWorkspace` is a `BrowserMachinesWorkspaceSource` (`provider`,
-`observation`, `open`, `budget`). The entry opens it with
+`observation`, `open`). The entry opens it with
 `BrowserMachinesWorkspace.open` in its own module, under its platform authority,
-and binds the `shell` tool to it. Its grant needs only `machines/exec`; the
-platform creates the Machine under the deployment's own credential. The entry's
-`runtime.actorMachine` names that binding and the owner's
-`options.filesystem_provider` as `volumeProvider`. The Machine's selected
+and binds the `shell` tool to it. Its grant needs only `machines/exec`. The
+platform creates the Machine through the entry's host-only `hostFetch` endpoint,
+built from the owner's `deployment.machines` (`origin`, bearer `credential`).
+Admission refuses a host-only endpoint whose credential any environment secret
+declares, or whose origin any guest fetch allow-list names, so the guest never
+holds Create authority. The entry's `runtime.actorMachine` names the binding,
+that `endpoint`, and the owner's `options.filesystem_provider` as
+`volumeProvider`. The Machine's selected
 volume for actor `id` is
 `filesystem::private_volume(volumeProvider, &AgentId::hosted_root(id))`, the
 volume the entry creates. The platform authority must grant that volume's read

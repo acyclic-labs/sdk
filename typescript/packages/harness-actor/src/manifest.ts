@@ -4,7 +4,7 @@
 import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, SubscriptionSpec,
   VolumeProvider } from "@acyclic-labs/workers/manifest";
 import type { ProviderSpec } from "@acyclic-labs/harness";
-import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "./bindings.js";
+import { HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "./bindings.js";
 
 /** Declared name of the model credential reference; never a credential value. */
 export const MODEL_SECRET = "modelCredential";
@@ -18,6 +18,9 @@ export interface HarnessDeployment {
   readonly subscriptions: SubscriptionSpec[];
   readonly bindings: Binding[];
   readonly grants: BindingGrant[];
+  /** The platform's Machines endpoint for creating each actor's Machine. Its
+   * bearer credential is host-only: it never enters the guest environment. */
+  readonly machines: { readonly origin: string; readonly credential: string };
 }
 
 /** Typed refusal of a deployment that omits a harness binding. */
@@ -44,6 +47,10 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
     if (!declared.has(name)) throw new HarnessManifestError(`$.environments[0].bindings.${name}`, "harness-binding");
   }
   const origin = new URL(spec.base_url);
+  const machines = new URL(deployment.machines.origin);
+  if (machines.protocol !== "https:" || machines.origin !== deployment.machines.origin) {
+    throw new HarnessManifestError("$.deployment.machines.origin", "https-origin");
+  }
   // An anonymous endpoint has no credential to protect; every other mode names one.
   const secrets = spec.authentication === "optional" ? [] : [MODEL_SECRET];
   return {
@@ -63,9 +70,14 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
           limits: deployment.limits,
           subscriptions: deployment.subscriptions,
           timerInbox: null,
-          actorMachine: { binding: HARNESS_BINDINGS.workspace, volumeProvider },
+          actorMachine: { binding: HARNESS_BINDINGS.workspace, endpoint: MACHINES_ENDPOINT, volumeProvider },
         },
         fetch: { name: MODEL_FETCH, egress: [{ host: origin.hostname, port: Number(origin.port || 443) }] },
+        hostFetch: [{
+          name: MACHINES_ENDPOINT,
+          origin: { host: machines.hostname, port: Number(machines.port || 443) },
+          credential: { scheme: "bearer", reference: deployment.machines.credential },
+        }],
       }],
       bindings: deployment.bindings,
       grants: deployment.grants,

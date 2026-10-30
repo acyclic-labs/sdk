@@ -996,7 +996,7 @@ fn actor_state_binding_is_own_actor_only_and_cannot_be_selected_by_a_worker()
 }
 
 #[test]
-fn actor_machine_names_a_selected_machines_binding_and_volume_provider()
+fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest = fixture()?;
     let environment = manifest.environments.first_mut().ok_or_else(missing)?;
@@ -1016,39 +1016,92 @@ fn actor_machine_names_a_selected_machines_binding_and_volume_provider()
         .into(),
         limits: None,
     });
+    let origin = EgressRule {
+        host: "machines.example.com".into(),
+        port: 443,
+    };
     let entry = environment.entries.first_mut().ok_or_else(missing)?;
     entry.bindings.push("WORKSPACE".into());
-    let provider = VolumeProvider {
-        namespace: "acyclic".into(),
-        family: "filesystem".into(),
-        version: "2".into(),
-    };
-    let with = |binding: &str, provider: &VolumeProvider| {
+    entry.host_fetch.push(HostFetch {
+        name: "machinesEndpoint".into(),
+        origin: origin.clone(),
+        credential: HostCredential {
+            scheme: CredentialScheme::Bearer,
+            reference: SecretReference::new("secrets:/machines/account".into())?,
+        },
+    });
+    if let EntryRuntime::ActorNamespace { actor_machine, .. } = &mut entry.runtime {
+        *actor_machine = Some(ActorMachine {
+            binding: "WORKSPACE".into(),
+            endpoint: "machinesEndpoint".into(),
+            volume_provider: VolumeProvider {
+                namespace: "acyclic".into(),
+                family: "filesystem".into(),
+                version: "2".into(),
+            },
+        });
+    }
+    validate(&manifest)?;
+    let refused = |change: &dyn Fn(&mut Environment)| {
         let mut manifest = manifest.clone();
-        if let Some(EntryRuntime::ActorNamespace { actor_machine, .. }) = manifest
-            .environments
-            .first_mut()
-            .and_then(|environment| environment.entries.first_mut())
-            .map(|entry| &mut entry.runtime)
-        {
-            *actor_machine = Some(ActorMachine {
-                binding: binding.into(),
-                volume_provider: provider.clone(),
-            });
+        if let Some(environment) = manifest.environments.first_mut() {
+            change(environment);
         }
         validate(&manifest).err().map(|error| error.rule)
     };
-    assert_eq!(with("WORKSPACE", &provider), None);
-    let refused = Some("actor-machine".to_owned());
-    // Negative controls: a non-Machines binding, an unselected one, and a
-    // provider that is not a filesystem.
-    assert_eq!(with("INBOX", &provider), refused);
-    assert_eq!(with("UNDECLARED", &provider), refused);
-    let machines = VolumeProvider {
-        family: "machines".into(),
-        ..provider.clone()
+    let machine = |change: fn(&mut ActorMachine)| {
+        refused(&|environment: &mut Environment| {
+            if let Some(EntryRuntime::ActorNamespace {
+                actor_machine: Some(machine),
+                ..
+            }) = environment
+                .entries
+                .first_mut()
+                .map(|entry| &mut entry.runtime)
+            {
+                change(machine);
+            }
+        })
     };
-    assert_eq!(with("WORKSPACE", &machines), refused);
+    let rule = Some("actor-machine".to_owned());
+    // Negative controls: a non-Machines or unselected binding, an endpoint that
+    // is not a host-only declaration, and a volume provider that is no filesystem.
+    assert_eq!(machine(|m| m.binding = "INBOX".into()), rule);
+    assert_eq!(machine(|m| m.binding = "UNDECLARED".into()), rule);
+    assert_eq!(machine(|m| m.endpoint = "HTTP".into()), rule);
+    assert_eq!(
+        machine(|m| m.volume_provider.family = "machines".into()),
+        rule
+    );
+    // The guest can reach neither the endpoint's credential nor its origin.
+    let exposed = Some("host-fetch-exposed".to_owned());
+    assert_eq!(
+        refused(&|environment| {
+            environment.secrets.push(SecretRef {
+                name: "MACHINES_KEY".into(),
+                reference: SecretReference::new("secrets:/machines/account".into())
+                    .expect("reference"),
+            });
+            if let Some(entry) = environment.entries.first_mut() {
+                entry.secrets.push("MACHINES_KEY".into());
+            }
+        }),
+        exposed
+    );
+    assert_eq!(
+        refused(&|environment| {
+            if let Some(entry) = environment.entries.first_mut() {
+                entry.fetch = Some(FetchBinding {
+                    name: "HTTP".into(),
+                    egress: vec![origin.clone()],
+                });
+            }
+        }),
+        exposed
+    );
+    // A host-only declaration never appears in the guest environment.
+    let generated = environment_typescript(&manifest, "production", "agent")?;
+    assert!(!generated.contains("machinesEndpoint") && generated.contains("WORKSPACE: Machines"));
     Ok(())
 }
 
