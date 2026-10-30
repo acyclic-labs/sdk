@@ -71,42 +71,31 @@ pub struct ProviderSpec {
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub retry: RetrySpec,
-    /// Deadlines bounding every exchange with the endpoint.
+    /// Optional caller-selected deadline for each request to the endpoint.
     #[serde(default, skip_serializing_if = "TimeoutSpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
     pub timeouts: TimeoutSpec,
 }
 
-/// Deadlines of one exchange with an endpoint, the model request, its token count and a
-/// credential refresh alike. An expired deadline is a typed timeout, redelivered under `retry`
-/// only while no output has escaped.
+/// Caller-selected request deadline, shared by response headers and the body.
+/// Requests are unbounded when no deadline is provided. A deadline never
+/// restarts when another body chunk arrives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), derive(tsify::Tsify))]
 pub struct TimeoutSpec {
-    /// Longest interval between consuming nonempty body chunks, measured on the monotonic
-    /// clock before each read. An expired deadline takes precedence over ready bytes or EOF.
-    pub idle_ms: u32,
-    /// Longest exchange, from the send to the end of the body.
-    pub total_ms: u32,
+    /// Maximum request duration in milliseconds, from send through body completion.
+    /// `None` is unbounded; zero expires before dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub total_ms: Option<u64>,
 }
 
 impl TimeoutSpec {
-    /// Five minutes of silence, as long as a reasoning model may think without a byte, and one
-    /// hour per exchange.
-    pub const DEFAULT: Self = Self {
-        idle_ms: 300_000,
-        total_ms: 3_600_000,
-    };
+    /// Requests have no implicit deadline.
+    pub const DEFAULT: Self = Self { total_ms: None };
     fn is_default(&self) -> bool {
         *self == Self::DEFAULT
-    }
-    /// Rejects a zero deadline, which would fail every pending exchange.
-    pub(crate) fn validate(self) -> acyclic_harness_core::Result<()> {
-        if self.idle_ms == 0 || self.total_ms == 0 {
-            return Err(crate::invalid("provider timeouts must be positive"));
-        }
-        Ok(())
     }
 }
 

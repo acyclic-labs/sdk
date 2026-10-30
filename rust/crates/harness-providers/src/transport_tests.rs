@@ -27,13 +27,9 @@ impl HttpTransport for Counted {
         self.sent.fetch_add(1, Ordering::SeqCst);
         self.inner.send(request)
     }
-    // Backoff waits elapse at once; the exchange deadlines, minutes long, never expire here.
+    // Each failed exchange is the explicit model-redelivery step.
     fn delay(&self, wait: std::time::Duration) -> BoxProviderFuture<'static, ()> {
-        if wait >= std::time::Duration::from_secs(60) {
-            Box::pin(futures::future::pending())
-        } else {
-            Box::pin(async {})
-        }
+        crate::fixtures::delay(wait)
     }
     fn now(&self) -> std::time::Duration {
         crate::fixtures::now()

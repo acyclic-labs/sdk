@@ -2,6 +2,7 @@ use super::*;
 use crate::HttpResponse;
 use acyclic_stream::BoxProviderFuture;
 use bytes::Bytes;
+use futures::FutureExt as _;
 use proptest::prelude::*;
 use std::sync::{Arc, Mutex};
 
@@ -9,6 +10,7 @@ struct Refresh {
     status: u16,
     response: Value,
     sent: Mutex<Vec<HttpRequest>>,
+    release: Option<futures::future::Shared<futures::channel::oneshot::Receiver<()>>>,
 }
 
 impl HttpTransport for Refresh {
@@ -24,7 +26,12 @@ impl HttpTransport for Refresh {
                 .lock()
                 .map_err(|_| invalid("fixture poisoned"))?
                 .push(request);
-            tokio::task::yield_now().await;
+            if let Some(release) = &self.release {
+                release
+                    .clone()
+                    .await
+                    .map_err(|_| invalid("refresh response producer disappeared"))?;
+            }
             let chunk = Bytes::from(self.response.to_string());
             Ok(HttpResponse {
                 retry_after: None,
@@ -57,6 +64,7 @@ fn fixture(access: &str, status: u16) -> Result<(tempfile::TempDir, CodexLogin, 
         response: json!({"access_token":jwt(crate::codex::fixed_now().unix_timestamp() + 3600),
         "id_token":"new-id","refresh_token":"new-refresh"}),
         sent: Mutex::new(Vec::new()),
+        release: None,
     };
     Ok((
         root,
@@ -126,19 +134,22 @@ async fn negative_control_detects_independent_locks_racing_the_scripted_token_en
 }
 
 async fn refresh_pair(broken: bool, status: u16) -> Result<()> {
-    let (_root, first, transport) = fixture(&jwt(0), status)?;
+    let (_root, first, mut transport) = fixture(&jwt(0), status)?;
+    let (release, completion) = futures::channel::oneshot::channel();
+    transport.release = Some(completion.shared());
     let transport = Arc::new(transport);
     let mut second = first.fresh();
     assert!(crate::sync::Arc::ptr_eq(&first.refresh, &second.refresh));
     if broken {
         second.refresh = crate::sync::Arc::new(crate::refresh::Refresh::new());
     }
-    // The scripted endpoint suspends after recording each request. Both
-    // attempts therefore reach the shared guard before the first refresh returns.
-    let (left, right) = futures::join!(
-        first.bearer(transport.as_ref(), None, None),
-        second.bearer(transport.as_ref(), None, None)
-    );
+    // Hold the endpoint response while both callers reach the ownership boundary.
+    let mut left = std::pin::pin!(first.bearer(transport.as_ref(), None, None));
+    let mut right = std::pin::pin!(second.bearer(transport.as_ref(), None, None));
+    assert!(left.as_mut().now_or_never().is_none());
+    assert!(right.as_mut().now_or_never().is_none());
+    release.send(()).expect("refresh response remains owned");
+    let (left, right) = futures::join!(left, right);
     if status == 200 {
         assert_eq!(left?, right?);
     } else {
