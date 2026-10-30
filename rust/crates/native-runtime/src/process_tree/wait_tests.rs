@@ -1,24 +1,11 @@
 use super::*;
 use std::io::{BufRead as _, Write as _};
-use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use windows_sys::Win32::Foundation::{FILETIME, WAIT_OBJECT_0};
-use windows_sys::Win32::System::Threading::{
-    CreateEventW, GetCurrentThread, GetThreadTimes, SetEvent, WaitForSingleObject,
-};
+use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+use windows_sys::Win32::Foundation::FILETIME;
+use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
 
-const EVENT: &str = "ACYCLIC_NATIVE_WAIT_EVENT";
+const HELPER: &str = "ACYCLIC_NATIVE_WAIT_HELPER";
 const READY: &str = "ACYCLIC_NATIVE_WAIT_READY";
-
-fn event(name: &str) -> io::Result<OwnedHandle> {
-    let wide: Vec<_> = name.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: the terminated name is live for this synchronous creation/open.
-    let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
-    if handle.is_null() {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: CreateEventW transfers one fresh owned handle on success.
-    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
-}
 
 fn thread_cpu() -> io::Result<u64> {
     let empty = FILETIME {
@@ -64,20 +51,20 @@ fn thread_cycles() -> io::Result<u64> {
 
 #[test]
 fn wait_helper() -> io::Result<()> {
-    let Ok(name) = std::env::var(EVENT) else {
+    if std::env::var_os(HELPER).is_none() {
         return Ok(());
-    };
-    let event = event(&name)?;
+    }
     println!("{READY}");
     std::io::stdout().flush()?;
-    // SAFETY: this helper retains its event while the parent controls release.
-    let status = unsafe { WaitForSingleObject(event.as_raw_handle(), 5000) };
-    assert_eq!(status, WAIT_OBJECT_0);
+    let mut released = [0];
+    // EOF is a typed error if the parent releases custody without a message.
+    std::io::stdin().read_exact(&mut released)?;
+    assert_eq!(released, [1]);
     Ok(())
 }
 
-/// This test binary re-run as `wait_helper`, which waits on the named event.
-fn helper_command(name: &str) -> io::Result<Command> {
+/// This test binary re-run as `wait_helper`, waiting on its original input pipe.
+fn helper_command() -> io::Result<Command> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args([
@@ -86,8 +73,8 @@ fn helper_command(name: &str) -> io::Result<Command> {
             "--nocapture",
         ])
         .env_clear()
-        .env(EVENT, name)
-        .stdin(std::process::Stdio::null())
+        .env(HELPER, "1")
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
     Ok(command)
 }
@@ -108,13 +95,11 @@ fn readiness(stdout: std::process::ChildStdout) -> (std::sync::mpsc::Receiver<()
     (received, reader)
 }
 
-/// Signal the helper's gate so it exits.
-fn release(gate: &OwnedHandle) -> io::Result<()> {
-    // SAFETY: the parent still owns this gate and the helper waits on it.
-    if unsafe { SetEvent(gate.as_raw_handle()) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+/// Release the helper and close its input pipe, including on a write failure.
+fn release(gate: &mut Option<std::process::ChildStdin>) -> io::Result<()> {
+    gate.take()
+        .ok_or(io::ErrorKind::BrokenPipe)?
+        .write_all(&[1])
 }
 
 /// A precise tree wait charged to the optional read meter.
@@ -159,19 +144,10 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
     use std::sync::atomic::{AtomicBool, Ordering};
     use windows_sys::Win32::UI::WindowsAndMessaging::PBT_APMRESUMEAUTOMATIC;
 
-    let root = tempfile::tempdir()?;
-    let name = format!(
-        "Local\\acyclic-resume-{}-{}",
-        std::process::id(),
-        root.path().display()
-    );
-    let name = name.replace(['\\', '/', ':'], "-");
-    let gate = event(&name)?;
-    let mut tree = ProcessTree::spawn(&mut helper_command(&name)?)?;
+    let mut tree = ProcessTree::spawn(&mut helper_command()?)?;
+    let mut gate = Some(tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?);
     let (receive_ready, reader) = readiness(tree.take_stdout().ok_or(io::ErrorKind::NotFound)?);
-    receive_ready
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(io::Error::other)?;
+    receive_ready.recv().map_err(io::Error::other)?;
     let epoch = Instant::now();
     let deadline = epoch + Duration::from_secs(120);
     let resumed = Arc::new(AtomicBool::new(false));
@@ -218,9 +194,7 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
         Ok((tree, result))
     });
     let result = (|| -> io::Result<()> {
-        let wake = receive_armed
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(io::Error::other)?;
+        let wake = receive_armed.recv().map_err(io::Error::other)?;
         resumed.store(true, Ordering::Release);
         // SAFETY: this is an owned alias of the production callback's event.
         // No real host clock or power state is changed by this regression.
@@ -231,21 +205,17 @@ fn wait_across_resume(precise: bool, suspended: Duration) -> io::Result<()> {
                 std::ptr::null(),
             );
         }
-        receive_checked
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(io::Error::other)?;
+        receive_checked.recv().map_err(io::Error::other)?;
         if suspended >= Duration::from_secs(120) {
             assert_eq!(
-                receive_finished
-                    .recv_timeout(Duration::from_secs(1))
-                    .map_err(io::Error::other)?,
+                receive_finished.recv().map_err(io::Error::other)?,
                 Err(io::ErrorKind::TimedOut)
             );
         }
         Ok(())
     })();
-    // Always release the child, including when a missed resume hits the watchdog.
-    let released = release(&gate);
+    // Always release the child after the resume observation finishes.
+    let released = release(&mut gate);
     let (mut tree, status) = waiter
         .join()
         .map_err(|_| io::Error::other("resume waiter panicked"))??;
@@ -312,20 +282,12 @@ fn assert_immediate_waits(
 
 fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
     let _subscriber = measurement_setup()?;
-    let root = tempfile::tempdir()?;
-    let suffix = root
-        .path()
-        .file_name()
-        .ok_or(io::ErrorKind::InvalidInput)?
-        .to_string_lossy();
-    let name = format!("Local\\acyclic-native-wait-{}-{suffix}", std::process::id());
-    let gate = event(&name)?;
     let accounting = std::env::var_os("ACYCLIC_NATIVE_WAIT_ACCOUNTING")
         .map(|_| crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
     let meter = accounting
         .as_ref()
         .map(|meter| meter as &dyn crate::NativeReadMeter);
-    let mut command = helper_command(&name)?;
+    let mut command = helper_command()?;
     let mut custody = None;
     if let Err(error) = ProcessTree::spawn_controlled(&mut command, meter, &mut custody) {
         if let Some(tree) = custody.as_mut() {
@@ -334,6 +296,7 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
         return Err(error);
     }
     let mut tree = custody.ok_or(io::ErrorKind::NotFound)?;
+    let mut gate = Some(tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?);
     let wait = |tree: &mut ProcessTree, timeout| metered_wait(meter, tree, timeout);
     let pending_wait = |tree: &mut ProcessTree, timeout: Duration| {
         if !coarse {
@@ -351,9 +314,7 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
     };
     let (received, reader) = readiness(tree.take_stdout().ok_or(io::ErrorKind::NotFound)?);
     let result = (|| {
-        received
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)?;
+        received.recv().map_err(io::Error::other)?;
         assert_immediate_waits(meter, &mut tree)?;
         let cycles = thread_cycles()?;
         let cpu = thread_cpu()?;
@@ -383,8 +344,8 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
             "NATIVE_WAIT_TIMEOUT elapsed_us={} cpu_100ns={cpu} cycles={cycles} recorded_ops={recorded} coarse={coarse}",
             elapsed.as_micros()
         );
-        release(&gate)?;
-        assert!(pending_wait(&mut tree, Duration::from_secs(5))?.success());
+        release(&mut gate)?;
+        assert!(tree.wait_exit(meter)?.success());
         assert!(!tree.is_reaped());
         assert!(wait(&mut tree, Duration::ZERO)?.success());
         assert!(tree.try_wait(meter)?.is_some());
@@ -402,4 +363,24 @@ fn wait_preserves_ownership(coarse: bool) -> io::Result<()> {
         .join()
         .map_err(|_| io::Error::other("readiness reader panicked"))?;
     result.and(cleanup).and(drained)
+}
+
+#[test]
+fn dropped_helper_input_releases_its_process_wait() -> io::Result<()> {
+    let mut tree = ProcessTree::spawn(&mut helper_command()?)?;
+    let gate = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
+    let (received, reader) = readiness(tree.take_stdout().ok_or(io::ErrorKind::NotFound)?);
+    received.recv().map_err(io::Error::other)?;
+    // Negative control: no release byte is sent. The original stdin producer
+    // disappears, so read_exact returns UnexpectedEof and the real helper exits.
+    drop(gate);
+    let status = tree.wait_exit(None)?;
+    let cleanup = tree.terminate(None);
+    let drained = reader
+        .join()
+        .map_err(|_| io::Error::other("readiness reader panicked"))?;
+    cleanup.and(drained)?;
+    assert!(!status.success());
+    assert!(tree.is_reaped());
+    Ok(())
 }
