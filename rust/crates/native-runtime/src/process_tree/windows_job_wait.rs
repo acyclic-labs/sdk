@@ -196,11 +196,7 @@ mod tests {
         use std::process::Stdio;
         let mut command = Command::new(std::env::current_exe()?);
         command
-            .args([
-                "--exact",
-                "process_tree::custody::windows::member_tests::job_member_page_child",
-                "--nocapture",
-            ])
+            .args(["--exact", member_child_name(), "--nocapture"])
             .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "parent")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -239,6 +235,43 @@ mod tests {
         eprintln!(
             "JOB_FIRST_NATIVE root={root} descendant={descendant} selected={selected:?} empty_after_cleanup=true"
         );
+        Ok(())
+    }
+
+    fn member_child_name() -> &'static str {
+        std::any::type_name_of_val(&job_member_page_child)
+            .split_once("::")
+            .expect("a test function belongs to its crate")
+            .1
+    }
+
+    #[test]
+    fn job_member_page_child() -> io::Result<()> {
+        use std::io::{Read as _, Write as _};
+        use std::process::Stdio;
+        let Ok(mode) = std::env::var("ACYCLIC_JOB_MEMBER_PAGE_CHILD") else {
+            return Ok(());
+        };
+        let mut descendant = if mode == "parent" {
+            let child = Command::new(std::env::current_exe()?)
+                .args(["--exact", member_child_name(), "--nocapture"])
+                .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "child")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            println!("JOB_PAGE_CHILD={}", child.id());
+            std::io::stdout().flush()?;
+            Some(child)
+        } else {
+            None
+        };
+        // Each real process remains alive on its original input producer.
+        std::io::stdin().read(&mut [0])?;
+        if let Some(child) = descendant.as_mut() {
+            drop(child.stdin.take());
+            child.wait()?;
+        }
         Ok(())
     }
 }
