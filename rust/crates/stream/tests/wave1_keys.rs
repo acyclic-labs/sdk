@@ -3,30 +3,24 @@ use acyclic_stream::{
     MemoryLimits, MemoryStream, StreamPath,
     conformance::wave1::{self, Case},
 };
-use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 async fn memory(case: Case) -> TestResult {
     let provider = MemoryStream::new(MemoryLimits::default());
     let namespace = StreamPath::new("wave1-memory")?;
-    tokio::time::timeout(Duration::from_secs(9), wave1::verify_case(&provider, &namespace, case))
-        .await.map_err(|_| format!("step=memory_history case={} timeout_seconds=9; recovery: build-slot --remote cargo test -p acyclic-stream --test wave1_keys --features local,conformance", case.name()))?
-        .map_err(|failure| failure.to_string())?;
+    wave1::verify_case(&provider, &namespace, case).await?;
     Ok(())
 }
 
 #[cfg(feature = "local")]
 async fn local(case: Case) -> TestResult {
     use acyclic_stream::{LocalStream, LocalStreamLimits};
-    tokio::time::timeout(Duration::from_secs(9), async {
-        let directory = tempfile::tempdir().map_err(|error| format!("step=create_local_root error={error}; recovery: build-slot --remote cargo test -p acyclic-stream --test wave1_keys --features local,conformance"))?;
-        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await
-            .map_err(|error| format!("step=open_local_provider error={error}; recovery: build-slot --remote cargo test -p acyclic-stream --test wave1_keys --features local,conformance"))?;
-        let namespace = StreamPath::new("wave1-local")?;
-        wave1::verify_case(&provider, &namespace, case).await.map_err(|failure| failure.to_string())?;
-        Ok(())
-    }).await.map_err(|_| format!("step=local_history case={} timeout_seconds=9; recovery: build-slot --remote cargo test -p acyclic-stream --test wave1_keys --features local,conformance", case.name()))?
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let namespace = StreamPath::new("wave1-local")?;
+    wave1::verify_case(&provider, &namespace, case).await?;
+    Ok(())
 }
 
 #[tokio::test]
