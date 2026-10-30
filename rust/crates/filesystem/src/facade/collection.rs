@@ -96,7 +96,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             ))?);
             // Before the epoch is read: a concurrent collection never
             // persists or switches an epoch computed from a stale one.
-            let running = collection.run().await;
+            let mut running = collection.run().await;
             let logical = self.inner.objects.inner().inner();
             let epoch = Arc::clone(logical.epoch());
             let previous = epoch.current();
@@ -105,7 +105,10 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .ok_or(FsError::Work(WorkError::Overflow))?;
             if advance {
                 // A restart resumes `next` before anything retains under it.
-                epoch.persist(next).await.map_err(FsError::LocalRoot)?;
+                running = epoch
+                    .persist(next, running)
+                    .await
+                    .map_err(FsError::LocalRoot)?;
                 crash(&epoch, Step::Persisted)?;
             }
             let collecting = collection

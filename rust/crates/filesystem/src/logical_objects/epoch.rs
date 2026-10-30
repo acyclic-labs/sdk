@@ -85,28 +85,39 @@ impl Epoch {
     /// Durably records `next` as the epoch a restart resumes, before anything
     /// retains under it, with the oldest epoch still to release: a restart
     /// then never retains under an epoch a later collection would skip
-    /// releasing.
+    /// releasing. The write owns the collection's `running` turn until it
+    /// finishes, so a dropped caller never lets the next collection's write
+    /// race it.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-    pub(crate) async fn persist(&self, next: u64) -> std::io::Result<()> {
+    pub(crate) async fn persist(
+        &self,
+        next: u64,
+        running: crate::collection::Running,
+    ) -> std::io::Result<crate::collection::Running> {
         let Some(pointer) = self.pointer.clone() else {
-            return Ok(());
+            return Ok(running);
         };
         let mut bytes = [0_u8; 16];
         let (current, unreleased) = bytes.split_at_mut(8);
         current.copy_from_slice(&next.to_le_bytes());
         unreleased.copy_from_slice(&self.unreleased().to_le_bytes());
-        tokio::task::spawn_blocking(move || {
-            let staged = pointer.with_extension("next");
-            {
-                let file = std::fs::File::create(&staged)?;
-                std::io::Write::write_all(&mut &file, &bytes)?;
-                file.sync_all()?;
-            }
-            std::fs::rename(&staged, &pointer)?;
-            acyclic_native_runtime::sync_parent(&pointer, acyclic_native_runtime::Durability::Full)
-        })
-        .await
-        .map_err(std::io::Error::other)?
+        let write = tokio::task::spawn_blocking(move || {
+            let written = (|| {
+                let staged = pointer.with_extension("next");
+                {
+                    let file = std::fs::File::create(&staged)?;
+                    std::io::Write::write_all(&mut &file, &bytes)?;
+                    file.sync_all()?;
+                }
+                std::fs::rename(&staged, &pointer)?;
+                acyclic_native_runtime::sync_parent(
+                    &pointer,
+                    acyclic_native_runtime::Durability::Full,
+                )
+            })();
+            written.map(|()| running)
+        });
+        write.await.map_err(std::io::Error::other)?
     }
 
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
