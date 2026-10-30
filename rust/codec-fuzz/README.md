@@ -15,7 +15,7 @@ target here does not register a scheduled check.
 | `identities` | Resource identities and Actor references, with exact accepted-byte identity. |
 | `actor_codecs` | Durable Actor state, versioned guest manifests/deliveries/transitions, committed invocations, exact artifact checkpoint admission, private reservation request/decision/checkpoint codecs and timer records through their semantic decoders. |
 | `filesystem_codecs` | Authority and durable records, plain/sealed distributed state records, workspace context records, JSON join/control projections, funded private core-state JSON/checksum recovery, native exchange journals, native witnesses/metadata, native ownership receipts, directory continuations and the portable Windows USN checkpoint codec. Core-state payloads compare ordinary and funded admission and canonical values; success, refusal and reader failure must return live allocation custody to its baseline. Directory continuations exercise all native name profiles through actual funded decode, encode and retirement; complete original cuts must survive and live allocation returns to its starting value. Ownership receipts use the physical adapter's codec and preserve original lock/parent binding; unsupported versions cannot reach hashing. |
-| `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests and publication evidence. Immutable nodes use the production default decode limits. |
+| `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests, publication and historical evidence. Immutable nodes use the production default decode limits. |
 | `machine_journal` | Retained Machine observations and operation envelopes through the shared journal decoder, with version admission before the JSON payload. |
 | `harness_codecs` | Agent inbox, status, close and conversation records, retained turn effects, compact checkpoints, and the actual MCP JSON/SSE and stdio exchange decoders with chunk invariance and typed EOF. MCP service parameters/results cover resources, prompts and tools; callback admission checks canonical request identity, pinned policy and protocol refusal. |
 
@@ -242,6 +242,16 @@ changed original content refuse. Trailing content with a fresh hash and
 old/unknown outer-version headers also refuse. These controls establish codec
 properties only; projected preparation is neither fresh closure proof nor
 native custody. Actual preparation capture and execution remain pending.
+
+Historical evidence also reaches its actual parser with arbitrary self-bound
+bytes and a fixed caller record. Admitted publication evidence supplies its
+original append context for positive historical projection and exact bounds.
+Eight independent authority/record substitutions refuse, with canonical
+digests recomputed for foreign records; observation timestamps preserve the
+projection. Original-format headers refuse old/unknown versions before needing
+a body. Self-bound hashes and constructed record digests establish codec
+properties, not protected custody or settlement. Original volume/retention
+preparation producers and their contextual admission still await capture.
 
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an

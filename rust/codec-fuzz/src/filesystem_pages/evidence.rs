@@ -16,6 +16,7 @@ pub(super) fn check(bytes: &[u8]) {
     else {
         return;
     };
+    super::historical::publication(bytes, &projected);
     // These are only the facts decoded from original preparation evidence,
     // passed back to its canonical writer, not a new proof of the closure.
     let proof = GenerationProof {
