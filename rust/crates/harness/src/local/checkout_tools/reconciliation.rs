@@ -266,11 +266,21 @@ mod tests {
         fn acknowledgement_cannot_erase_another_reconciliation(
             operation in any::<[u8; 16]>(), generation in any::<[u8; 32]>(),
             revision in any::<u64>(), matched in any::<bool>(), overflow in any::<bool>(),
+            sealed in any::<bool>(),
         ) {
             let root = acyclic_fs::WorkspaceId::from_bytes([1; 16]);
+            let association = acyclic_fs::ObjectStorage {
+                locator: acyclic_fs::Digest::from_bytes(generation),
+                root_file_id: acyclic_fs::FileId::from_bytes(operation),
+                origin_generation: acyclic_fs::Digest::from_bytes(generation),
+            };
             let pending = (acyclic_fs::OperationId::from_bytes(operation), GitGenerationRef {
                 workspace_id: root,
-                generation: acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(generation)),
+                generation: acyclic_fs::GenerationId::from_root(acyclic_fs::ObjectId {
+                    kind: acyclic_fs::ObjectKind::GenerationRoot,
+                    digest: acyclic_fs::Digest::from_bytes(generation),
+                    storage: sealed.then_some(association),
+                }),
             });
             let mut state = GitCompatState::new("main", root);
             state.revision = if overflow { u64::MAX } else { revision.min(u64::MAX - 1) };
@@ -283,12 +293,29 @@ mod tests {
             }
             let result = update(&mut state, Some(expected), None);
             prop_assert_eq!(result.is_ok(), matched && !overflow);
-            if result.is_err() { prop_assert_eq!(state, original); }
+            if result.is_err() { prop_assert_eq!(state, original.clone()); }
             else {
                 prop_assert_eq!(result.unwrap(), original.revision);
-                let mut wanted = original; wanted.revision += 1;
+                let mut wanted = original.clone(); wanted.revision += 1;
                 wanted.checkout_reconciliation = None;
                 prop_assert_eq!(state, wanted);
+            }
+            for field in 0..4 {
+                let mut wrong = pending;
+                let mut object = wrong.1.generation.object_id();
+                let mut changed = association;
+                let mut bytes = generation; bytes[0] ^= 1;
+                match field {
+                    0 => object.storage = if sealed { None } else { Some(association) },
+                    1 => { changed.locator = acyclic_fs::Digest::from_bytes(bytes); object.storage = Some(changed); }
+                    2 => { let mut bytes = operation; bytes[0] ^= 1; changed.root_file_id = acyclic_fs::FileId::from_bytes(bytes); object.storage = Some(changed); }
+                    _ => { changed.origin_generation = acyclic_fs::Digest::from_bytes(bytes); object.storage = Some(changed); }
+                }
+                wrong.1.generation = acyclic_fs::GenerationId::from_root(object);
+                prop_assert_eq!(wrong.1.generation.digest(), pending.1.generation.digest());
+                let mut state = original.clone();
+                prop_assert!(update(&mut state, Some(wrong), None).is_err());
+                prop_assert_eq!(state, original.clone());
             }
         }
     }
