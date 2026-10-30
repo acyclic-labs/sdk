@@ -69,7 +69,7 @@
               "declined",
               "○"
             ],
-            "task_failure": "declined"
+            "task_failure": "approval declined"
           },
           "send": "\u0004"
         }
