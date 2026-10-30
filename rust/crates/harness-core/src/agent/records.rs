@@ -658,8 +658,8 @@ mod tests {
         );
         // The header decides: a later version is refused before its record is read.
         assert_eq!(
-            refused(br#"{"record":{"spawn":"not read"},"version":3}"#).found,
-            3
+            refused(br#"{"record":{"spawn":"not read"},"version":4}"#).found,
+            4
         );
         // Negative controls. A spawn of this version decodes; the version 1
         // body under this version's header is malformed, never a partial spawn.
@@ -691,7 +691,7 @@ mod tests {
         assert_eq!(InboxRecord::decode(&encoded).ok(), Some(spawn));
         let mut relabeled = br#"{"record":"#.to_vec();
         relabeled.extend_from_slice(V1_SPAWN);
-        relabeled.extend_from_slice(br#","version":2}"#);
+        relabeled.extend_from_slice(br#","version":3}"#);
         assert!(matches!(
             InboxRecord::decode(&relabeled),
             Err(Error::Record("record is malformed"))
