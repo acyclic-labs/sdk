@@ -112,3 +112,70 @@ fn pending_stream_survives_its_polling_runtime() {
         }
     }
 }
+
+#[test]
+fn pending_commit_reports_lost_executor_and_retains_exact_recovery() {
+    use futures::FutureExt as _;
+
+    let provider = Arc::new(MemoryStream::default());
+    let path = StreamPath::new("pending-recovery").unwrap();
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![CommitCondition::Absent { path: path.clone() }],
+        mutations: vec![CommitMutation::Append {
+            path: path.clone(),
+            records: vec!["original".into()],
+        }],
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    // The original publication owner prevents this submission from accepting.
+    // No substitute provider or task-completion producer is involved.
+    let publication = futures::executor::block_on(provider.publication.lock());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let pending = {
+        let _entered = runtime.enter();
+        crate::Pending::submit(
+            Arc::clone(&provider),
+            request.clone(),
+            &crate::runtime::PlatformExecutor,
+        )
+    };
+    assert!(pending.wait().now_or_never().is_none());
+    assert_eq!(
+        futures::executor::block_on(provider.head(path.clone())),
+        Err(StreamError::NotFound)
+    );
+    drop(runtime);
+    assert_eq!(
+        pending.wait().now_or_never(),
+        Some(Err(StreamError::Unavailable)),
+        "losing the original task producer must settle every waiter"
+    );
+    assert_eq!(
+        pending.clone().now_or_never(),
+        Some(Err(StreamError::Unavailable))
+    );
+    assert_eq!(pending.request(), &request);
+    drop(publication);
+    assert_eq!(
+        futures::executor::block_on(provider.head(path)),
+        Err(StreamError::NotFound),
+        "the cancelled task must not publish after its owner is released"
+    );
+    let outcome = futures::executor::block_on(provider.commit(pending.request().clone())).unwrap();
+    assert!(matches!(outcome, CommitOutcome::Committed(_)));
+
+    // Negative control: an already completed exact replay survives shutdown;
+    // executor loss cannot replace its authentic result with Unavailable.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let completed = {
+        let _entered = runtime.enter();
+        crate::Pending::submit(provider, request, &crate::runtime::PlatformExecutor)
+    };
+    drop(runtime);
+    assert_eq!(completed.now_or_never(), Some(Ok(outcome)));
+}
