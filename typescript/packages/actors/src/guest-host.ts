@@ -1,6 +1,6 @@
 /** Host adapter for the public ActorDefinition; admission and publication stay with the host. */
 import { ActorReference } from "@acyclic-labs/auth/addressing";
-import { ActorActivation } from "./durable.js";
+import { ActorActivation } from "./activation.js";
 import { GUEST_ABI_VERSION } from "./generated/guest.js";
 import type { ActorDefinition, ActorRuntime, Checkpoint, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
 
