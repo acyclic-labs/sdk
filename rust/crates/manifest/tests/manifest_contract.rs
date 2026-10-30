@@ -1025,10 +1025,7 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
     entry.host_fetch.push(HostFetch {
         name: "machinesEndpoint".into(),
         origin: origin.clone(),
-        credential: HostCredential {
-            scheme: CredentialScheme::Bearer,
-            reference: SecretReference::new("secrets:/machines/account".into())?,
-        },
+        credential: HostCredential::account_leaf(),
     });
     if let EntryRuntime::ActorNamespace { actor_machine, .. } = &mut entry.runtime {
         *actor_machine = Some(ActorMachine {
@@ -1073,32 +1070,69 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
         machine(|m| m.volume_provider.family = "machines".into()),
         rule
     );
-    // The guest can reach neither the endpoint's credential nor its origin.
+    // Both credential schemes admit, and the guest can reach neither the
+    // endpoint's credential nor its origin under either of them.
     let exposed = Some("host-fetch-exposed".to_owned());
-    assert_eq!(
-        refused(&|environment| {
-            environment.secrets.push(SecretRef {
-                name: "MACHINES_KEY".into(),
-                reference: SecretReference::new("secrets:/machines/account".into())
-                    .expect("reference"),
-            });
-            if let Some(entry) = environment.entries.first_mut() {
-                entry.secrets.push("MACHINES_KEY".into());
+    for scheme in [CredentialScheme::Bearer, CredentialScheme::AccountLeaf] {
+        let mut manifest = manifest.clone();
+        let host = manifest
+            .environments
+            .first_mut()
+            .and_then(|environment| environment.entries.first_mut())
+            .and_then(|entry| entry.host_fetch.first_mut())
+            .ok_or_else(missing)?;
+        host.credential.scheme = scheme;
+        validate(&manifest)?;
+        let refused = |change: &dyn Fn(&mut Environment)| {
+            let mut manifest = manifest.clone();
+            if let Some(environment) = manifest.environments.first_mut() {
+                change(environment);
             }
-        }),
-        exposed
-    );
-    assert_eq!(
-        refused(&|environment| {
-            if let Some(entry) = environment.entries.first_mut() {
-                entry.fetch = Some(FetchBinding {
-                    name: "HTTP".into(),
-                    egress: vec![origin.clone()],
+            validate(&manifest).err().map(|error| error.rule)
+        };
+        assert_eq!(
+            refused(&|environment| {
+                environment.secrets.push(SecretRef {
+                    name: "MACHINES_KEY".into(),
+                    reference: SecretReference::new(HostCredential::ACCOUNT_LEAF.into())
+                        .expect("reference"),
                 });
-            }
-        }),
-        exposed
-    );
+                if let Some(entry) = environment.entries.first_mut() {
+                    entry.secrets.push("MACHINES_KEY".into());
+                }
+            }),
+            exposed
+        );
+        assert_eq!(
+            refused(&|environment| {
+                if let Some(entry) = environment.entries.first_mut() {
+                    entry.fetch = Some(FetchBinding {
+                        name: "HTTP".into(),
+                        egress: vec![origin.clone()],
+                    });
+                }
+            }),
+            exposed
+        );
+        // An inline credential decodes but is refused by the reference rule.
+        let mut json = serde_json::to_value(&manifest)?;
+        let credential = "/environments/0/entries/0/hostFetch/0/credential";
+        *json
+            .pointer_mut(&format!("{credential}/reference"))
+            .ok_or_else(missing)? = json!("inline-leaf-key");
+        assert_eq!(
+            parse(&serde_json::to_vec(&json)?)
+                .err()
+                .map(|error| error.rule),
+            Some("secret-reference".to_owned())
+        );
+        // A scheme the platform cannot mint is refused on decode.
+        let mut json = serde_json::to_value(&manifest)?;
+        *json
+            .pointer_mut(&format!("{credential}/scheme"))
+            .ok_or_else(missing)? = json!("basic");
+        assert!(parse(&serde_json::to_vec(&json)?).is_err());
+    }
     // A host-only declaration never appears in the guest environment.
     let generated = environment_typescript(&manifest, "production", "agent")?;
     assert!(!generated.contains("machinesEndpoint") && generated.contains("WORKSPACE: Machines"));

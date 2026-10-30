@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { GUEST_ABI_VERSION, materializeActorState, openGuestResponse, type GuestResponseFrame } from "@acyclic-labs/actors";
 import { ActorStateStorage, initializeHosting } from "@acyclic-labs/harness/hosting";
 import initializeManifest, { validate, verifyArtifact } from "../../workers/generated/wasm/acyclic_manifest.js";
-import { HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "../src/bindings.js";
+import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "../src/bindings.js";
 import { actor } from "../src/harness-actor.js";
 import { harnessManifest, HarnessManifestError, MODEL_SECRET } from "../src/manifest.js";
 import owner from "./owner.json";
@@ -58,15 +58,18 @@ test("an anonymous provider declares and selects no credential", () => {
   expect(anonymous.environments[0]!.entries[0]!.secrets).toEqual([]);
 });
 
-test("the Machines endpoint and its bearer credential stay host-only", () => {
+test("the Machines endpoint and its credential stay host-only", () => {
   const [declared] = manifest().environments[0]!.entries;
   expect(declared!.hostFetch).toEqual([{ name: MACHINES_ENDPOINT, origin: { host: "machines.example.com", port: 443 },
-    credential: { scheme: "bearer", reference: "secrets:/machines/account" } }]);
+    credential: ACCOUNT_LEAF }]);
   const exposed = (machines: Parameters<typeof harnessManifest>[0]["machines"]) =>
     () => validate(JSON.stringify(harnessManifest({ ...deployment, machines }, spec, volumes, sha256(entry), [asset])));
   // Negative controls: the guest's model egress reaches the origin, or its model secret is the bearer.
   expect(exposed({ ...deployment.machines, origin: "https://api.anthropic.com" })).toThrow(": host-fetch-exposed");
-  expect(exposed({ ...deployment.machines, credential: "secrets:/models/anthropic" })).toThrow(": host-fetch-exposed");
+  for (const scheme of ["bearer", "account-leaf"] as const) {
+    expect(exposed({ ...deployment.machines, credential: { scheme, reference: "secrets:/models/anthropic" } }))
+      .toThrow(": host-fetch-exposed");
+  }
   expect(() => harnessManifest({ ...deployment, machines: { ...deployment.machines, origin: "http://machines.example.com" } },
     spec, volumes, sha256(entry), [asset])).toThrow("https-origin");
 });

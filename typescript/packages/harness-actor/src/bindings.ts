@@ -15,6 +15,9 @@ export const MODEL_FETCH = "modelFetch";
 /** The entry's host-only Machines endpoint, declared as `entry.hostFetch[0].name`. */
 export const MACHINES_ENDPOINT = "machinesEndpoint";
 
+/** The platform's account leaf: every host-only endpoint mints its bearers from it. */
+export const ACCOUNT_LEAF = { scheme: "account-leaf", reference: "secrets:/account/leaf" } as const;
+
 /** The bundled module file and its logical manifest module identifier. */
 export const HARNESS_MODULE = { file: "harness-actor.mjs", id: "harness_actor" } as const;
 

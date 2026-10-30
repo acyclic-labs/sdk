@@ -249,12 +249,34 @@ pub struct HostCredential {
     pub reference: SecretReference,
 }
 
-/// HTTP authentication scheme of a host-only credential.
+impl HostCredential {
+    /// The platform's account leaf, shared by every host-only endpoint that
+    /// mints its bearers from it.
+    pub const ACCOUNT_LEAF: &str = "secrets:/account/leaf";
+
+    /// Mint each exchange's bearer from [`Self::ACCOUNT_LEAF`].
+    pub fn account_leaf() -> Self {
+        Self {
+            scheme: CredentialScheme::AccountLeaf,
+            reference: SecretReference(Self::ACCOUNT_LEAF.to_owned()),
+        }
+    }
+}
+
+/// How the host turns the referenced secret into the `Authorization` header.
+/// An unknown scheme is refused on decode, never ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "kebab-case")]
 pub enum CredentialScheme {
-    /// `Authorization: Bearer <credential>`.
+    /// The secret is the bearer: `Authorization: Bearer <secret>`.
     Bearer,
+    /// The secret is the JSON `{key, certificate, birth}` in the platform's
+    /// leaf encoding, read only by the host. For each exchange the host mints
+    /// a short-lived bearer its own platform verifies, with lifetime
+    /// `min(caller deadline, platform maximum bearer lifetime)`, scoped to this
+    /// endpoint where the platform supports it, and sends it as
+    /// `Authorization: Bearer <minted>`. No stored token is refreshed.
+    AccountLeaf,
 }
 
 /// Exact canonical DNS authority, resolved and pinned by the host before use.
