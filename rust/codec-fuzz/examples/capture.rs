@@ -4,6 +4,21 @@ use prost::Message;
 use sha2::{Digest as _, Sha256};
 use std::{error::Error, path::Path};
 
+fn json_seed(
+    decoder: &acyclic_codec_fuzz::Decoder,
+    payload: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if let Some(name) = decoder.name.strip_prefix("acyclic.objects.v1.") {
+        return Ok(acyclic_objects::json::encode_binary(
+            name,
+            payload,
+            usize::MAX,
+        )?);
+    }
+    acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), payload)
+        .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name).into())
+}
+
 fn save(
     target: &str,
     name: &str,
@@ -58,18 +73,12 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
         let mut json = u64::try_from(index)?.to_le_bytes().to_vec();
-        json.extend_from_slice(
-            &acyclic_protobuf_json::encode(
-                acyclic_codec_fuzz::descriptor(decoder),
-                &(decoder.seed)(),
-            )
-            .map_err(|error| format!("protobuf JSON seed {}: {error:?}", decoder.name))?,
-        );
+        json.extend_from_slice(&json_seed(decoder, &(decoder.seed)())?);
         save(
             "protobuf_json",
             decoder.name,
             &json,
-            "acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)",
+            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from typed protobuf default output (first 8 bytes select type)",
             &mut manifest,
         )?;
     }
@@ -128,15 +137,12 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
         let mut json = selector.to_vec();
-        json.extend_from_slice(
-            &acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), &payload)
-                .map_err(|error| format!("semantic JSON seed {name}: {error:?}"))?,
-        );
+        json.extend_from_slice(&json_seed(decoder, &payload)?);
         save(
             "protobuf_json",
             &name,
             &json,
-            "acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)",
+            "Objects json::encode_binary or shared acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)",
             &mut manifest,
         )?;
     }
