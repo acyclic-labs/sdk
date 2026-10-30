@@ -253,3 +253,41 @@ spawn command is refused as `spawn_refused` before anything commits.
 
 These are source-level operation counts. The integration check measures functional
 liveness; it does not establish throughput, memory or live model latency.
+
+## Host-supplied bindings
+
+A host adapter outside the artifact's bundle hands the entry plain data and
+callbacks only; every WebAssembly object is constructed inside the bundle.
+`materializeBindings` from `@acyclic-labs/workers` selects each binding's
+producer after the Rust validator admits it, by the product of its
+`product:/path` resource name: `objects:/…` selects `immutableObjects`,
+`machines:/…` `machinesWorkspace` and `streams:/…` `streams`, at any path.
+Any other product, including look-alikes such as `objects-other:/x`, is
+refused before a producer runs.
+
+`platformAuthority` is a `WasmAuthorityCapability`: the invocation's
+`admission` (issuer, audience, sealed scope, public trust snapshot, public
+checkpoint key, canonical `CallerContext` bytes, operation and deadline) plus
+its `stopped`, `check`, `trustChanged`, `trustClosed`, `derive` and
+`checkpoint` callbacks. The entry builds its agent authority from it.
+
+`hostAccess` is an `EventHostAccess`: `{ trust, credential, policy }`. `trust`
+is a `SessionTrust`, and the event host builds its session verifier from it:
+
+| Field | Value |
+| --- | --- |
+| `trust` | v1: UTF-8 JSON of `acyclic_auth::trust::Snapshot` (`environment`, `environment_keys`, `account`, `issuer_keys`, `minimum_key_epoch`, `revoked_key_ids`, `revoked_block_ids`), the value `admission.trust` carries. Unknown fields are refused. |
+| `audience` | Canonical recipient resource each session credential must name. |
+| `holder` | Presenting account each session credential must name, or `null`. |
+| `changed(current, signal)` | Optional. Resolves with the same owner's complete current trust once it differs from `current`. A rejection or a non-monotonic publication closes the host. |
+
+The descriptor holds only public keys, revocations and the signed scope; the
+scoped session `credential` is the existing separate field.
+
+`immutableObjects` maps onto Objects v1 with `immutableObjectsOverV1(provider,
+root)` from `@acyclic-labs/objects`. A key is a canonical object reference; its
+bytes 1 to 32 are the plaintext BLAKE3-256, which is the Objects v1 blob
+digest. `length` is one `HeadBlob`, `read` one `GetBlob`, and a put batch is
+one `PutBlob` per object, issued concurrently, then one `Retain` under `root`.
+The grant needs `objects/head`, `objects/get`, `objects/put` and
+`objects/retain`.

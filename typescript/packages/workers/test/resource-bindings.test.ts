@@ -122,6 +122,7 @@ test("unsupported and malformed resource selections refuse before any host produ
   const valid = { ...base, capability: "grant", resource: "objects:/" };
   const invalid: semantic.Binding[] = [
     { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects-other:/child" }, { ...valid, resource: "streams-other:/child" },
+    { ...valid, resource: "constructor:/harness" }, { ...valid, resource: "objects/harness" },
     { ...valid, stateTransaction: true }, { ...valid, guestAdmission: "hostAccess" },
     { ...valid, targetAccount: new Uint8Array([1]) }, { ...valid, guestAdmission: "unknown" },
   ];

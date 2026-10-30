@@ -1,5 +1,4 @@
 import init, { HostFixtureAuthority, hostFixtureGrants, hostFixtureTrust } from "./generated/acyclic_cloudflare_conformance.js";
-import { WasmSessionAuthority } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 
 /** Load the qualification host into memory separate from the harness guest. */
 export async function initializeFixtureAuthority() {
@@ -40,7 +39,7 @@ export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "
     platformAuthority: () => capability,
     hostAccess: () => {
       access ??= Object.freeze({
-        authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
+        trust: Object.freeze({ trust: new TextEncoder().encode(hostFixtureTrust()), audience: "workers:/test", holder: "account" }),
         credential: host.bindingCredential(),
         policy(_principal, _command, signal) {
           signal.throwIfAborted();
@@ -57,5 +56,5 @@ export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "
     return host.binding(kind, projections[kind]);
   } });
   return { capability, bindings, revoke: scope => host.revoke(scope), close: () => closed.abort(),
-    free() { closed.abort(); access?.credential.fill(0); access?.authority.free(); host.free(); } };
+    free() { closed.abort(); access?.credential.fill(0); host.free(); } };
 }

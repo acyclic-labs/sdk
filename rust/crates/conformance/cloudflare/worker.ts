@@ -5,7 +5,7 @@ import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmSessionAuthority, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { fixtureAuthority } from "./fixture-authority.mjs";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
@@ -116,7 +116,7 @@ export class Agent extends DurableObject {
     } };
     return this.agent ??= openCloudflareAgent(context, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
       { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, owner, this.registry,
-      { authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
+      { trust: { trust: new TextEncoder().encode(hostFixtureTrust()), audience: "workers:/test", holder: "account" },
       credential: hostFixtureCredential(), policy: () => true });
   }
   async configureAdmission(grants: string[]) {

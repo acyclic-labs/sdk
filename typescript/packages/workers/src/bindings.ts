@@ -18,14 +18,20 @@ export interface BindingAuthority<A = never, H = never, M = never, S = never> {
   streams?(binding: semantic.Binding): S;
 }
 
+/** Resource producers by the product of the canonical `product:/path` name. */
+const RESOURCES = new Map<string, "immutableObjects" | "machinesWorkspace" | "streams">([
+  ["objects", "immutableObjects"], ["machines", "machinesWorkspace"], ["streams", "streams"],
+]);
+
 function kind(binding: semantic.Binding) {
   if (binding.stateTransaction) return "stateTransaction";
   if (binding.guestAdmission === "platformAuthority" || binding.guestAdmission === "hostAccess") return binding.guestAdmission;
   if (binding.actorNamespace !== undefined) return "namespace";
   if (binding.workerService !== undefined) return "service";
-  if (binding.resource.startsWith("objects:/")) return "immutableObjects";
-  if (binding.resource.startsWith("machines:/")) return "machinesWorkspace";
-  if (binding.resource.startsWith("streams:/")) return "streams";
+  // The Rust validator already admitted the name; its product ends at the first ":/".
+  const separator = binding.resource.indexOf(":/");
+  const resource = separator > 0 ? RESOURCES.get(binding.resource.slice(0, separator)) : undefined;
+  if (resource !== undefined) return resource;
   throw new TypeError("binding materialization: unsupported kind; recovery: select a supported deployment binding kind");
 }
 
@@ -38,6 +44,7 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
     return Object.freeze({ ...binding, targetAccount: new Uint8Array(binding.targetAccount) });
   });
   const names = new Set<string>();
+  const kinds: ReturnType<typeof kind>[] = [];
   for (const binding of selected) {
     if (names.has(binding.name)) throw new TypeError("duplicate binding name");
     names.add(binding.name);
@@ -45,20 +52,20 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
     const selection = kind(binding);
     const producer = selection === "platformAuthority" || selection === "hostAccess" ? authority.guestAdmission : authority[selection];
     if (producer === undefined) throw new TypeError(`binding materialization: missing ${selection} producer; recovery: supply the original admitted host producer before guest entry`);
+    kinds.push(selection);
   }
   const env: Record<string, DeploymentBinding<A, H, M, S>> = Object.create(null) as Record<string, DeploymentBinding<A, H, M, S>>;
   let state: ActorStateBinding | undefined;
-  for (const binding of selected) {
-    switch (kind(binding)) {
+  selected.forEach((binding, index) => {
+    const selection = kinds[index]!;
+    switch (selection) {
       case "namespace": env[binding.name] = new ActorNamespaceBinding(binding.targetAccount, binding.actorNamespace!, authority.namespace(binding), binding.name); break;
       case "service": env[binding.name] = new WorkerServiceBinding(binding.targetAccount, binding.workerService!, authority.service(binding), binding.name); break;
       case "stateTransaction": env[binding.name] = state ??= materializeActorState(authority.stateTransaction!); break;
-      case "platformAuthority": env[binding.name] = materializeGuestAdmission("platformAuthority", authority.guestAdmission); break;
-      case "hostAccess": env[binding.name] = materializeGuestAdmission("hostAccess", authority.guestAdmission); break;
+      case "platformAuthority": case "hostAccess": env[binding.name] = materializeGuestAdmission(selection, authority.guestAdmission); break;
       case "immutableObjects": env[binding.name] = materializeImmutableObjects(authority.immutableObjects!(binding)); break;
-      case "machinesWorkspace": env[binding.name] = authority.machinesWorkspace!(binding); break;
-      case "streams": env[binding.name] = authority.streams!(binding); break;
+      case "machinesWorkspace": case "streams": env[binding.name] = authority[selection]!(binding); break;
     }
-  }
+  });
   return Object.freeze(env);
 }
