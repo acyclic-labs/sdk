@@ -143,6 +143,7 @@ test = false
 required-features = ["client-session"]
 
 [dev-dependencies]
+acyclic-test-support = { path = "../test-support" }
 divan.workspace = true
 tempfile = "3.27.0"
 tracing.workspace = true

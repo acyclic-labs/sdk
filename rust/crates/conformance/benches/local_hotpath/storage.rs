@@ -1,15 +1,16 @@
 use super::{
     calibrate::Floors,
     population::{Fixture, id, key},
-    report::{Measurements, Result, Terms},
+    report::{Measurements, Observation, Result, Terms, emit},
 };
 use acyclic_actors::{
     addressing::ActorReference,
-    local::{PreparedPublish, Store},
+    local::{PreparedPublish, Snapshot, Store},
 };
 use acyclic_fs::{CancellationToken, WorkBudget};
-use acyclic_objects::{Blobs, ByteRange, Digest};
+use acyclic_objects::{Blobs, ByteRange, Digest, Head, Kind};
 use acyclic_stream::{AppendOutcome, Stream, StreamPath};
+use acyclic_test_support::scale::Operation;
 use bytes::Bytes;
 use futures::{TryStreamExt as _, task::AtomicWaker};
 use std::{
@@ -46,9 +47,12 @@ macro_rules! timed {
         // Allocate the sampler's future before the interval; construction of
         // the operation itself remains inside it.
         let future = Box::pin(async { $future.await });
+        let before = $rows.start();
         let start = Instant::now();
         let result = future.await;
-        $rows.record($name, $floor, start.elapsed());
+        let elapsed = start.elapsed();
+        let observed = $rows.stop(before);
+        $rows.record($name, $floor, elapsed, observed)?;
         result
     }};
 }
@@ -76,8 +80,9 @@ pub(super) async fn run(
     agents: usize,
     samples: usize,
     floors: &Floors,
-) -> Result<bool> {
-    let mut rows = Measurements::new(agents);
+    recovery: &str,
+) -> Result<(bool, acyclic_test_support::scale::Point)> {
+    let mut rows = Measurements::new(agents, fixture.requests.clone(), recovery);
     objects(fixture, samples, &mut rows).await?;
     streams(fixture, samples, &mut rows).await?;
     actors(fixture, samples, &mut rows).await?;
@@ -102,7 +107,7 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         let expected = body.clone();
         let put = timed!(
             rows,
-            "objects.put",
+            Operation::ObjectPut,
             Terms {
                 hash_bytes: 1024,
                 // Blobs::put stores bytes; only Blobs::flush promises crash
@@ -121,18 +126,40 @@ async fn objects(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         fixture.objects.flush(Some(&[digest])).await?;
         let get = timed!(
             rows,
-            "objects.get",
+            Operation::ObjectGet,
             read(1024),
             fixture.objects.get(digest, ByteRange::FULL, 1024)
         )?;
         require_bytes(get.body().as_ref(), &expected)?;
-        let head = timed!(rows, "objects.head", read(0), fixture.objects.head(digest))?;
-        if head.length != 1024 {
-            return Err("object HEAD length mismatch".into());
+        if index == 0 {
+            let mut corrupted = expected.clone();
+            *corrupted.first_mut().ok_or("empty object control")? ^= 1;
+            if require_bytes(get.body().as_ref(), &corrupted).is_ok() {
+                return Err("payload safety oracle accepted changed bytes".into());
+            }
+            emit(
+                serde_json::json!({"schema": 1, "kind": "negative_control", "control": "changed real object payload", "result": "rejected"}),
+            )?;
+        }
+        let mut head = timed!(
+            rows,
+            Operation::ObjectHead,
+            read(0),
+            fixture.objects.head(digest)
+        )?;
+        require_head(&head, digest)?;
+        if index == 0 {
+            head.digest = Digest::of(b"changed real HEAD identity");
+            if require_head(&head, digest).is_ok() {
+                return Err("HEAD safety oracle accepted another digest".into());
+            }
+            emit(
+                serde_json::json!({"schema": 1, "kind": "negative_control", "control": "changed real object HEAD identity", "result": "rejected"}),
+            )?;
         }
         let page = timed!(
             rows,
-            "objects.list",
+            Operation::ObjectList,
             read(32),
             fixture.objects.list(None, 1)
         )?;
@@ -195,16 +222,22 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         // Producer failure cancels the consumer, so it cannot leave an orphan
         // wait for a record that will never be published.
         let ((receipt, appended), (delivered, notified)) = futures::try_join!(append, delivery)?;
-        rows.record("streams.append", commit(1024), appended);
         rows.record(
-            "streams.follow",
+            Operation::StreamAppend,
+            commit(1024),
+            appended,
+            Observation::default(),
+        )?;
+        rows.record(
+            Operation::StreamFollow,
             Terms {
                 wakes: 1,
                 calls: 1,
                 ..Terms::default()
             },
             notified,
-        );
+            Observation::default(),
+        )?;
         next = receipt
             .start
             .checked_add(1)
@@ -213,7 +246,7 @@ async fn streams(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> 
         if delivered.sequence != receipt.start {
             return Err("follow cursor mismatch".into());
         }
-        let records = timed!(rows, "streams.read", read(1024), async {
+        let records = timed!(rows, Operation::StreamRead, read(1024), async {
             stream
                 .read(receipt.start, 1)
                 .await?
@@ -241,32 +274,40 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
             format!("actor-{index}").as_bytes(),
         )?;
         let creation_key = key(format!("actor-create/{index}"))?;
-        timed!(rows, "actors.create", commit(0), async {
+        timed!(rows, Operation::ActorCreate, commit(0), async {
             let mut creation = PreparedPublish::foreign(creation_key);
             for effect in store.create(&actor, BTreeMap::new(), None)? {
                 creation.join(effect)?;
             }
             store.submit(creation).await
         })?;
+        require_created(&store.load(&actor).await?)?;
         address = Some(actor);
     }
     let address = address.ok_or("no actor samples")?;
     let before = store.load(&address).await?;
     store.claim(&before, 1, key("actor-claim")?).await?;
-    let mut state = store.bind_state(store.load(&address).await?, 1)?;
+    let claimed = store.load(&address).await?;
+    if require_created(&claimed).is_ok() {
+        return Err("actor creation oracle accepted a claimed epoch".into());
+    }
+    emit(
+        serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real actor after placement claim", "result": "rejected"}),
+    )?;
+    let mut state = store.bind_state(claimed, 1)?;
     for index in 0..samples {
         let payload = Bytes::from(vec![u8::try_from(index % 256)?; 128]);
         let operation = key(format!("actor-write/{index}"))?;
-        timed!(rows, "actors.durable_write", commit(128), async {
+        timed!(rows, Operation::ActorDurableWrite, commit(128), async {
             state.transaction(|transaction| {
                 transaction.put("value".into(), payload.clone());
                 Ok(())
             })?;
             state.flush(operation).await
         })?;
-        let start = Instant::now();
-        let value = state.transaction(|transaction| Ok(transaction.get("value").cloned()))?;
-        rows.record("actors.warm_read", read(128), start.elapsed());
+        let value = timed!(rows, Operation::ActorWarmRead, read(128), async {
+            state.transaction(|transaction| Ok(transaction.get("value").cloned()))
+        })?;
         require_bytes(value.ok_or("actor metadata missing")?.as_ref(), &payload)?;
     }
     Ok(())
@@ -294,10 +335,11 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
     Box::pin(generation.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation))
         .await
         .map_err(|failure| failure.error)?;
+    let mut visible = payload.to_vec();
     for index in 0..samples {
         let observed = timed!(
             rows,
-            "fs.pinned_read",
+            Operation::PinnedRead,
             read(1024),
             generation.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation)
         )
@@ -319,14 +361,22 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
         let staged = Bytes::from(body.clone());
         timed!(
             rows,
-            "fs.staged_write",
+            Operation::StagedWrite,
             read(1024),
             transaction.write("/value", staged, WorkBudget::UNBOUNDED, &cancellation)
         )
         .map_err(|failure| failure.error)?;
+        // Staging promises no publication. Check the live workspace outside
+        // the interval before allowing the commit sample to begin.
+        let unpublished =
+            Box::pin(workspace.read("/value", 1024, WorkBudget::UNBOUNDED, &cancellation))
+                .await
+                .map_err(|failure| failure.error)?
+                .value;
+        require_bytes(unpublished.as_ref(), &visible)?;
         let outcome = timed!(
             rows,
-            "fs.fsync",
+            Operation::Fsync,
             commit(1024),
             transaction.commit(
                 None,
@@ -358,6 +408,7 @@ async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) 
                 .map_err(|failure| failure.error)?
                 .value;
         require_bytes(confirmed.as_ref(), &body)?;
+        visible = body;
     }
     Ok(())
 }
@@ -383,7 +434,7 @@ async fn sessions(
         };
         let created = timed!(
             rows,
-            "swarm.session_start",
+            Operation::SessionStart,
             Terms {
                 wakes: 1,
                 ..commit(0)
@@ -400,6 +451,31 @@ async fn sessions(
 fn require_bytes(observed: &[u8], expected: &[u8]) -> Result {
     if observed != expected {
         return Err("provider returned different payload bytes".into());
+    }
+    Ok(())
+}
+
+fn require_head(head: &Head, digest: Digest) -> Result {
+    if head.digest != digest
+        || head.length != 1024
+        || head.kind != Kind::Blob
+        || !head.references.is_empty()
+    {
+        return Err("object HEAD identity, kind, length or references mismatch".into());
+    }
+    Ok(())
+}
+
+fn require_created(snapshot: &Snapshot) -> Result {
+    let state = snapshot.state().ok_or("created actor state missing")?;
+    if state.epoch() != 0
+        || state.checkpoint().is_some()
+        || state.metadata().len() != 0
+        || !state.subscriptions().is_empty()
+        || state.alarm().pending().is_some()
+        || state.paused()
+    {
+        return Err("created actor differs from its requested initial state".into());
     }
     Ok(())
 }

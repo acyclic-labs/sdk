@@ -18,14 +18,16 @@ use acyclic_harness_core::{
     resources::ProviderRef,
 };
 use acyclic_objects::{LocalMedium, LocalObjects, Store, local::LocalObjectsLimits};
+use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     BoxProviderFuture, CommitRequest, IdempotencyKey, LocalStream, LocalStreamLimits, MemoryLimits,
 };
 use std::{path::Path, sync::Arc, time::Instant};
 
-pub(super) type Objects = LogicalObjectStore<LocalObjects>;
-pub(super) type Filesystem = Fs<StreamAuthorityStore<LocalStream>, Objects>;
-pub(super) type Binding = Bound<LocalStream, Objects>;
+pub(super) type Objects = LogicalObjectStore<Counted<LocalObjects>>;
+pub(super) type Streams = Counted<LocalStream>;
+pub(super) type Filesystem = Fs<StreamAuthorityStore<Streams>, Objects>;
+pub(super) type Binding = Bound<Streams, Objects>;
 
 /// Creation-only executors refuse accidental execution rather than making up a
 /// model completion. Population roots remain dormant throughout measurement.
@@ -47,8 +49,9 @@ impl TurnExecutors for CreationOnly {
 }
 
 pub(super) struct Fixture {
-    pub(super) stream: Arc<LocalStream>,
-    pub(super) objects: Arc<LocalObjects>,
+    pub(super) stream: Arc<Streams>,
+    pub(super) requests: RequestLedger,
+    pub(super) objects: Arc<Counted<LocalObjects>>,
     pub(super) fs: Filesystem,
     pub(super) bound: Binding,
     pub(super) provider: ProviderRef,
@@ -91,10 +94,17 @@ impl Fixture {
             journal_bytes: u64::MAX,
             ..LocalStreamLimits::default()
         };
-        let stream = Arc::new(LocalStream::open(root.join("stream"), limits).await?);
+        let requests = RequestLedger::new();
+        let stream = Arc::new(Counted::with_ledger(
+            LocalStream::open(root.join("stream"), limits).await?,
+            requests.clone(),
+        ));
         let medium =
             LocalMedium::open(root.join("objects"), LocalObjectsLimits::default(), None).await?;
-        let objects = Arc::new(Store::new(medium).account(b"benchmark")?);
+        let objects = Arc::new(Counted::with_ledger(
+            Store::new(medium).account(b"benchmark")?,
+            requests.clone(),
+        ));
         let fs = Fs::new(
             StreamAuthorityStore::new(stream.clone()),
             LogicalObjectStore::new(objects.clone()),
@@ -134,6 +144,7 @@ impl Fixture {
         )?;
         let fixture = Self {
             stream,
+            requests,
             objects,
             fs,
             bound,
