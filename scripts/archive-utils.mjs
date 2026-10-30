@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
+import { join } from "node:path";
 
 export function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
@@ -83,4 +84,58 @@ export function tarEntries(tar) {
     offset = bodyStart + Math.ceil(size / 512) * 512;
   }
   throw new Error("archive lacks an end marker");
+}
+
+// wasm-bindgen emits flat bindings plus inline JavaScript under snippets/.
+export function isWasmArtifactPath(path) {
+  const parts = path.split("/");
+  return parts.every(part => part !== "" && part !== "." && part !== ".." && !part.includes("\\"))
+    && (parts.length === 1 || (parts[0] === "snippets" && parts.length > 1));
+}
+
+/** Enumerate the complete emitted tree without following symbolic links. */
+function* wasmArtifactPaths(directory, { receipt = false } = {}) {
+  const root = lstatSync(directory);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new Error(`WASM artifact admission failed at ${directory}: expected a real directory; recovery: bun scripts/build-wasm.mjs`);
+  }
+  function* visit(parent, prefix) {
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      const path = prefix + entry.name;
+      if (entry.isDirectory() && !entry.isSymbolicLink() && (path === "snippets" || path.startsWith("snippets/"))) {
+        yield* visit(join(parent, entry.name), `${path}/`);
+      } else if (entry.isFile() && !entry.isSymbolicLink() && isWasmArtifactPath(path)) {
+        if (receipt || path !== "producer-receipt.json") yield path;
+      } else {
+        throw new Error(`WASM artifact admission failed at ${path}: non-regular artifact; recovery: bun scripts/build-wasm.mjs`);
+      }
+    }
+  }
+  yield* visit(directory, "");
+}
+
+/** @returns {Generator<[string, Buffer]>} */
+export function* wasmArtifactFiles(directory, options) {
+  for (const path of wasmArtifactPaths(directory, options)) {
+    yield [`generated/wasm/${path}`, readFileSync(join(directory, path))];
+  }
+}
+
+/** Replace only admitted generated files, including snippets from an older build. */
+export function copyWasmArtifacts(source, output) {
+  const artifacts = wasmArtifactInventory(wasmArtifactFiles(source));
+  const current = new Set(artifacts.map(item => item.path.slice("generated/wasm/".length)));
+  // Admit the complete old tree before removing anything. Directory entries
+  // alone suffice; stale payloads need neither reading nor hashing.
+  const previous = existsSync(output) ? [...wasmArtifactPaths(output, { receipt: true })] : [];
+  for (const path of previous) if (!current.has(path)) unlinkSync(join(output, path));
+  mkdirSync(output, { recursive: true });
+  cpSync(source, output, { recursive: true });
+  return artifacts;
+}
+
+export function wasmArtifactInventory(files) {
+  return Array.from(files, ([path, bytes]) => ({
+    path, bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }

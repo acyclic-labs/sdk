@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageClosure } from "./package-closure.mjs";
+import { copyWasmArtifacts } from "./archive-utils.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Manual caller-array copies must stay behind the admitted byte snapshot.
@@ -103,7 +104,7 @@ const targetRoot = JSON.parse(metadata).target_directory;
 const profile = process.env.ACYCLIC_WASM_PROFILE || "wasm-release";
 const profileDirectory = profile === "dev" ? "debug" : profile;
 
-const script = readFileSync(fileURLToPath(import.meta.url));
+const script = Buffer.concat([readFileSync(fileURLToPath(import.meta.url)), readFileSync(new URL("./archive-utils.mjs", import.meta.url))]);
 
 const grouped = process.env.ACYCLIC_WASM_GROUPS_PREPARED === "1";
 const targets = grouped ? [packageArgument] : packageArgument
@@ -165,16 +166,10 @@ for (const name of targets) {
     postprocess?.(bindings);
     writeFileSync(stamp, key);
   }
-  mkdirSync(output, { recursive: true });
-  cpSync(bindings, output, { recursive: true });
+  const artifacts = copyWasmArtifacts(bindings, output);
   if (producer) {
     await producer.assertSourceSnapshot(source);
     if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
-    const artifacts = readdirSync(bindings, { withFileTypes: true }).map(entry => {
-      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("WASM bindings contain a non-regular artifact");
-      const bytes = readFileSync(resolve(output, entry.name));
-      return { path: `generated/wasm/${entry.name}`, bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` };
-    }).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
     const moduleSha256 = `sha256:${createHash("sha256").update(readFileSync(module)).digest("hex")}`;
     const receipt = originalReceipt ?? {
       schema: "acyclic.wasm-build-receipt.v1", family: name, package: family.wasmPackageName, version: family.version,

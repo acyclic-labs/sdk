@@ -159,7 +159,7 @@ class RustStreamProvider implements StreamProvider {
 
 
 function record(value: WireRecord): EncodedRecord {
-  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros, keys: value.keys, attributes: value.attributes };
+  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros, origin: value.origin, keys: value.keys, attributes: value.attributes };
 }
 
 /** Durable account-local provider using strict IndexedDB publication and Rust recovery. */

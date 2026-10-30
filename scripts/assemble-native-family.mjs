@@ -9,6 +9,7 @@ import { gunzipSync } from "node:zlib";
 import { isDeepStrictEqual } from "node:util";
 import { tarEntries } from "./archive-utils.mjs";
 import { createNativeProducer } from "./build-native-family.mjs";
+import { isWasmArtifactPath, wasmArtifactFiles } from "./archive-utils.mjs";
 
 /** Shared exact assembly specialized only by immutable Rust-generated family facts. */
 export function createNativeAssembler(family) {
@@ -120,7 +121,7 @@ function assertWasmReceipt(receipt, files, sourceSha, expectedSource, version) {
   if (!Array.isArray(receipt.artifacts) || receipt.artifacts.length === 0) fail("WASM artifact inventory is missing");
   const expected = new Set(["package/generated/wasm/producer-receipt.json"]);
   for (const artifact of receipt.artifacts) {
-    if (!/^generated\/wasm\/[^/\\]+$/u.test(artifact.path)) fail("WASM artifact path is invalid");
+    if (typeof artifact.path !== "string" || !artifact.path.startsWith("generated/wasm/") || !isWasmArtifactPath(artifact.path.slice("generated/wasm/".length))) fail("WASM artifact path is invalid; recovery: bun scripts/build-wasm.mjs");
     const path = `package/${artifact.path}`;
     if (expected.has(path)) fail("WASM artifact inventory contains duplicates");
     expected.add(path);
@@ -332,8 +333,7 @@ async function main() {
     ]);
     const wasmReceiptPath = join(parentRoot, "generated/wasm/producer-receipt.json");
     const wasmReceipt = JSON.parse(await readFile(wasmReceiptPath, "utf8"));
-    const wasmFiles = new Map();
-    for (const name of await readdir(join(parentRoot, "generated/wasm"))) wasmFiles.set(`package/generated/wasm/${name}`, await readFile(join(parentRoot, "generated/wasm", name)));
+    const wasmFiles = new Map([...wasmArtifactFiles(join(parentRoot, "generated/wasm"), { receipt: true })].map(([path, bytes]) => [`package/${path}`, bytes]));
     assertWasmReceipt(wasmReceipt, wasmFiles, sourceSha, { source_sha256: source.sha256, source_files: source.files }, manifest.version);
     await mkdir(output, { recursive: true });
     const companionOutput = join(output, companionDirectory);

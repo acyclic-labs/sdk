@@ -81,7 +81,7 @@ export class StreamSessions {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
       const record = data.item.value;
-      yield { sequence: record.sequence, value: record.value, keys: record.keys, attributes: record.attributes, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros };
+      yield { sequence: record.sequence, value: record.value, keys: record.keys, attributes: record.attributes, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros, origin: record.origin };
     }
   }
 

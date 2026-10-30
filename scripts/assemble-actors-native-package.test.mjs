@@ -118,8 +118,15 @@ test("archive verification binds parent, companion, original source and actual a
     const generationBytes = JSON.stringify(generation);
     const meta = { ...generation, schema: "acyclic.actors.native-targets.v1", source_revision: source, artifact: artifacts[2], generation_sha256: `sha256:${hash(generationBytes)}` };
     const entry = { name, version, asset: "actors-native/companion.tgz", selected_target: target, os: ["fixture"], cpu: ["fixture"], artifact: meta.artifact, generation_sha256: meta.generation_sha256 };
-    const { wasm, wasmReceipt, wasmReceiptBytes } = await writeWasmReceiptFixture(parent, "actors", source, inventory);
-    const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry], wasm_receipt_sha256: `sha256:${hash(wasmReceiptBytes)}` };
+    const { wasm, wasmReceipt } = await writeWasmReceiptFixture(parent, "actors", source, inventory);
+    const snippetPath = "generated/wasm/snippets/nested/inline.js";
+    const snippet = "arbitrary archive bytes; not a compiler fixture";
+    await mkdir(join(parent, "generated/wasm/snippets/nested"), { recursive: true });
+    await writeFile(join(parent, snippetPath), snippet);
+    wasmReceipt.artifacts.push({ path: snippetPath, bytes: Buffer.byteLength(snippet), sha256: `sha256:${hash(snippet)}` });
+    const sealedWasmReceiptBytes = JSON.stringify(wasmReceipt);
+    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), sealedWasmReceiptBytes);
+    const index = { schema: "acyclic.actors.native-package-assembly.v2", source_commit: source, source_sha256: inventory.source_sha256, targets: [target], companions: [entry], wasm_receipt_sha256: `sha256:${hash(sealedWasmReceiptBytes)}` };
     const parentReceipt = { name: "@acyclic-labs/actors", version, asset: "acyclic-labs-actors-0.2.0.tgz" };
     await json(join(parent, "package.json"), parentManifest);
     await json(join(companion, "package.json"), { name, version, private: false, main, os: entry.os, cpu: entry.cpu });
@@ -138,6 +145,9 @@ test("archive verification binds parent, companion, original source and actual a
     };
     const verify = () => verifyNativeAssembly(output, source, version, inventory);
     await seal(); await verify();
+    await writeFile(join(parent, snippetPath), "modified snippet"); await seal();
+    await assert.rejects(verify(), /WASM artifact digest differs/);
+    await writeFile(join(parent, snippetPath), snippet); await seal(); await verify();
     await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), "tampered WASM"); await seal();
     await assert.rejects(verify(), /WASM artifact digest differs/);
     await writeFile(join(parent, "generated/wasm/fixture_bg.wasm"), wasm);
@@ -151,8 +161,8 @@ test("archive verification binds parent, companion, original source and actual a
       await seal();
       await assert.rejects(verify(), /WASM receipt source or package identity differs/);
     }
-    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), wasmReceiptBytes);
-    index.wasm_receipt_sha256 = `sha256:${hash(wasmReceiptBytes)}`;
+    await writeFile(join(parent, "generated/wasm/producer-receipt.json"), sealedWasmReceiptBytes);
+    index.wasm_receipt_sha256 = `sha256:${hash(sealedWasmReceiptBytes)}`;
     await seal(); await verify();
     for (const mutation of [{ scripts: { install: "node -e process.exit(1)" } }, { dependencies: { "unqualified-runtime-dependency": "*" } }]) {
       await json(join(parent, "package.json"), { ...parentManifest, ...mutation }); await seal();

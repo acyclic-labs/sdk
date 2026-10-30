@@ -7,7 +7,9 @@
   "type": "module",
   "sideEffects": false,
   "scripts": {
-    "test": "bun test test"
+    "generate": "bun ../../../scripts/generate.mjs harness-actor",
+    "build": "bun ../../../scripts/build-wasm.mjs harness-actor && bun x tsc -b tsconfig.json",
+    "test": "bun run build && bun test test"
   },
   "dependencies": {
     "@acyclic-labs/actors": "0.2.0",
