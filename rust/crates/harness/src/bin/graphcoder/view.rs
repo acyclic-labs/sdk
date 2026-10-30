@@ -534,12 +534,14 @@ pub async fn run(
             })?;
             (areas, usize::from(areas.transcript.height).max(1))
         };
-        // Page sizes describe visible output, never the repository population.
-        // One row is reserved for the continuation hint.
-        let credit = u32::try_from(page.saturating_sub(1).clamp(1, 128))?;
+        // Only inner content cells can advance the query. Reserve the hint;
+        // a collapsed panel waits for the existing resize/input event.
+        let credit = u32::from(areas.overlay_rows(1)).min(128);
         if diff_open && diff_credit != credit {
             diff_credit = credit;
-            diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
+            diff_panel = None;
+            diff_query
+                .set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
         }
         tokio::select! {
             result = async {
@@ -572,7 +574,7 @@ pub async fn run(
                 let waited = view.busy();
                 view.apply(&conversation, event, events.seen()).await?;
                 view.ring &= waited;
-                if diff_open && settled {
+                if diff_open && settled && credit != 0 {
                     diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
                 }
                 // A settled turn clears the output and the streamed answer.
@@ -646,7 +648,7 @@ pub async fn run(
                                         overlay = None;
                                         diff_open = true;
                                         diff_credit = credit;
-                                        diff_query.set(Some(diff::query(Arc::clone(&conversation), credit, None)));
+                                        diff_query.set((credit != 0).then(|| diff::query(Arc::clone(&conversation), credit, None)));
                                         overlay_top = 0;
                                         continue;
                                     }
@@ -719,7 +721,7 @@ pub async fn run(
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape) => {}
                             InputEffect::Quit => return Ok(view.outcome.code()),
-                            InputEffect::Scroll(rows) if diff_open && diff_query.is_none() => {
+                            InputEffect::Scroll(rows) if diff_open && diff_query.is_none() && credit != 0 => {
                                 let cursor = if rows < 0 {
                                     diff_panel.as_mut().and_then(|panel| panel.next.take())
                                 } else {

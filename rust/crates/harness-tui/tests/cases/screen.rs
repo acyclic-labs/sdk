@@ -60,6 +60,59 @@ fn composition_renders_followed_panels_prompt_and_status() -> Result<(), Box<dyn
         assert!(text.contains(expected), "missing {expected}");
     }
     assert!(viewport.cursor.is_some());
+
+    // A page cursor may advance only over rows the bordered modal actually
+    // paints. Check the real renderer across collapsed and resized viewports,
+    // with a footer that consumes one content row.
+    let mut detects_outer_credit = false;
+    for width in [0, 1, 2, 64] {
+        for height in 0..32 {
+            let area = Rect::new(0, 0, width, height);
+            let areas = Screen::default().areas(area, &input);
+            let credit = areas.overlay_rows(1);
+            if credit == 0 {
+                continue;
+            }
+            let rows = (0..credit)
+                .map(|index| Line::from(format!("patch-{index:02}")))
+                .chain([Line::from("next page")])
+                .collect::<Vec<_>>();
+            let modal = Screen {
+                overlay: &rows,
+                overlay_title: "Diff",
+                ..Screen::default()
+            };
+            let mut painted = Terminal::new(TestBackend::new(width, height))?;
+            painted.draw(|frame| {
+                modal.render(frame, &input, &mut viewport, 0, 1000);
+            })?;
+            let text = visible(&painted);
+            for row in &rows {
+                assert!(text.contains(&row.to_string()), "hidden {row} at {area:?}");
+            }
+            // The previous outer-height credit consumes patch rows behind the
+            // border. Its real output must fail the same visibility oracle.
+            let outer_credit = areas.transcript.height.saturating_sub(1);
+            let too_many = (0..outer_credit)
+                .map(|index| Line::from(format!("patch-{index:02}")))
+                .chain([Line::from("next page")])
+                .collect::<Vec<_>>();
+            let negative = Screen {
+                overlay: &too_many,
+                overlay_title: "Diff",
+                ..Screen::default()
+            };
+            painted.draw(|frame| {
+                negative.render(frame, &input, &mut viewport, 0, 1000);
+            })?;
+            let text = visible(&painted);
+            detects_outer_credit |= too_many.iter().any(|row| !text.contains(&row.to_string()));
+        }
+    }
+    assert!(
+        detects_outer_credit,
+        "outer-height credit must lose actual rows"
+    );
     Ok(())
 }
 

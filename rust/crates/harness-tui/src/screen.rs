@@ -73,6 +73,23 @@ pub struct ScreenAreas {
 }
 
 impl ScreenAreas {
+    fn overlay_content(&self) -> Rect {
+        Block::default()
+            .borders(Borders::ALL)
+            .inner(self.transcript)
+    }
+
+    /// Visible modal rows after its border and caller-reserved hints or headers.
+    /// Zero means no query row can be painted, including a zero-width viewport.
+    pub fn overlay_rows(&self, reserved: u16) -> u16 {
+        let content = self.overlay_content();
+        if content.width == 0 {
+            0
+        } else {
+            content.height.saturating_sub(reserved)
+        }
+    }
+
     /// Capture drag only for the painted track. A click resolves through the
     /// renderer's source index, then publishes an ordinary typed file intent.
     pub fn event(
@@ -142,7 +159,8 @@ impl Screen<'_> {
 
     /// Default follow-tail position; a followed layout file may override it.
     pub fn tail_scroll(&self, area: Rect, input: &PromptInput) -> usize {
-        let height = self.areas(area, input).transcript.height;
+        let areas = self.areas(area, input);
+        let height = areas.transcript.height;
         if self.feedback {
             0
         } else if self.overlay.is_empty() {
@@ -153,7 +171,7 @@ impl Screen<'_> {
         } else {
             self.overlay
                 .len()
-                .saturating_sub(usize::from(height.saturating_sub(2)))
+                .saturating_sub(usize::from(areas.overlay_content().height))
         }
     }
 
@@ -352,7 +370,7 @@ impl Screen<'_> {
             rows(
                 frame,
                 self.overlay,
-                block.inner(areas.transcript),
+                areas.overlay_content(),
                 transcript_scroll,
             );
             frame.render_widget(block, areas.transcript);
