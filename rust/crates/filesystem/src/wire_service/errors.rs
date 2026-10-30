@@ -69,7 +69,6 @@ fn filesystem_code(error: &FsError) -> Code {
         E::Config(_)
         | E::CheckoutMode(_)
         | E::NonNormalizedName
-        | E::ZeroLiveRetryLimit
         | E::NotDirectory
         | E::NotSymbolicLink
         | E::NotReparsePoint
@@ -93,10 +92,6 @@ fn filesystem_code(error: &FsError) -> Code {
         | E::PreparedMergePending
         | E::MergeParentNotHead => Code::FailedPrecondition,
         E::NotFound | E::WorkspaceDeleted => Code::NotFound,
-        E::LiveRetry(error) => match error {
-            crate::kernel::LiveRetryError::ZeroAttempts => Code::InvalidArgument,
-            crate::kernel::LiveRetryError::InvalidTransition => Code::Internal,
-        },
         E::Authority(error) => authority_code(error),
         E::Object(error) => object_code(error),
         E::Path(error) => path_code(error),

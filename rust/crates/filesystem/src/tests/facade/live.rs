@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn original_guarded_live_retry_preserves_both_real_identities() -> TestResult {
+async fn original_guarded_live_conflict_requires_explicit_rebase() -> TestResult {
     let cancel = CancellationToken::new();
     let (volume, mut seed) = fixture(serialized_config(), &cancel).await?;
     let left = create(
@@ -57,11 +57,31 @@ async fn original_guarded_live_retry_preserves_both_real_identities() -> TestRes
         calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(Ok::<(), FsError>(()))
     };
+    let conflict = local
+        .resume_live_with_native_work(
+            OperationId::from_bytes([212; 16]),
+            PublicationPermit::Unrestricted,
+            &original,
+            &cancel,
+            &mut guard,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    assert!(matches!(conflict.0, LiveMutationOutcome::Conflict { .. }));
+    assert!(conflict.1.work().shares_ledger(&original));
+    let checks_at_conflict = callbacks.load(Ordering::SeqCst);
+    assert!(checks_at_conflict <= 1);
+    assert!(local.has_pending_mutations());
+    drop(conflict);
+    let (decision, allocation) = local.rebase_head(16, &original, &cancel).await?;
+    assert!(matches!(decision, RebaseDecision::Safe { .. }));
+    drop(allocation);
     let outcome = local
         .resume_live_with_native_work(
             OperationId::from_bytes([212; 16]),
-            8,
-            16,
             PublicationPermit::Unrestricted,
             &original,
             &cancel,
@@ -74,7 +94,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities() -> TestRes
         .await?;
     assert!(matches!(outcome.0, LiveMutationOutcome::Committed { .. }));
     assert!(outcome.1.work().shares_ledger(&original));
-    assert_ne!(callbacks.load(Ordering::SeqCst), 0);
+    assert_eq!(callbacks.load(Ordering::SeqCst), checks_at_conflict + 1);
     assert!(!local.has_pending_mutations());
     let left_record = local
         .read_file_record_by_id(left, &original, &cancel)
@@ -89,7 +109,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities() -> TestRes
 }
 
 #[tokio::test]
-async fn direct_live_mutations_retry_only_across_safe_regions() -> TestResult {
+async fn direct_live_conflicts_return_before_explicit_rebase() -> TestResult {
     let cancel = CancellationToken::new();
     let (optimistic, _) = fixture(config(), &cancel).await?;
     let rejected = optimistic
@@ -134,8 +154,8 @@ async fn direct_live_mutations_retry_only_across_safe_regions() -> TestResult {
         }
         for (index, checkout) in [&mut first, &mut second].into_iter().enumerate() {
             let blob = &blobs[index];
-            let outcome = checkout
-                .mutate_live(
+            checkout
+                .mutate(
                     vec![Mutation::Write {
                         path: path("file")?,
                         offset: writes[index].0,
@@ -143,22 +163,43 @@ async fn direct_live_mutations_retry_only_across_safe_regions() -> TestResult {
                         content: blob.root,
                         content_offset: 0,
                     }],
-                    OperationId::new(),
-                    2,
-                    8,
                     B,
                     &cancel,
                 )
+                .await?;
+        }
+        assert!(matches!(
+            first
+                .resume_live(OperationId::new(), B, &cancel)
                 .await?
-                .value;
-            if overlap && index == 1 {
-                assert!(
-                    matches!(outcome, LiveMutationOutcome::Conflicted { conflicts, .. }
-                    if conflicts.iter().any(|conflict| matches!(conflict.region, DependencyRegion::ContentRange { .. })))
-                );
-            } else {
-                assert!(matches!(outcome, LiveMutationOutcome::Committed { .. }));
-            }
+                .value,
+            LiveMutationOutcome::Committed { .. }
+        ));
+        let operation = OperationId::new();
+        let before = second.generation_id();
+        let conflict = second.resume_live(operation, B, &cancel).await?;
+        let LiveMutationOutcome::Conflict { actual } = conflict.value else {
+            return Err("stale publication did not return its original conflict".into());
+        };
+        assert_eq!(second.generation_id(), before);
+        assert!(second.has_pending_mutations());
+        assert_eq!(
+            second.resume_live(operation, B, &cancel).await?.value,
+            LiveMutationOutcome::Conflict { actual }
+        );
+        let rebase = second.rebase_head(8, B, &cancel).await?.value;
+        if overlap {
+            assert!(
+                matches!(rebase, RebaseDecision::Conflicted { conflicts, .. }
+                if conflicts.iter().any(|conflict| matches!(conflict.region, DependencyRegion::ContentRange { .. })))
+            );
+            assert_eq!(second.generation_id(), before);
+        } else {
+            assert!(matches!(rebase, RebaseDecision::Safe { .. }));
+            assert!(matches!(
+                second.resume_live(operation, B, &cancel).await?.value,
+                LiveMutationOutcome::Committed { .. }
+            ));
         }
     }
     Ok(())
@@ -213,7 +254,7 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions() -> Test
 }
 
 #[tokio::test]
-async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> TestResult {
+async fn direct_live_resume_preserves_original_identity_and_epoch_fence() -> TestResult {
     let cancel = CancellationToken::new();
     let (volume, _) = fixture(serialized_config(), &cancel).await?;
     let mut winner = open_checkout(&volume, writable_live(), &cancel).await?;
@@ -225,9 +266,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
         &cancel,
     )
     .await?;
-    winner
-        .resume_live(OperationId::new(), 1, 8, B, &cancel)
-        .await?;
+    winner.resume_live(OperationId::new(), B, &cancel).await?;
     create(
         &mut retrying,
         "retrying",
@@ -237,58 +276,27 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     .await?;
     let retry = OperationId::from_bytes([119; 16]);
     assert!(matches!(
-        retrying.resume_live(retry, 1, 8, B, &cancel).await?.value,
-        LiveMutationOutcome::RetryLimit { .. }
+        retrying.resume_live(retry, B, &cancel).await?.value,
+        LiveMutationOutcome::Conflict { .. }
     ));
     assert!(retrying.has_pending_mutations());
-    let blocked = create(
-        &mut retrying,
-        "must-remain-fenced",
-        OwnedBytes::from_static(b"blocked"),
-        &cancel,
-    )
-    .await
-    .unwrap_err();
     assert!(matches!(
-        blocked
-            .downcast_ref::<OperationFailure<FsError>>()
-            .map(|failure| &failure.error),
-        Some(FsError::PendingLiveMutation)
+        retrying.rebase_head(8, B, &cancel).await?.value,
+        RebaseDecision::Safe { .. }
     ));
-    for failure in [
-        retrying
-            .resume_live(OperationId::new(), 2, 8, B, &cancel)
-            .await
-            .unwrap_err(),
-        retrying.rebase_head(8, B, &cancel).await.unwrap_err(),
-    ] {
-        assert!(matches!(failure.error, FsError::PendingLiveMutation));
-    }
     assert!(matches!(
-        retrying.resume_live(retry, 2, 8, B, &cancel).await?.value,
+        retrying.resume_live(retry, B, &cancel).await?.value,
         LiveMutationOutcome::Committed { .. }
     ));
     assert!(!retrying.has_pending_mutations());
     assert!(matches!(
         retrying
-            .resume_live(retry, 1, 8, B, &cancel)
+            .resume_live(retry, B, &cancel)
             .await
             .unwrap_err()
             .error,
         FsError::NoPendingMutations
     ));
-    for failure in [
-        retrying
-            .resume_live(retry, 0, 8, B, &cancel)
-            .await
-            .unwrap_err(),
-        retrying
-            .mutate_live(Vec::new(), OperationId::new(), 0, 8, B, &cancel)
-            .await
-            .unwrap_err(),
-    ] {
-        assert!(matches!(failure.error, FsError::ZeroLiveRetryLimit));
-    }
     let mut pending = open_checkout(&volume, writable_live(), &cancel).await?;
     create(
         &mut pending,
@@ -299,7 +307,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     .await?;
     assert!(matches!(
         pending
-            .mutate_live(Vec::new(), OperationId::new(), 1, 8, B, &cancel)
+            .mutate_live(Vec::new(), OperationId::new(), B, &cancel)
             .await
             .unwrap_err()
             .error,
@@ -307,7 +315,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     ));
     assert!(matches!(
         pending
-            .apply_authored_live(Vec::new(), OperationId::new(), 1, 8, B, &cancel)
+            .apply_authored_live(Vec::new(), OperationId::new(), B, &cancel)
             .await
             .unwrap_err()
             .error,
@@ -336,14 +344,11 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     repeated.mutate(vec![mutation], B, &cancel).await?;
     let operation = OperationId::from_bytes([121; 16]);
     assert!(matches!(
-        first.resume_live(operation, 1, 8, B, &cancel).await?.value,
+        first.resume_live(operation, B, &cancel).await?.value,
         LiveMutationOutcome::Committed { .. }
     ));
     assert!(matches!(
-        repeated
-            .resume_live(operation, 1, 8, B, &cancel)
-            .await?
-            .value,
+        repeated.resume_live(operation, B, &cancel).await?.value,
         LiveMutationOutcome::AlreadyCommitted { .. }
     ));
     let mut different = open_checkout(&volume, writable_live(), &cancel).await?;
@@ -355,10 +360,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     )
     .await?;
     assert!(matches!(
-        different
-            .resume_live(operation, 1, 8, B, &cancel)
-            .await?
-            .value,
+        different.resume_live(operation, B, &cancel).await?.value,
         LiveMutationOutcome::IdempotencyConflict { .. }
     ));
     assert!(different.has_pending_mutations());
@@ -379,14 +381,14 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
         return Err("fresh fence conflicted".into());
     };
     assert!(
-        matches!(fenced.resume_live(OperationId::new(), 1, 8, B, &cancel).await?.value,
+        matches!(fenced.resume_live(OperationId::new(), B, &cancel).await?.value,
         LiveMutationOutcome::Fenced { actual_epoch } if actual_epoch == head.epoch)
     );
     let mut manual = open_checkout(&volume, writable_manual(), &cancel).await?;
     assert!(manual.refresh_live(B, &cancel).await.is_err());
     assert!(
         manual
-            .mutate_live(Vec::new(), OperationId::new(), 1, 8, B, &cancel)
+            .mutate_live(Vec::new(), OperationId::new(), B, &cancel)
             .await
             .is_err()
     );
@@ -414,8 +416,6 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
                 },
             ],
             OperationId::from_bytes([118; 16]),
-            3,
-            8,
             B,
             &cancel,
         )

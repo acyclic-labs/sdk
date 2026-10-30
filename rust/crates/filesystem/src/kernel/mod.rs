@@ -187,10 +187,7 @@ pub use historical_evidence::{
     decode_historical_generation_evidence, encode_original_generation_evidence,
 };
 pub use list::{DirectoryPage, DirectoryReadError, DirectoryReadFailure, list_tree_entries};
-pub use live::{
-    LiveMutationOutcome, LivePublicationObservation, LiveRetryAction, LiveRetryError,
-    LiveRetryState,
-};
+pub use live::{LiveMutationOutcome, LivePublicationObservation};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use mark::MarkError;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

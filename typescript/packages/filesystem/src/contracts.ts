@@ -531,8 +531,8 @@ export interface FsCheckout {
   cloneFileRange( source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
   cloneFileRangeById( sourceFileId: Uint8Array, sourceOffset: bigint, destinationFileId: Uint8Array, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
   commit(operationId: Uint8Array, lease?: OperationWindowLease): Promise<CommitResult>;
-  mutateLive( operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveTransactionResult>;
-  resumeLive( operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveMutationResult>;
+  mutateLive( operations: readonly TransactionOperation[], operationId: Uint8Array, ): Promise<LiveTransactionResult>;
+  resumeLive( operationId: Uint8Array, ): Promise<LiveMutationResult>;
   rebaseHead(maximumConflicts: number): Promise<RebaseResult>;
   discard(): Promise<MutationResult>;
   mount?(destination: string, writable: boolean): NativeMount;

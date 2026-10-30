@@ -148,7 +148,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     let mut published = None;
     for cut in 1..=64 {
         control.arm(cut);
-        let outcome = (live.resume_live(live_operation, 3, 16, B, &cancellation)).await;
+        let outcome = (live.resume_live(live_operation, B, &cancellation)).await;
         match outcome {
             Ok(receipt) => {
                 published = Some(receipt);
@@ -164,6 +164,20 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
                 );
                 assert_eq!(live.generation_id(), live_before);
                 assert!(live.has_pending_mutations());
+                assert!(matches!(
+                    live.resume_live(OperationId::from_bytes([35; 16]), B, &cancellation)
+                        .await
+                        .unwrap_err()
+                        .error,
+                    FsError::PendingLiveMutation
+                ));
+                assert!(matches!(
+                    live.rebase_head(16, B, &cancellation)
+                        .await
+                        .unwrap_err()
+                        .error,
+                    FsError::PendingLiveMutation
+                ));
             }
         }
     }

@@ -269,12 +269,12 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     assert!((read_only.refresh_head(B, &cancellation)).await.is_err());
     assert!((read_only.refresh_live(B, &cancellation)).await.is_err());
     assert!(
-        (read_only.mutate_live(Vec::new(), OperationId::new(), 1, 1, B, &cancellation,))
+        (read_only.mutate_live(Vec::new(), OperationId::new(), B, &cancellation,))
             .await
             .is_err()
     );
     assert!(
-        (read_only.resume_live(OperationId::new(), 1, 1, B, &cancellation,))
+        (read_only.resume_live(OperationId::new(), B, &cancellation,))
             .await
             .is_err()
     );
@@ -306,7 +306,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
         .is_err()
     );
     assert!(
-        (clean.resume_live(OperationId::new(), 1, 1, B, &cancellation,))
+        (clean.resume_live(OperationId::new(), B, &cancellation,))
             .await
             .is_err()
     );

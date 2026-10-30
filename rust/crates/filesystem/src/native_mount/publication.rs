@@ -1,14 +1,11 @@
 //! One fenced publication path shared by native mounts and host watchers.
 
 use crate::MountSourceError;
-use crate::kernel::RebaseDecision;
 use crate::model::MutationMode;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Checkout, LiveMutationOutcome,
     LivePublicationObservation, OperationId, PublicationPermit, WorkBudget,
 };
-
-const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
 
 #[derive(Default)]
 pub(super) struct PublicationProof<'a> {
@@ -83,7 +80,7 @@ pub async fn seal_checkout_with_permit<A: AsyncAuthorityStore, O: AsyncObjectSto
         }
         MutationMode::DirectLive if permit == PublicationPermit::Unrestricted => {
             let receipt = checkout
-                .resume_live(operation_id, 8, 256, budget, cancellation)
+                .resume_live(operation_id, budget, cancellation)
                 .await
                 .map_err(|failure| publication_error(failure.error))?;
             live_ack(operation_id, &receipt.value)
@@ -154,45 +151,27 @@ where
         return Ok(Some((None, checkout.generation_id())));
     }
     if mode == MutationMode::PrivateOverlay {
-        for _ in 0..(if force {
-            MAXIMUM_SAFE_REBASE_ATTEMPTS
-        } else {
-            1
-        }) {
-            original
-                .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
-                .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
-            let outcome = checkout
-                .commit_even_if_clean_with_native_work(
-                    operation_id,
-                    permit,
-                    original,
-                    cancellation,
-                    before_publication,
-                    proof.producer,
-                    proof.context,
-                    proof.evidence.clone(),
-                    proof.fingerprint_permit,
-                )
-                .await?;
-            if matches!(outcome, LivePublicationObservation::Conflict { .. }) && force {
-                if rebase_conflicted(checkout, original, cancellation)
-                    .await
-                    .map_err(T::from)?
-                {
-                    return Ok(None);
-                }
-            } else {
-                return Ok(private_ack(operation_id, outcome));
-            }
-        }
-        Err(T::from(MountSourceError::PublicationRetryLimit))
+        original
+            .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
+            .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
+        let outcome = checkout
+            .commit_even_if_clean_with_native_work(
+                operation_id,
+                permit,
+                original,
+                cancellation,
+                before_publication,
+                proof.producer,
+                proof.context,
+                proof.evidence,
+                proof.fingerprint_permit,
+            )
+            .await?;
+        Ok(private_ack(operation_id, outcome))
     } else {
         let (outcome, allocation) = checkout
             .resume_live_with_native_work(
                 operation_id,
-                8,
-                256,
                 permit,
                 original,
                 cancellation,
@@ -204,7 +183,6 @@ where
             )
             .await?;
         let ack = live_ack(operation_id, &outcome);
-        drop(outcome);
         drop(allocation);
         Ok(ack)
     }
@@ -248,216 +226,11 @@ fn publication_error(error: crate::FsError) -> MountSourceError {
     }
 }
 
-async fn rebase_conflicted<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &mut Checkout<A, O>,
-    original: &crate::NativeMaterializationWork,
-    cancellation: &CancellationToken,
-) -> Result<bool, crate::FsError> {
-    let (decision, allocation) = checkout
-        .rebase_head(
-            checkout
-                .volume_config()
-                .limits
-                .maximum_checkout_dependencies,
-            original,
-            cancellation,
-        )
-        .await?;
-    let conflicted = matches!(decision, RebaseDecision::Conflicted { .. });
-    drop(decision);
-    drop(allocation);
-    Ok(conflicted)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Fs;
-    use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-    use crate::model::{
-        AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
-        VolumeConfig,
-    };
-    use bytes::Bytes;
-
-    #[tokio::test]
-    async fn conflicting_publication_retry_has_one_cumulative_budget()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let fs = Fs::memory();
-        let cancellation = CancellationToken::new();
-        let config = VolumeConfig::portable(Lifecycle::Ephemeral);
-        let volume = fs
-            .create_volume(config, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value;
-        let mode = CheckoutMode {
-            access: AccessMode::ReadWrite,
-            consistency: ConsistencyMode::Manual,
-            mutations: MutationMode::PrivateOverlay,
-        };
-        let mut first = volume
-            .checkout(
-                GenerationSelector::Head,
-                mode,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
-        let mut stale = volume
-            .checkout(
-                GenerationSelector::Head,
-                mode,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
-        let mut budgeted = volume
-            .checkout(
-                GenerationSelector::Head,
-                mode,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?
-            .value;
-        for (checkout, name) in [
-            (&mut first, b"first".as_slice()),
-            (&mut stale, b"stale"),
-            (&mut budgeted, b"stale"),
-        ] {
-            let path = NamespacePath::new(
-                vec![LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.to_vec(),
-                    config.limits.maximum_component_bytes,
-                )?],
-                config.limits,
-            )?;
-            checkout
-                .create(
-                    crate::AuthoredMutation::CreateFile {
-                        path,
-                        bytes: (Bytes::from_static(b"data")).into(),
-                        metadata: crate::kernel::FileMetadata::default(),
-                    },
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
-                .await?;
-        }
-        assert!(matches!(
-            first
-                .commit(
-                    OperationId::from_bytes([1; 16]),
-                    None,
-                    None,
-                    None,
-                    crate::PublicationPermit::Unrestricted,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                    |_| async {
-                        crate::FsResult::Ok(crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::UNCHARGED,
-                        })
-                    }
-                )
-                .await?
-                .value,
-            LivePublicationObservation::Committed { .. }
-        ));
-        let conflict = stale
-            .commit(
-                OperationId::from_bytes([2; 16]),
-                None,
-                None,
-                None,
-                crate::PublicationPermit::Unrestricted,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-                |_| async {
-                    crate::FsResult::Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    })
-                },
-            )
-            .await?;
-        assert!(matches!(
-            conflict.value,
-            LivePublicationObservation::Conflict { .. }
-        ));
-        assert!(conflict.work.authority_records_read > 0);
-        let rebase = stale
-            .rebase_head(
-                config.limits.maximum_checkout_dependencies,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await?;
-        assert!(matches!(rebase.value, RebaseDecision::Safe { .. }));
-        assert!(rebase.work.authority_records_read > 0);
-
-        // Each step individually fits; their sum does not. A per-attempt
-        // reset would admit work beyond the caller's budget.
-        let budget = WorkBudget {
-            authority_records_read: conflict
-                .work
-                .authority_records_read
-                .max(rebase.work.authority_records_read),
-            ..WorkBudget::UNBOUNDED
-        };
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(error, _)| error)?;
-        let mut budgeted = budgeted.private_candidate(
-            &mut crate::kernel::KernelAccounting::native(&original, &cancellation),
-            &cancellation,
-        )?;
-        let result = seal_checkout_with_permit_guarded_with_native_work(
-            &mut budgeted,
-            OperationId::from_bytes([3; 16]),
-            PublicationPermit::Unrestricted,
-            true,
-            crate::kernel::KernelAccounting::native(&original, &cancellation),
-            &mut |_: &crate::NativeMaterializationWork| async {
-                Ok::<(), NativePublicationTestError>(())
-            },
-            PublicationProof {
-                producer: None,
-                context: None,
-                evidence: None,
-                fingerprint_permit: None,
-            },
-        )
-        .await;
-        let work_error = match result.expect_err("the original budget must bound every retry") {
-            NativePublicationTestError::Filesystem(crate::FsError::Work(error))
-            | NativePublicationTestError::Filesystem(crate::FsError::NativeKernel(
-                crate::NativeTreeMaterializationError::Work(error),
-            ))
-            | NativePublicationTestError::Filesystem(crate::FsError::Authority(
-                crate::AuthorityStoreError::NativeOriginal(
-                    crate::NativeTreeMaterializationError::Work(error),
-                ),
-            ))
-            | NativePublicationTestError::Source(MountSourceError::Work(error))
-            | NativePublicationTestError::Source(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::Work(error),
-            )) => error,
-            error => return Err(error.into()),
-        };
-        assert!(matches!(
-            work_error,
-            crate::WorkError::BudgetExceeded {
-                counter: "authority_records_read",
-                ..
-            }
-        ));
-        assert!(budgeted.has_pending_mutations());
-        Ok(())
-    }
+    use crate::model::{CheckoutMode, GenerationSelector, Lifecycle, VolumeConfig};
 
     #[cfg(not(target_arch = "wasm32"))]
     #[derive(Debug, thiserror::Error)]
@@ -466,6 +239,87 @@ mod tests {
         Filesystem(#[from] crate::FsError),
         #[error(transparent)]
         Source(#[from] MountSourceError),
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_source_head_conflict_returns_without_rebase()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let cancellation = CancellationToken::new();
+        let fs = Fs::memory();
+        let volume = fs
+            .create_volume(
+                VolumeConfig::portable(Lifecycle::Ephemeral),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        let mut winner = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &original,
+                &cancellation,
+            )
+            .await?;
+        let mut stale = volume
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode::tracking_transaction(),
+                &original,
+                &cancellation,
+            )
+            .await?;
+        let generation = stale.generation_id();
+        let winning_operation = OperationId::from_bytes([0x65; 16]);
+        let stale_operation = OperationId::from_bytes([0x66; 16]);
+        let mut guard = |_: &crate::NativeMaterializationWork| async {
+            Ok::<(), NativePublicationTestError>(())
+        };
+        let won = seal_checkout_with_permit_guarded_with_native_work(
+            &mut winner,
+            winning_operation,
+            PublicationPermit::Unrestricted,
+            true,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
+            &mut guard,
+            PublicationProof::default(),
+        )
+        .await?;
+        assert_eq!(won, Some((Some(winning_operation), generation)));
+        let lost = seal_checkout_with_permit_guarded_with_native_work(
+            &mut stale,
+            stale_operation,
+            PublicationPermit::Unrestricted,
+            true,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
+            &mut guard,
+            PublicationProof::default(),
+        )
+        .await?;
+        assert_eq!(lost, None);
+        assert_eq!(stale.generation_id(), generation);
+        let (decision, allocation) = stale.rebase_head(1, &original, &cancellation).await?;
+        assert!(matches!(
+            decision,
+            crate::kernel::RebaseDecision::Safe { .. }
+        ));
+        drop(allocation);
+        let published = seal_checkout_with_permit_guarded_with_native_work(
+            &mut stale,
+            stale_operation,
+            PublicationPermit::Unrestricted,
+            true,
+            crate::kernel::KernelAccounting::native(&original, &cancellation),
+            &mut guard,
+            PublicationProof::default(),
+        )
+        .await?;
+        assert_eq!(published, Some((Some(stale_operation), generation)));
+        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]

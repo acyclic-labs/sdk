@@ -51,7 +51,7 @@ pub struct BrowserRebaseResult {
 #[tsify(large_number_types_as_bigints)]
 pub struct BrowserLiveMutationResult {
     #[tsify(
-        type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
+        type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
     )]
     pub(in crate::bindings) status: &'static str,
     #[tsify(type = "Uint8Array | undefined")]
@@ -136,12 +136,7 @@ impl BrowserCheckout {
         &mut self,
         #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
         operation_id: Vec<u8>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserLiveTransactionResult>, JsValue> {
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let maximum_attempts = wasm_u32(&maximum_attempts)?;
-
         let authored = decode_authored_transactions(operations, self.engine.volume_config())?;
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let cancellation = CancellationToken::default();
@@ -150,8 +145,6 @@ impl BrowserCheckout {
             .apply_authored_live(
                 authored,
                 operation_id,
-                maximum_attempts,
-                maximum_conflicts,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
@@ -164,20 +157,13 @@ impl BrowserCheckout {
     pub async fn resume_live(
         &mut self,
         operation_id: Vec<u8>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_attempts: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserLiveMutationResult>, JsValue> {
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
-        let maximum_attempts = wasm_u32(&maximum_attempts)?;
-
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
             .resume_live(
                 operation_id,
-                maximum_attempts,
-                maximum_conflicts,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &cancellation,
             )
@@ -330,20 +316,8 @@ pub(in crate::bindings) fn live_mutation_value(
                 false,
                 None,
             ),
-            LiveMutationOutcome::Conflicted {
-                conflicts,
-                truncated,
-            } => (
-                "conflicted",
-                None,
-                None,
-                None,
-                u32::try_from(conflicts.len()).unwrap_or(u32::MAX),
-                truncated,
-                None,
-            ),
-            LiveMutationOutcome::RetryLimit { actual } => (
-                "retry-limit",
+            LiveMutationOutcome::Conflict { actual } => (
+                "conflict",
                 None,
                 Some(actual.epoch.get()),
                 Some(actual.sequence.get()),

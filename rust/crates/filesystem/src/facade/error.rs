@@ -86,12 +86,6 @@ pub enum FsError {
         /// Linearizable head that defeated this acquisition.
         actual: Head,
     },
-    /// A direct-live operation requires a positive safe-retry bound.
-    #[error("direct-live retry bound must be positive")]
-    ZeroLiveRetryLimit,
-    /// Direct-live retry observations violated the canonical transition order.
-    #[error(transparent)]
-    LiveRetry(#[from] LiveRetryError),
     /// A direct-live checkout already has an unresolved candidate operation.
     #[error("direct-live checkout already has a pending operation")]
     PendingLiveMutation,

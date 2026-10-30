@@ -189,8 +189,8 @@ export function createFilesystemAdapter(extensions: {
       async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
       async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
       async commit(operationId, lease) { const value = await raw.commit(operationId, lease); return copyCheckoutCommit(value, copyWork(value.work)); },
-      async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { const value = await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts); return copyLiveTransaction(value, copyWork(value.work)); },
-      async resumeLive(operationId, maximumAttempts, maximumConflicts) { const value = await raw.resumeLive(operationId, maximumAttempts, maximumConflicts); return copyLiveMutation(value, copyWork(value.work)); },
+      async mutateLive(operations, operationId) { const value = await raw.mutateLive(Array.from(operations), operationId); return copyLiveTransaction(value, copyWork(value.work)); },
+      async resumeLive(operationId) { const value = await raw.resumeLive(operationId); return copyLiveMutation(value, copyWork(value.work)); },
       async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
       async discard() { return copyMutation(await raw.discard()); },
     };
