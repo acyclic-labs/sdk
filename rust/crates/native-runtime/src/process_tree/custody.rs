@@ -102,6 +102,9 @@ pub(super) struct Record {
     /// The tree's number with this owner's custodian, which the record names.
     #[cfg(windows)]
     tree: usize,
+    /// What a member presents to admit a process it started itself.
+    #[cfg(windows)]
+    secret: super::custodian_admission::Secret,
     #[cfg(windows)]
     custodian: std::sync::Arc<super::custodian::Custodian>,
     /// Set once the custodian watches the tree, which may then have members.
@@ -574,6 +577,7 @@ mod windows {
                 Record {
                     path,
                     tree,
+                    secret: super::super::custodian_admission::secret()?,
                     custodian,
                     link: None,
                 },
@@ -588,7 +592,7 @@ mod windows {
     impl Record {
         /// Where a member admits a suspended process it started itself.
         pub(in crate::process_tree) fn admission(&self) -> String {
-            self.custodian.admission(self.tree)
+            self.custodian.admission(self.tree, &self.secret)
         }
 
         /// Hands the tree's Job and its suspended first member to the
@@ -598,7 +602,10 @@ mod windows {
             job: HANDLE,
             process: HANDLE,
         ) -> io::Result<()> {
-            self.link = Some(self.custodian.open(self.tree, job, process)?);
+            self.link = Some(
+                self.custodian
+                    .open(self.tree, &self.secret, job, process)?,
+            );
             Ok(())
         }
     }
