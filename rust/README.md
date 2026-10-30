@@ -73,34 +73,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 ## Workers
 
-Workers are named script deployments, alongside actor namespace deployments. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), deploys a named script, invokes it and deletes it.
-
-Uses the canonical Objects and Actors contracts. Publication stores exact module bytes as an Objects blob retained under the code's own root until unpublished. No mutation is automatically retried.
-
-```rust,no_run
-use acyclic_actors::{http, wire};
-use acyclic_objects::HttpObjects;
-use acyclic_workers::deployment::Client;
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let endpoint = std::env::var("EDGE_ENDPOINT")?;
-    let token = std::env::var("ACYCLIC_API_KEY")?;
-    let workers = Client::new(http::Client::new(&endpoint, &token, 1024 * 1024)?,
-        HttpObjects::new(&endpoint, &token, 1024 * 1024, None)?);
-    let digest = workers.publish(std::fs::read("worker.mjs")?.into()).await?;
-    let deployment = workers.deploy(&wire::DeploymentRequest {
-        name: "example-worker".into(), code_sha256: digest.to_vec(),
-        worker_limits: Some(wire::WorkerLimits { timeout_millis: 30000, memory_bytes: 268435456, cpu_millis: 1048576 }),
-        idempotency_key: "deploy-worker".into(), ..Default::default()
-    }).await?.deployment.ok_or("deploy returned no deployment")?;
-    println!("{:?}", workers.invoke(&wire::InvokeWorkerRequest {
-        worker_name: deployment.name.clone(), method: "GET".into(), url: "/".into(), ..Default::default()
-    }).await?);
-    workers.delete(&wire::DeleteWorkerRequest { worker_name: deployment.name, idempotency_key: "delete-worker".into(), ..Default::default() }).await?;
-    Ok(())
-}
-```
+Workers are named script deployments, alongside actor namespace deployments.
+The [Workers example](crates/workers/README.md) prepares one selected manifest
+entry, publishes its complete immutable closure through the lifecycle client's
+shared entry store and submits the resulting canonical Actors request. Each
+deployment retains its own stable intent root until confirmed deletion. Modules
+load lazily from the same account-scoped Objects provider.
 
 ## fs
 

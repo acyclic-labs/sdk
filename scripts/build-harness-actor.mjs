@@ -4,12 +4,13 @@
 // asset, and agent-deploy.json. The artifact is admitted, then loaded from only
 // the files that manifest declares, before the build succeeds.
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { wasmAssetClosure } from "./artifact-assets.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const { values } = parseArgs({ options: { config: { type: "string" }, out: { type: "string" } } });
@@ -28,31 +29,17 @@ const { harnessManifest } = await load("manifest.js");
 const { deployment, ...config } = JSON.parse(readFileSync(resolve(values.config), "utf8"));
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 
-const built = await Bun.build({ entrypoints: [join(packages, "harness-actor/dist/harness-actor.js")], target: "browser", format: "esm" });
+const closure = wasmAssetClosure(`bun scripts/build-harness-actor.mjs --config ${JSON.stringify(values.config)} --out ${JSON.stringify(values.out)}`);
+const built = await Bun.build({ entrypoints: [join(packages, "harness-actor/dist/harness-actor.js")], target: "browser", format: "esm",
+  plugins: [closure.plugin] });
 const output = built.success && built.outputs.find(artifact => artifact.kind === "entry-point");
 if (!output) throw new AggregateError(built.logs, "STEP bundle failed; recovery: bun scripts/build-harness-actor.mjs");
-// Every module the bundle loads becomes a content-addressed sibling asset of the entry.
-const modules = new Map(readdirSync(packages).flatMap(name => {
-  const directory = join(packages, name, "generated/wasm");
-  return existsSync(directory)
-    ? readdirSync(directory).filter(file => file.endsWith(".wasm")).map(file => [file, join(directory, file)]) : [];
-}));
-const files = new Map();
-const assets = new Map();
-const reference = /new URL\((["'])(?:[^"']*\/)?([^/"']+)\.wasm\1,\s*import\.meta\.url\)/g;
-const bundle = (await output.text()).replace(reference, (_, _quote, name) => {
-  const source = modules.get(`${name}.wasm`);
-  if (!source) throw new Error(`STEP assets failed: ${name}.wasm has no generated module; recovery: bun scripts/build-wasm.mjs`);
-  const bytes = readFileSync(source);
-  const asset = { path: `${name}.${sha256(bytes)}.wasm`, sha256: sha256(bytes), size: bytes.length,
-    mediaType: "application/wasm", role: "module" };
-  files.set(asset.path, bytes);
-  assets.set(asset.path, asset);
-  return `new URL("./${asset.path}", import.meta.url)`;
-});
+const bundle = closure.rewrite(await output.text());
+const { files, assets } = closure;
 // The owner's configuration precedes the bundle, so the entry digest commits to it and every asset.
 const entry = Buffer.from(`const HARNESS_ACTOR = ${JSON.stringify({ config })};\n${bundle}`);
-const manifest = `${JSON.stringify(harnessManifest(deployment, config.model.spec, sha256(entry), [...assets.values()]), null, 2)}\n`;
+const entrySha256 = sha256(entry);
+const manifest = `${JSON.stringify(harnessManifest(deployment, config.model.spec, entrySha256, [...assets.values()]), null, 2)}\n`;
 files.set(HARNESS_MODULE.file, entry).set("agent-deploy.json", manifest);
 const write = (directory, paths) => {
   mkdirSync(directory, { recursive: true });
@@ -81,4 +68,4 @@ try {
   rmSync(staged, { recursive: true, force: true });
 }
 write(resolve(values.out), files.keys());
-console.log(`harness Actor artifact: ${resolve(values.out)} (${HARNESS_MODULE.file} sha256 ${sha256(entry)}, ${assets.size} module assets)`);
+console.log(`harness Actor artifact: ${resolve(values.out)} (${HARNESS_MODULE.file} sha256 ${entrySha256}, ${assets.size} module assets)`);

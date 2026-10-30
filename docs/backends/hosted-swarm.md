@@ -215,7 +215,12 @@ bun scripts/build-harness-actor.mjs --config owner.json --out artifact
 
 `artifact/` then holds `harness-actor.mjs`, which exports `actor`, every
 WebAssembly module it loads, and `agent-deploy.json`. The entry declares each
-module in its `assets` with path, SHA-256, size, media type and role. `verifyArtifact` admits an
+module in its `assets` with path, SHA-256, size, media type and role. Static module
+URLs retain their importing file's exact identity during bundling. Only surviving
+references enter the closure; each selected WASM file is read and hashed once per build,
+even when several references name it. Equal basenames in different source modules
+remain distinct when their bytes differ. Unrelated generated packages are never
+inventoried. The entry digest is also computed once. `verifyArtifact` admits an
 artifact only when its files are exactly the entry and those declared assets. The
 build runs that check, then loads the artifact from only the declared files,
 before writing it. The entry selects

@@ -125,6 +125,7 @@ export class ActorsClient {
 
   #connection(token: string, signal?: AbortSignal): Promise<ActorsRustClient> {
     throwIfAborted(signal);
+    if (this.#client !== undefined && this.#connectAbort === undefined) return this.#client;
     if (this.#client === undefined) {
       const controller = new AbortController();
       let pending!: Promise<ActorsRustClient>;
@@ -184,19 +185,23 @@ function nativeBinding(): ActorsRustBinding {
       }
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
+        const entry = inner[method];
+        if (typeof entry !== "function") throw new ActorsTransportError(`native Actors companion is missing ${method}`, "configuration");
+        const invoke = entry.bind(inner);
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
           const cancellation = nativeCancellation(module, signal);
-          return nativeResult(abortable(inner[method](request, cancellation?.handle), signal))
+          return nativeResult(abortable(invoke(request, cancellation?.handle), signal))
             .finally(() => cancellation?.cleanup());
         }];
       }));
       const transport = typeof inner.transport === "function" ? inner.transport() : inner.transport;
+      if (typeof inner.callWithCredentialResult !== "function") {
+        throw new ActorsTransportError("native Actors companion does not support per-request credentials", "configuration");
+      }
+      const callWithCredential = inner.callWithCredentialResult.bind(inner);
       const withCredential = (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => {
-        if (typeof inner.callWithCredentialResult !== "function") {
-          throw new ActorsTransportError("native Actors companion does not support per-request credentials", "configuration");
-        }
         const cancellation = nativeCancellation(module, signal);
-        return nativeResult(abortable(inner.callWithCredentialResult(method, request, token, cancellation?.handle), signal))
+        return nativeResult(abortable(callWithCredential(method, request, token, cancellation?.handle), signal))
           .finally(() => cancellation?.cleanup());
       };
       return { ...client, transport, withCredential } as ActorsRustClient;
@@ -282,19 +287,21 @@ function wasmBinding(): ActorsRustBinding {
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
         const method = operation.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
+        const entry = (wasm as unknown as Record<string, unknown>)[method];
+        if (typeof entry !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
+        const invoke = entry.bind(wasm) as (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
         return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
-          const invoke = (wasm as unknown as Record<string, unknown>)[method];
-          if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
           throwIfAborted(signal);
-          return wasmResult(abortable(invoke.call(wasm, request, signal) as Promise<Uint8Array>, signal));
+          return wasmResult(abortable(invoke(request, signal), signal));
         }];
       }));
+      if (typeof wasm.call_with_credential !== "function") {
+        throw new ActorsTransportError("WASM Actors bridge does not support per-request credentials", "configuration");
+      }
+      const callWithCredential = wasm.call_with_credential.bind(wasm);
       const withCredential = (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => {
-        if (typeof wasm.call_with_credential !== "function") {
-          throw new ActorsTransportError("WASM Actors bridge does not support per-request credentials", "configuration");
-        }
         throwIfAborted(signal);
-        return wasmResult(abortable(wasm.call_with_credential(method, request, token, signal), signal));
+        return wasmResult(abortable(callWithCredential(method, request, token, signal), signal));
       };
       return { ...client, transport: wasm.transport, withCredential } as ActorsRustClient;
     },
