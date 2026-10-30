@@ -9,8 +9,6 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::kernel::allocation::KernelAccounting;
 use crate::kernel::{Owned, allocation::KernelOwnedAllocation};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::materializer::{NativeAllocation, NativeMaterializationWork};
@@ -25,7 +23,9 @@ use std::future::{Future, poll_fn};
 use std::mem::size_of;
 use std::pin::pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, Waker};
+use std::task::Poll;
+#[cfg(test)]
+use std::task::{Context, Waker};
 use thiserror::Error;
 
 /// Hard process-local bounds for one disposable immutable-object cache.
@@ -106,27 +106,47 @@ mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 
 enum FlightState {
-    Running(Owned<Vec<Waker>>),
+    Running(u32),
     Complete(Option<OwnedBytes>),
 }
 
 struct Flight {
     state: Mutex<FlightState>,
     epoch: u64,
+    ready: tokio::sync::Notify,
     maximum_waiters: u32,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<NativeAllocation>,
+}
+
+enum FlightRead<'a> {
+    Ready(OwnedBytes),
+    Waiting(FlightWaiter<'a>),
+}
+
+/// The notification node lives in its waiting future. This guard returns its
+/// capacity even when cancellation drops the future before its producer settles.
+struct FlightWaiter<'a>(&'a Flight);
+
+impl Drop for FlightWaiter<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let FlightState::Running(waiters) = &mut *state {
+            *waiters -= 1;
+        }
+    }
 }
 
 impl Flight {
     fn new(maximum_waiters: u32, epoch: u64) -> Self {
         Self {
             epoch,
-            state: Mutex::new(FlightState::Running(Owned::new(
-                Vec::new(),
-                KernelOwnedAllocation::Standalone,
-                0,
-            ))),
+            state: Mutex::new(FlightState::Running(0)),
+            ready: tokio::sync::Notify::new(),
             maximum_waiters,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
@@ -134,106 +154,52 @@ impl Flight {
     }
 
     fn finish(&self, bytes: Option<OwnedBytes>) {
-        let waiters = {
-            let (mut state, bytes) = match self.state.lock() {
-                Ok(state) => (state, bytes),
-                Err(poisoned) => (poisoned.into_inner(), None),
-            };
-            if matches!(*state, FlightState::Complete(_)) {
-                return;
-            }
-            match std::mem::replace(&mut *state, FlightState::Complete(bytes)) {
-                FlightState::Running(waiters) => waiters,
-                FlightState::Complete(_) => unreachable!(),
-            }
+        let (mut state, bytes) = match self.state.lock() {
+            Ok(state) => (state, bytes),
+            Err(poisoned) => (poisoned.into_inner(), None),
         };
-        for waiter in waiters.value {
-            waiter.wake();
+        if matches!(*state, FlightState::Complete(_)) {
+            return;
+        }
+        *state = FlightState::Complete(bytes);
+        drop(state);
+        self.ready.notify_waiters();
+    }
+
+    fn register(&self) -> Result<FlightRead<'_>, ObjectStoreError> {
+        let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
+        match &mut *state {
+            FlightState::Complete(bytes) => bytes
+                .clone()
+                .map(FlightRead::Ready)
+                .ok_or(ObjectStoreError::SharedReadUnavailable),
+            FlightState::Running(waiters) => {
+                if *waiters >= self.maximum_waiters {
+                    return Err(ObjectStoreError::Rejected(
+                        "immutable-object single-flight waiter bound exhausted".to_owned(),
+                    ));
+                }
+                *waiters += 1;
+                Ok(FlightRead::Waiting(FlightWaiter(self)))
+            }
         }
     }
 
-    fn poll(
-        &self,
-        context: &Context<'_>,
-        #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
-    ) -> Poll<Result<OwnedBytes, ObjectStoreError>> {
-        let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
-        match &mut *state {
+    async fn read(&self) -> Result<OwnedBytes, ObjectStoreError> {
+        // notify_waiters retains its generation for every Notified created
+        // before publication, including one that has not yet been polled.
+        let ready = self.ready.notified();
+        let _waiter = match self.register()? {
+            FlightRead::Ready(bytes) => return Ok(bytes),
+            FlightRead::Waiting(waiter) => waiter,
+        };
+        ready.await;
+        let state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
+        match &*state {
             FlightState::Complete(bytes) => {
-                Poll::Ready(bytes.clone().ok_or(ObjectStoreError::SharedReadUnavailable))
+                bytes.clone().ok_or(ObjectStoreError::SharedReadUnavailable)
             }
-            FlightState::Running(waiters) => {
-                if waiters
-                    .value
-                    .iter()
-                    .any(|waiter| waiter.will_wake(context.waker()))
-                {
-                    return Poll::Pending;
-                }
-                if waiters.value.len()
-                    >= usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX)
-                {
-                    return Poll::Ready(Err(ObjectStoreError::Rejected(
-                        "immutable-object single-flight waiter bound exhausted".to_owned(),
-                    )));
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                if waiters.value.len() == waiters.value.capacity()
-                    && (work.is_some()
-                        || matches!(waiters.allocation, KernelOwnedAllocation::NativeOriginal(_)))
-                {
-                    // Fund the actual replacement scope before entering its
-                    // allocator; never construct or drop storage under a root loan.
-                    let capacity = waiters
-                        .value
-                        .len()
-                        .saturating_mul(2)
-                        .max(1)
-                        .min(usize::try_from(self.maximum_waiters).unwrap_or(usize::MAX));
-                    let mut replacement = if let Some(work) = work {
-                        Owned::allocate(
-                            capacity,
-                            &mut KernelAccounting::native(work, work.cancellation()),
-                        )
-                        .map_err(crate::async_storage::object_error)?
-                    } else {
-                        let mut values = Vec::new();
-                        values.try_reserve_exact(capacity).map_err(|_| {
-                            ObjectStoreError::Rejected(
-                                "immutable-object waiter allocation failed".to_owned(),
-                            )
-                        })?;
-                        let bytes = (values.capacity() * size_of::<Waker>()) as u64;
-                        Owned::new(values, KernelOwnedAllocation::Standalone, bytes)
-                    };
-                    let copy = work
-                        .map(|work| {
-                            work.reserve_work(crate::WorkCounters {
-                                bytes_copied: (waiters.value.len() * size_of::<Waker>()) as u64,
-                                ..crate::WorkCounters::UNCHARGED
-                            })
-                        })
-                        .transpose()?;
-                    replacement.value.append(&mut waiters.value);
-                    let copied = (replacement.value.len() * size_of::<Waker>()) as u64;
-                    // Commit moved waiters before a late refusal, preserving all
-                    // prior registrations. Free old storage before its guard.
-                    drop(std::mem::replace(waiters, replacement));
-                    if let Some(copy) = copy {
-                        copy.record_completed(crate::WorkCounters {
-                            bytes_copied: copied,
-                            ..crate::WorkCounters::UNCHARGED
-                        })?;
-                    }
-                    if let Some(work) = work {
-                        KernelAccounting::native(work, work.cancellation())
-                            .record_completed(WorkCounters::UNCHARGED)
-                            .map_err(crate::async_storage::object_error)?;
-                    }
-                }
-                waiters.value.push(context.waker().clone());
-                Poll::Pending
-            }
+            FlightState::Running(_) => Err(ObjectStoreError::Corrupt),
         }
     }
 }
@@ -786,18 +752,14 @@ fn cache_probe_work() -> WorkCounters {
 async fn wait_for_flight(
     flight: &Flight,
     cancellation: &CancellationToken,
-    #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
 ) -> Result<OwnedBytes, ObjectStoreError> {
     let mut cancelled = pin!(cancellation.cancelled());
+    let mut read = pin!(flight.read());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
             return Poll::Ready(Err(ObjectStoreError::Cancelled));
         }
-        flight.poll(
-            context,
-            #[cfg(not(target_arch = "wasm32"))]
-            work,
-        )
+        read.as_mut().poll(context)
     })
     .await
 }
