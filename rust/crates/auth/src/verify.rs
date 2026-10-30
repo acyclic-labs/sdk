@@ -311,7 +311,9 @@ impl VerifiedCapability {
     }
 
     /// Authorize the explicit scope against fresh revocations/time and the
-    /// owner's policy result. Deferred scopes retain mandatory provider checks.
+    /// owner's policy result. Immutable structural admission is reused; every
+    /// request fact and owner decision is evaluated again. Deferred scopes
+    /// retain mandatory provider checks.
     pub fn authorize(
         &self,
         trust: &(impl Trust + ?Sized),
@@ -320,7 +322,8 @@ impl VerifiedCapability {
         scope: authority::Scope,
     ) -> Result<(), VerifyError> {
         self.check(trust, request.now_unix_seconds)?;
-        authority::permits(&self.blocks, request, policy, scope).map_err(VerifyError::Denied)
+        authority::permits_current(&self.blocks, request, policy, scope)
+            .map_err(VerifyError::Denied)
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
@@ -425,3 +428,6 @@ impl VerifiedCapability {
         }
     }
 }
+
+#[cfg(test)]
+mod authorization_tests;
