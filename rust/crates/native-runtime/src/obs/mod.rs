@@ -166,7 +166,8 @@ impl Drop for OperationSpan {
     }
 }
 
-pub(crate) fn kind(error: &io::Error) -> &'static str {
+/// Classifies the original I/O error without exposing paths or losing uncertainty.
+pub fn kind(error: &io::Error) -> &'static str {
     use io::ErrorKind as Kind;
     if crate::is_uncertain_io_error(error) {
         return "uncertain";

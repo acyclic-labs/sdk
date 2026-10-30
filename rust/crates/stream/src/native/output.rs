@@ -70,6 +70,8 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         error: K,
     ) -> Self
     where
+        T: 'a,
+        E: 'a,
         F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
         K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
     {
@@ -86,6 +88,8 @@ impl<'a, T, E> NativeProviderFuture<'a, T, E> {
         error: K,
     ) -> std::io::Result<Self>
     where
+        T: 'a,
+        E: 'a,
         F: Future<Output = NativeStreamResult<T, E>> + Send + 'a,
         K: FnOnce(&NativeStreamResult<T, E>) -> Option<&'static str> + Send + 'a,
     {

@@ -20,13 +20,7 @@ macro_rules! span {
 }
 pub(crate) use span;
 
-fn io_kind(error: &std::io::Error) -> &'static str {
-    if acyclic_native_runtime::is_uncertain_io_error(error) {
-        "uncertain"
-    } else {
-        "observer"
-    }
-}
+use acyclic_native_runtime::obs::kind as io_kind;
 
 pub(crate) fn outcome<T, E>(
     result: &NativeStreamResult<T, E>,
