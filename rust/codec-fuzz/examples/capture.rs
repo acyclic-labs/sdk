@@ -74,7 +74,27 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     let streams = futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())?;
+    for (name, bytes) in acyclic_codec_fuzz::inference_http::seeds()? {
+        save(
+            "inference_http",
+            &name,
+            &bytes,
+            "SDK inference HTTP route descriptors, protobuf JSON request writer and actual HTTP response writer (first 8 bytes select route/direction)",
+            &mut manifest,
+        )?;
+    }
     for (message, variant, payload) in acyclic_codec_fuzz::semantic_seeds(&streams)? {
+        for (name, bytes) in
+            acyclic_codec_fuzz::inference_http::semantic_seeds(message, variant, &payload)?
+        {
+            save(
+                "inference_http",
+                &name,
+                &bytes,
+                "SDK semantic_seeds encoder output through its actual Inference HTTP route writer and decoder (first 8 bytes select route/direction)",
+                &mut manifest,
+            )?;
+        }
         let (index, decoder) = DECODERS
             .iter()
             .enumerate()

@@ -1,6 +1,7 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
 pub mod filesystem_pages;
+pub mod inference_http;
 mod mcp;
 mod semantic;
 
@@ -89,6 +90,7 @@ pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
         "filesystem_pages" => filesystem_pages::check(bytes),
         "machine_journal" => assert!(acyclic_machines::codec_fuzz::check(bytes)),
         "harness_codecs" => harness_codecs(bytes),
+        "inference_http" => inference_http::check(bytes),
         _ => return Err(format!("unknown corpus target {target}")),
     }
     Ok(())
