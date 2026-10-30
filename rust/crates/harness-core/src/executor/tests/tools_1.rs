@@ -73,7 +73,7 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
     ));
     assert!(matches!(
         executor.execute(input.clone(), &journal).await,
-        Err(Error::Indeterminate(_))
+        Err(Error::Storage(cause)) if cause == "response lost after effect"
     ));
     let retained = journal.0.lock().unwrap().len();
     let retargeted = base.clone().with_task_context(&replacement, operation)?;
@@ -1190,7 +1190,39 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
             ))
         };
     let (cancelled, replay, calls, reconciles) = outcome(|| Error::Cancelled).await?;
-    assert!(matches!(cancelled, Err(Error::Indeterminate(_))));
+    assert!(matches!(cancelled, Err(Error::Cancelled)));
+    assert!(replay.is_ok());
+    assert_eq!((calls, reconciles), (1, 1));
+    let (lost, replay, calls, reconciles) =
+        outcome(|| Error::Storage("response lost after effect".into())).await?;
+    let cause = lost.unwrap_err();
+    assert!(
+        cause.uncertain(),
+        "the retained cause cannot settle the effect"
+    );
+    assert!(matches!(cause, Error::Storage(cause) if cause == "response lost after effect"));
+    assert!(replay.is_ok());
+    assert_eq!((calls, reconciles), (1, 1));
+    let command_operation = OperationId::from_bytes([0x73; 16]);
+    let (lost, replay, calls, reconciles) = outcome(|| Error::CommandIndeterminate {
+        operation_id: OperationId::from_bytes([0x73; 16]),
+        cause: crate::CommandIndeterminacy {
+            command: "example.echo".into(),
+            reason: crate::CommandIndeterminacyReason::Failed {
+                code: "STORAGE".into(),
+                error: "command response lost after effect".into(),
+            },
+        },
+    })
+    .await?;
+    let cause = lost.unwrap_err();
+    assert!(cause.uncertain());
+    assert!(
+        matches!(cause, Error::CommandIndeterminate { operation_id, cause }
+        if operation_id == command_operation
+            && matches!(cause.reason, crate::CommandIndeterminacyReason::Failed { error, .. }
+                if error == "command response lost after effect"))
+    );
     assert!(replay.is_ok());
     assert_eq!((calls, reconciles), (1, 1));
     let (rejected, replay, calls, reconciles) =
