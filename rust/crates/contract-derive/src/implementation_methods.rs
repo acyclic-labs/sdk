@@ -20,7 +20,7 @@ pub(crate) fn expand(name: Ident, implementation: ItemImpl) -> TokenStream {
         #implementation
         impl #generics #owner #condition {
             /// Methods emitted by the compiler-checked provider implementation.
-            pub const #name: &'static [&'static str] = &[#(#methods),*];
+            pub const #name: &[&str] = &[#(#methods),*];
         }
     }
 }
