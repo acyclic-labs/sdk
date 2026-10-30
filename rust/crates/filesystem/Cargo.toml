@@ -95,6 +95,7 @@ harness = false
 required-features = ["memory", "native-watch", "native-mount"]
 
 [dependencies]
+acyclic-collections = { version = "=0.2.0", path = "../collections" }
 acyclic-fs-wire = { version = "=0.2.0", path = "../filesystem-wire" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-fs-base = { version = "=0.2.0", path = "../filesystem-base" }
