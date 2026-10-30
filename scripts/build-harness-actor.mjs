@@ -39,7 +39,7 @@ const { files, assets } = closure;
 // The owner's configuration precedes the bundle, so the entry digest commits to it and every asset.
 const entry = Buffer.from(`const HARNESS_ACTOR = ${JSON.stringify({ config })};\n${bundle}`);
 const entrySha256 = sha256(entry);
-const manifest = `${JSON.stringify(harnessManifest(deployment, config.model.spec, entrySha256, [...assets.values()]), null, 2)}\n`;
+const manifest = `${JSON.stringify(harnessManifest(deployment, config.model.spec, config.options.filesystem_provider, entrySha256, [...assets.values()]), null, 2)}\n`;
 files.set(HARNESS_MODULE.file, entry).set("agent-deploy.json", manifest);
 const write = (directory, paths) => {
   mkdirSync(directory, { recursive: true });

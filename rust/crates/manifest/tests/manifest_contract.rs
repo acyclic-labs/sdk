@@ -996,6 +996,63 @@ fn actor_state_binding_is_own_actor_only_and_cannot_be_selected_by_a_worker()
 }
 
 #[test]
+fn actor_machine_names_a_selected_machines_binding_and_volume_provider()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    let resource = "machines:/agents".to_owned();
+    environment
+        .bindings
+        .push(Binding::new("WORKSPACE".into(), "machines".into(), resource.clone())?.into());
+    environment.grants.push(BindingGrant {
+        name: "machines".into(),
+        grant: ResourceGrant {
+            resource: ResourcePattern {
+                name: resource,
+                prefix: true,
+            },
+            actions: vec!["machines/exec".into()],
+        }
+        .into(),
+        limits: None,
+    });
+    let entry = environment.entries.first_mut().ok_or_else(missing)?;
+    entry.bindings.push("WORKSPACE".into());
+    let provider = VolumeProvider {
+        namespace: "acyclic".into(),
+        family: "filesystem".into(),
+        version: "2".into(),
+    };
+    let with = |binding: &str, provider: &VolumeProvider| {
+        let mut manifest = manifest.clone();
+        if let Some(EntryRuntime::ActorNamespace { actor_machine, .. }) = manifest
+            .environments
+            .first_mut()
+            .and_then(|environment| environment.entries.first_mut())
+            .map(|entry| &mut entry.runtime)
+        {
+            *actor_machine = Some(ActorMachine {
+                binding: binding.into(),
+                volume_provider: provider.clone(),
+            });
+        }
+        validate(&manifest).err().map(|error| error.rule)
+    };
+    assert_eq!(with("WORKSPACE", &provider), None);
+    let refused = Some("actor-machine".to_owned());
+    // Negative controls: a non-Machines binding, an unselected one, and a
+    // provider that is not a filesystem.
+    assert_eq!(with("INBOX", &provider), refused);
+    assert_eq!(with("UNDECLARED", &provider), refused);
+    let machines = VolumeProvider {
+        family: "machines".into(),
+        ..provider.clone()
+    };
+    assert_eq!(with("WORKSPACE", &machines), refused);
+    Ok(())
+}
+
+#[test]
 fn guest_admission_selects_original_owner_without_resource_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_auth::guest::GuestAdmissionKind;

@@ -18,13 +18,16 @@ const asset = { path: `harness.${sha256(module)}.wasm`, sha256: sha256(module), 
   mediaType: "application/wasm", role: "module" } as const;
 const spec = owner.model.spec as Parameters<typeof harnessManifest>[1];
 const deployment = owner.deployment as Parameters<typeof harnessManifest>[0];
-const manifest = (assets = [asset]) => harnessManifest(deployment, spec, sha256(entry), assets);
+const volumes = owner.options.filesystem_provider;
+const manifest = (assets = [asset]) => harnessManifest(deployment, spec, volumes, sha256(entry), assets);
 
 test("the generated manifest selects every descriptor binding and passes Rust admission", () => {
   validate(JSON.stringify(manifest()));
   const [declared] = manifest().environments[0]!.entries;
   expect(declared!.module).toBe(HARNESS_MODULE.id);
   expect(declared!.bindings).toEqual(Object.values(HARNESS_BINDINGS));
+  // The platform reads the Machine's selected-volume provider from the manifest, never the bundle.
+  expect(declared!.runtime).toMatchObject({ actorMachine: { binding: HARNESS_BINDINGS.workspace, volumeProvider: volumes } });
   expect(declared!.fetch).toEqual({ name: MODEL_FETCH, egress: [{ host: "api.anthropic.com", port: 443 }] });
   expect(manifest().environments[0]!.secrets).toEqual([{ name: MODEL_SECRET, reference: "secrets:/models/anthropic" }]);
 });
@@ -44,12 +47,12 @@ test("the artifact is exactly the entry and its declared assets", () => {
 
 test("a deployment without the platform authority binding is refused before admission", () => {
   const partial = { ...deployment, bindings: deployment.bindings.filter(binding => binding.name !== HARNESS_BINDINGS.authority) };
-  expect(() => harnessManifest(partial, spec, sha256(entry), [asset])).toThrow(HarnessManifestError);
-  expect(() => harnessManifest(partial, spec, sha256(entry), [asset])).toThrow("platformAuthority: harness-binding");
+  expect(() => harnessManifest(partial, spec, volumes, sha256(entry), [asset])).toThrow(HarnessManifestError);
+  expect(() => harnessManifest(partial, spec, volumes, sha256(entry), [asset])).toThrow("platformAuthority: harness-binding");
 });
 
 test("an anonymous provider declares and selects no credential", () => {
-  const anonymous = harnessManifest(deployment, { ...spec, authentication: "optional" }, sha256(entry), [asset]);
+  const anonymous = harnessManifest(deployment, { ...spec, authentication: "optional" }, volumes, sha256(entry), [asset]);
   validate(JSON.stringify(anonymous));
   expect(anonymous.environments[0]!.secrets).toEqual([]);
   expect(anonymous.environments[0]!.entries[0]!.secrets).toEqual([]);
@@ -57,7 +60,7 @@ test("an anonymous provider declares and selects no credential", () => {
 
 test("an inline credential is refused by the Rust secret-reference rule", () => {
   const inline = { ...spec, authentication: { api_key_secret: { secret_reference: "sk-ant-api03-inline" } } };
-  expect(() => validate(JSON.stringify(harnessManifest(deployment, inline, sha256(entry), [asset]))))
+  expect(() => validate(JSON.stringify(harnessManifest(deployment, inline, volumes, sha256(entry), [asset]))))
     .toThrow(": secret-reference");
 });
 

@@ -1,7 +1,8 @@
 /** Lower the owner's deployment choices to the public deployment manifest.
  * The Rust validator remains the sole admission rule set; this adds only the
  * harness entry's own selection of its descriptor bindings. */
-import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, SubscriptionSpec } from "@acyclic-labs/workers/manifest";
+import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, SubscriptionSpec,
+  VolumeProvider } from "@acyclic-labs/workers/manifest";
 import type { ProviderSpec } from "@acyclic-labs/harness";
 import { HARNESS_BINDINGS, HARNESS_MODULE, MODEL_FETCH } from "./bindings.js";
 
@@ -34,8 +35,10 @@ function reference(authentication: ProviderSpec["authentication"]): string {
   return credential?.secret_reference ?? "";
 }
 
-export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpec, artifactSha256: string,
-  assets: EntryAsset[]): DeploymentManifest {
+/** `volumeProvider` is the owner's `options.filesystem_provider`: the platform
+ * selects each actor agent's private volume of that provider for its Machine. */
+export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpec, volumeProvider: VolumeProvider,
+  artifactSha256: string, assets: EntryAsset[]): DeploymentManifest {
   const declared = new Set(deployment.bindings.map(binding => binding.name));
   for (const name of Object.values(HARNESS_BINDINGS)) {
     if (!declared.has(name)) throw new HarnessManifestError(`$.environments[0].bindings.${name}`, "harness-binding");
@@ -60,6 +63,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
           limits: deployment.limits,
           subscriptions: deployment.subscriptions,
           timerInbox: null,
+          actorMachine: { binding: HARNESS_BINDINGS.workspace, volumeProvider },
         },
         fetch: { name: MODEL_FETCH, egress: [{ host: origin.hostname, port: Number(origin.port || 443) }] },
       }],

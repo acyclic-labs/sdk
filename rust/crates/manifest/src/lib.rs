@@ -147,6 +147,9 @@ pub enum EntryRuntime {
         /// Optional durable alarm destination; enabling timers requires its wake subscription.
         #[serde(default, rename = "timerInbox")]
         timer_inbox: Option<TimerInbox>,
+        /// Optional Machine of each actor, created by the platform before the actor runs.
+        #[serde(default, rename = "actorMachine")]
+        actor_machine: Option<ActorMachine>,
     },
     /// Stateless Worker with explicit request ceilings.
     Worker {
@@ -164,6 +167,34 @@ pub struct TimerInbox {
     /// Exact canonical Streams resource for durable fires.
     #[ts(type = "ResourcePattern")]
     pub stream: Contract<ResourcePattern>,
+}
+
+/// One Machine per actor of the namespace, created by the platform under the
+/// deployment's own credential and presented to the actor as `binding`.
+///
+/// The Machine's `selected_volume_ref` is the actor agent's private volume:
+/// `acyclic_harness::filesystem::private_volume(volumeProvider,
+/// &AgentId::hosted_root(actor_id))`. The platform substitutes only the actor
+/// id; that one Rust derivation is also what the guest host creates.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActorMachine {
+    /// Selected environment binding whose grant resource is `machines:/`.
+    pub binding: String,
+    /// Filesystem provider of each actor agent's private volume.
+    pub volume_provider: VolumeProvider,
+}
+
+/// Canonical `harness.v2.ProviderRef` fields, checked by the harness on use.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
+pub struct VolumeProvider {
+    /// Globally unique namespace, such as `acyclic` or a reverse DNS name.
+    pub namespace: String,
+    /// Provider family; a volume provider is `filesystem`.
+    pub family: String,
+    /// Immutable provider contract version.
+    pub version: String,
 }
 
 /// Positive stateless Worker CPU, memory and wall-clock ceilings.

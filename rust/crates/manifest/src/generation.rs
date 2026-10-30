@@ -42,6 +42,8 @@ pub fn typescript() -> Result<String, String> {
         Entry,
         EntryRuntime,
         TimerInbox,
+        ActorMachine,
+        VolumeProvider,
         WorkerLimits,
         EntryAsset,
         AssetRole,

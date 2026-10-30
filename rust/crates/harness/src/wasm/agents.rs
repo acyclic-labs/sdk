@@ -13,12 +13,12 @@ use crate::{
     context::CompactionPolicy,
     conversation::{
         ContentAccess, ContentPublisher as _, ContentResidencyVerifier as _, FileRef, Limits,
-        VolumeClass, VolumeOwner, VolumeRef,
+        VolumeRef,
     },
     core::RuntimeAuthority,
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME, TurnAdmission, agent_authority,
+        PRIVATE_VOLUME, TurnAdmission, agent_authority, private_volume,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -350,8 +350,7 @@ impl WasmAgents {
                 "agent brief exceeds file byte limit".into(),
             )));
         }
-        let id = AgentId::from_bytes(digest16("acyclic.browser.agent.v1", &[intent.as_bytes()]));
-        Ok(AgentPath::root(&id).to_string())
+        Ok(AgentPath::root(&AgentId::hosted_root(intent)).to_string())
     }
 
     /// Checks the canonical path and its committed adoption before an event
@@ -522,14 +521,7 @@ impl WasmAgents {
         let path = AgentPath::try_from(self.validate_create(&intent, brief.clone())?)
             .map_err(agent_error)?;
         let id = path.id();
-        let volume = VolumeRef::new(
-            self.provider.clone(),
-            PRIVATE_VOLUME.to_owned(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes(id.to_bytes())),
-            &mut None,
-        )
-        .map_err(js_error)?;
+        let volume = private_volume(self.provider.clone(), &id).map_err(js_error)?;
         self.filesystem
             .create_volume(&volume)
             .await

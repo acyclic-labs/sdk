@@ -51,7 +51,7 @@
     "grants": [
       { "name": "harnessStreams", "grant": { "resource": { "name": "streams:/", "prefix": true }, "actions": ["streams/append", "streams/follow", "streams/fork", "streams/list"] }, "limits": null },
       { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/get", "objects/put"] }, "limits": null },
-      { "name": "harnessMachines", "grant": { "resource": { "name": "machines:/harness", "prefix": true }, "actions": ["machines/exec", "machines/read"] }, "limits": null }
+      { "name": "harnessMachines", "grant": { "resource": { "name": "machines:/harness", "prefix": true }, "actions": ["machines/exec"] }, "limits": null }
     ]
   }
 }

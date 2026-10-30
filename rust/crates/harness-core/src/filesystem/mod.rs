@@ -46,7 +46,7 @@ pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
 mod agent_turns;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
-    TurnExecutors, TurnLimits, agent_authority,
+    TurnExecutors, TurnLimits, agent_authority, private_volume,
 };
 pub(crate) mod bounded_io;
 mod tool_resource;

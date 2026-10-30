@@ -3,8 +3,8 @@
 import { defineActor, GUEST_ABI_VERSION, type CheckpointCodec, type GuestState } from "@acyclic-labs/actors";
 import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch,
   type ActorState, type EventHostAccess, type ImmutableObjects, type StreamLedger } from "@acyclic-labs/harness/hosting";
-import { BrowserAgentAuthority, BrowserAgentRegistry, type BrowserAgentOptions,
-  type BrowserMachinesWorkspace, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
+import { BrowserAgentAuthority, BrowserAgentRegistry, BrowserMachinesWorkspace, type BrowserAgentOptions,
+  type BrowserMachinesWorkspaceSource, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
 import { ModelRegistry, type CompactionPolicy, type ModelCredentialResolver, type ProviderSpec } from "@acyclic-labs/harness";
 import { HARNESS_BINDINGS, MODEL_FETCH, HarnessActorError } from "./bindings.js";
 import { harnessStreamLedger } from "./streams.js";
@@ -31,7 +31,8 @@ interface Values {
   streams: Pick<StreamLedger, "register" | "dispatch" | "open">;
   access: EventHostAccess;
   authority: WasmAuthorityCapability;
-  workspace: BrowserMachinesWorkspace;
+  /** The platform's admitted Machine, opened in this module with the actor's own authority. */
+  workspace: BrowserMachinesWorkspaceSource;
 }
 type Bound = Values & { model: ModelCredentialResolver };
 
@@ -96,7 +97,9 @@ export const actor = defineActor<Opened, HarnessBindings>({
       const provider = models.resolve(model.selection);
       try { provider.install(registry, model.compaction); } finally { provider.free(); }
     } finally { models.free(); }
-    registry.bindMachinesWorkspace(env.workspace);
+    // The handle lives in this bundle's own module instance; the registry retains its executor.
+    const workspace = BrowserMachinesWorkspace.open(owner, env.workspace);
+    try { registry.bindMachinesWorkspace(workspace); } finally { workspace.free(); }
     const state = new ActorStateStorage(env.storage);
     // Shared history alone does not admit a child Actor's placement and wake.
     // Keep both spawn entrances closed until the original producer owns them.

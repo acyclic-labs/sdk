@@ -526,14 +526,7 @@ impl WasmAgentServer {
             .map_err(stream_error)
     }
     fn root_request(&self, agent: AgentId) -> std::result::Result<RootRequest, JsValue> {
-        let volume = VolumeRef::new(
-            self.observation.provider.clone(),
-            PRIVATE_VOLUME.into(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(crate::AgentId::from_bytes(agent.to_bytes())),
-            &mut None,
-        )
-        .map_err(js_error)?;
+        let volume = private_volume(self.observation.provider.clone(), &agent).map_err(js_error)?;
         Ok(RootRequest {
             agent,
             fresh: vec![VolumeBinding {

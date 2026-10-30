@@ -453,7 +453,30 @@ fn validate_entries<'a>(
             *work += fetch.egress.len();
         }
         match &entry.runtime {
-            EntryRuntime::ActorNamespace { subscriptions, .. } => {
+            EntryRuntime::ActorNamespace {
+                subscriptions,
+                actor_machine,
+                ..
+            } => {
+                if let Some(machine) = actor_machine {
+                    let VolumeProvider {
+                        namespace,
+                        family,
+                        version,
+                    } = &machine.volume_provider;
+                    require(
+                        selection.contains(machine.binding.as_str())
+                            && bindings
+                                .get(machine.binding.as_str())
+                                .is_some_and(|b| b.resource().starts_with("machines:/"))
+                            && !namespace.is_empty()
+                            && family == "filesystem"
+                            && !version.is_empty(),
+                        &format!("{ep}.runtime.actorMachine"),
+                        "actor-machine",
+                    )?;
+                    *work += 2;
+                }
                 let mut streams = HashSet::new();
                 for sub in subscriptions {
                     acyclic_stream::StreamPath::new(sub.stream_path())
