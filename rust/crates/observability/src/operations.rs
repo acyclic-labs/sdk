@@ -78,6 +78,21 @@ impl Completion {
         }
         output
     }
+
+    /// Transfer this completion owner into the original producer future,
+    /// including work that detaches from its disposable caller observation.
+    pub fn observe_output<T, F, K>(
+        self,
+        future: F,
+        error: K,
+    ) -> impl std::future::Future<Output = T> + use<T, F, K>
+    where
+        F: std::future::Future<Output = T>,
+        K: FnOnce(&T) -> Option<&'static str>,
+    {
+        use futures::FutureExt as _;
+        future.map(move |output| self.complete(output, error))
+    }
 }
 
 impl Drop for Completion {
@@ -120,9 +135,7 @@ where
     F: std::future::Future<Output = T>,
     K: FnOnce(&T) -> Option<&'static str>,
 {
-    use futures::FutureExt as _;
-    let completion = Completion::new(span);
-    future.map(move |output| completion.complete(output, error))
+    Completion::new(span).observe_output(future, error)
 }
 
 /// Counts and a base-two nanosecond latency histogram from one operation span.

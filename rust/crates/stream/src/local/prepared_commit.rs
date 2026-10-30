@@ -8,88 +8,108 @@ impl LocalStream {
         #[cfg(feature = "test-support")]
         describe_commit(&request);
         let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
-            let mut stream = Self {
-                work: Some(Arc::clone(&work)),
-                ..stream
-            };
-            // The caller's handle stays with this future and the prepared
-            // commit it returns; the detached work holds none, so it drains
-            // as the store closes.
-            let handle = stream.handle.take();
-            let provider = stream.inner.provider.with_context(Arc::clone(&work));
-            let result = async {
-                let _visibility = stream.inner.visibility.read().await;
-                stream.check_available()?;
-                let input = provider.request_claim(&request)?;
-                // Clone only before issuance, with both control vectors funded.
-                let copied = usize::try_from(
-                    input
-                        .as_ref()
-                        .map_or(0, acyclic_native_runtime::ReadAllocation::bytes),
+        crate::native::Work::start(
+            meter,
+            crate::native::span!("acyclic.stream.prepare_commit"),
+            |work, completion| {
+                completion.observe_output(
+                    async move {
+                        let mut stream = Self {
+                            work: Some(Arc::clone(&work)),
+                            ..stream
+                        };
+                        // The caller's handle stays with this future and the prepared
+                        // commit it returns; the detached work holds none, so it drains
+                        // as the store closes.
+                        let handle = stream.handle.take();
+                        let provider = stream.inner.provider.with_context(Arc::clone(&work));
+                        let result = async {
+                            let _visibility = stream.inner.visibility.read().await;
+                            stream.check_available()?;
+                            let input = provider.request_claim(&request)?;
+                            // Clone only before issuance, with both control vectors funded.
+                            let copied = usize::try_from(
+                                input
+                                    .as_ref()
+                                    .map_or(0, acyclic_native_runtime::ReadAllocation::bytes),
+                            )
+                            .map_err(|_| StreamError::Capacity)?;
+                            let command_claim = work.record(
+                                acyclic_native_runtime::ReadAllocation::new(&work.meter, copied),
+                            )?;
+                            work.record(work.meter.admit_codec(0, copied as u64, 0))?;
+                            let command = WriteRequest::Commit(request.clone());
+                            work.record(work.meter.record_codec(0, copied as u64, 0))?;
+                            drop(input);
+                            let (plan, recovery) = provider.prepare(request, maximum).await?;
+                            let WriteRequest::Commit(request) = &command else {
+                                unreachable!()
+                            };
+                            let size = crate::wire_codec::requests::prepared_commit_command_len(
+                                request, maximum,
+                            );
+                            if size > MAX_COMMAND_BYTES {
+                                return Err(StreamError::Capacity);
+                            }
+                            let capacity = size
+                                .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
+                                .ok_or(StreamError::Capacity)?;
+                            let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
+                                .map_err(|error| stream.frame_error(error))?;
+                            work.reserve_durability(4)?;
+                            let slot = work
+                                .record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
+                            let ingress = Arc::clone(&slot);
+                            let writer = stream.clone();
+                            let writer_work = Arc::clone(&work);
+                            let worker = acyclic_observability::operation_output_future!(
+                                "acyclic.stream.commit",
+                                |result| crate::native::outcome(result, StreamError::code),
+                                acyclic_native_runtime::obs::OperationSpan::new,
+                                publication_scope(async move {
+                                    let _command_claim = command_claim;
+                                    let result =
+                                        writer.settle_prepared(command, frame, plan, ingress).await;
+                                    writer_work.finish(result)
+                                })
+                            );
+                            let allocation =
+                                work.record(acyclic_native_runtime::ReadAllocation::new(
+                                    &work.meter,
+                                    std::mem::size_of_val(&worker),
+                                ))?;
+                            let task = spawn(async move {
+                                let _allocation = allocation;
+                                worker.await
+                            });
+                            let future = match crate::NativeProviderFuture::try_new(
+                                &work.meter,
+                                async move {
+                                    let _handle = handle;
+                                    task.await.map_err(std::io::Error::other)?
+                                },
+                            ) {
+                                Ok(future) => future,
+                                Err(error) => {
+                                    slot.close();
+                                    return Err({
+                                        let _ = work.record::<()>(Err(error));
+                                        StreamError::Unavailable
+                                    });
+                                }
+                            };
+                            Ok((
+                                crate::PreparedNativeCommit::new(future, recovery, slot, maximum),
+                                None,
+                            ))
+                        }
+                        .await;
+                        work.finish(result)
+                    },
+                    |result| crate::native::outcome(result, StreamError::code),
                 )
-                .map_err(|_| StreamError::Capacity)?;
-                let command_claim = work.record(acyclic_native_runtime::ReadAllocation::new(
-                    &work.meter,
-                    copied,
-                ))?;
-                work.record(work.meter.admit_codec(0, copied as u64, 0))?;
-                let command = WriteRequest::Commit(request.clone());
-                work.record(work.meter.record_codec(0, copied as u64, 0))?;
-                drop(input);
-                let (plan, recovery) = provider.prepare(request, maximum).await?;
-                let WriteRequest::Commit(request) = &command else {
-                    unreachable!()
-                };
-                let size =
-                    crate::wire_codec::requests::prepared_commit_command_len(request, maximum);
-                if size > MAX_COMMAND_BYTES {
-                    return Err(StreamError::Capacity);
-                }
-                let capacity = size
-                    .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
-                    .ok_or(StreamError::Capacity)?;
-                let frame = PreparedFrame::reserve(capacity, Some(Arc::clone(&work)))
-                    .map_err(|error| stream.frame_error(error))?;
-                work.reserve_durability(4)?;
-                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
-                let ingress = Arc::clone(&slot);
-                let writer = stream.clone();
-                let writer_work = Arc::clone(&work);
-                let worker = publication_scope(async move {
-                    let _command_claim = command_claim;
-                    let result = writer.settle_prepared(command, frame, plan, ingress).await;
-                    writer_work.finish(result)
-                });
-                let allocation = work.record(acyclic_native_runtime::ReadAllocation::new(
-                    &work.meter,
-                    std::mem::size_of_val(&worker),
-                ))?;
-                let task = spawn(async move {
-                    let _allocation = allocation;
-                    worker.await
-                });
-                let future = match crate::NativeProviderFuture::try_new(&work.meter, async move {
-                    let _handle = handle;
-                    task.await.map_err(std::io::Error::other)?
-                }) {
-                    Ok(future) => future,
-                    Err(error) => {
-                        slot.close();
-                        return Err({
-                            let _ = work.record::<()>(Err(error));
-                            StreamError::Unavailable
-                        });
-                    }
-                };
-                Ok((
-                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum),
-                    None,
-                ))
-            }
-            .await;
-            work.finish(result)
-        })
+            },
+        )
     }
 
     async fn settle_prepared(

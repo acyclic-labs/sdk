@@ -682,19 +682,21 @@ impl LocalStream {
     }
 
     /// Runs one mutation under exclusive visibility on its own task, so a
-    fn exclusive<T, F>(
+    fn exclusive<T, F, O>(
         &self,
         span: obs::OperationSpan,
         mutation: impl FnOnce(Self) -> F + Send + 'static,
-    ) -> impl Future<Output = Result<T, StreamError>>
+        finish: impl FnOnce(Result<T, StreamError>) -> O + Send + 'static,
+    ) -> impl Future<Output = Result<O, StreamError>>
     where
         T: Send + 'static,
         F: Future<Output = Result<T, StreamError>> + Send + 'static,
+        O: Send + 'static,
     {
         async move {
-            self.check_available().inspect_err(|error| {
-                obs::failed(&span, error.code());
-            })?;
+            if let Err(error) = self.check_available() {
+                return Ok(span.in_scope(|| finish(Err(error))));
+            }
             let stream = self.worker();
             // The mutation owns completion as well as durability, even if its caller is dropped.
             let operation = span.clone();
@@ -716,13 +718,10 @@ impl LocalStream {
                     result
                 });
                 let result = operation.scope(task).await;
-                obs::finish(&operation, result)
+                operation.in_scope(|| finish(result))
             }))
             .await
-            .map_err(|_| {
-                obs::failed(&span, StreamError::Unavailable.code());
-                StreamError::Unavailable
-            })?
+            .map_err(|_| StreamError::Unavailable)
         }
     }
 

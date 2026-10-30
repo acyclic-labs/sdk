@@ -149,13 +149,23 @@ impl StreamProvider for LocalStream {
             ),
         });
         let operation = span.clone();
-        Box::pin(self.exclusive(span, move |stream| async move {
-            let outcome = stream.execute(request, None).await?.outcome;
-            if let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &outcome {
-                operation.record("rev", receipt.tail);
-            }
-            Ok(outcome)
-        }))
+        let caller = span.clone();
+        let completion = acyclic_observability::Completion::new(&span);
+        Box::pin(caller.scope(futures::FutureExt::map(
+            self.exclusive(
+                span,
+                move |stream| async move {
+                    let outcome = stream.execute(request, None).await?.outcome;
+                    if let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &outcome
+                    {
+                        operation.record("rev", receipt.tail);
+                    }
+                    Ok(outcome)
+                },
+                move |result| completion.finish(result, StreamError::code),
+            ),
+            |result| result.and_then(std::convert::identity),
+        )))
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -243,35 +253,52 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, ()> {
         let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
-            let stream = Self {
-                work: Some(Arc::clone(&work)),
-                ..stream
-            };
-            let result = async {
-                stream.seal_accepted().await?;
-                Ok(((), None))
-            }
-            .await;
-            work.finish(result)
-        })
+        crate::native::Work::start(
+            meter,
+            crate::native::span!("acyclic.stream.durability_barrier"),
+            |work, completion| {
+                completion.observe_output(
+                    async move {
+                        let stream = Self {
+                            work: Some(Arc::clone(&work)),
+                            ..stream
+                        };
+                        let result = async {
+                            stream.seal_accepted().await?;
+                            Ok(((), None))
+                        }
+                        .await;
+                        work.finish(result)
+                    },
+                    |result| crate::native::outcome(result, StreamError::code),
+                )
+            },
+        )
     }
     fn prepare_native_durability_barrier(
         &self,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
-        let work = crate::native::Work::new(Arc::clone(&meter))?;
+        let span = crate::native::span!("acyclic.stream.durability_barrier");
+        let work = crate::native::Work::new(Arc::clone(&meter))
+            .inspect_err(|error| span.record_error(Some(error)))?;
         // This ticket survives original cancellation and excludes competing
         // work from consuming the phase's final durability allowance.
-        work.prepare_durability(1)?;
+        work.prepare_durability(1)
+            .inspect_err(|error| span.record_error(Some(error)))?;
         let stream = Self {
             work: Some(Arc::clone(&work)),
             ..self.clone()
         };
-        crate::NativeProviderFuture::try_new(&meter, async move {
-            let result = stream.seal_accepted_with_reservation(true).await;
-            work.finish(result.map(|()| ((), None)))
-        })
+        crate::NativeProviderFuture::try_observed(
+            &meter,
+            span,
+            async move {
+                let result = stream.seal_accepted_with_reservation(true).await;
+                work.finish(result.map(|()| ((), None)))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
     }
     fn native_tail(
         &self,
@@ -279,11 +306,16 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, u64> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            self.accepted(self.inner.provider.native_tail(path, meter))
-                .await
-                .unwrap_or_else(|error| Ok(Err(error)))
-        })
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.tail"),
+            async move {
+                self.accepted(self.inner.provider.native_tail_inner(path, meter))
+                    .await
+                    .unwrap_or_else(|error| Ok(Err(error)))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
     }
     fn native_read(
         &self,
@@ -291,14 +323,19 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
-                return Ok(Err(error));
-            }
-            self.accepted(self.inner.provider.native_read(request, meter))
-                .await
-                .unwrap_or_else(|error| Ok(Err(error)))
-        })
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.read"),
+            async move {
+                if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
+                    return Ok(Err(error));
+                }
+                self.accepted(self.inner.provider.native_read_inner(request, meter))
+                    .await
+                    .unwrap_or_else(|error| Ok(Err(error)))
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
     }
     fn native_inspect_idempotency(
         &self,
@@ -306,11 +343,20 @@ impl crate::NativeStreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            self.accepted(self.inner.provider.native_inspect_idempotency(key, meter))
+        crate::NativeProviderFuture::observed(
+            &original,
+            crate::native::span!("acyclic.stream.inspect_idempotency"),
+            async move {
+                self.accepted(
+                    self.inner
+                        .provider
+                        .native_inspect_idempotency_inner(key, meter),
+                )
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
-        })
+            },
+            |result| crate::native::outcome(result, StreamError::code),
+        )
     }
     fn native_write(
         &self,
@@ -328,9 +374,11 @@ impl crate::NativeStreamProvider for LocalStream {
                 || futures::future::ready(Ok(())),
                 crate::WriteOutcome::Commit,
             ),
-            crate::WriteRequest::Fork(_) => {
-                crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
-            }
+            crate::WriteRequest::Fork(_) => crate::NativeProviderFuture::ready_observed(
+                crate::native::span!("acyclic.stream.fork"),
+                Ok(Err(StreamError::Unsupported)),
+                StreamError::code,
+            ),
         }
     }
     fn native_commit_guarded<E, F, Fut>(

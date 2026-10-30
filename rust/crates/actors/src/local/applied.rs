@@ -113,64 +113,71 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         actor: &ActorReference,
         cut: AppliedCut,
     ) -> Result<Applied, Error> {
-        // Check the input history even if the actor already passed the cursor.
-        // Never let a same-sequence record from another history satisfy it.
-        if cut.preceding.is_some() || !cut.at_least.is_empty() {
-            drop(
-                self.provider
+        acyclic_observability::async_operation!(
+            "acyclic.actors.wait_applied",
+            Error::kind,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                // Check the input history even if the actor already passed the cursor.
+                // Never let a same-sequence record from another history satisfy it.
+                if cut.preceding.is_some() || !cut.at_least.is_empty() {
+                    drop(
+                        self.provider
+                            .follow(FollowRequest {
+                                preceding: cut.preceding,
+                                at_least: cut.at_least.clone(),
+                                ..FollowRequest::new(cut.path.clone(), cut.next)
+                            })
+                            .await?,
+                    );
+                }
+                let mut snapshot = self.load(actor).await?;
+                let state = snapshot
+                    .state()
+                    .ok_or(Error::Invalid("actor state was never created"))?;
+                let anchor = snapshot
+                    .anchor
+                    .ok_or(Error::Invalid("actor state has no committed anchor"))?;
+                if cut.reached(state)? {
+                    return Ok(Applied {
+                        snapshot,
+                        cut,
+                        commit_id: anchor,
+                    });
+                }
+                // Atomically subscribe at the exact loaded cut. Publications between
+                // load and registration are replayed; history replacement is refused.
+                let records = self
+                    .provider
                     .follow(FollowRequest {
-                        preceding: cut.preceding,
+                        preceding: Some(anchor),
                         at_least: cut.at_least.clone(),
-                        ..FollowRequest::new(cut.path.clone(), cut.next)
+                        ..FollowRequest::new(snapshot.path.clone(), snapshot.tail)
                     })
-                    .await?,
-            );
-        }
-        let mut snapshot = self.load(actor).await?;
-        let state = snapshot
-            .state()
-            .ok_or(Error::Invalid("actor state was never created"))?;
-        let anchor = snapshot
-            .anchor
-            .ok_or(Error::Invalid("actor state has no committed anchor"))?;
-        if cut.reached(state)? {
-            return Ok(Applied {
-                snapshot,
-                cut,
-                commit_id: anchor,
-            });
-        }
-        // Atomically subscribe at the exact loaded cut. Publications between
-        // load and registration are replayed; history replacement is refused.
-        let records = self
-            .provider
-            .follow(FollowRequest {
-                preceding: Some(anchor),
-                at_least: cut.at_least.clone(),
-                ..FollowRequest::new(snapshot.path.clone(), snapshot.tail)
-            })
-            .await?;
-        let mut records = acyclic_stream::records_only(records);
-        while let Some(record) = records.try_next().await? {
-            if record.sequence != snapshot.tail {
-                return Err(Error::Invalid("applied observation skipped actor state"));
+                    .await?;
+                let mut records = acyclic_stream::records_only(records);
+                while let Some(record) = records.try_next().await? {
+                    if record.sequence != snapshot.tail {
+                        return Err(Error::Invalid("applied observation skipped actor state"));
+                    }
+                    let state = State::decode(&record.value)?;
+                    let reached = cut.reached(&state)?;
+                    snapshot.tail = snapshot
+                        .tail
+                        .checked_add(1)
+                        .ok_or(Error::Invalid("actor state revision overflow"))?;
+                    snapshot.anchor = Some(record.commit_id);
+                    snapshot.state = Some(state);
+                    if reached {
+                        return Ok(Applied {
+                            snapshot,
+                            cut,
+                            commit_id: record.commit_id,
+                        });
+                    }
+                }
+                Err(acyclic_stream::StreamError::Unavailable.into())
             }
-            let state = State::decode(&record.value)?;
-            let reached = cut.reached(&state)?;
-            snapshot.tail = snapshot
-                .tail
-                .checked_add(1)
-                .ok_or(Error::Invalid("actor state revision overflow"))?;
-            snapshot.anchor = Some(record.commit_id);
-            snapshot.state = Some(state);
-            if reached {
-                return Ok(Applied {
-                    snapshot,
-                    cut,
-                    commit_id: record.commit_id,
-                });
-            }
-        }
-        Err(acyclic_stream::StreamError::Unavailable.into())
+        )
     }
 }

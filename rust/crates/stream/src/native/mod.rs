@@ -9,6 +9,36 @@ pub(crate) use prepared::NativeCommitRecordSlot;
 pub use prepared::PreparedNativeCommit;
 pub(crate) use work::Work;
 
+macro_rules! span {
+    ($name:literal) => {
+        acyclic_native_runtime::obs::OperationSpan::new(tracing::info_span!(
+            $name,
+            outcome = tracing::field::Empty,
+            error.kind = tracing::field::Empty,
+        ))
+    };
+}
+pub(crate) use span;
+
+fn io_kind(error: &std::io::Error) -> &'static str {
+    if acyclic_native_runtime::is_uncertain_io_error(error) {
+        "uncertain"
+    } else {
+        "observer"
+    }
+}
+
+pub(crate) fn outcome<T, E>(
+    result: &NativeStreamResult<T, E>,
+    kind: impl FnOnce(&E) -> &'static str,
+) -> Option<&'static str> {
+    match result {
+        Err(error) => Some(io_kind(error)),
+        Ok(Err(error)) => Some(kind(error)),
+        Ok(Ok(_)) => None,
+    }
+}
+
 pub(crate) fn vector<T>(
     length: usize,
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,

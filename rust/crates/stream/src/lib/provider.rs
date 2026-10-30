@@ -59,7 +59,11 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Makes every write accepted by this session before the call durable.
     /// Visibility and live delivery do not wait for this barrier.
     async fn durability_barrier(&self) -> Result<(), StreamError> {
-        Err(StreamError::Unsupported)
+        acyclic_observability::operation!(
+            "acyclic.stream.durability_barrier",
+            StreamError::code,
+            || Err(StreamError::Unsupported)
+        )
     }
 
     /// Reads the retained terminal result for one caller-owned retry identity.
