@@ -236,7 +236,7 @@ async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
 }
 
 #[tokio::test]
-async fn cancelled_followers_return_capacity_without_retaining_their_wakers()
+async fn cancelled_followers_release_their_wakers_before_the_original_read_finishes()
 -> Result<(), Box<dyn std::error::Error>> {
     struct Woken;
     impl std::task::Wake for Woken {
@@ -254,10 +254,7 @@ async fn cancelled_followers_return_capacity_without_retaining_their_wakers()
             gate: futures::FutureExt::shared(gate),
             reads: reads.clone(),
         },
-        ObjectCacheOptions {
-            maximum_waiters_per_object: 1,
-            ..options(4, 64)
-        },
+        options(4, 64),
     )?;
     let mut leader = Box::pin(object_work!(cached, read(identity, 17), B, &cancellation));
     assert!(futures::poll!(leader.as_mut()).is_pending());
@@ -288,8 +285,8 @@ async fn cancelled_followers_return_capacity_without_retaining_their_wakers()
         }
         drop(follower);
         drop(waker);
-        // Dropping the consumer is the settle event. A stale waker would keep
-        // its owner alive and make the next reader exhaust capacity one.
+        // Dropping the consumer is the settle event. A stale notification
+        // node would retain its callback owner after this point.
         assert_eq!(Arc::strong_count(&observer), 1);
         assert_eq!(reads.load(Ordering::Acquire), 1);
     }
@@ -299,5 +296,87 @@ async fn cancelled_followers_return_capacity_without_retaining_their_wakers()
     assert_eq!(leader.await?.value.bytes, bytes);
     assert_eq!(reads.load(Ordering::Acquire), 1);
     assert_eq!(cached.stats()?.in_flight, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn distinct_reads_and_followers_cross_previous_admission_totals()
+-> Result<(), Box<dyn std::error::Error>> {
+    let inner = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let mut objects = Vec::new();
+    for index in 0..1_025_u64 {
+        let bytes = OwnedBytes::from(index.to_le_bytes().to_vec());
+        let identity = ObjectId {
+            storage: None,
+            kind: ObjectKind::BlobChunk,
+            digest: object_digest(&bytes),
+        };
+        object_work!(inner, put(identity, bytes.clone()), B, &cancellation).await?;
+        objects.push((identity, bytes));
+    }
+    let (release, gate) = futures::channel::oneshot::channel();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let cached = CachedObjectStore::new(
+        GatedStore {
+            inner: Arc::new(inner),
+            gate: futures::FutureExt::shared(gate),
+            reads: reads.clone(),
+        },
+        // Every body exceeds resident capacity. Followers must receive their
+        // original result even when no completed object can remain cached.
+        options(1, 1),
+    )?;
+    let mut leaders = objects
+        .iter()
+        .map(|(identity, _)| {
+            let identity = *identity;
+            let cached = &cached;
+            let cancellation = &cancellation;
+            Box::pin(async move { object_work!(cached, read(identity, 8), B, cancellation).await })
+        })
+        .collect::<Vec<_>>();
+    for leader in &mut leaders {
+        assert!(futures::poll!(leader.as_mut()).is_pending());
+    }
+    assert_eq!(cached.stats()?.in_flight, 1_025);
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    let identity = objects[0].0;
+    let mut followers = (0..1_025)
+        .map(|_| {
+            let cached = &cached;
+            let cancellation = &cancellation;
+            Box::pin(async move { object_work!(cached, read(identity, 8), B, cancellation).await })
+        })
+        .collect::<Vec<_>>();
+    for follower in &mut followers {
+        assert!(futures::poll!(follower.as_mut()).is_pending());
+    }
+    let mut too_small = Box::pin(object_work!(cached, read(identity, 7), B, &cancellation));
+    assert!(futures::poll!(too_small.as_mut()).is_pending());
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    release
+        .send(())
+        .map_err(|_| "original read producer lost")?;
+    for ((_, bytes), leader) in objects.iter().zip(leaders) {
+        assert_eq!(leader.await?.value.bytes, *bytes);
+    }
+    for follower in followers {
+        assert_eq!(follower.await?.value.bytes, objects[0].1);
+    }
+    let failure = too_small
+        .await
+        .err()
+        .ok_or("caller read maximum was ignored")?;
+    assert!(matches!(
+        failure.error,
+        ObjectStoreError::TooLarge {
+            observed: 8,
+            maximum: 7
+        }
+    ));
+    assert_eq!(reads.load(Ordering::Acquire), 1_025);
+    assert_eq!(cached.stats()?.in_flight, 0);
+    assert_eq!(cached.stats()?.resident_entries, 0);
     Ok(())
 }

@@ -148,10 +148,6 @@ pub(in crate::bindings) struct BrowserObjectCacheOptions {
     pub(in crate::bindings) entries: u32,
     #[serde(rename = "maximumBytes")]
     pub(in crate::bindings) bytes: u64,
-    #[serde(rename = "maximumInFlight")]
-    pub(in crate::bindings) in_flight: u32,
-    #[serde(rename = "maximumWaitersPerObject")]
-    pub(in crate::bindings) waiters_per_object: u32,
 }
 
 #[derive(Serialize, Tsify)]
