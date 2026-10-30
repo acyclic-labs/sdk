@@ -415,10 +415,6 @@ fn resume_reapplies_the_latest_exclusive_selection() {
 
 impl<W: Write> Drop for RestoreGuard<W> {
     fn drop(&mut self) {
-        // A transient write failure during teardown leaves journal entries to
-        // retry. Bound the retry so a disconnected terminal cannot hang exit.
-        if self.restore().is_err() {
-            let _ = self.restore();
-        }
+        let _ = self.restore();
     }
 }
