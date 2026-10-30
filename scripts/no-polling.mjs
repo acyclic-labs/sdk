@@ -8,6 +8,11 @@ const temporal = /^(?:sleep(?:_until)?|usleep|nanosleep|delay|interval(?:_at)?|t
 const policyName = /(?:retry|retries|backoff|poll[_A-Z]|polling|[_A-Z]INTERVAL|wait[_A-Z].*Ready)/i;
 const loop = new Set(['for', 'while', 'loop', 'do']);
 const literalKinds = new Set([ts.SyntaxKind.StringLiteral, ts.SyntaxKind.NoSubstitutionTemplateLiteral, ts.SyntaxKind.TemplateHead, ts.SyntaxKind.TemplateMiddle, ts.SyntaxKind.TemplateTail]);
+const hostObjects = new Set(['globalThis', 'window', 'global', 'Bun', 'process']);
+const opening = new Set(['(', '[', '{']);
+const closing = new Set([')', ']', '}']);
+const bindingEnds = new Set([';', ',', ')', ']', '}']);
+const statementStarts = new Set(['let', 'const', 'fn', 'return']);
 const classes = new Set([
  'caller-deadline', 'transient-transport-backoff', 'retryable-tool', 'retryable-model',
  'idempotent-identity', 'event-wait', 'finite-work', 'injected-child-stall',
@@ -19,6 +24,21 @@ export function sourceInScope(file) {
  return file === 'package.json' || /^(?:rust\/crates\/|typescript\/packages\/|scripts\/)[\s\S]+\.(?:rs|[cm]?js|tsx?|[ch]|cc|cpp|sh|ps1|cmd|bat|proto|toml|json|ya?ml)$/.test(file);
 }
 
+/** @param {import('typescript').Expression | undefined} expression @returns {string | undefined} */
+function constantString(expression) {
+ if (!expression) return undefined;
+ const stack = [expression];
+ const pieces = [];
+ while (stack.length) {
+  const node = /** @type {import('typescript').Expression} */ (stack.pop());
+  if (ts.isStringLiteralLike(node)) pieces.push(node.text);
+  else if (ts.isParenthesizedExpression(node)) stack.push(node.expression);
+  else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) stack.push(node.right, node.left);
+  else return undefined;
+ }
+ return pieces.join('');
+}
+
 function scriptTokens(file, source) {
  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
  const diagnostics = /** @type {typeof parsed & {parseDiagnostics: readonly import('typescript').Diagnostic[]}} */ (parsed).parseDiagnostics;
@@ -28,6 +48,18 @@ function scriptTokens(file, source) {
  const out = [];
  while (stack.length) {
   const node = /** @type {import('typescript').Node} */ (stack.pop());
+  const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
+  if (ts.isElementAccessExpression(node)) {
+   const property = constantString(node.argumentExpression);
+   if (property !== undefined && (temporal.test(property) || policyName.test(property))) out.push({value: property, kind: 'word', line});
+   else if (property === undefined && ts.isIdentifier(node.expression) && hostObjects.has(node.expression.text)) out.push({value: node.getText(parsed), kind: 'indirection', line});
+  }
+  if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+   const callee = node.expression;
+   if (ts.isElementAccessExpression(callee)
+    || (ts.isIdentifier(callee) && (callee.text === 'eval' || callee.text === 'Function'))
+    || (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && callee.expression.text === 'Reflect')) out.push({value: callee.getText(parsed), kind: 'indirection', line});
+  }
   const children = node.getChildren(parsed);
   if (children.length) {
    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]);
@@ -37,11 +69,10 @@ function scriptTokens(file, source) {
   const kind = literalKinds.has(node.kind) ? 'literal'
    : node.kind === ts.SyntaxKind.Identifier || (node.kind >= ts.SyntaxKind.FirstKeyword && node.kind <= ts.SyntaxKind.LastKeyword) ? 'word'
    : 'punctuation';
-  const start = node.getStart(parsed);
   // The parser preserves executable template substitutions and regex boundaries.
   const value = kind === 'literal' ? /** @type {import('typescript').LiteralLikeNode} */ (node).text
    : ts.isIdentifier(node) ? node.text : node.getText(parsed);
-  out.push({value, kind, line: parsed.getLineAndCharacterOfPosition(start).line + 1});
+  out.push({value, kind, line});
  }
  return out;
 }
@@ -107,22 +138,26 @@ export function pollingSites(file, source) {
   if (!aliases.has(from)) aliases.set(from, new Set());
   aliases.get(from).add(to);
  };
+ const bindings = [];
+ let depth = 0;
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
-  if (t.kind !== 'word') continue;
-  if (stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
-  if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') edge(t.value, stream[i + 2].value);
-  if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=') {
-   let depth = 0;
-   for (let right = i + 2; right < stream.length; right++) {
-    const item = stream[right];
-    if (!depth && [';', ',', '}'].includes(item.value)) break;
-    if (!depth && item.line > t.line && ['let', 'const', 'fn', 'return'].includes(item.value)) break;
-    if (item.kind === 'word') edge(item.value, t.value);
-    if (['(', '[', '{'].includes(item.value)) depth++;
-    if ([')', ']', '}'].includes(item.value)) { if (!depth) break; depth--; }
-   }
+  // Only the innermost initializer owns a reference. Its binding name already
+  // belongs to its outer initializer, so dependency closure handles nesting.
+  while (bindings.length) {
+   const active = bindings[bindings.length - 1];
+   if (depth > active.depth || (!(t.kind === 'punctuation' && bindingEnds.has(t.value))
+    && !(t.kind === 'word' && t.line > active.line && statementStarts.has(t.value)))) break;
+   bindings.pop();
   }
+  if (t.kind === 'word') {
+   if (bindings.length) edge(t.value, bindings[bindings.length - 1].name);
+   if (stream[i + 1]?.value === 'as') edge(t.value, stream[i + 2]?.value);
+   if (stream[i + 1]?.value === ':' && stream[i + 2]?.kind === 'word') edge(t.value, stream[i + 2].value);
+   if (stream[i + 1]?.value === '=' && stream[i + 2]?.value !== '=' && stream[i + 2]?.value !== '>') bindings.push({name: t.value, depth, line: t.line});
+  }
+  if (t.kind === 'punctuation' && opening.has(t.value)) depth++;
+  if (t.kind === 'punctuation' && closing.has(t.value)) depth--;
  }
  const queue = [...forbidden];
  for (let i = 0; i < queue.length; i++) {
@@ -133,7 +168,8 @@ export function pollingSites(file, source) {
  const sites = [];
  for (let i = 0; i < stream.length; i++) {
   const t = stream[i];
-  const kind = t.kind === 'word' && loop.has(t.value) ? 'loop'
+  const kind = t.kind === 'indirection' ? 'indirect-timer-or-call'
+   : t.kind === 'word' && loop.has(t.value) ? 'loop'
    : t.kind === 'word' && forbidden.has(t.value) ? 'timer-or-readiness'
    : t.kind === 'literal' && (/\b(?:sleep|usleep|nanosleep|setTimeout|setInterval|Bun\.sleep|retry|backoff)\b/.test(t.value) || policyName.test(t.value)) ? 'embedded-timer-or-retry'
    : undefined;

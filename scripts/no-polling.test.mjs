@@ -29,6 +29,7 @@ test('new direct and indirect readiness mutations are rejected', () => {
   'setTimeout(ready, 1);',
   "import {setTimeout as pause} from 'node:timers/promises'; await pause(1);",
   'const pause = promisify(setTimeout); await pause(1);',
+  'const pause = () => { const nested = promisify(setTimeout); return nested; }; await pause()(1);',
   'const later = setTimeout; later(ready, 1);',
   'await Bun.sleep(1);',
   'while (!await ready()) await tick();',
@@ -38,6 +39,11 @@ test('new direct and indirect readiness mutations are rejected', () => {
   "const unused = /[//]/; setTimeout(probe, 1);",
   String.raw`\u0073etTimeout(probe, 1);`,
   "globalThis['setTimeout'](probe, 1);",
+  "const pause = globalThis['set' + ('Time' + 'out')]; pause(probe, 1);",
+  'const pause = globalThis[chosenName]; pause(probe, 1);',
+  'const host = globalThis; host[chosenName](probe, 1);',
+  "Reflect.get(globalThis, ['set','Timeout'].join(''))(probe, 1);",
+  "const generate = new Function('return ' + name); generate()();",
   'async function bypass() { while (!await registry()) await pause(); } await bypass();',
  ]) assert.ok(newPollingSites(script, '', source).length, source);
 });
@@ -59,6 +65,7 @@ test('comments and Future polling remain distinct from time and readiness rechec
  fn drive<'a>(future: &'a mut Future) { future.poll(context); }
  `), []);
  assert.deepEqual(pollingSites(script, '// setTimeout retry while\nconst pattern = /[//]sleep/;'), []);
+ assert.deepEqual(pollingSites(script, 'const name = globalThis["crypto"]; name.getRandomValues(bytes);'), []);
  assert.ok(pollingSites(rust, 'fn fixture() { command.arg(r#"sleep 30"#); }').some(site => site.kind === 'embedded-timer-or-retry'));
 });
 
