@@ -1,0 +1,4 @@
+# Captured external server output
+# path	bytes	sha256	producer
+harness_codecs/mcp-filesystem-2.1.0-stdio	12868	735ab618f5eb36a2d5b42e78337095d35bc2855e446bcbb411214825b5c3e78a	@modelcontextprotocol/server-filesystem@2.1.0 stdio discovery; capture-mcp.mjs
+harness_codecs/mcp-filesystem-2.1.0-result	12651	31ae89f956bb9e9fcb9a654e967d443faf254cf21c448affd33438b9a770a8aa	@modelcontextprotocol/server-filesystem@2.1.0 stdio discovery; capture-mcp.mjs
