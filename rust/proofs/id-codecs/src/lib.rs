@@ -3,6 +3,58 @@
 mod version {
     #[kani::proof]
     #[kani::unwind(64)]
+    fn bounded_actor_triples_round_trip_and_refuse_resource_encodings() {
+        use acyclic_auth::addressing::{ActorReference, IdentityError, ResourceIdentity};
+        let account: [u8; 4] = kani::any();
+        let namespace: [u8; 4] = kani::any();
+        let id: [u8; 4] = kani::any();
+        let Ok(value) = ActorReference::new(&account, &namespace, &id) else {
+            return;
+        };
+        let encoded = value.encode();
+        assert_eq!(ActorReference::decode(&encoded), Ok(value));
+        let resource = ResourceIdentity::new(&account, &id).unwrap().encode();
+        assert!(ActorReference::decode(&resource).is_err());
+        assert!(ResourceIdentity::decode(&encoded).is_err());
+        let version = encoded.len() - (3 * 8 + account.len() + namespace.len() + id.len()) - 1;
+        let other: u8 = kani::any();
+        kani::assume(other != 1);
+        let mut refused = encoded;
+        refused[version] = other;
+        refused.truncate(version + 1);
+        assert_eq!(
+            ActorReference::decode(&refused),
+            Err(IdentityError::UnsupportedVersion)
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(41)]
+    fn usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions() {
+        use acyclic_fs::windows_usn_codec::{WindowsUsnCheckpoint, WindowsUsnError};
+        let bytes: [u8; 40] = kani::any();
+        if let Ok(value) = WindowsUsnCheckpoint::from_bytes(&bytes) {
+            assert_eq!(value.to_bytes(), bytes);
+            assert!(value.next_usn() <= i64::MAX as u64);
+            for length in 8..40 {
+                assert!(matches!(
+                    WindowsUsnCheckpoint::from_bytes(&bytes[..length]),
+                    Err(WindowsUsnError::InvalidCheckpoint)
+                ));
+            }
+        }
+        let mut refused = *b"ACYUSN\0\x01";
+        let version: u8 = kani::any();
+        kani::assume(version != 1);
+        refused[7] = version;
+        assert!(matches!(
+            WindowsUsnCheckpoint::from_bytes(&refused),
+            Err(WindowsUsnError::UnsupportedVersion)
+        ));
+    }
+
+    #[kani::proof]
+    #[kani::unwind(64)]
     fn bounded_resource_pairs_round_trip_and_refuse_other_versions() {
         use acyclic_auth::addressing::{IdentityError, ResourceIdentity};
         let account: [u8; 4] = kani::any();

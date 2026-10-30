@@ -30,7 +30,8 @@ pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 #[cfg(test)]
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
 
-/// The checkpoint codec every agent actor commits with.
+/// The checkpoint codec every agent actor commits with. Its state embeds the
+/// same durable record shapes, so both boundaries admit the same version.
 pub(crate) fn codec() -> CodecIdentity {
     identity().clone()
 }
@@ -39,7 +40,7 @@ fn identity() -> &'static CodecIdentity {
     static IDENTITY: std::sync::LazyLock<CodecIdentity> =
         std::sync::LazyLock::new(|| CodecIdentity {
             name: "acyclic.harness.agent".into(),
-            version: "1".into(),
+            version: super::records::RECORD_VERSION.to_string(),
         });
     &IDENTITY
 }
@@ -627,14 +628,16 @@ mod tests {
             bytes: bytes.into(),
         };
         assert!(checkpoint_state(&valid).is_ok());
-        for version in ["0", "2", "unknown"] {
-            let mut checkpoint = valid.clone();
-            checkpoint.codec.version = version.into();
-            checkpoint.bytes = Vec::new().into();
-            assert!(matches!(
-                checkpoint_state(&checkpoint),
-                Err(Error::IncompatibleCheckpointCodec)
-            ));
+        for version in ["0", "1", "2", "unknown"] {
+            for bytes in [valid.bytes.clone(), Vec::new().into()] {
+                let mut checkpoint = valid.clone();
+                checkpoint.codec.version = version.into();
+                checkpoint.bytes = bytes;
+                assert!(matches!(
+                    checkpoint_state(&checkpoint),
+                    Err(Error::IncompatibleCheckpointCodec)
+                ));
+            }
         }
         let mut another = valid.clone();
         another.codec.name.push_str(".other");

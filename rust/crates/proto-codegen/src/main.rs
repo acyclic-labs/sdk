@@ -8,6 +8,26 @@ mod readonly;
 mod service;
 
 fn main() -> io::Result<()> {
+    run().map_err(|error| {
+        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let args = std::env::args().skip(1).collect::<Vec<_>>();
+        let step = args.first().map_or("mode selection", String::as_str);
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let recovery = format!(
+            "cargo run --locked --manifest-path {} -- {}",
+            quote(&manifest.to_string_lossy()),
+            args.iter()
+                .map(|arg| quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        io::Error::other(format!(
+            "protobuf generator step {step} failed: {error}; recovery: {recovery}"
+        ))
+    })
+}
+
+fn run() -> io::Result<()> {
     let generator = std::env::args().nth(1);
     if generator.as_deref() == Some("canonicalize") {
         let args = std::env::args().skip(2).collect::<Vec<_>>();

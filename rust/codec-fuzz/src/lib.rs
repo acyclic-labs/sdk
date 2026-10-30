@@ -259,7 +259,7 @@ pub fn actor_codecs(bytes: &[u8]) {
         );
     }
     if let Ok(value) = acyclic_stream::wire::Record::decode(bytes)
-        && let Ok(record) = acyclic_stream::wire_codec::record(value)
+        && let Ok(record) = acyclic_stream::wire_codec::record(value, None)
         && let Ok(Some(invocation)) = acyclic_actors::invocation::Invocation::decode(&record)
     {
         let encoded = invocation
