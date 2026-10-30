@@ -97,16 +97,8 @@ async fn paused_peer() -> Result<
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("http://{}", listener.local_addr()?);
     let counts = Arc::new(Counts::default());
-    let accepted = Arc::clone(&counts);
-    let incoming = stream::try_unfold(listener, move |listener| {
-        let counts = Arc::clone(&accepted);
-        async move {
-            let (socket, _) = listener.accept().await?;
-            socket.set_nodelay(true)?;
-            counts.connections.fetch_add(1, Ordering::Relaxed);
-            Ok::<_, std::io::Error>(Some((socket, listener)))
-        }
-    });
+    let connections = Arc::new(fixture::Connections::default());
+    let incoming = connections.incoming(listener, Arc::clone(&counts));
     let closed = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
     let host = PausedPeer {
@@ -114,7 +106,7 @@ async fn paused_peer() -> Result<
         resume: Arc::clone(&resume),
         closed: Arc::clone(&closed),
     };
-    let server = tokio::spawn(
+    let (server, server_ended) = fixture::serve(
         tonic::transport::Server::builder()
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming),
@@ -131,6 +123,8 @@ async fn paused_peer() -> Result<
             tls_client: None,
             counts,
             server,
+            server_ended,
+            connections,
         },
         resume,
         closed,
@@ -140,8 +134,7 @@ async fn paused_peer() -> Result<
 #[tokio::test]
 async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancellation()
 -> TestResult {
-    let phase = std::cell::Cell::new("connecting nodes");
-    let result = tokio::time::timeout(Duration::from_secs(8), async {
+    async {
         let memory = Arc::new(MemoryStream::default());
         append(&memory, "healthy", 1).await?;
         let healthy = Fixture::open(Arc::clone(&memory), "healthy").await?;
@@ -159,7 +152,6 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             connect,
         );
         client.register_credential(0, crate::session::testing::credential())?;
-        phase.set("opening redirected healthy follow");
         let mut records = client
             .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
             .map_ok(crate::records_only)
@@ -182,18 +174,14 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
                 }
             }
         });
-        phase.set("waiting for bounded admission rejection");
         rejected.notified().await;
-        phase.set("delivering while the peer is blocked");
         assert_eq!(paused.counts.sessions.load(Ordering::Relaxed), 1);
         for sequence in 1..=4 {
             append(&memory, "healthy", 1).await?;
             assert_eq!(next(&mut records).await?.sequence, sequence);
         }
-        phase.set("cancelling blocked opens");
         storm.abort();
         assert!(storm.await.is_err_and(|error| error.is_cancelled()));
-        phase.set("delivering after cancellation");
         for sequence in 5..=8 {
             append(&memory, "healthy", 1).await?;
             assert_eq!(next(&mut records).await?.sequence, sequence);
@@ -207,13 +195,8 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         // HTTP/2 credit. All isolation/cancellation assertions ran while paused;
         // now allow the peer to drain and observe the request's eventual EOF.
         resume.notify_one();
-        phase.set("waiting for cancelled RPC cleanup");
         closed.notified().await;
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
-    })
-    .await;
-    if result.is_err() {
-        eprintln!("blocked-peer watchdog expired while {}", phase.get());
     }
-    result?
+    .await
 }
