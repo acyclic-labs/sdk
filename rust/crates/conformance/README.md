@@ -96,3 +96,10 @@ Run the deterministic observer controls with
 `cargo test --locked -p acyclic-test-support scale::tests`. They execute an
 injected scan, real per-agent threads, virtual timer registrations and a lost
 event producer; these controls validate the observer, not production liveness.
+
+Select core operation names with `--operations`, for example
+`--operations actors.create,actors.durable_write,actors.warm_read,actors.wake`.
+The default selects all 17 rows. Selection uses the same drivers, floor
+calibration and population setup; unrelated operation families are skipped.
+Dependent fixture operations remain outside the selected intervals. Reports
+name the requested operation set, and a subset never claims full core coverage.
