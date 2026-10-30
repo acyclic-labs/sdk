@@ -209,13 +209,13 @@ pub fn process_output(
         .map_err(|failure| failure.error)
 }
 
-/// Runs a trusted host command with its configured streams and a bounded wait.
+/// Runs a trusted host command with its configured streams and caller schedule.
 pub fn process_status(
     command: &mut std::process::Command,
-    timeout: std::time::Duration,
+    schedule: impl Into<CaptureSchedule>,
 ) -> io::Result<std::process::ExitStatus> {
     let mut tree = ProcessTree::spawn(command)?;
-    let result = tree.wait(timeout);
+    let result = tree.wait(schedule);
     tree.terminate(None)?;
     result
 }
