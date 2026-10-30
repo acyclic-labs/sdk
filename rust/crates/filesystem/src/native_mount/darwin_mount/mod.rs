@@ -22,19 +22,14 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+#[cfg(test)]
+use std::time::Instant;
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
-const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
-const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
-const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(test)]
-const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
-
 mod callback_gate;
 mod work_scope;
 use callback_gate::*;
@@ -64,8 +59,6 @@ mod mount_probe;
 use mount_probe::*;
 mod reclaim;
 pub(in crate::native_mount) use reclaim::reclaim_stale_mounts;
-
-const STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 mod context;
 use context::*;

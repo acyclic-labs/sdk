@@ -123,56 +123,45 @@ impl Drop for CallbackPass<'_> {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// A drain waits for the callback admitted before it, and finishes
-    /// while later callbacks keep arriving and overlapping without a gap.
+    /// while a later callback remains active.
     /// Negative control: with no earlier callback it returns at once,
     /// without running `before_waiting`.
     #[test]
-    fn a_drain_finishes_while_callbacks_keep_arriving() {
+    fn a_drain_finishes_while_a_later_callback_remains_active() {
         let gate = Arc::new(CallbackGate::new());
         assert_eq!(gate.drain(|| Err::<(), _>("waited")), Ok(()));
         let earlier = gate.enter().expect("open");
-        let stop = Arc::new(AtomicBool::new(false));
-        // Always at least one later callback in flight: a single counter
-        // would never reach zero.
-        let arrivals = std::thread::spawn({
-            let (gate, stop) = (Arc::clone(&gate), Arc::clone(&stop));
-            move || {
-                let mut held = gate.enter().expect("open");
-                while !stop.load(Ordering::SeqCst) {
-                    let next = gate.enter().expect("open");
-                    drop(std::mem::replace(&mut held, next));
-                }
-            }
-        });
+        let (entered, waiting) = std::sync::mpsc::channel();
         let (sent, finished) = std::sync::mpsc::channel();
         let barrier = std::thread::spawn({
             let gate = Arc::clone(&gate);
             move || {
-                let waited = gate.drain(|| Ok::<_, ()>(()));
+                let waited =
+                    gate.drain(|| entered.send(()).map_err(|_| "settle receiver disappeared"));
                 let _ = sent.send(waited);
             }
         });
+        waiting.recv().expect("barrier entered its new epoch");
         assert!(
-            finished
-                .recv_timeout(std::time::Duration::from_millis(50))
-                .is_err(),
+            finished.try_recv().is_err(),
             "the earlier callback is still running"
         );
+        // This pass is admitted after the barrier's explicit settle event.
+        // Holding it through completion rejects a single-counter drain.
+        let later = gate.enter().expect("open");
         drop(earlier);
-        let waited = finished.recv_timeout(std::time::Duration::from_secs(10));
-        stop.store(true, Ordering::SeqCst);
+        let waited = finished.recv();
         assert_eq!(waited, Ok(Ok(())), "a drain starved behind later callbacks");
+        drop(later);
         barrier.join().expect("barrier");
-        arrivals.join().expect("arrivals");
         assert_eq!(gate.active(), 0);
     }
 
-    /// A failed `before_waiting` abandons the wait; a retry waits again.
+    /// A failed wait admission releases the drain's epoch.
     #[test]
-    fn an_abandoned_drain_can_be_retried() {
+    fn failed_wait_admission_does_not_hold_a_callback_epoch() {
         let gate = CallbackGate::new();
         let pass = gate.enter().expect("open");
         assert_eq!(gate.drain(|| Err("over budget")), Err("over budget"));
