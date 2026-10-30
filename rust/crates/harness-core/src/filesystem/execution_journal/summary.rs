@@ -318,6 +318,16 @@ impl ExecutionSummary {
             ExecutionEvent::ToolStarted { step, .. }
             | ExecutionEvent::ToolCompleted { step, .. }
             | ExecutionEvent::ToolFailed { step, .. } => {
+                let key = (
+                    *step,
+                    tool_key.ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "tool observation has no authenticated identity",
+                        )
+                    })?,
+                );
                 match event {
                     ExecutionEvent::ToolStarted { .. } => {
                         self.pending_dispatches =
@@ -329,23 +339,10 @@ impl ExecutionSummary {
                                 )
                             })?;
                     }
-                    ExecutionEvent::ToolFailed { .. }
-                        if self
-                            .tools
-                            .get(
-                                &(
-                                    *step,
-                                    tool_key.ok_or_else(|| {
-                                        canonical_boundary(
-                                            io,
-                                            crate::wire::ErrorCode::Storage,
-                                            "tool observation has no authenticated identity",
-                                        )
-                                    })?,
-                                ),
-                                io,
-                            )?
-                            .is_none() => {}
+                    ExecutionEvent::ToolFailed { reason, .. }
+                        if reason.precedes_dispatch()
+                            || (*reason == crate::executor::ToolFailureKind::ExecutorRejected
+                                && self.tools.get(&key, io)?.is_none()) => {}
                     _ => {
                         self.pending_dispatches =
                             self.pending_dispatches.checked_sub(1).ok_or_else(|| {
@@ -358,16 +355,7 @@ impl ExecutionSummary {
                     }
                 }
                 self.tools.insert(
-                    (
-                        *step,
-                        tool_key.ok_or_else(|| {
-                            canonical_boundary(
-                                io,
-                                crate::wire::ErrorCode::Storage,
-                                "tool observation has no authenticated identity",
-                            )
-                        })?,
-                    ),
+                    key,
                     !matches!(event, ExecutionEvent::ToolStarted { .. }),
                     io,
                 )?;
