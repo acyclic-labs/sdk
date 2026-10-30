@@ -130,7 +130,11 @@ impl MemoryStream {
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn maximum_replay_height(&self) -> u64 {
-        2 * u64::from(self.limits.idempotency_results.saturating_add(1).ilog2() + 1)
+        2 * u64::from(
+            self.limits
+                .idempotency_results
+                .map_or(usize::BITS, |limit| limit.saturating_add(1).ilog2() + 1),
+        )
     }
 
     fn replay<'a>(
