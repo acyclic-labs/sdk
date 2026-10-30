@@ -99,6 +99,28 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
         collect_paths(&store, &linked, record).await?,
         [path(&["a"])?, path(&["dir", "alias"])?]
     );
+    for maximum in [0, 1, 2] {
+        let cancel = CancellationToken::new();
+        let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+        let selected = DirectOnly(&store);
+        let view = crate::workspace::NamespaceView {
+            objects: &selected,
+            root: &linked,
+            config: config(),
+        };
+        let (search, allocation) = view.records(&[file], maximum, &mut work, &cancel).await?;
+        assert_eq!(search.complete, maximum == 2);
+        let expected = [path(&["a"])?, path(&["dir", "alias"])?];
+        let actual: Vec<_> = search
+            .records
+            .iter()
+            .flat_map(|(_, paths)| paths.iter().map(|(path, _)| path.clone()))
+            .collect();
+        assert_eq!(actual, expected[..maximum as usize]);
+        let bytes = crate::workspace::namespace_records_bytes(&search.records);
+        crate::kernel::Owned::new(search, allocation, bytes).retire(&mut work)?;
+        assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    }
     let moved = apply_generation_mutations(
         &store,
         &linked,
@@ -236,12 +258,14 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
     struct Held {
         bytes: Vec<u8>,
         original: crate::NativeMaterializationWork,
+        original_bytes: u64,
         dropped: Arc<AtomicBool>,
     }
     impl Drop for Held {
         fn drop(&mut self) {
             assert!(
-                self.original.live_allocation_bytes() >= self.bytes.capacity() as u64,
+                self.original.live_allocation_bytes()
+                    == self.original_bytes + self.bytes.capacity() as u64,
                 "physical backing outlived its original credit"
             );
             self.dropped.store(true, Ordering::SeqCst);
@@ -252,6 +276,8 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         .map_err(|(error, _)| error)?;
     let recipient = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
         .map_err(|(error, _)| error)?;
+    let donor_bytes = donor.live_allocation_bytes();
+    let recipient_bytes = recipient.live_allocation_bytes();
     let dropped = Arc::new(AtomicBool::new(false));
     let bytes = vec![7; 73];
     let length = bytes.capacity() as u64;
@@ -260,6 +286,7 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         Held {
             bytes,
             original: donor.clone(),
+            original_bytes: donor_bytes,
             dropped: Arc::clone(&dropped),
         },
         KernelOwnedAllocation::NativeOriginal(guard),
@@ -275,10 +302,13 @@ fn refused_transfer_retires_the_value_before_its_original_native_credit()
         ))
     ));
     assert!(dropped.load(Ordering::SeqCst));
-    assert_eq!(donor.live_allocation_bytes(), 0);
+    assert_eq!(donor.live_allocation_bytes(), donor_bytes);
     assert_eq!(target.bytes, target_bytes);
-    assert_eq!(recipient.live_allocation_bytes(), target_bytes);
+    assert_eq!(
+        recipient.live_allocation_bytes(),
+        recipient_bytes + target_bytes
+    );
     target.retire(&mut accounting)?;
-    assert_eq!(recipient.live_allocation_bytes(), 0);
+    assert_eq!(recipient.live_allocation_bytes(), recipient_bytes);
     Ok(())
 }

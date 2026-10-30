@@ -672,10 +672,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 crate::workspace::namespace_records_to_file_root_with_accounting(
                     &self.volume,
                     &self.root,
-                    self.generation_root,
                     &[id],
                     // Bindings can outnumber file records through hard links.
-                    // The original work budget bounds this cold traversal.
+                    // The original work budget bounds demanded parent edges.
                     u32::MAX,
                     accounting,
                     cancellation,

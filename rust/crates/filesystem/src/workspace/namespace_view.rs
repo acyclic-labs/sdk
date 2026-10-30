@@ -19,7 +19,7 @@ pub(super) struct NamespacePage {
 }
 
 impl<O: AsyncObjectStore> NamespaceView<'_, O> {
-    pub(super) async fn records(
+    pub(crate) async fn records(
         &self,
         ids: &[FileId],
         maximum_entries: u32,
@@ -36,15 +36,23 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         if ids.is_empty() || maximum_entries == 0 {
             return Ok(matches);
         }
-        matches.0.complete = super::reverse_traversal::collect_namespace(
+        let result = super::reverse_traversal::collect_selected(
             self,
-            Some(ids),
+            ids,
             maximum_entries,
             &mut matches,
             accounting,
             cancellation,
         )
-        .await?;
+        .await;
+        match result {
+            Ok(complete) => matches.0.complete = complete,
+            Err(error) => {
+                let bytes = super::reverse_traversal::namespace_records_bytes(&matches.0.records);
+                reverse_drop(matches, bytes, accounting)?;
+                return Err(error);
+            }
+        }
         Ok(matches)
     }
 
@@ -66,7 +74,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         }
         matches.0.complete = super::reverse_traversal::collect_namespace(
             self,
-            None,
             maximum_entries,
             &mut matches,
             accounting,
@@ -106,21 +113,13 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         &self,
         path: &NamespacePath,
         after: Option<&LogicalName>,
-        selected: Option<&[FileId]>,
         maximum_entries: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(NamespacePage, KernelOwnedAllocation), FsError> {
         let before = crate::facade::readonly_standalone_live(accounting);
         let result = self
-            .list_inner(
-                path,
-                after,
-                selected,
-                maximum_entries,
-                accounting,
-                cancellation,
-            )
+            .list_inner(path, after, maximum_entries, accounting, cancellation)
             .await;
         let retained = result.as_ref().map_or(0, |(page, _)| {
             workspace_vec_bytes(&page.entries)
@@ -165,7 +164,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         &self,
         path: &NamespacePath,
         after: Option<&LogicalName>,
-        selected: Option<&[FileId]>,
         maximum_entries: u32,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
@@ -194,9 +192,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         let mut ids = Owned::<Vec<FileId>>::allocate(count, accounting)?;
         accounting.charge(copy_work((count * std::mem::size_of::<FileId>()) as u64))?;
         for entry in &source.0.entries {
-            if selected_entry(entry, selected, accounting)? {
-                ids.value.push(entry.file_id);
-            }
+            ids.value.push(entry.file_id);
         }
         let mut output = Owned::<Vec<NamespaceEntry>>::allocate(count, accounting)?;
         let (records, allocation) = if ids.value.is_empty() {
@@ -222,7 +218,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
         output.allocation.absorb(&mut source.1)?;
         let mut selected_records = records.0.iter();
         for entry in source.0.entries.drain(..) {
-            let record = if selected_entry(&entry, selected, accounting)? {
+            let record = {
                 let record = selected_records
                     .next()
                     .copied()
@@ -232,8 +228,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
                     return Err(FsError::InvalidDirectoryRecord);
                 }
                 Some(record)
-            } else {
-                None
             };
             accounting.charge(crate::WorkCounters {
                 items_examined: 1,
@@ -258,23 +252,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
             },
             output.allocation,
         ))
-    }
-}
-
-// Directory bindings must be walked; unrelated ordinary file records need not
-// be loaded just to discard them during a reverse namespace lookup.
-fn selected_entry(
-    entry: &crate::kernel::TreeEntry,
-    selected: Option<&[FileId]>,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<bool, FsError> {
-    if entry.kind == FileKind::Directory {
-        return Ok(true);
-    }
-    match selected {
-        None => Ok(true),
-        Some(ids) => binary_search_with_accounting(ids, accounting, |id| id.cmp(&entry.file_id))
-            .map(|position| position.is_ok()),
     }
 }
 

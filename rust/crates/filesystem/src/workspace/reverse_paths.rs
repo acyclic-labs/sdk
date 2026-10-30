@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
         crate::facade::measured(result, &accounting)
     }
 
-    /// Finds portable paths for multiple stable file identities in one namespace traversal.
+    /// Finds portable paths through each selected identity's authenticated parent edges.
     pub async fn paths_for_file_ids(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
@@ -101,11 +101,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
                 cancellation,
             )
             .await?;
-        let generation_root = self.id.object_id();
         let result = namespace_records_to_file_root_with_accounting(
             &self.workspace.volume,
             checkout.value.root(),
-            generation_root,
             ids,
             maximum_entries,
             accounting,
