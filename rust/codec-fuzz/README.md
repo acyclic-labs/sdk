@@ -6,14 +6,16 @@ target here does not register a scheduled check.
 | `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects and Streams, including session messages and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. |
 | `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
+| `session_protocol` | Actual session admission and dispatch, including arbitrary first Hello, typed version refusal before credentials, initial interests and request-producer closure. |
 | `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, memory and local snapshot containers, incarnations, retained retry observations, committed envelopes, semantic records, compressed read batches and change records. File and memory frame readers must agree. |
 | `object_persistence` | Manifests, stored HEAD envelopes, retained reference batches, incarnations and collection epochs. |
 | `ids` | Every ObjectId kind and GenerationId, with both 33-byte plain and 113-byte sealed encodings. |
 | `auth` | Canonical blocks, capabilities, caveats, typed grant unions and cryptographic capability verification using the SDK's deterministic test trust. |
 | `identities` | Resource identities and Actor references, with exact accepted-byte identity. |
-| `actor_codecs` | Durable Actor state, guest manifests/deliveries/transitions and timer records through their semantic decoders. |
-| `filesystem_codecs` | Authority and durable records, distributed state records, workspace context records and JSON join/control projections. |
+| `actor_codecs` | Durable Actor state, versioned guest manifests/deliveries/transitions, committed invocations, exact artifact checkpoint admission, private reservation request/decision/checkpoint codecs and timer records through their semantic decoders. |
+| `filesystem_codecs` | Authority and durable records, plain/sealed distributed state records, workspace context records, JSON join/control projections, funded private core-state JSON/checksum recovery and the portable Windows USN checkpoint codec. |
 | `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests and publication evidence. Immutable nodes use the production default decode limits. |
+| `machine_journal` | Retained Machine observations and operation envelopes through the shared journal decoder, with version admission before the JSON payload. |
 
 The protobuf oracle compares encoded fixed points, rather than Rust equality:
 valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
@@ -27,6 +29,12 @@ cargo run --example capture
 cargo run --example replay
 ```
 
+Capture compares current encoder output with the shared
+`compatibility/frames/golden.hex` baseline. It refuses an unreviewed byte change.
+After reviewing an intentional format change, run
+`cargo run --example capture -- --accept-goldens` to capture the new golden
+rows. Replay checks the existing corpus against that same shared lookup.
+
 The producer writes `corpus/SOURCES.tsv` with each path, length, SHA-256 and
 producing call. Protobuf seeds are emitted by each generated message's default
 encoder and carry an eight-byte little-endian decoder index. Journal facts and
@@ -39,11 +47,17 @@ it contains no account credential. These are SDK output captures, not hosted
 service traffic. Regenerate the complete protobuf corpus when schemas change,
 because the decoder indices can change.
 
+Capture also writes `corpus/resource-identity-v1.json` by applying the actual
+resource encoder to the shared cross-language vector inputs. Copy that output
+to `../crates/auth/tests/fixtures/resource-identity-v1.json` when admitting a new
+identity format; the shared tests only compare and never rewrite the fixture.
+
 With cargo-fuzz and its supported Rust toolchain installed, choose a target and
 an explicit run budget:
 
 ```sh
 cargo +nightly fuzz run session_frames -- -max_total_time=30
+cargo +nightly fuzz run session_protocol -- -max_total_time=30
 cargo +nightly fuzz run protobuf -- -max_total_time=30
 cargo +nightly fuzz run protobuf_json -- -max_total_time=30
 cargo +nightly fuzz run stream_persistence -- -max_total_time=30
@@ -54,6 +68,7 @@ cargo +nightly fuzz run identities -- -max_total_time=30
 cargo +nightly fuzz run actor_codecs -- -max_total_time=30
 cargo +nightly fuzz run filesystem_codecs -- -max_total_time=30
 cargo +nightly fuzz run filesystem_pages -- -max_total_time=30
+cargo +nightly fuzz run machine_journal -- -max_total_time=30
 ```
 
 The time budget belongs to the fuzz campaign. Targets impose no input-length

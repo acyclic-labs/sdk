@@ -9,10 +9,9 @@ fn identity(version: &str) -> CodecIdentity {
     }
 }
 
-fn codec(version: &str, readable: Vec<CodecIdentity>) -> CheckpointCodec<Vec<u8>> {
+fn codec(version: &str) -> CheckpointCodec<Vec<u8>> {
     CheckpointCodec {
         identity: identity(version),
-        readable,
         encode: |state| Ok(state.clone().into()),
         decode: |checkpoint| Ok(checkpoint.bytes.to_vec()),
     }
@@ -45,7 +44,7 @@ proptest! {
 
     #[test]
     fn artifact_codec_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
-        let codec = codec("1", vec![identity("1")]);
+        let codec = codec("1");
         let checkpoint = Checkpoint { codec: codec.identity.clone(), bytes: (codec.encode)(&bytes)? };
         let wire = serde_json::to_vec(&checkpoint)?;
         let decoded: Checkpoint = serde_json::from_slice(&wire)?;
@@ -63,9 +62,8 @@ proptest! {
             checkpoint: Some(Checkpoint { codec: identity("1"), bytes: bytes.into() }),
         };
         let prior = installed.clone();
-        let mut candidate = codec("2", vec![identity("2")]);
+        let mut candidate = codec(if decoder_fails { "1" } else { "2" });
         if decoder_fails {
-            candidate.readable.push(identity("1"));
             candidate.decode = |_| Err(GuestError::Decode("bad state".into()));
         }
         prop_assert!(installed.update(configuration.wrapping_add(1), vec![], &candidate).is_err());
@@ -73,14 +71,14 @@ proptest! {
     }
 
     #[test]
-    fn compatible_update_decodes_prior_format_without_rewriting_checkpoint(
+    fn same_format_update_preserves_checkpoint_bytes(
         bytes in prop::collection::vec(any::<u8>(), 0..512),
     ) {
         let checkpoint = Checkpoint { codec: identity("1"), bytes: bytes.clone().into() };
         let mut installed = GuestInstallation {
             configuration: "old", subscriptions: vec![1], checkpoint: Some(checkpoint.clone()),
         };
-        let candidate = codec("2", vec![identity("1"), identity("2")]);
+        let candidate = codec("1");
         prop_assert_eq!(installed.update("new", vec![2], &candidate)?, Some(bytes));
         prop_assert_eq!(installed.configuration, "new");
         prop_assert_eq!(installed.subscriptions, vec![2]);
@@ -327,12 +325,12 @@ fn fuzz_seed_corpus_round_trips_accepted_inputs() -> Result<(), Box<dyn std::err
 
 #[test]
 fn absent_checkpoint_still_requires_valid_codec_and_never_calls_decoder() {
-    let mut candidate = codec("1", vec![]);
+    let mut candidate = codec("");
     assert_eq!(
         prepare_update(None, &candidate),
         Err(GuestError::IncompatibleCodec)
     );
-    candidate.readable.push(identity("1"));
+    candidate.identity = identity("1");
     candidate.decode = |_| {
         Err(GuestError::Decode(
             "absent checkpoint must not be decoded".into(),
@@ -341,6 +339,22 @@ fn absent_checkpoint_still_requires_valid_codec_and_never_calls_decoder() {
     assert_eq!(prepare_update(None, &candidate), Ok(None));
     assert!(retry_key("", "effect").is_err());
     assert!(retry_key("delivery", "").is_err());
+}
+
+#[test]
+fn another_checkpoint_format_never_reaches_artifact_decoder() {
+    let mut candidate = codec("1");
+    candidate.decode = |_| panic!("refused version reached artifact decoder");
+    for version in ["0", "2", "unknown"] {
+        let checkpoint = Checkpoint {
+            codec: identity(version),
+            bytes: Default::default(),
+        };
+        assert_eq!(
+            prepare_update(Some(&checkpoint), &candidate),
+            Err(GuestError::IncompatibleCodec)
+        );
+    }
 }
 
 #[test]

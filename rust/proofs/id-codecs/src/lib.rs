@@ -2,6 +2,32 @@
 #[cfg(kani)]
 mod version {
     #[kani::proof]
+    #[kani::unwind(64)]
+    fn bounded_resource_pairs_round_trip_and_refuse_other_versions() {
+        use acyclic_auth::addressing::{IdentityError, ResourceIdentity};
+        let account: [u8; 4] = kani::any();
+        let id: [u8; 4] = kani::any();
+        let value = ResourceIdentity::new(&account, &id).unwrap();
+        let encoded = value.encode();
+        assert_eq!(ResourceIdentity::decode(&encoded), Ok(value));
+        let mut old = encoded.clone();
+        // The final header byte precedes two fixed-length fields.
+        let version = encoded.len() - (8 + account.len() + 8 + id.len()) - 1;
+        let other: u8 = kani::any();
+        kani::assume(other != 1);
+        old[version] = other;
+        old.truncate(version + 1);
+        assert_eq!(
+            ResourceIdentity::decode(&old),
+            Err(IdentityError::UnsupportedVersion)
+        );
+        assert_eq!(
+            ResourceIdentity::decode(&encoded[version + 1..]),
+            Err(IdentityError::UnsupportedVersion)
+        );
+    }
+
+    #[kani::proof]
     #[kani::unwind(16)]
     fn version_admission_borrows_payload_and_refuses_before_decoding() {
         use acyclic_stream::{StreamError, persistence::header};

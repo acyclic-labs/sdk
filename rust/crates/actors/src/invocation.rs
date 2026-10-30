@@ -108,7 +108,7 @@ impl Invocation {
             return Ok(None);
         };
         if attributes.get(index).ok_or_else(invalid)?.value.as_ref() != VERSION {
-            return Err(invalid());
+            return Err(GuestError::UnsupportedFormat);
         }
         let wire = RequestWire::decode(record.value.as_ref()).map_err(|_| invalid())?;
         if wire.encode_to_vec().as_slice() != record.value.as_ref() {

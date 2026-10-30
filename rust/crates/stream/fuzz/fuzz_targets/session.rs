@@ -1,14 +1,11 @@
 #![no_main]
 
 use acyclic_stream::{
-    MemoryStream, session, wire,
+    wire,
     wire_codec::session::{consume_credit, grant_credit},
 };
-use bytes::Bytes;
-use futures::{StreamExt, stream};
 use libfuzzer_sys::fuzz_target;
 use prost::Message;
-use std::sync::Arc;
 
 mod checks {
     include!(concat!(
@@ -18,9 +15,6 @@ mod checks {
 }
 
 fuzz_target!(|input: &[u8]| {
-    if input.len() > 4096 {
-        return;
-    }
     checks::exercise(
         u64::from(input.first().copied().unwrap_or(0)),
         u16::from(input.get(1).copied().unwrap_or(0)),
@@ -58,27 +52,5 @@ fuzz_target!(|input: &[u8]| {
             assert_eq!(credit, before);
         }
     }
-    let hello = wire::SessionFrame {
-        body: Some(wire::session_frame::Body::Hello(wire::SessionHello {
-            interest: None,
-            credentials: vec![session::testing::credential()],
-            version: acyclic_stream::session::VERSION,
-            client_id: Bytes::from_static(b"fuzz"),
-            destination_node: "node".into(),
-            receive_bytes: 1024,
-            receive_frames: 2,
-        })),
-        ..Default::default()
-    };
-    // Finite input guarantees termination even for a valid live subscription.
-    let incoming = stream::iter([Ok(hello), Ok(frame)]).boxed();
-    if let Ok(output) = session::serve(
-        Arc::new(MemoryStream::default()),
-        session::testing::authority(),
-        "node".into(),
-        session::Limits::default(),
-        incoming,
-    ) {
-        futures::executor::block_on(output.collect::<Vec<_>>());
-    }
+    assert!(acyclic_stream::codec_fuzz::session(input));
 });

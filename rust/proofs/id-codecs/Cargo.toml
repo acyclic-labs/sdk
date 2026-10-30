@@ -7,6 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+acyclic-auth = { path = "../../crates/auth" }
 acyclic-fs = { path = "../../crates/filesystem", default-features = false }
 acyclic-objects = { path = "../../crates/objects", default-features = false }
 acyclic-stream = { path = "../../crates/stream", default-features = false }

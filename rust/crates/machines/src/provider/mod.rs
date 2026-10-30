@@ -154,3 +154,8 @@ pub(crate) mod admitted;
 pub(crate) mod deadline;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) mod journal;
+#[cfg(all(
+    any(feature = "local", feature = "test-support"),
+    not(target_arch = "wasm32")
+))]
+pub(crate) mod journal_codec;

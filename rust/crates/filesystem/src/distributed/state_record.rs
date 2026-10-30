@@ -111,7 +111,10 @@ impl StateRecord {
     pub fn decode(bytes: Bytes) -> Result<RecordedState, crate::AuthorityStoreError> {
         let corrupt =
             || crate::AuthorityStoreError::CorruptStatic("invalid filesystem state record");
-        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES || !bytes.starts_with(DOMAIN) {
+        acyclic_auth::format::header(&bytes, b"acyclic-fs-state-v", b"1\0", corrupt, || {
+            crate::AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unsupported)
+        })?;
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
             return Err(corrupt());
         }
         let key_start = DOMAIN.len() + 2;
@@ -182,6 +185,91 @@ impl StateRecord {
             published_at,
             state,
         })
+    }
+}
+
+#[cfg(feature = "test-support")]
+/// Production state-record encoder and decoder entry points for on-demand checks.
+pub mod codec_fuzz {
+    use super::*;
+
+    /// Accepted state records have one exact encoding, including the complete ID.
+    pub fn check(bytes: &[u8]) -> bool {
+        let Ok(value) = StateRecord::decode(bytes::Bytes::copy_from_slice(bytes).into()) else {
+            return true;
+        };
+        let cancellation = crate::CancellationToken::new();
+        let mut work = crate::AuthorityWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        work.encode_state(&value.state, &value.operation)
+            .is_ok_and(|encoded| encoded.as_ref() == bytes)
+    }
+
+    /// Capture plain and sealed roots and every companion tag with the real writer.
+    pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, crate::AuthorityStoreError> {
+        let cancellation = crate::CancellationToken::new();
+        let mut work = crate::AuthorityWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        let operation = acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(b"codec"))?;
+        let mut seeds = Vec::new();
+        for sealed in [false, true] {
+            let root_file_id = FileId::from_bytes([1; 16]);
+            let record = StateRecord::Volume {
+                root: PortableRoot {
+                    root_file_id,
+                    file_table: ObjectId {
+                        kind: ObjectKind::FileTablePage,
+                        digest: crate::Digest::from_bytes([2; 32]),
+                        storage: sealed.then_some(crate::ObjectStorage {
+                            locator: crate::Digest::from_bytes([3; 32]),
+                            root_file_id,
+                            origin_generation: crate::Digest::from_bytes([4; 32]),
+                        }),
+                    },
+                },
+                companion: Bytes::default(),
+            };
+            seeds.push((
+                format!("state-root-{sealed}"),
+                work.encode_state(&record, &operation)?.to_vec(),
+            ));
+        }
+        for (name, kind) in [
+            ("state-context", CompanionKind::WorkspaceContext),
+            ("state-sparse", CompanionKind::SparseWorkspace),
+            ("state-refs", CompanionKind::GitRefs),
+            ("state-outcome", CompanionKind::OperationOutcome),
+        ] {
+            let record = StateRecord::Companion {
+                kind,
+                payload: Bytes::default(),
+            };
+            seeds.push((
+                name.into(),
+                work.encode_state(&record, &operation)?.to_vec(),
+            ));
+        }
+        Ok(seeds)
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    #[test]
+    fn unsupported_state_version_precedes_body_decode() {
+        for version in [b'0', b'2', u8::MAX] {
+            let mut header = DOMAIN.to_vec();
+            header[DOMAIN.len() - 2] = version;
+            assert!(matches!(
+                StateRecord::decode(bytes::Bytes::from(header).into()),
+                Err(crate::AuthorityStoreError::NativeStream(
+                    acyclic_stream::StreamError::Unsupported
+                ))
+            ));
+        }
+        assert!(matches!(
+            StateRecord::decode(bytes::Bytes::from_static(DOMAIN).into()),
+            Err(crate::AuthorityStoreError::CorruptStatic(_))
+        ));
     }
 }
 

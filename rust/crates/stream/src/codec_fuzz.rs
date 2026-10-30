@@ -2,6 +2,75 @@
 use crate::{StreamError, persistence};
 use prost::Message as _;
 
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
+fn session_admission() -> crate::wire::SessionFrame {
+    static CREDENTIAL: std::sync::OnceLock<bytes::Bytes> = std::sync::OnceLock::new();
+    crate::wire::SessionFrame {
+        body: Some(crate::wire::session_frame::Body::Hello(
+            crate::wire::SessionHello {
+                version: crate::session::VERSION,
+                client_id: bytes::Bytes::from_static(b"codec"),
+                destination_node: "node".into(),
+                receive_bytes: 1024,
+                receive_frames: 2,
+                credentials: vec![
+                    CREDENTIAL
+                        .get_or_init(crate::session::testing::credential)
+                        .clone(),
+                ],
+                interest: Some(crate::wire::SessionInterest {
+                    revision: 1,
+                    ..Default::default()
+                }),
+            },
+        )),
+        ..Default::default()
+    }
+}
+
+/// Actual SessionHello output, using deterministic public test credentials.
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
+pub fn session_seed() -> Vec<u8> {
+    session_admission().encode_to_vec()
+}
+
+/// Exercise the real session admission and dispatcher with finite input.
+///
+/// An arbitrary Hello is the first request, so version and credential refusals
+/// cannot be hidden behind successful admission. Other frames follow a real
+/// Hello. Closing the request producer must end every source without a timer.
+#[cfg(all(feature = "session", not(target_arch = "wasm32")))]
+pub fn session(bytes: &[u8]) -> bool {
+    use crate::{MemoryStream, session, wire::session_frame::Body};
+    use futures::{StreamExt as _, stream};
+    let Ok(frame) = crate::wire::SessionFrame::decode(bytes) else {
+        return true;
+    };
+    let version = match &frame.body {
+        Some(Body::Hello(hello)) => Some(hello.version),
+        _ => None,
+    };
+    let input = if version.is_some() {
+        vec![Ok(frame)]
+    } else {
+        vec![Ok(session_admission()), Ok(frame)]
+    };
+    let Ok(output) = session::serve(
+        std::sync::Arc::new(MemoryStream::default()),
+        session::testing::authority(),
+        "node".into(),
+        session::Limits::default(),
+        stream::iter(input).boxed(),
+    ) else {
+        return false;
+    };
+    let output = futures::executor::block_on(output.collect::<Vec<_>>());
+    if version.is_some_and(|version| version != session::VERSION) {
+        return output.len() == 1 && output.first() == Some(&Err(StreamError::Unsupported));
+    }
+    true
+}
+
 /// Exercise canonical journal commands and immutable retained facts.
 pub fn check(bytes: &[u8]) -> bool {
     #[cfg(feature = "local")]

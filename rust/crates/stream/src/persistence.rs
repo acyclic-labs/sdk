@@ -22,11 +22,13 @@ pub fn header<'a>(
     domain: &[u8],
     version: &[u8],
 ) -> Result<&'a [u8], StreamError> {
-    encoded
-        .strip_prefix(domain)
-        .ok_or(StreamError::InvalidArgument)?
-        .strip_prefix(version)
-        .ok_or(StreamError::Unsupported)
+    acyclic_auth::format::header(
+        encoded,
+        domain,
+        version,
+        || StreamError::InvalidArgument,
+        || StreamError::Unsupported,
+    )
 }
 
 /// Encodes a complete terminal retry observation, including conflict outcomes.
