@@ -4,7 +4,13 @@ use crate::{OperationId, mcp::rpc, wire::ErrorCode};
 use bytes::Bytes;
 use serde_json::Value;
 
-fn parse(input: &[u8], width: usize, media: &str, maximum: u32) -> Result<Value, ErrorCode> {
+fn parse(
+    input: &[u8],
+    width: usize,
+    media: &str,
+    maximum: u32,
+    operation: OperationId,
+) -> Result<Value, ErrorCode> {
     let body = futures::stream::unfold(
         Bytes::copy_from_slice(input),
         move |mut remaining| async move {
@@ -21,13 +27,23 @@ fn parse(input: &[u8], width: usize, media: &str, maximum: u32) -> Result<Value,
         headers: [("content-type".into(), media.into())].into(),
         body: Box::pin(body),
     };
-    futures::executor::block_on(response::decode(
-        response,
-        OperationId::from_bytes([7; 16]),
-        maximum,
-        None,
-    ))
-    .map_err(|error| error.code())
+    futures::executor::block_on(response::decode(response, operation, maximum, None))
+        .map_err(|error| error.code())
+}
+
+/// Require positive admission of an actual captured response, rather than only
+/// comparing equivalent refusals across chunk partitions.
+pub fn admit(
+    input: &[u8],
+    media: &str,
+    operation: OperationId,
+    initialization: bool,
+) -> Result<Value, ErrorCode> {
+    let result = parse(input, input.len().max(1), media, u32::MAX, operation)?;
+    if initialization {
+        rpc::initialization(&result, None).map_err(|error| error.code())?;
+    }
+    Ok(result)
 }
 
 /// Chunking cannot change a decoded result or its typed refusal. The finite
@@ -35,9 +51,10 @@ fn parse(input: &[u8], width: usize, media: &str, maximum: u32) -> Result<Value,
 pub fn check(input: &[u8]) {
     for media in ["application/json", "text/event-stream"] {
         for maximum in [0, 1, u32::MAX] {
-            let whole = parse(input, input.len().max(1), media, maximum);
+            let operation = OperationId::from_bytes([7; 16]);
+            let whole = parse(input, input.len().max(1), media, maximum, operation);
             for width in [1, 17, 127] {
-                assert_eq!(whole, parse(input, width, media, maximum));
+                assert_eq!(whole, parse(input, width, media, maximum, operation));
             }
         }
     }

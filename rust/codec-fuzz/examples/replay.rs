@@ -1,8 +1,46 @@
 //! Replay captured inputs and check their recorded provenance.
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeSet, error::Error, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    path::Path,
+};
+
+fn external_expectations() -> Result<BTreeMap<String, (String, String)>, Box<dyn Error>> {
+    let mut expectations = BTreeMap::new();
+    for entry in std::fs::read_dir("captures")? {
+        let path = entry?.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        for output in metadata
+            .get("outputs")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("capture metadata has no output expectations")?
+        {
+            let field = |name| {
+                output
+                    .get(name)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or("incomplete external capture expectation")
+            };
+            if expectations
+                .insert(
+                    field("path")?.to_owned(),
+                    (field("codec")?.to_owned(), field("method")?.to_owned()),
+                )
+                .is_some()
+            {
+                return Err("duplicate external capture expectation".into());
+            }
+        }
+    }
+    Ok(expectations)
+}
 
 fn replay() -> Result<usize, Box<dyn Error>> {
+    let mut expectations = external_expectations()?;
     let sources = [
         ("corpus", std::fs::read_to_string("corpus/SOURCES.tsv")?),
         ("external", std::fs::read_to_string("corpus/EXTERNAL.tsv")?),
@@ -32,7 +70,23 @@ fn replay() -> Result<usize, Box<dyn Error>> {
             if bytes != golden {
                 return Err(format!("captured bytes differ from shared golden: {name}").into());
             }
-            match std::panic::catch_unwind(|| acyclic_codec_fuzz::exercise(target, &bytes)) {
+            let expectation = if *prefix == "external" {
+                Some(
+                    expectations
+                        .remove(*name)
+                        .ok_or("external seed has no admission expectation")?,
+                )
+            } else {
+                None
+            };
+            match std::panic::catch_unwind(|| {
+                acyclic_codec_fuzz::exercise(target, &bytes)?;
+                if let Some((codec, method)) = &expectation {
+                    acyclic_codec_fuzz::admit_external(codec, method, &bytes)
+                        .map_err(|error| format!("positive external admission {name}: {error}"))?;
+                }
+                Ok::<(), String>(())
+            }) {
                 Ok(result) => result?,
                 Err(_) => {
                     return Err(format!(
@@ -42,6 +96,9 @@ fn replay() -> Result<usize, Box<dyn Error>> {
             }
             count += 1;
         }
+    }
+    if !expectations.is_empty() {
+        return Err("external expectations have no captured input".into());
     }
     if count == 0 {
         return Err("captured corpus is empty".into());

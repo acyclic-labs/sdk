@@ -48,13 +48,21 @@ it contains no account credential. These are SDK output captures, not hosted
 service traffic. Regenerate the complete protobuf corpus when schemas change,
 because the decoder indices can change.
 
-`corpus/EXTERNAL.tsv` separately records exact output from the published
-`@modelcontextprotocol/server-filesystem@2.1.0` server. Its complete stdio
-initialization/discovery transcript exercises the finite exchange; its unchanged
-`tools/list` response also exercises the JSON response decoder. These bytes were
-captured from the server process. They are not an HTTP or SSE transport capture.
-The request transcript and capture metadata, including all installed package
-versions and integrity values, live in `captures/`.
+`corpus/EXTERNAL.tsv` separately records exact output from published
+`@modelcontextprotocol/server-filesystem@2.1.0` and
+`@modelcontextprotocol/server-everything@2.1.0` processes. The stdio discovery
+transcripts exercise the finite exchange. The reference server also supplies
+all seven resource, prompt and tool result shapes, an actual sampling callback
+request followed by the client's explicit refusal, and eight HTTP/SSE bodies
+including initialization. No model request runs. HTTP bodies retain their
+original event IDs and empty priming events.
+
+Request transcripts, full reference-server stdout and capture metadata,
+including installed dependency identities and HTTP status/headers, live in
+`captures/`. Each indexed output records its expected codec and method. Replay
+requires actual successful transport and service or callback admission for these
+positive inputs; equivalent decoder refusals cannot qualify them. The sampling
+tool's error result is an admitted protocol result, not a successful model call.
 
 To recapture with Node.js 24 or later, install the published package in a
 temporary directory and pass its package directory to the capture tool:
@@ -62,14 +70,20 @@ temporary directory and pass its package directory to the capture tool:
 ```sh
 npm install --prefix /tmp/mcp-capture --ignore-scripts --no-audit --no-fund --save-exact @modelcontextprotocol/server-filesystem@2.1.0
 node capture-mcp.mjs /tmp/mcp-capture/node_modules/@modelcontextprotocol/server-filesystem
+npm install --prefix /tmp/mcp-services --ignore-scripts --no-audit --no-fund --save-exact @modelcontextprotocol/server-everything@2.1.0
+node capture-mcp.mjs /tmp/mcp-services/node_modules/@modelcontextprotocol/server-everything stdio
+node capture-mcp.mjs /tmp/mcp-services/node_modules/@modelcontextprotocol/server-everything http
 cargo run --example replay
 ```
 
-The tool only initializes and lists tools, using an empty temporary directory;
-it performs no remote tool call. It waits on stdout and process EOF without
-polling. Early EOF or a failed producer refuses the capture. Review any changed
-external bytes against the installed versions before updating their `external/`
-rows in the shared golden file. SDK encoder capture preserves these rows.
+Filesystem discovery uses an empty temporary directory. The reference-server
+capture reads a document advertised by its resource catalog, gets its static
+prompt and calls its echo tool. HTTP uses the published application over an
+ephemeral loopback listener. Listening, stdout and EOF are events; early EOF or
+producer failure refuses capture. Review changed external bytes against the
+installed versions before updating their `external/` golden rows. Event IDs and
+HTTP dates can change on recapture; no output is normalized. SDK encoder capture
+preserves the external golden rows.
 
 Capture also writes `corpus/resource-identity-v1.json` by applying the actual
 resource encoder to the shared cross-language vector inputs. Copy that output
