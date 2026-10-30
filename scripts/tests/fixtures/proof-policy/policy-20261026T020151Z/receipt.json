@@ -12,7 +12,7 @@
       "exit": 0,
       "seconds": 1.172000000020489,
       "selected": 11,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T020151Z\\positive.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "4b66ff1dfdd696d24c6c26729bb3e9fc4b9526bf1eb9469784cb391a7bd6397a",
       "checker_sha256": "14f98def8c08b46a73d7c152bb7c40402c4523c4e9a930094b77f3af490bf912"
     },
@@ -25,7 +25,7 @@
       "exit": 1,
       "seconds": 0.875,
       "selected": 11,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T020151Z\\omit-exact-witness-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "319c5b22013c8b1ab49735a2ca3cebc79578d754c28a03dc78b12fa9207b1540",
       "checker_sha256": "ba46c79eea2320b0138c28d3251ceb152badecf16194d9bb7c2ab2332e0c11cb"
     },
@@ -38,7 +38,7 @@
       "exit": 1,
       "seconds": 0.9059999999590218,
       "selected": 11,
-      "log": "Q:\\lanes\\verify\\evidence\\wave1\\policy-20261026T020151Z\\omit-node-artifact-check.log",
+      "log": "[private-metadata-removed]",
       "log_sha256": "72d150157c54549007292169ab2f15f9d8dae335c07deef81c5e112e5c505d1f",
       "checker_sha256": "0092f50c3eee375c517af97909aeac3763a14752a3795cf34866c0cf04c4ef93"
     }

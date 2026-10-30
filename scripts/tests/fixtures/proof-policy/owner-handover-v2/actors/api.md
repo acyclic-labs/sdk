@@ -36,7 +36,7 @@ The exact constructor/signatures will be pinned as code lands. The existing doma
 
 ## Proof plan and current delta
 
-Public provider-generic histories run against memory, durable-local and arbitrary endpoints. Crash-cut histories assert the checkpoint/cursor/alarm tuple; takeover and generation histories reject old owners/alarms. Actual negative controls split the atomic transition, omit epoch/generation fencing, and remove register/recheck. Runtime resource counters cover dormant populations through100000 actors. All selected suites must finish under10s; every new bb2 job is affected-crate-only and under600s. No current positive/negative receipt or signed A4 source pin exists yet; the next measurable checkpoint is the public types plus transactional storage oracle on memory/local providers. A proof-ready/merge ETA is not supportable before that checkpoint and the hosted/Streams dependency review.
+Public provider-generic histories run against memory, durable-local and arbitrary endpoints. Crash-cut histories assert the checkpoint/cursor/alarm tuple; takeover and generation histories reject old owners/alarms. Actual negative controls split the atomic transition, omit epoch/generation fencing, and remove register/recheck. Runtime resource counters cover dormant populations through100000 actors. All selected suites must finish under10s; every new Linux job is affected-crate-only and under600s. No current positive/negative receipt or signed A4 source pin exists yet; the next measurable checkpoint is the public types plus transactional storage oracle on memory/local providers. A proof-ready/merge ETA is not supportable before that checkpoint and the hosted/Streams dependency review.
 
 ## Deletes and ownership
 

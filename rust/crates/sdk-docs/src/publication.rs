@@ -74,15 +74,6 @@ pub(super) fn write_bundle_inner(
     let data_bytes = serde_json::to_vec_pretty(data)?;
     let digest = sha256_hex(&data_bytes);
     let data_path = output_dir.join(&data_file);
-    if data_path.exists() {
-        let existing = fs::read(&data_path)?;
-        if sha256_hex(&existing) != digest {
-            return Err(Error::Invalid(format!(
-                "refusing to rewrite {} with different data",
-                data_path.display()
-            )));
-        }
-    }
     let entry = VersionEntry {
         captured_source: data.source.captured_source.clone(),
         publication_status: data.source.publication_status.clone(),
@@ -93,7 +84,7 @@ pub(super) fn write_bundle_inner(
         data_file,
         data_sha256: digest,
     };
-    let updated_index = merge_version_index(index, &entry, output_dir, mark_latest)?;
+    let updated_index = merge_version_index(index, &entry, mark_latest)?;
     validate_latest_release(&updated_index)?;
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;

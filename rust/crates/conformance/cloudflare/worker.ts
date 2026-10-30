@@ -1,4 +1,7 @@
+import { ModelLifecycle, modelObservations } from "../fixtures/model-lifecycle.js";
 import { DurableObject } from "cloudflare:workers";
+export { Actor, Actors } from "./actors.js";
+import type { Actor, Actors } from "./actors.js";
 import { initSync, qualifyCloudflare, qualifyCloudflareRpc, qualifyJournalDeadline, appendWakeRecord, spawnAdoptionFixture,
   hostFixtureGrants, hostFixtureTrust, hostFixtureCredential, hostFixtureModelEvents, hostFixtureTool } from "./generated/acyclic_cloudflare_conformance.js";
 import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
@@ -87,15 +90,13 @@ export class Agent extends DurableObject {
   private failAlarmClear = false;
   private retainedRecoveryAlarm = false;
   private grants = hostFixtureGrants();
-  private readonly timeout = { started: false, aborted: false };
-  private readonly started = Promise.withResolvers<void>();
+  private readonly lifecycle = new ModelLifecycle();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.blockConcurrencyWhile(async () => {
       this.grants = await this.ctx.storage.get("fixture-grants") ?? this.grants;
     });
-    const timeout = this.timeout;
-    const started = this.started;
+    const lifecycle = this.lifecycle;
     const hangs = ctx.id.name === "timeout" || ctx.id.name === "cancel";
     const protocol = ctx.id.name?.startsWith("protocol-");
     if (protocol) this.registry.registerTool(hostFixtureTool(),
@@ -104,10 +105,9 @@ export class Agent extends DurableObject {
     this.registry.configureModel({ provider: "conformance", name: "scripted", revision: "1", options: {} },
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
-          timeout.started = true;
-          started.resolve();
+          lifecycle.started();
           await new Promise<void>(resolve => {
-            const aborted = () => { timeout.aborted = true; resolve(); };
+            const aborted = () => { lifecycle.aborted(); resolve(); };
             if (signal.aborted) aborted();
             else signal.addEventListener("abort", aborted, { once: true });
           });
@@ -171,14 +171,15 @@ export class Agent extends DurableObject {
   read(stream: "inbox" | "conversation" | "status") { return this.host().read(stream); }
   pause(paused: boolean) { return this.host().pause(paused); }
   cancel(intent: string) { return this.host().cancel(intent); }
-  timeoutState() { return this.timeout; }
-  waitStarted() { return this.started.promise; }
+  observeModel() { return this.lifecycle.observe(); }
   readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
   wake() { return this.host().wake(); }
   alarm() { return this.host().wake(); }
 }
 
 interface Env {
+  ACTORS: DurableObjectNamespace<Actors>;
+  ACTOR: DurableObjectNamespace<Actor>;
   SUITE: DurableObjectNamespace<Suite>;
   LEDGER: DurableObjectNamespace<Ledger>;
   AGENT: DurableObjectNamespace<Agent>;
@@ -253,6 +254,11 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/actors") {
+      const verified = await env.ACTORS.getByName(crypto.randomUUID()).run(false);
+      const measured = await env.ACTORS.getByName(crypto.randomUUID()).run(true);
+      return Response.json({ actors: "passed", verified, measured });
+    }
     if (new URL(request.url).pathname === "/alarm-recovery") {
       const agent = env.AGENT.getByName("alarm-recovery");
       await agent.create("alarm-root", "Reply once after committing this prompt");
@@ -390,25 +396,32 @@ export default {
       const agent = env.AGENT.getByName("cancel");
       const creation = agent.create("cancel-root", "Wait for an inbox cancellation").then(
         value => ({ value }), error => ({ error: String(error) }));
-      await Promise.race([agent.waitStarted(), creation.then(outcome => {
-        throw new Error(`STEP guest-cancel start failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
-      })]);
-      await agent.cancel("cancel-running-guest");
-      const outcome = await creation;
-      if ("error" in outcome || !(await agent.timeoutState()).aborted) {
-        throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
-      }
+      const observations = modelObservations(await agent.observeModel());
+      try {
+        if ((await observations.next()).value !== "started") {
+          throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
+        }
+        const [outcome, aborted] = await Promise.all([
+          creation, observations.next(), agent.cancel("cancel-running-guest"),
+        ]);
+        if ("error" in outcome || aborted.value !== "aborted") {
+          throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
+        }
+      } finally { await observations.return(); }
       return Response.json({ cancel: "aborted running guest through its committed inbox" });
     }
     if (new URL(request.url).pathname === "/timeout") {
       const agent = env.AGENT.getByName("timeout");
+      const observations = modelObservations(await agent.observeModel());
       let failed = false;
-      try { await agent.create("timeout-root", "Wait until the host aborts this guest"); }
-      catch { failed = true; }
-      const state = await agent.timeoutState();
-      if (!failed || !state.started || !state.aborted || (await agent.read("conversation")).length !== 0) {
-        throw new Error("STEP guest-timeout abort failed; recovery: bash scripts/qualify-cloudflare.sh");
-      }
+      try {
+        try { await agent.create("timeout-root", "Wait until the host aborts this guest"); }
+        catch { failed = true; }
+        if (!failed || (await observations.next()).value !== "started"
+          || (await observations.next()).value !== "aborted" || (await agent.read("conversation")).length !== 0) {
+          throw new Error("STEP guest-timeout abort failed; recovery: bash scripts/qualify-cloudflare.sh");
+        }
+      } finally { await observations.return(); }
       await agent.pause(true);
       return Response.json({ timeout: "aborted", input: "unconsumed" });
     }

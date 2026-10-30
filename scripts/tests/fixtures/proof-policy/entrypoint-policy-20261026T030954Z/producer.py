@@ -9,8 +9,8 @@ import tempfile
 import time
 from datetime import datetime, timezone
 
-ROOT = Path('Q:/worktrees/redesign-verify')
-RECOVERY = 'python Q:/lanes/verify/qualify_entrypoint_policy.py'
+ROOT = Path('[private-metadata-removed]')
+RECOVERY = 'python [private-path-removed]'
 step = 'export_inputs'
 
 
@@ -24,7 +24,7 @@ try:
         staged = subprocess.check_output(['git', 'show', ':' + name], cwd=ROOT)
         if staged != (ROOT / name).read_bytes():
             raise ValueError('working/index byte mismatch; normalize and stage exact input before qualification: ' + name)
-    records = Path('Q:/lanes/verify/evidence/wave1') / ('entrypoint-policy-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
+    records = Path('[private-path-removed]') / ('entrypoint-policy-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'))
     records.mkdir()
     shutil.copyfile(__file__, records / 'producer.py')
     selected = [path.relative_to(ROOT).as_posix() for path in (ROOT / 'docs/proofs').rglob('*') if path.is_file()]

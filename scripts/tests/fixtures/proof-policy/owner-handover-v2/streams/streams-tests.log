@@ -4,7 +4,7 @@ rust/crates/stream/tests/wave1_recovery.rs:1:1: warning: missing documentation f
 warning: `acyclic-stream` (test "wave1_recovery") generated 1 warning
 warning: `acyclic-stream` (lib test) generated 1 warning
     Finished `test` profile [optimized + debuginfo] target(s) in 38.15s
-     Running unittests src/lib.rs (/home/var/targets/cx-streams/debug/deps/acyclic_stream-235511752c8ea4fa)
+     Running unittests src/lib.rs ([private-path-removed])
 
 running 375 tests
 test changes::native::tests::every_native_allocation_denial_retires_completed_storage ... ok
@@ -385,7 +385,7 @@ test session::tests::queue_scaling::credited_tail_selection_visits_one_head_inde
 
 test result: ok. 375 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.45s
 
-     Running tests/wave1_keys.rs (/home/var/targets/cx-streams/debug/deps/wave1_keys-24bf8a80fb2a2190)
+     Running tests/wave1_keys.rs ([private-path-removed])
 
 running 10 tests
 test memory_absent_zero_tail ... ok
@@ -401,7 +401,7 @@ test local_subtree_fork ... ok
 
 test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
 
-     Running tests/wave1_recovery.rs (/home/var/targets/cx-streams/debug/deps/wave1_recovery-2ab7b517ca8e3470)
+     Running tests/wave1_recovery.rs ([private-path-removed])
 
 running 1 test
 test subtree_and_success_keys_survive_journal_and_snapshot_recovery ... ok

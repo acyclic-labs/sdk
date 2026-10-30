@@ -7,8 +7,6 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [features]
 default = ["test-support"]
 test-support = []
@@ -32,3 +30,6 @@ path = "fuzz_targets/metadata_output.rs"
 test = false
 doc = false
 bench = false
+
+# Retain the pinned documentation and generator dependency graph.
+[workspace]

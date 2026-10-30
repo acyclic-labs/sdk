@@ -116,8 +116,7 @@ pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
 pub struct Measurement {
     /// Successfully appended, read and followed records.
     pub records: usize,
-    /// Elapsed wall-clock time at millisecond resolution; native runners can
-    /// additionally time this invocation with a monotonic clock.
+    /// Monotonic elapsed time through the final checked record.
     pub elapsed: std::time::Duration,
     /// Calls after initial path creation and follow setup.
     pub requests: Requests,
@@ -166,9 +165,7 @@ async fn workload(
             .await?,
     );
     budget("follow open", before, &ledger)?;
-    let before = ledger.requests();
-    let clock = crate::SystemUnixMillisClock;
-    let started = clock.now_unix_millis();
+    let sample = ledger.start_sample();
     let value = OwnedBytes::from(vec![0x5a; 4096]);
     for index in 0..rounds {
         let sequence = index as u64 + 1;
@@ -219,9 +216,10 @@ async fn workload(
             return Err(Failure::Invariant("read and follow disagreed"));
         }
     }
+    let sample = sample.finish();
     Ok(Measurement {
         records: rounds,
-        elapsed: std::time::Duration::from_millis(clock.now_unix_millis().saturating_sub(started)),
-        requests: ledger.requests().since(before),
+        elapsed: sample.elapsed,
+        requests: sample.requests,
     })
 }

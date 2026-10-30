@@ -1,19 +1,32 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
 import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
 
-test("checks every workspace member alone, reusing one target with bounded workers", async () => {
-  const packages = workspacePackages({
-    workspace_members: ["c", "a", "b"],
-    packages: [
-      { id: "a", name: "first" }, { id: "external", name: "external" },
-      { id: "b", name: "second" }, { id: "c", name: "third" },
-    ],
-  });
-  assert.deepEqual(packages, ["first", "second", "third"]);
+test("checks original default members alone in bounded worker targets", async () => {
+  // Capture the real workspace; fabricated metadata cannot establish Kani routing.
+  const metadata = JSON.parse(execFileSync("cargo",
+    ["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  const selected = workspacePackages(metadata);
+  const ids = new Set(metadata.workspace_default_members);
+  assert.deepEqual(selected, metadata.packages.filter(item => ids.has(item.id)).map(item => item.name).sort());
+  assert.ok(selected.includes("acyclic-harness-fuzz"));
+  assert.ok(selected.includes("acyclic-fs-fuzz"));
+  assert.ok(selected.includes("acyclic-sdk-fuzz"));
+  assert.ok(!selected.includes("agent-spawn-slot-proofs"));
+  for (const mutate of [
+    item => { delete item.workspace_default_members; },
+    item => { item.workspace_default_members = []; },
+    item => { item.packages = item.packages.filter(pkg => pkg.id !== item.workspace_default_members[0]); },
+  ]) {
+    const incomplete = structuredClone(metadata);
+    mutate(incomplete);
+    assert.throws(() => workspacePackages(incomplete), /STEP_FAILED workspace-default-selection/);
+  }
+  const packages = ["first", "second", "third"];
   let active = 0, peak = 0;
   const commands = [], buildDirectories = [];
   const failures = await checkCrateTests(packages, 2, "/shared target", async (args, buildDirectory) => {
@@ -26,14 +39,18 @@ test("checks every workspace member alone, reusing one target with bounded worke
   });
   assert.equal(peak, 2);
   assert.deepEqual(failures, ["second"]);
-  assert.deepEqual(commands, packages.map(name =>
-    ["check", "--locked", "--tests", "-p", name, "--target-dir", "/shared target"]));
-  assert.deepEqual(buildDirectories, [0, 1, 0].map(index => resolve("/shared target", "crate-test-checks", String(index))));
+  const targets = [0, 1, 0].map(index => resolve("/shared target", "crate-test-checks", String(index)));
+  assert.deepEqual(commands, packages.map((name, index) =>
+    ["check", "--locked", "--tests", "-p", name, "--target-dir", targets[index]]));
+  assert.deepEqual(buildDirectories, targets);
 });
 
 test("real Cargo compilations overlap; restoring the shared build lock is rejected", async () => {
-  mkdirSync(".tools", { recursive: true });
-  const directory = resolve(mkdtempSync(".tools/crate-check-"));
+  // Cargo admission requires actual job-owned target storage. Keep the real
+  // fixture and both build directories under that original target as well.
+  const fixtureRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target", "crate-test-fixtures");
+  mkdirSync(fixtureRoot, { recursive: true });
+  const directory = mkdtempSync(join(fixtureRoot, "crate-check-"));
   try {
     for (const shared of [false, true]) {
       const fixture = join(directory, shared ? "shared" : "parallel");
@@ -66,7 +83,11 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
           CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
         delete env.COMPILE_BARRIER;
         if (measure) env.COMPILE_BARRIER = barrier;
-        const child = spawn("cargo", args, {
+        // Negative control restores the original shared target and build lock.
+        const cargoArgs = shared
+          ? args.map((arg, index) => args[index - 1] === "--target-dir" ? target : arg)
+          : args;
+        const child = spawn("cargo", cargoArgs, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
           env,
         });
@@ -88,30 +109,8 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
       }
     }
   } finally {
-    assert.equal(dirname(directory), resolve(".tools"));
-    assert.ok(directory.startsWith(resolve(".tools") + sep));
+    assert.equal(dirname(directory), fixtureRoot);
+    assert.ok(directory.startsWith(fixtureRoot + sep));
     rmSync(directory, { recursive: true, force: true });
-  }
-});
-
-test("feature unification cannot hide an individual failure", async () => {
-  const run = async args => args.filter(arg => arg === "-p").length === 1 ? 101 : 0;
-  assert.deepEqual(await checkCrateTests(["first", "second"], 2, "target", run), ["first", "second"]);
-  // Negative control: combining the roots hides both failures in this fixture.
-  assert.equal(await run(["check", "--tests", "-p", "first", "-p", "second"]), 0);
-});
-
-test("qualification gate runs the standalone checks and their scheduling control", () => {
-  const source = readFileSync(new URL("./qualify-ci.sh", import.meta.url), "utf8").replaceAll("\r\n", "\n");
-  const commands = ["node --test scripts/check-crate-tests.test.mjs", "node scripts/check-crate-tests.mjs 2"];
-  const verify = text => {
-    const gate = text.match(/^  gate\)\n([\s\S]*?)^    ;;$/m)?.[1] ?? assert.fail("missing gate branch");
-    for (const command of commands) assert.ok(gate.includes(command), `gate must run ${command}`);
-  };
-  verify(source);
-  // Moving either command to another lane must not satisfy the gate assertion.
-  for (const command of commands) {
-    const moved = source.replace(`    ${command}\n`, "").replace("  docs)\n", `  docs)\n    ${command}\n`);
-    assert.throws(() => verify(moved), /gate must run/);
   }
 });

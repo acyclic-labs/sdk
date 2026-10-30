@@ -250,27 +250,6 @@ impl HeapLayout for acyclic_stream::OwnedBytes {
     };
 }
 
-/// The durable timer record names its identity types.
-impl<T: HeapLayout, O: HeapLayout> HeapLayout for acyclic_actors::timers::TimerRecord<T, O> {
-    const LAYOUT: &'static JsonLayout = &JsonLayout::Node {
-        seq: Some(Alloc::INLINE),
-        map: Some(Alloc::INLINE),
-        tagged: false,
-        fields: &[
-            ("task_id", T::LAYOUT),
-            ("operation_id", O::LAYOUT),
-            ("deadline_unix_ms", &JsonLayout::Scalar),
-        ],
-        elements: &[
-            T::LAYOUT,
-            O::LAYOUT,
-            &JsonLayout::Scalar,
-            &JsonLayout::Scalar,
-        ],
-        flatten: &[],
-    };
-}
-
 /// Layout markers for fields decoded by a custom function.
 pub mod markers {
     use super::{Alloc, HeapLayout, JsonLayout};

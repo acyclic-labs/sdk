@@ -1,1 +1,1 @@
-WAVE1_CONFORMANCE_FAILURE step=parse_hst_requirement; recovery: set ACYCLIC_CONFORMANCE_REQUIRE_HST=0 or 1 and rerun build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance
+WAVE1_CONFORMANCE_FAILURE step=parse_hst_requirement; recovery: set ACYCLIC_CONFORMANCE_REQUIRE_HST=0 or 1 and rerun cargo run -p acyclic-stream --features http --example wave1-conformance

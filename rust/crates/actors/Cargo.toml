@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
@@ -16,12 +17,13 @@ path = "src/bin/actors-rpc-inventory.rs"
 
 [features]
 conformance = ["acyclic-stream/conformance"]
-model-checking = ["acyclic-stream/model-checking"]
-test-support = [ "acyclic-native-runtime/test-support"]
+model-checking = ["dep:loom", "acyclic-stream/model-checking"]
+test-support = ["acyclic-native-runtime/test-support"]
 
 [dependencies]
 acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+loom = { version = "0.7.2", features = ["futures"], optional = true }
 acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 uuid.workspace = true
@@ -71,7 +73,6 @@ http-body-util = "0.1.5"
 async-trait.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "conformance", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
-loom = { version = "0.7.2", features = ["futures"] }
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio.workspace = true
@@ -90,11 +91,5 @@ protoc-bin-vendored = "=3.3.0"
 workspace = true
 
 [[test]]
-name = "guest_loom"
-path = "tests/guest_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "timer_loom"
-path = "tests/timer_loom.rs"
-required-features = ["model-checking"]
+name = "main"
+path = "tests/main.rs"

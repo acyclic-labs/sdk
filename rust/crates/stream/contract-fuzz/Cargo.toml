@@ -25,6 +25,3 @@ path = "fuzz_targets/watermarks.rs"
 test = false
 doc = false
 bench = false
-
-[workspace]
-members = ["."]

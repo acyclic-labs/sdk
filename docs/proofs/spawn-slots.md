@@ -41,24 +41,14 @@ checkpoint and actor envelope bound retain their separate maximum-size test.
 `rust/proofs/spawn-slots/proofs.json` declares actual production mutations. The producer changes one
 production file in a job-owned derivative and checks its complete tracked
 input manifest before compiling; the tests and proof harnesses stay unchanged.
-It records commands, toolchain, raw log hashes, timings, mutation hashes and
-Cargo-selected executable hashes. `rust/proofs/spawn-slots/run.py` requires canonical bb2 admission,
-uses the existing compiler cache and caps each job's command budget at 500 s.
-Never invoke it as a local test or rerun an identical completed producer.
+It records commands, toolchain, raw output hashes, timings, mutation hashes and Cargo-selected executable hashes.
 
-Run the `rust`, `kani`, `mutants` and `finish` modes through canonical bb2
-`build-slot`, with `BUILD_SLOT_COMPILER=1`, SDK tenant `graphcoder`, PR 1697,
-and the actual source base in the complete input declaration. Each invocation
-needs a fresh `--evidence` directory. `remaining` resumes only the compiler
-check and missing-method control after already-captured successful doctests;
-it does not replay the positive properties. Installed Kani uses
-`KANI_HOME=/home/var/.kani` inside the protected job home.
+Install the pinned Rust toolchain and Kani. Run `python3 rust/proofs/spawn-slots/run.py MODE --evidence /path/to/new/output` from a clean checkout, selecting `rust`, `kani`, `mutants` or `finish`. Each invocation requires a fresh evidence directory. Configure Kani through its standard environment or PATH. `remaining` resumes only the compiler check and missing-method control after the captured successful doctests; it does not replay the positive properties.
 
 Main's correlated-turn revision adds WaitingHost. Its host must satisfy the same
 1–128 byte, non-control name bound as inbox host names. The transition turns an
 invalid driver wait into a bounded failure before publishing its effects. The
 maximum-record property includes the new phase and conversation inbox sequence.
 
-Raw captured logs are retained outside the product repository under
-Q:/lanes/verify/evidence/1697/retained-raw. The versioned admission manifest
+The versioned admission manifest
 retains their SHA256 hashes and the original captured archive hashes.

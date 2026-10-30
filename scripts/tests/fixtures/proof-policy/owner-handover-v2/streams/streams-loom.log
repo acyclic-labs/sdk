@@ -1,6 +1,6 @@
    Compiling acyclic-stream v0.2.0 (/mnt/bb/cx/wt/cx-streams/rust/crates/stream)
     Finished `test` profile [optimized + debuginfo] target(s) in 11.83s
-     Running tests/wave1_loom.rs (/home/var/targets/cx-streams/debug/deps/wave1_loom-d47ba9246edaac38)
+     Running tests/wave1_loom.rs ([private-path-removed])
 
 running 4 tests
 test negative_control_old_fork_without_exclusions - should panic ... ok

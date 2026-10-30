@@ -25,8 +25,8 @@ test("Windows Rust tests run independently without changing workspace or ignored
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   const body = script.split("    'windows-rust' {")[1]?.split("    'windows-fork-join' {")[0] ?? assert.fail("missing Rust dispatch");
-  assert.ok(body.includes('cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"'));
-  assert.ok(body.includes("cargo test --workspace --all-features --locked --doc"));
+  assert.ok(body.includes('cargo nextest run @WorkspaceArgs --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"'));
+  assert.ok(body.includes("cargo test @WorkspaceArgs --all-features --locked --doc"));
   assert.doesNotMatch(body, /profile\.test\.package|@testProfile|CARGO_PROFILE_TEST_OPT_LEVEL/);
   assert.ok(body.includes("nextest/ci/junit.xml"));
   assert.ok(body.includes('Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"'));

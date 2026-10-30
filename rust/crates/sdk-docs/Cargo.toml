@@ -6,8 +6,6 @@ rust-version = "1.98"
 publish = false
 description = "Deterministic Rust-owned versioned SDK documentation data"
 
-[workspace]
-
 [features]
 model-checking = []
 test-support = []
@@ -31,3 +29,6 @@ proptest = "=1.11.0"
 [lints.rust]
 unsafe_code = "deny"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+# Retain the pinned documentation and generator dependency graph.
+[workspace]

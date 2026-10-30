@@ -1,6 +1,6 @@
 //! Exercise the public boundary on the process main thread's default stack.
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let credentials = directory.path().join("identity.json");
     let runtime = tokio::runtime::Builder::new_current_thread()

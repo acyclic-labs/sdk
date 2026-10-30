@@ -5,7 +5,9 @@ import { join } from "node:path";
 
 const outputRelative = "typescript/packages/filesystem/generated/hosted-contract";
 
-export const rust = [["acyclic-fs", "example", "filesystem-typescript-hosted-contract"]];
+export const rust = [["acyclic-fs", "example", "filesystem-contracts"]];
+export const rustFeatures = ["acyclic-fs/tooling"];
+export const rustPayload = "filesystem-typescript-hosted-contract";
 
 const MAPS = [
   ["FILESYSTEM_PROFILE_TO_PROFILE", "filesystem_profile", "FilesystemProfile", "FILESYSTEM_PROFILE_"],

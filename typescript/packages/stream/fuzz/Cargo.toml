@@ -28,6 +28,3 @@ path = "fuzz_targets/session.rs"
 test = false
 doc = false
 bench = false
-
-[workspace]
-members = ["."]

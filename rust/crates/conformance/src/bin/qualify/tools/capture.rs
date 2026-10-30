@@ -1,89 +1,45 @@
 use super::*;
 
 pub(super) fn restore_gen(args: &[String]) -> Result<(), Failure> {
-    let store_dir = PathBuf::from(args.first().ok_or("restore-gen: missing <store/store>")?);
-    let volume_hex = args.get(1).ok_or("restore-gen: missing <volume-uuid>")?;
-    let generation_hex = args.get(2).ok_or("restore-gen: missing <gen-hex>")?;
-    let destination = PathBuf::from(args.get(3).ok_or("restore-gen: missing <dest>")?);
-    fs::create_dir_all(&destination)?;
-
-    let volume_uuid: [u8; 16] = {
-        let clean: String = volume_hex.chars().filter(|c| *c != '-').collect();
-        let bytes = hex_decode(&clean)?;
-        bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "volume uuid must be 16 bytes")?
-    };
-    let digest: [u8; 32] = hex_decode(generation_hex)?
-        .as_slice()
-        .try_into()
-        .map_err(|_| "generation must be 32 bytes")?;
-
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async {
-        let cancel = CancellationToken::new();
-        let fs_engine = LocalFs::local(local_options(&store_dir)?)
-            .await
-            .map_err(engine_err("open store"))?;
-        let volume = fs_engine
-            .open_volume(
-                VolumeId::from_bytes(volume_uuid),
-                WorkCounters::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(engine_err("open volume"))?
-            .value;
-        let mut checkout = volume
-            .checkout(
-                GenerationSelector::Exact(GenerationId::new(acyclic_fs::Digest::from_bytes(
-                    digest,
-                ))),
-                CheckoutMode {
-                    access: AccessMode::ReadOnly,
-                    consistency: ConsistencyMode::Pinned,
-                    mutations: MutationMode::None,
-                },
-                WorkCounters::UNBOUNDED,
-                &cancel,
-            )
-            .await
-            .map_err(engine_err("checkout exact"))?
-            .value;
-        let receipt = materialize_checkout(
-            &mut checkout,
-            &MaterializeOptions {
-                destination: destination.clone(),
-                expected_root_identity: None,
-                maximum_directory_entries: 1_024,
-                maximum_extent_spans: 65_536,
-                transfer_bytes: 8 * 1024 * 1024,
-            },
-            WorkCounters::UNBOUNDED,
-            &cancel,
+    let invalid = |reason: &str| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "step=restore-gen admission: {reason}; recovery: qualify restore-gen STORE VOLUME_UUID CANONICAL_GENERATION_HEX DEST"
+            ),
         )
-        .await
-        .map_err(engine_err("materialize"))?
-        .value;
-        println!(
-            "materialized {} files / {} dirs into {}",
-            receipt.files,
-            receipt.directories,
-            destination.display()
-        );
-        Ok(())
-    })
-}
+    };
+    let [store, volume, generation, destination] = args else {
+        return Err(invalid("expected four arguments").into());
+    };
+    let volume = uuid::Uuid::parse_str(volume).map_err(|_| invalid("invalid volume UUID"))?;
+    let mut bytes = [0; acyclic_fs::ObjectId::ENCODED_LEN];
+    let bytes = bytes
+        .get_mut(..generation.len() / 2)
+        .ok_or_else(|| invalid("invalid canonical generation reference"))?;
+    hex::decode_to_slice(generation, bytes)
+        .map_err(|_| invalid("invalid generation hexadecimal encoding"))?;
+    let generation = GenerationId::from_bytes(bytes)
+        .ok_or_else(|| invalid("invalid canonical generation reference"))?;
 
-pub(super) fn hex_decode(text: &str) -> Result<Vec<u8>, Failure> {
-    if !text.len().is_multiple_of(2) {
-        return Err("odd hex length".into());
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).map_err(|e| format!("{e}").into()))
-        .collect()
+    let destination = Path::new(destination);
+    fs::create_dir_all(destination)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let receipt = runtime
+        .block_on(materialize(
+            Path::new(store),
+            VolumeId::from_bytes(volume.into_bytes()),
+            generation,
+            destination,
+        ))?
+        .value;
+    println!(
+        "materialized {} files / {} dirs into {}",
+        receipt.files,
+        receipt.directories,
+        destination.display()
+    );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -337,7 +293,17 @@ pub(super) fn roundtrip(args: &[String]) -> Result<(), Failure> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     let (volume_id, generation) = runtime.block_on(capture_and_commit(&source, &store_dir))?;
-    runtime.block_on(materialize(&store_dir, volume_id, generation, &restore_dir))?;
+    let started = Instant::now();
+    let receipt = runtime.block_on(materialize(&store_dir, volume_id, generation, &restore_dir))?;
+    println!(
+        "materialize: {:?} ({} files, {} dirs, {} symlinks, {} bytes written)",
+        started.elapsed(),
+        receipt.value.files,
+        receipt.value.directories,
+        receipt.value.symbolic_links,
+        receipt.value.written_bytes
+    );
+    println!("materialize_work: {:?}", receipt.work);
 
     let started = Instant::now();
     let mismatches = compare_trees(&source, &restore_dir)?;
@@ -480,7 +446,7 @@ pub(super) async fn materialize(
     volume_id: VolumeId,
     generation: GenerationId,
     destination: &Path,
-) -> Result<(), Failure> {
+) -> Result<acyclic_fs::OperationReceipt<acyclic_fs::MaterializationReceipt>, Failure> {
     let cancel = CancellationToken::new();
     let fs_engine = LocalFs::local(local_options(store_dir)?)
         .await
@@ -505,8 +471,7 @@ pub(super) async fn materialize(
         .map_err(engine_err("checkout exact"))?
         .value;
 
-    let started = Instant::now();
-    let receipt = materialize_checkout(
+    materialize_checkout(
         &mut checkout,
         &MaterializeOptions {
             destination: destination.to_path_buf(),
@@ -519,19 +484,7 @@ pub(super) async fn materialize(
         &cancel,
     )
     .await
-    .map_err(engine_err("materialize_checkout"))?;
-    let materialize_work = receipt.work;
-    let receipt = receipt.value;
-    println!(
-        "materialize: {:?} ({} files, {} dirs, {} symlinks, {} bytes written)",
-        started.elapsed(),
-        receipt.files,
-        receipt.directories,
-        receipt.symbolic_links,
-        receipt.written_bytes
-    );
-    println!("materialize_work: {materialize_work:?}");
-    Ok(())
+    .map_err(engine_err("materialize_checkout"))
 }
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
   "files": [
     {
       "origin": "git show",
-      "worktree": "Q:\\wt\\rb-identity-sdk",
+      "worktree": "[private-metadata-removed]",
       "commit": "e21fdba1fec263508f5f4e9f3ca83554fc92503e",
       "source": "rust/crates/auth/src/verify.rs",
       "captured": "auth/rust/crates/auth/src/verify.rs",
@@ -13,7 +13,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\wt\\rb-identity-sdk",
+      "worktree": "[private-metadata-removed]",
       "commit": "e21fdba1fec263508f5f4e9f3ca83554fc92503e",
       "source": "rust/crates/auth/src/verify/current.rs",
       "captured": "auth/rust/crates/auth/src/verify/current.rs",
@@ -21,7 +21,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\wt\\rb-identity-sdk",
+      "worktree": "[private-metadata-removed]",
       "commit": "e21fdba1fec263508f5f4e9f3ca83554fc92503e",
       "source": "rust/crates/auth/src/verify/effective.rs",
       "captured": "auth/rust/crates/auth/src/verify/effective.rs",
@@ -29,7 +29,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\wt\\rb-identity-sdk",
+      "worktree": "[private-metadata-removed]",
       "commit": "e21fdba1fec263508f5f4e9f3ca83554fc92503e",
       "source": "rust/crates/auth/src/verify/wire.rs",
       "captured": "auth/rust/crates/auth/src/verify/wire.rs",
@@ -37,7 +37,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\wt\\rb-identity-sdk",
+      "worktree": "[private-metadata-removed]",
       "commit": "e21fdba1fec263508f5f4e9f3ca83554fc92503e",
       "source": "rust/crates/auth/src/authority.rs",
       "captured": "auth/rust/crates/auth/src/authority.rs",
@@ -45,7 +45,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\worktrees\\redesign-verify",
+      "worktree": "[private-metadata-removed]",
       "commit": "e30d6f881320a4ca21d2d563d195c9514dfb4eed",
       "source": "rust/crates/sdk-docs/src/lib.rs",
       "captured": "sdk-docs/rust/crates/sdk-docs/src/lib.rs",
@@ -53,7 +53,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\worktrees\\redesign-verify",
+      "worktree": "[private-metadata-removed]",
       "commit": "e30d6f881320a4ca21d2d563d195c9514dfb4eed",
       "source": "rust/crates/sdk-docs/src/projection.rs",
       "captured": "sdk-docs/rust/crates/sdk-docs/src/projection.rs",
@@ -61,7 +61,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\worktrees\\redesign-verify",
+      "worktree": "[private-metadata-removed]",
       "commit": "e30d6f881320a4ca21d2d563d195c9514dfb4eed",
       "source": "rust/crates/sdk-docs/src/public_api.rs",
       "captured": "sdk-docs/rust/crates/sdk-docs/src/public_api.rs",
@@ -69,7 +69,7 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\worktrees\\redesign-verify",
+      "worktree": "[private-metadata-removed]",
       "commit": "e30d6f881320a4ca21d2d563d195c9514dfb4eed",
       "source": "rust/crates/sdk-docs/src/rustdoc_profiles.rs",
       "captured": "sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles.rs",
@@ -77,30 +77,30 @@
     },
     {
       "origin": "git show",
-      "worktree": "Q:\\worktrees\\redesign-verify",
+      "worktree": "[private-metadata-removed]",
       "commit": "e30d6f881320a4ca21d2d563d195c9514dfb4eed",
       "source": "rust/crates/sdk-docs/src/rustdoc_profiles/receipts.rs",
       "captured": "sdk-docs/rust/crates/sdk-docs/src/rustdoc_profiles/receipts.rs",
       "sha256": "e4c093e501175b72241f469b9c94d5f72492a1be71bcc7b8ab248169c2660801"
     },
     {
-      "origin": "Q:/lanes/redesign/auth/handover.md",
+      "origin": "[private-path-removed]",
       "captured": "coordination/handover.md",
       "sha256": "f4628b33fab0a619ac0ca06320a057b54e16414d528d5cb4319d6f9f1066ef3b"
     },
     {
-      "origin": "Q:/lanes/redesign/auth/adoption-rb-identity.md",
+      "origin": "[private-path-removed]",
       "captured": "coordination/adoption-rb-identity.md",
       "sha256": "43bc4dcb0334caca1b9ad2b9df6363399a1f54a644e19b8c9b338741145836f0"
     },
     {
-      "origin": "Q:/lanes/redesign/api/rb-identity.md",
+      "origin": "[private-path-removed]",
       "captured": "coordination/rb-identity.md",
       "sha256": "835835b64eae00cea06f2517ea83b78e70d8f0afd2467acb91c2f21d44b11288"
     },
     {
-      "origin": "Q:/lanes/steers/gate-speed-to-verify-20261026T031900Z.md",
-      "captured": "coordination/gate-speed-to-verify-20261026T031900Z.md",
+      "origin": "[private-path-removed]",
+      "captured": "coordination/source-ownership-20261026T031900Z.md",
       "sha256": "86610f06bcd949bf6dcdb17ff025b946e27644d1eca3bffd9b5d29141ae3218f"
     }
   ]

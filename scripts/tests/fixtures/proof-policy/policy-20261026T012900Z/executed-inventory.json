@@ -4,19 +4,19 @@
   "status": "in_progress_not_a_full_stack_guarantee",
   "generated_at": "2026-10-26T01:24:36.244624+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
-  "worktree": "Q:/worktrees/redesign-verify",
+  "worktree": "[private-metadata-removed]",
   "branch": "redesign/verify-wave1",
-  "historical_inventory": "Q:/lanes/verify/inventory.json",
-  "specification": "Q:/lanes/redesign/api/verify.md",
+  "historical_inventory": "[private-path-removed]",
+  "specification": "[private-path-removed]",
   "cloud_review": {
-    "path": "Q:/lanes/redesign/cloud-review/verify.md",
+    "path": "[private-path-removed]",
     "cloud_source_pin": "a80dd0b8d96a5af569a14fd05df01277ffdfee5a",
     "state": "source_review_resolved_proofs_pending"
   },
   "resolved_design_decisions": {
     "sources": [
-      "Q:/lanes/redesign/streams.review2.md",
-      "Q:/lanes/redesign/fs.review1.md"
+      "[private-path-removed]",
+      "[private-path-removed]"
     ],
     "domain": "one versioned persistent namespace root per account tree; agent subtree and its volume authorities share domain; O(S) cross-domain serializable composition; never cross-cell",
     "successful_keys": "namespace lifetime; retained with committed history reachable from live forks; never expired then replayed fresh",
@@ -48,14 +48,14 @@
       "production_modifications": "none; only conformance module wiring/example and new proof files",
       "build_slot_base_tree": "b846e07d51e295efe09db0e8240050ee0eff80fe",
       "build_slot_content_digest": "9cf9bd2a73c950b402f76c5aeebe327472c9a4d8ed4291bd8d8147699fbacea8",
-      "command": "build-slot --remote cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
+      "command": "cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
       "log": "evidence/wave1/tests-20261026T005441Z.log",
       "log_sha256": "2ca450245045443fb4e2db651362d3da8ca95bb45febf334532e97ad735b9761",
       "executed_oracle_sources": [
         {
           "path": "evidence/wave1/wave1-keys-source-9cf.rs",
           "sha256": "fcdb6c1abc598c7cd70e15f12300042f1db416a0f45d2a324dd01701ab826f70",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "docs/proofs/evidence/wave1-keys-source-9cf.rs"
         }
       ],
@@ -92,20 +92,20 @@
       "production_modifications": "none; only conformance module wiring/example and new proof files",
       "build_slot_base_tree": "b846e07d51e295efe09db0e8240050ee0eff80fe",
       "build_slot_content_digest": "cd2a84990299355da319d0e5677a0573167b2a93ecc8fdb80fe28d01f3cc3914",
-      "command": "build-slot --remote cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
+      "command": "cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
       "log": "evidence/wave1/tests-20261026T010305Z.log",
       "log_sha256": "8985f3ad66068465d7b4615d7cc1a0fa0e19de987b60ad0c60947dc07e7e1f97",
       "executed_oracle_sources": [
         {
           "path": "evidence/wave1/wave1-streams-source-cd2.rs",
           "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "docs/proofs/evidence/wave1-streams-source-cd2.rs"
         },
         {
           "path": "evidence/wave1/wave1-fork-source-cd2.rs",
           "sha256": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "docs/proofs/evidence/wave1-fork-source-cd2.rs"
         }
       ],
@@ -158,7 +158,7 @@
   },
   "cleanliness": {
     "tool": "clippy",
-    "command": "build-slot --remote cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
+    "command": "cargo clippy -p acyclic-stream --no-deps --message-format=json --features http,local --test wave1_keys --example wave1-conformance",
     "source_log": "evidence/wave1/clippy-report-20261026T010609Z.log",
     "source_log_sha256": "e6fb743fc49852d32508aa40a68968d279c2a94b49e946ba265f45b4af06db2c",
     "result": "compilation_pass_existing_warnings_remain",
@@ -224,7 +224,7 @@
     ],
     "repo_capture": "docs/proofs/evidence/clippy-report-20261026T010609Z.jsonl",
     "capture_sha256": "0e84ed0a221e1546df30cd1302d14d07a2cb34fbcb5d496ef43f9ee406f82f32",
-    "capture_provenance": "exact BUILD_SLOT_TREE/compiler-message/build-finished lines selected from captured real BB2 output; dependency artifact chatter omitted"
+    "capture_provenance": "exact BUILD_SLOT_TREE/compiler-message/build-finished lines selected from captured real Linux output; dependency artifact chatter omitted"
   },
   "obligations": [
     {
@@ -609,7 +609,7 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
       "source": [
@@ -658,7 +658,7 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
       "source": [
@@ -707,7 +707,7 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "oracle_implemented_old_source_negative_detected_positive_fails",
       "source": [

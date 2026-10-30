@@ -66,6 +66,23 @@ async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
         let sample = acyclic_agent_host_conformance::bench(&backend).await?;
         assert_eq!(sample.deliveries, 64);
         assert_eq!(sample.idle_agents, 0);
+        assert_eq!(sample.turns.len(), sample.deliveries);
+        assert_eq!(
+            sample
+                .turns
+                .iter()
+                .map(|turn| turn.requests.data())
+                .sum::<u64>(),
+            sample.requests.data()
+        );
+        assert_eq!(
+            sample
+                .turns
+                .iter()
+                .map(|turn| turn.requests.control())
+                .sum::<u64>(),
+            sample.requests.control()
+        );
         assert!(sample.requests.data() >= sample.deliveries as u64);
         println!("AGENT_BENCH {sample:?}");
         let samples = acyclic_agent_host_conformance::scale(

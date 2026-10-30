@@ -1,0 +1,22 @@
+[package]
+name = "acyclic-napi-progress-test"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+description = "Real Node environment shutdown controls for native callback ownership"
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[dependencies]
+futures.workspace = true
+napi.workspace = true
+napi-derive.workspace = true
+
+[build-dependencies]
+napi-build = "2.6.0"
+
+[lints]
+workspace = true

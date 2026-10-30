@@ -6,7 +6,7 @@
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/identities.json",
       "sha256": "99492086a4c04086782801fe3b23bbfdba18c9d6878b78dc76368a741c456d19",
       "bytes": 568,
-      "origin": "real git rev-parse commit/tree in Q:\\wt\\rx-hostability-sdk"
+      "origin": "real git rev-parse commit/tree in [private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/native_signed-signature.txt",
@@ -24,37 +24,37 @@
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-qualified-20261026T0245Z.log",
       "sha256": "7deab2df76cf320c8857f04a8a5d44311dc745ee99345443b1772d6dd19dac0f",
       "bytes": 46090,
-      "origin": "Q:\\lanes\\redesign\\streams\\owner-qualified-20261026T0245Z.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-typescript-20261026T0258Z.log",
       "sha256": "719131b94660ef644102168d834ed7da6a694d2858983db6a9865e8b7a72fb13",
       "bytes": 11735,
-      "origin": "Q:\\lanes\\redesign\\streams\\owner-typescript-20261026T0258Z.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-final-surface-20261026T0256Z.log",
       "sha256": "00d343ffeb6eec954a87d7dd64668b9367042d59d257aa8dd59d4b1d9cc70d87",
       "bytes": 20018,
-      "origin": "Q:\\lanes\\redesign\\streams\\owner-final-surface-20261026T0256Z.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-native-surface-20261026T0256Z.log",
       "sha256": "79ffcec46cd6dd2319a88616bd82a6cd771d69faa6ca574f6f6720a4e10f799c",
       "bytes": 9334,
-      "origin": "Q:\\lanes\\redesign\\streams\\owner-native-surface-20261026T0256Z.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/owner-static-surface-20261026T0258Z.log",
       "sha256": "c94529d4a381be23beb88747cb30eb9f3d55fb29308fd03ad1a772a32125708a",
       "bytes": 285307,
-      "origin": "Q:\\lanes\\redesign\\streams\\owner-static-surface-20261026T0258Z.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/logs/adoption.md",
       "sha256": "e3bc7ddf06f4c119c655fd2c921bf3b5f3c30599962997c282ae01eec1e4551a",
       "bytes": 8137,
-      "origin": "Q:\\lanes\\redesign\\streams\\adoption.md"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/source/rust/crates/stream/tests/wave1_loom.rs",
@@ -102,7 +102,7 @@
       "repo_path": "docs/proofs/evidence/streams-checkpoint-v3/producer.py",
       "sha256": "fe290f6e89c8f27fd8078109ba85bff0249a2cc11a6475538815c4f7a9cbd36a",
       "bytes": 4538,
-      "origin": "Q:\\lanes\\verify\\capture_stream_checkpoint.py"
+      "origin": "[private-metadata-removed]"
     }
   ],
   "identities": {

@@ -1,7 +1,7 @@
 """Capture retained sdk-generation output; no compiler/provider fixture is authored."""
 from pathlib import Path
 import hashlib,json,shutil,sys
-ROOT=Path('Q:/worktrees/redesign-verify')
+ROOT=Path('[private-metadata-removed]')
 SRC=Path('D:/codex-sdk-docs-eb24-fe001/windows-lock-assertion-temp/sdk-generation-feature-profile-37848-22')
 BUNDLE=SRC.parent/'sdk-generation-feature-profile-output-37848-23'
 DEST=ROOT/'docs/proofs/evidence/canonical-exports-v1'
@@ -19,4 +19,4 @@ try:
  (DEST/'capture.json').write_bytes((json.dumps(r,indent=2)+'\n').encode());shutil.copyfile(__file__,DEST/'producer.py')
  print(json.dumps(dict(status='captured_real_generator_fixture',files=len(captures),manifest_sha256=r['manifest_sha256'])))
 except (OSError,ValueError,KeyError) as e:
- print(f'VERIFY_EXPORT_CAPTURE_FAILURE step=capture_real_generator_artifacts error={e}; recovery: python Q:/lanes/verify/capture_canonical_exports.py',file=sys.stderr);sys.exit(1)
+ print(f'VERIFY_EXPORT_CAPTURE_FAILURE step=capture_real_generator_artifacts error={e}; recovery: python [private-path-removed]',file=sys.stderr);sys.exit(1)

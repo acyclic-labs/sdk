@@ -31,6 +31,51 @@ pub(super) fn publication_data(version: &str, revision: char) -> DocsData {
 }
 
 #[test]
+fn equal_publication_preserves_files_and_still_rejects_external_corruption() {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("output");
+    let data = publication_data("1.0.0", 'a');
+    write_bundle(&data, &output, false).unwrap();
+    let paths = [
+        output.join("release-candidates/1.0.0/sdk-docs-data.v1.json"),
+        output.join("release-candidates/1.0.0/sdk-docs-data.v1.schema.json"),
+        output.join("sdk-docs-versions.v1.schema.json"),
+        output.join("sdk-docs-versions.v1.json"),
+    ];
+    // Keep the original files open so an unlink cannot recycle their identity.
+    let originals: Vec<_> = paths.iter().map(|path| File::open(path).unwrap()).collect();
+    let stamps: Vec<_> = paths
+        .iter()
+        .map(|path| sdk_file_identity::stamp(path).unwrap())
+        .collect();
+    write_bundle(&data, &output, false).unwrap();
+    assert_eq!(
+        stamps,
+        paths
+            .iter()
+            .map(|path| sdk_file_identity::stamp(path).unwrap())
+            .collect::<Vec<_>>(),
+        "an equal publication must preserve every original file identity"
+    );
+    let index = fs::read(&paths[3]).unwrap();
+    for (path, expected_error) in [
+        (&paths[0], "data digest does not match"),
+        (&paths[1], "schema sidecar does not match"),
+    ] {
+        let bytes = fs::read(path).unwrap();
+        fs::write(path, b"externally changed").unwrap();
+        let error = write_bundle(&data, &output, false).unwrap_err();
+        assert!(error.to_string().contains(expected_error), "{error}");
+        assert_eq!(fs::read(&paths[3]).unwrap(), index);
+        fs::write(path, bytes).unwrap();
+    }
+    write_bundle(&data, &output, false).unwrap();
+    assert_eq!(sdk_file_identity::stamp(&paths[3]).unwrap(), stamps[3]);
+    drop(originals);
+    directory.close().unwrap();
+}
+
+#[test]
 fn release_publication_rejects_unbound_source_before_creating_output() {
     let directory = tempfile::tempdir().expect("fixture directory should be creatable");
     let output = directory.path().join("output");

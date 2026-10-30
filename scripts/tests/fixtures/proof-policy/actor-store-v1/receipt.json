@@ -78,139 +78,139 @@
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/sources.json",
       "sha256": "fc756467546d9fedab5c1be4751ef435148285841752c9d4d3b3e2971fd659bb",
       "bytes": 1070440,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-sources.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/inputs.log",
       "sha256": "015c9684478cf487f1d17dce4cfef9607269a2e856f9107c6b5420bf9979a52e",
       "bytes": 319620,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-inputs.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/inputs.json",
       "sha256": "8f2412f1a14da175297c2ff0caf638c4d4cf4653a04f2be0051786f81342d532",
       "bytes": 139,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-inputs.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/format.log",
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "bytes": 0,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-format.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/format.json",
       "sha256": "fe0b7c720751d13e49d14619414fb5694bd4394623a978f46c5078ce7a631d17",
       "bytes": 325,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-format.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/formatted.tar.gz",
       "sha256": "0a9ba4e62897149e006ef23aa864462d8633d44063d37ed2a66f99bd1eaffccd",
       "bytes": 13364,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-formatted.tar.gz"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/formatted.json",
       "sha256": "b51114f9a69ff27c6dad67e4f78b448543c77ba0695b28d3db28220eeef4c52c",
       "bytes": 628,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-formatted.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/positive.log",
       "sha256": "493b59290715867f1a6880ecd2c850e62c0e1a8d59fffa40898fcb2c407f15b2",
       "bytes": 11036,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-positive.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/positive.json",
       "sha256": "c5a07ad767fa813a8df354695d8d70a55e203fcf1191f8522ca79da875b843a5",
       "bytes": 186,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-positive.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/epoch-negative.log",
       "sha256": "2d84ccbea62b08bfec9836db5de92930a3047e519d97420aaf29d76dd28a6a15",
       "bytes": 2909,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-epoch-negative.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/epoch-negative.json",
       "sha256": "923b9bf872ab2a66cf368af87294223c9a66dbfb515d9d76110add5d71c63c4b",
       "bytes": 209,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-epoch-negative.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/alarm-negative.log",
       "sha256": "87a45add7fdbe497d2e51fb054c3091161efdb719a42c73e37aa15af9bbab49b",
       "bytes": 2920,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-alarm-negative.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/alarm-negative.json",
       "sha256": "e090d764d6e1f5dce647e2aeb236c8287e4d8fbae3ea9414b8c815ca50e26a90",
       "bytes": 209,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-alarm-negative.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/split-negative.log",
       "sha256": "b6cfdc2d30bde0184c57c0b2759013af66eef892ddddfe5ad59396ca42b962e5",
       "bytes": 3278,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-split-negative.log"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/split-negative.json",
       "sha256": "e0f6ec3f45b8706855871a422f8d62a1ec7f96ab62e95bc5c10c20d62bc59ffb",
       "bytes": 199,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-split-negative.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/run/restored.json",
       "sha256": "b51114f9a69ff27c6dad67e4f78b448543c77ba0695b28d3db28220eeef4c52c",
       "bytes": 628,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:.bb-a4-store-restored.json"
+      "origin": "[private-metadata-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/producer.sh",
       "sha256": "bb2f855c57f606ee09bb9efd1d9419cae5eb44163b00b3c0722ad7cf6390ef7d",
       "bytes": 4082,
-      "origin": "D:/lane-scratch/b-runtime/a4-store-producer.sh; exact input .bb-a4-store.sh"
+      "origin": "[private-metadata-removed] exact input .bb-a4-store.sh"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/Cargo.toml",
       "sha256": "8d837827cc461a1a6c386da55163f80dea03bc259ea408e8fbcb1a3be23d2131",
       "bytes": 2930,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/src/lib.rs",
       "sha256": "043bbb264d5cbc912bcd92a955f91d57df85a522a24a42346ffebfc239c08c45",
       "bytes": 13579,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/src/guest.rs",
       "sha256": "b8c4b773967553971fdfb3fb4671d50e00672d2e78d336c1339df61e1021393b",
       "bytes": 6229,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/src/guest/handler.rs",
       "sha256": "a490b8ca95728af1edd0eda6f65d29a80d3ebc3e7cba9ef9d9eba35ef05be7ce",
       "bytes": 3831,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/src/local.rs",
       "sha256": "698bb184195bc2fdfce7e9a059c5d0ce0ed4fa46fb75fd8c1697bcc4b19ee085",
       "bytes": 11138,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/source/rust/crates/actors/src/local/tests.rs",
       "sha256": "47e1c5a8e1dcc7059accb0f17320c5f5d026a4ae68b28b3c77ad36d7e7c2c906",
       "bytes": 11041,
-      "origin": "D:\\lane-scratch\\b-runtime\\a4-store-conditioned-evidence.tar.gz:formatted archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
+      "origin": "[private-metadata-removed] archive; byte-matched git 252c28c27fd490186f7e17e1d55b47ffe82a9e9a"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/signature-252c28c27fd4.txt",
@@ -228,13 +228,13 @@
       "repo_path": "docs/proofs/evidence/actor-store-v1/handover.md",
       "sha256": "e15216c4ab13e98adfae0865dc0909d4d3bb95ff84ce6133a7f18562c4426597",
       "bytes": 14741,
-      "origin": "Q:/lanes/redesign/actors/handover.md"
+      "origin": "[private-path-removed]"
     },
     {
       "repo_path": "docs/proofs/evidence/actor-store-v1/owner-api.md",
       "sha256": "0b023cb15a8d8795c6e766e3e01d3526573327e8e96f2e24a6bcd890eb0cdbd8",
       "bytes": 6447,
-      "origin": "Q:/lanes/redesign/api/rb-actors.md"
+      "origin": "[private-path-removed]"
     }
   ]
 }

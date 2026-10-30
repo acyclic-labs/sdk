@@ -17,10 +17,6 @@ serde_json = "1.0"
 
 # Match the canonical debug build: unoptimized serde and base64 make each
 # 4 KiB frame cost milliseconds under the sanitizer, starving the fuzzer.
-[profile.dev]
-opt-level = 1
-debug = "line-tables-only"
-
 [[bin]]
 name = "task_volume"
 path = "fuzz_targets/task_volume.rs"
@@ -34,5 +30,3 @@ path = "fuzz_targets/jsonl_wire.rs"
 test = false
 doc = false
 bench = false
-
-[workspace]

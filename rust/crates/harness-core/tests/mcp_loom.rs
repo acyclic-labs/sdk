@@ -2,13 +2,7 @@
 //! Both instrumented modules below are production source.
 #![cfg(loom)]
 
-pub use acyclic_harness_core::{Error, ProcessError, Result};
-
-pub(crate) mod sync {
-    include!("../src/sync/arc.rs");
-    include!("../src/sync/atomic.rs");
-}
-mod mcp {
+pub(crate) mod mcp {
     pub(crate) use crate::sync;
 }
 #[path = "../src/mcp/install/cancellation.rs"]

@@ -109,8 +109,8 @@ index 2670f0c3c6..e12063a4a2 100644
      elif args.mode == "kani":
          env.pop("RUSTC", None)
          env.pop("RUSTC_WRAPPER", None)
-+        env["KANI_HOME"] = "/home/var/.kani"
-         env["PATH"] = "/home/var/.kani/kani-0.68.0/bin:" + env["PATH"]
++        env["KANI_HOME"] = "[private-path-removed]"
+         env["PATH"] = "[private-path-removed]" + env["PATH"]
          command = ["cargo", "kani", "--manifest-path", "rust/proofs/spawn-slots/Cargo.toml"]
          run("kani-version", ["cargo", "kani", "--version"], env=env)
 @@ -151,9 +173,10 @@ try:
