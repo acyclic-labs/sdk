@@ -339,6 +339,9 @@ mod http {
                 path(field(child, "path")?)?;
                 let result = Object::new();
                 set(&result, "path", &string_js(field(child, "path")?)?)?;
+                if let Some(tail) = child.get("tail") {
+                    set(&result, "tail", &bigint_js(tail)?)?;
+                }
                 if let Some(record) = child.get("tailRecord") {
                     set(&result, "tailRecord", &record_js(record, None)?)?;
                 }

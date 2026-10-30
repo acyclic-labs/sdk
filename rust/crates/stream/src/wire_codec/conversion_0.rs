@@ -369,15 +369,18 @@ pub fn children_page_from_response(
             .children
             .into_iter()
             .map(|child| {
-                Ok(crate::Child {
+                let child = crate::Child {
                     origin: child.origin.map(fork_origin_from_wire).transpose()?,
+                    tail: child.tail,
                     // A tail record may sit in a relative tail stream, so it spells its origin.
                     tail_record: child
                         .tail_record
                         .map(|record| self::record(record, None))
                         .transpose()?,
                     path: path(child.path)?,
-                })
+                };
+                child.validate_tail()?;
+                Ok(child)
             })
             .collect::<Result<_, StreamError>>()?,
         next_after: value.next_after.map(path).transpose()?,
@@ -392,6 +395,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
             .children
             .into_iter()
             .map(|child| wire::Child {
+                tail: child.tail,
                 origin: child.origin.map(fork_origin_to_wire),
                 tail_record: child.tail_record.map(|record| record_wire(record, None)),
                 path: child.path.to_string(),
