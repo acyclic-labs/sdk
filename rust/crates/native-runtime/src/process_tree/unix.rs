@@ -3,9 +3,68 @@ use std::io::{Read, Write};
 pub(super) use std::os::fd::AsRawFd as Pipe;
 use std::os::unix::process::CommandExt as _;
 use std::os::unix::process::ExitStatusExt as _;
-#[cfg(test)]
-use std::process::Child;
-use std::process::{Command, ExitStatus};
+use std::process::{ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+
+/// The direct child of a tree, reaped by PID: started by std, or cloned for
+/// this owner by the custody runner.
+pub(super) struct Child {
+    pub(super) stdin: Option<ChildStdin>,
+    pub(super) stdout: Option<ChildStdout>,
+    pub(super) stderr: Option<ChildStderr>,
+    pid: libc::pid_t,
+    status: Option<ExitStatus>,
+}
+
+impl Child {
+    pub(super) const fn new(
+        pid: libc::pid_t,
+        stdin: Option<ChildStdin>,
+        stdout: Option<ChildStdout>,
+        stderr: Option<ChildStderr>,
+    ) -> Self {
+        Self {
+            stdin,
+            stdout,
+            stderr,
+            pid,
+            status: None,
+        }
+    }
+
+    fn from_std(mut child: std::process::Child) -> Self {
+        // A Unix Child ID originated as pid_t at this same SDK boundary.
+        let pid = child.id() as libc::pid_t;
+        Self::new(
+            pid,
+            child.stdin.take(),
+            child.stdout.take(),
+            child.stderr.take(),
+        )
+    }
+
+    pub(super) const fn id(&self) -> u32 {
+        self.pid.cast_unsigned()
+    }
+
+    /// Closes stdin, then reaps the child, as `std::process::Child::wait`.
+    pub(super) fn wait(&mut self) -> io::Result<ExitStatus> {
+        drop(self.stdin.take());
+        if let Some(status) = self.status {
+            return Ok(status);
+        }
+        let mut raw = 0;
+        // SAFETY: this owner's own unreaped child and writable status storage.
+        while unsafe { libc::waitpid(self.pid, &raw mut raw, 0) } != self.pid {
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        let status = ExitStatus::from_raw(raw);
+        self.status = Some(status);
+        Ok(status)
+    }
+}
 
 #[cfg(test)]
 pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
@@ -19,7 +78,7 @@ pub(super) fn observe_exit_id(
     exit_status_id(id, meter, libc::WEXITED | libc::WNOWAIT | libc::WNOHANG)
 }
 
-pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()> {
+pub(super) fn wait_without_reaping(child: &Child) -> io::Result<()> {
     exit_status_id(child.id(), None, libc::WEXITED | libc::WNOWAIT)?
         .map(|_| ())
         .ok_or_else(|| io::ErrorKind::WouldBlock.into())
@@ -259,11 +318,22 @@ pub(super) fn spawn_controlled(
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
     command.process_group(0);
+    adopt(meter, custody, || {
+        Ok((Child::from_std(command.spawn()?), Ok(())))
+    })
+}
+
+/// Retains the direct child `start` returns as a new tree whose process
+/// group it leads, even when `start` also reports that its exec failed.
+pub(super) fn adopt(
+    meter: Option<&dyn crate::NativeReadMeter>,
+    custody: &mut Option<super::ProcessTree>,
+    start: impl FnOnce() -> io::Result<(Child, io::Result<()>)>,
+) -> io::Result<()> {
     let events = super::events::Events::start()?;
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-        let child = command.spawn()?;
-        // A Unix Child ID originated as pid_t at this same SDK boundary.
-        let process_group = child.id() as libc::pid_t;
+        let (child, started) = start()?;
+        let process_group = child.pid;
         *custody = Some(super::ProcessTree {
             child: Some(child),
             guard: Guard {
@@ -284,7 +354,7 @@ pub(super) fn spawn_controlled(
             #[cfg(all(test, feature = "test-support", not(loom)))]
             capture_armed: None,
         });
-        Ok(())
+        started
     })
 }
 

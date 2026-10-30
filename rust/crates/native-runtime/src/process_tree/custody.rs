@@ -6,9 +6,12 @@
 //! returns only once every tree a dead owner left is dead, so nothing such a
 //! tree started can act after the new owner records its interruption.
 //!
-//! - Unix: the direct child is a warden forked before exec. It creates and
-//!   locks its record, watches the owner (Linux: pidfd; macOS: kqueue
-//!   `NOTE_EXIT`) and forks the program. When the owner or the program exits
+//! - Unix: the direct child is a warden, which runs before exec. It creates
+//!   and locks its record, watches the owner (Linux: pidfd; macOS: kqueue
+//!   `NOTE_EXIT`) and forks the program. On Linux the owner's one runner, a
+//!   small static image it execs once, clones each warden as the owner's
+//!   child, so no spawn forks the owner's address space; on macOS the owner
+//!   forks the warden. When the owner or the program exits
 //!   it kills every remaining descendant (Linux: as child subreaper; macOS:
 //!   its process group), unlinks the record and exits as the program did.
 //!   A fence takes each record's lock, which the kernel releases only when
@@ -203,8 +206,8 @@ impl Record {
         #[cfg(unix)]
         {
             let mut storage = [0; 24];
-            let name = super::warden::record_name(self.pid, &mut storage)
-                .ok_or(io::ErrorKind::InvalidInput)?;
+            let name =
+                super::record::name(self.pid, &mut storage).ok_or(io::ErrorKind::InvalidInput)?;
             // SAFETY: a live directory descriptor and a NUL-terminated name.
             let removed = unsafe {
                 libc::unlinkat(
@@ -244,31 +247,53 @@ mod retirement_tests;
 mod unix {
     use super::{File, Path, ProcessCustody, Record, fs, io};
     use std::io::Read as _;
-    use std::os::fd::AsRawFd as _;
     use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::process::CommandExt as _;
-    use std::process::Command;
 
     impl ProcessCustody {
-        /// Makes `command`'s direct child the warden of its tree. Answers
-        /// the custody directory, opened for this spawn, which the caller
-        /// keeps open while the spawn borrows it.
-        pub(in crate::process_tree) fn arm(&self, command: &mut Command) -> io::Result<File> {
+        /// Opens the custody directory for one spawn, which keeps it open
+        /// while the tree's record lives.
+        pub(in crate::process_tree) fn directory(&self) -> io::Result<File> {
             let directory = File::open(&self.path)?;
             // A directory put in place of the fenced one holds records no
             // fence of this custody has seen.
             if identity(&directory)? != self.identity {
                 return Err(io::Error::other("process custody directory was replaced"));
             }
-            let descriptor = directory.as_raw_fd();
-            let owner = libc::pid_t::try_from(std::process::id())
-                .map_err(|_| io::ErrorKind::InvalidInput)?;
-            // SAFETY: the warden makes only async-signal-safe calls, and the
-            // custody directory stays open while the borrowing spawn runs.
-            unsafe {
-                command.pre_exec(move || super::super::warden::enter(descriptor, owner));
-            }
             Ok(directory)
+        }
+
+        /// Starts `command` with a warden as its tree's direct child,
+        /// recorded in `directory`. On Linux the owner's runner clones the
+        /// warden; on macOS this owner forks it.
+        pub(in crate::process_tree) fn spawn(
+            command: &super::super::ProcessCommand,
+            directory: &File,
+            meter: Option<&dyn crate::NativeReadMeter>,
+            retained: &mut Option<super::super::ProcessTree>,
+        ) -> io::Result<()> {
+            #[cfg(target_os = "linux")]
+            {
+                super::super::platform::adopt(meter, retained, || {
+                    super::super::runner::start(command, directory)
+                })
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                use std::os::fd::AsRawFd as _;
+                use std::os::unix::process::CommandExt as _;
+                let mut native = command.to_std()?;
+                let descriptor = directory.as_raw_fd();
+                let owner = libc::pid_t::try_from(std::process::id())
+                    .map_err(|_| io::ErrorKind::InvalidInput)?;
+                // SAFETY: the warden makes only async-signal-safe calls, and
+                // the custody directory stays open while the spawn runs.
+                unsafe {
+                    native.pre_exec(move || {
+                        super::super::warden::enter(descriptor, owner).map_err(Into::into)
+                    });
+                }
+                super::super::platform::spawn_controlled(&mut native, meter, retained)
+            }
         }
     }
 
@@ -309,8 +334,8 @@ mod unix {
         }
         let mut recorded = Vec::new();
         (&*record).read_to_end(&mut recorded)?;
-        let mut boot = [0; super::super::warden::BOOT_BYTES];
-        super::super::warden::boot_identity(&mut boot)?;
+        let mut boot = [0; super::super::record::BOOT_BYTES];
+        super::super::record::boot_identity(&mut boot)?;
         // A record from another boot, or one whose warden died before it
         // recorded its start (and so before it forked the program), names no
         // live tree.
@@ -336,14 +361,16 @@ mod unix {
     /// with that ID now is someone else's. With no such process at all, the
     /// group ID stays reserved while any member of the warden's group lives.
     fn fence_group(group: libc::pid_t, start: &[u8]) -> io::Result<()> {
-        let mut current = [0; super::super::warden::START_BYTES];
+        let mut current = [0; super::super::record::START_BYTES];
         use crate::process_identity::{IncarnationState, ProcessIncarnation, ProcessObservation};
         let owner = ProcessIncarnation::new(
             u32::try_from(group).map_err(|_| io::ErrorKind::InvalidData)?,
             start,
         )
         .ok_or(io::ErrorKind::InvalidData)?;
-        let observation = match super::super::warden::start_identity(group, &mut current) {
+        let observation = match super::super::record::start_identity(group, &mut current)
+            .map_err(std::io::Error::from)
+        {
             Ok(length) => ProcessObservation::Present {
                 started: current.get(..length).ok_or(io::ErrorKind::InvalidData)?,
                 exited: false,
@@ -377,6 +404,7 @@ mod unix {
     /// Waits for the live members of `group` to exit. False when none lived.
     #[cfg(target_os = "linux")]
     fn await_members(group: libc::pid_t) -> io::Result<bool> {
+        use std::os::fd::AsRawFd as _;
         let mut watches = Vec::new();
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
