@@ -86,6 +86,7 @@ async fn captured_snapshot_pins_facts_and_namespace_without_retaining_state_guar
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn captured_snapshot_keeps_original_native_allocation_custody()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -9,7 +9,7 @@ use acyclic_auth::contract::{
 #[derive(Clone)]
 pub struct ResourceAuthorization {
     authority: Arc<Authority>,
-    pub(super) resource: Arc<str>,
+    pub(super) resource: Arc<ResourcePattern>,
     capability: Arc<std::sync::Mutex<Arc<dyn Admission>>>,
     pub(super) action: &'static str,
 }
@@ -21,7 +21,10 @@ impl ResourceAuthorization {
     ) -> Self {
         Self {
             authority,
-            resource: resource.into(),
+            resource: Arc::new(ResourcePattern {
+                name: resource,
+                prefix: true,
+            }),
             capability: Arc::new(std::sync::Mutex::new(capability)),
             action: "fs/list",
         }
@@ -54,13 +57,7 @@ impl ResourceAuthorization {
         policy: PolicyDecision,
     ) -> Result<(), StreamError> {
         if !acyclic_auth::valid_resource(resource)
-            || !acyclic_auth::authority::resource_matches(
-                &ResourcePattern {
-                    name: self.resource.to_string(),
-                    prefix: true,
-                },
-                resource,
-            )
+            || !acyclic_auth::authority::resource_matches(&self.resource, resource)
         {
             return Err(StreamError::AccessDenied);
         }
@@ -165,6 +162,7 @@ impl ResourceAuthorization {
         }
         if let Some(path) = self
             .resource
+            .name
             .strip_prefix(volume_resource)
             .and_then(|tail| tail.strip_prefix('/'))
         {
