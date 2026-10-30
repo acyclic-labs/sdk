@@ -62,7 +62,9 @@ impl CommandJournal for LocalPort {
         let entries = if from == head {
             Vec::new()
         } else {
-            spawn_blocking(
+            // The key is formatted at submission; ending the statement here
+            // keeps its non-Send arguments out of the awaited future.
+            let read = spawn_blocking(
                 "streams",
                 "read-page",
                 &format_args!("{:p}/{from}", Arc::as_ptr(&journal)),
@@ -106,9 +108,8 @@ impl CommandJournal for LocalPort {
                     }
                     Ok(entries)
                 },
-            )
-            .await
-            .map_err(|_| StreamError::Unavailable)??
+            );
+            read.await.map_err(|_| StreamError::Unavailable)??
         };
         Ok(JournalPage {
             entries,
