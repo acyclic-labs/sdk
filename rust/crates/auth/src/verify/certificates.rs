@@ -109,7 +109,7 @@ impl CertificateVerifier {
             .and_then(|birth| birth.birth.as_ref())
             .ok_or(VerifyError::Malformed)?;
         let mut seen = HashSet::new();
-        for key in trust.environment_keys(&birth.environment)? {
+        for key in trust.environment_keys(&birth.environment)?.iter() {
             seen.insert(public_key(key)?.to_bytes());
         }
         seen.insert(public_key(&birth.genesis_public_key)?.to_bytes());

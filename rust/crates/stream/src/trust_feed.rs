@@ -2,15 +2,50 @@
 //! Stream and one child Stream per followed account, multiplexed in one task
 //! with no task or timer per account. Freshness is follow lag: a record is
 //! served as soon as its Stream delivers it, never on a refresh interval.
-use crate::{FollowFilter, Stream, StreamError, StreamProvider, UnixMillisClock};
+use crate::{FollowFilter, Record, Stream, StreamError, StreamProvider, UnixMillisClock};
 use acyclic_auth::trust::{Follower, account_path, environment_path};
 use futures::{
     StreamExt as _,
     channel::mpsc,
-    future::{self, Either},
+    future::{self, BoxFuture, Either},
     stream::{BoxStream, SelectAll},
 };
 use std::{collections::HashMap, sync::Arc};
+
+/// Live records of one trust Stream.
+pub type Records = BoxStream<'static, Result<Record, StreamError>>;
+
+/// What a [`TrustFeed`] reads: a Stream's tail and a live follow from an
+/// offset. Every [`StreamProvider`] is a source; a host may supply its own.
+pub trait Source: Send + Sync + 'static {
+    /// The Stream's current tail (next sequence).
+    fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>>;
+    /// Records from `from`, then live, until the Stream is lost.
+    fn follow<'a>(
+        &'a self,
+        path: &'a str,
+        from: u64,
+    ) -> BoxFuture<'a, Result<Records, StreamError>>;
+}
+
+impl<P: StreamProvider + ?Sized> Source for Arc<P> {
+    fn tail<'a>(&'a self, path: &'a str) -> BoxFuture<'a, Result<u64, StreamError>> {
+        Box::pin(async move { Stream::new(Arc::clone(self), path)?.tail().await })
+    }
+
+    fn follow<'a>(
+        &'a self,
+        path: &'a str,
+        from: u64,
+    ) -> BoxFuture<'a, Result<Records, StreamError>> {
+        Box::pin(async move {
+            let records = Stream::new(Arc::clone(self), path)?
+                .follow(from, FollowFilter::new(Default::default())?)
+                .await?;
+            Ok(records.boxed())
+        })
+    }
+}
 
 /// Adds accounts to a running [`TrustFeed`]; following is lazy, by account.
 #[derive(Clone)]
@@ -24,12 +59,12 @@ impl Accounts {
     }
 }
 
-type Item = (Option<String>, Result<crate::Record, StreamError>);
+type Item = (Option<String>, Result<Record, StreamError>);
 
-/// One follow session over a provider. Offsets persist across [`Self::run`]
-/// calls, so a reconnect resumes where the lost follow stopped.
-pub struct TrustFeed<P: ?Sized> {
-    provider: Arc<P>,
+/// One follow session over a [`Source`]. Offsets persist across
+/// [`Self::run`] calls, so a reconnect resumes where the lost follow stopped.
+pub struct TrustFeed<S> {
+    source: S,
     follower: Arc<Follower>,
     clock: Arc<dyn UnixMillisClock>,
     next: HashMap<Option<String>, u64>,
@@ -37,11 +72,11 @@ pub struct TrustFeed<P: ?Sized> {
     added: Option<mpsc::UnboundedReceiver<String>>,
 }
 
-impl<P: StreamProvider + ?Sized> TrustFeed<P> {
-    /// A feed applying `provider`'s trust Streams to `follower` at `clock`'s
+impl<S: Source> TrustFeed<S> {
+    /// A feed applying `source`'s trust Streams to `follower` at `clock`'s
     /// protected time.
     pub fn new(
-        provider: Arc<P>,
+        source: S,
         follower: Arc<Follower>,
         clock: Arc<dyn UnixMillisClock>,
     ) -> (Self, Accounts) {
@@ -50,7 +85,7 @@ impl<P: StreamProvider + ?Sized> TrustFeed<P> {
         next.insert(None, 0);
         (
             Self {
-                provider,
+                source,
                 follower,
                 clock,
                 next,
@@ -141,12 +176,9 @@ impl<P: StreamProvider + ?Sized> TrustFeed<P> {
             || environment_path(&environment),
             |account| account_path(&environment, account),
         );
-        let stream = Stream::new(Arc::clone(&self.provider), path)?;
         let from = self.next.get(&key).copied().unwrap_or(0);
-        let tail = stream.tail().await?;
-        let records = stream
-            .follow(from, FollowFilter::new(Default::default())?)
-            .await?;
+        let tail = self.source.tail(&path).await?;
+        let records = self.source.follow(&path, from).await?;
         let tag = key.clone();
         follows.push(records.map(move |record| (tag.clone(), record)).boxed());
         if from >= tail {

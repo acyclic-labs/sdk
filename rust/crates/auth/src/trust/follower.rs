@@ -7,10 +7,14 @@
 //! canonical [`TrustRecord`].
 //!
 //! Signers. A pinned anchor key signs environment keyring 1; each later
-//! environment keyring is signed by a key of the previous one. An environment
-//! key signs each account keyring, whose single `root_public_key` is the
-//! account's only issuer root: rotation ends the previous root. The current
-//! account root signs that account's revocations.
+//! environment keyring is signed by a key of the previous one. Each account
+//! keyring names a single `root_public_key`, the account's only issuer root:
+//! an environment key may sign any keyring and is the only signer that sets a
+//! new root (rotation ends the previous root); the current root may sign one
+//! that keeps it, which can only narrow (epoch floor, key and block
+//! revocations). The current account root signs that account's revocations.
+//! "Everything before an epoch" is the keyring's `minimum_key_epoch` alone:
+//! revocation records carrying an epoch floor are refused.
 //!
 //! Application. Each record is authenticated and gap-checked (sequence plus
 //! previous digest), refused if it rolls back an epoch floor, publication time
@@ -69,7 +73,11 @@ pub enum Applied {
     Duplicate,
 }
 
-struct Environment {
+/// One environment's authenticated keyring frontier: its current keys and
+/// the (sequence, digest) its next record must extend. Built only from the
+/// pinned anchor and by replaying signed records, so it cannot be forged.
+#[derive(Clone)]
+pub struct EnvironmentFrontier {
     name: String,
     keys: Arc<[BlockId]>,
     sequence: u64,
@@ -77,29 +85,176 @@ struct Environment {
     issued_at: u64,
 }
 
-struct Keyring {
-    sequence: u64,
-    digest: BlockId,
-    issued_at: u64,
-    root: Arc<[BlockId]>,
-    minimum_key_epoch: u64,
-    revoked_keys: HashSet<String>,
-    revoked_blocks: HashMap<BlockId, u64>,
+impl EnvironmentFrontier {
+    /// The frontier before environment keyring 1: only `anchor` signs.
+    #[must_use]
+    pub fn genesis(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
+        Self {
+            name: environment.into(),
+            keys: anchor.into(),
+            sequence: 0,
+            digest: [0; 32],
+            issued_at: 0,
+        }
+    }
+
+    /// Replays the environment Stream's records from genesis, through the
+    /// same validation as [`Follower::apply`].
+    ///
+    /// # Errors
+    /// A gap, a foreign signer, a rollback, or a non-environment record.
+    pub fn resume(
+        environment: impl Into<String>,
+        anchor: Vec<BlockId>,
+        records: &[&[u8]],
+    ) -> Result<Self, VerifyError> {
+        let mut frontier = Self::genesis(environment, anchor);
+        for record in records {
+            let TrustRecordKind::Environment(signed) = decode(record)?.record else {
+                return Err(VerifyError::Trust);
+            };
+            frontier.apply(&signed, u64::MAX)?;
+        }
+        Ok(frontier)
+    }
+
+    /// The environment name.
+    #[must_use]
+    pub fn environment(&self) -> &str {
+        &self.name
+    }
+
+    /// The current environment keys.
+    #[must_use]
+    pub fn keys(&self) -> &[BlockId] {
+        &self.keys
+    }
+
+    /// Last applied sequence (0 before keyring 1) and its digest.
+    #[must_use]
+    pub const fn frontier(&self) -> (u64, BlockId) {
+        (self.sequence, self.digest)
+    }
+
+    /// Last applied publication time.
+    #[must_use]
+    pub const fn issued_at(&self) -> u64 {
+        self.issued_at
+    }
+
+    /// Authenticates and applies the next environment keyring at `now`. A
+    /// refusal changes nothing.
+    pub(super) fn apply(
+        &mut self,
+        signed: &SignedEnvironmentKeyring,
+        now: u64,
+    ) -> Result<(Applied, u64), VerifyError> {
+        let next = &signed.keyring;
+        if next.environment != self.name {
+            return Err(VerifyError::Trust);
+        }
+        if next.sequence <= self.sequence {
+            return Ok((Applied::Duplicate, self.issued_at));
+        }
+        if self.sequence.checked_add(1) != Some(next.sequence)
+            || next.previous_digest != self.digest
+            || next.issued_at_unix_seconds < self.issued_at
+            || next.keys.is_empty()
+        {
+            return Err(VerifyError::Trust);
+        }
+        if next.issued_at_unix_seconds > now {
+            return Err(VerifyError::Time);
+        }
+        let mut message = Vec::new();
+        claims_message(
+            &mut message,
+            ENVIRONMENT_DOMAIN,
+            &EnvironmentKeyringProto::from(next.clone()),
+        )?;
+        signed_by(&self.keys, &message, &signed.signature)?;
+        let keys = next
+            .keys
+            .iter()
+            .map(|key| {
+                key.as_slice()
+                    .try_into()
+                    .map_err(|_| VerifyError::Malformed)
+            })
+            .collect::<Result<Vec<BlockId>, _>>()?;
+        *self = Self {
+            name: next.environment.clone(),
+            keys: keys.into(),
+            sequence: next.sequence,
+            digest: block_id(&message, &signed.signature),
+            issued_at: next.issued_at_unix_seconds,
+        };
+        Ok((Applied::Changed, next.issued_at_unix_seconds))
+    }
 }
 
+#[derive(Clone)]
+pub(super) struct Keyring {
+    pub(super) sequence: u64,
+    pub(super) digest: BlockId,
+    pub(super) issued_at: u64,
+    pub(super) root: Arc<[BlockId]>,
+    pub(super) minimum_key_epoch: u64,
+    pub(super) revoked_keys: HashSet<String>,
+    pub(super) revoked_blocks: HashMap<BlockId, u64>,
+}
+
+/// One account's authenticated keyring and revocation frontiers: what a
+/// follower serves and what an account root's custody extends.
 #[derive(Default)]
-struct Account {
-    keyring: Option<Keyring>,
-    revocations: Option<RevocationState>,
+pub(super) struct Account {
+    pub(super) keyring: Option<Keyring>,
+    pub(super) revocations: Option<RevocationState>,
     /// The driver applied this account's Stream through its observed tail.
     serving: bool,
     /// A refused record; cleared only by a record that applies.
     poisoned: bool,
 }
 
+impl Account {
+    /// Authenticates and applies one record of account `id` at `now`: the one
+    /// account validation path. An environment key signs every keyring that
+    /// sets a root; the current root alone may sign one that keeps it.
+    pub(super) fn apply(
+        &mut self,
+        id: &str,
+        record: &TrustRecordKind,
+        environment: &[BlockId],
+        now: u64,
+    ) -> Result<(Applied, u64), VerifyError> {
+        match record {
+            TrustRecordKind::Keyring(signed) if signed.snapshot.account_id == id => {
+                keyring(self, signed, environment, now)
+            }
+            TrustRecordKind::Revocation(signed) if publication_account(signed) == id => {
+                revocation(self, id, signed, now)
+            }
+            _ => Err(VerifyError::Trust),
+        }
+    }
+}
+
+pub(super) fn decode(record: &[u8]) -> Result<TrustRecord, VerifyError> {
+    TrustRecordProto::decode(record)
+        .map_err(|_| VerifyError::Malformed)
+        .and_then(|proto| TrustRecord::try_from(proto).map_err(VerifyError::from))
+}
+
+pub(super) fn publication_account(signed: &SignedRevocation) -> &str {
+    match &signed.publication {
+        RevocationPublication::Delta(delta) => &delta.account_id,
+        RevocationPublication::Checkpoint(checkpoint) => &checkpoint.account_id,
+    }
+}
+
 /// Follows signed trust records for any number of accounts of one environment.
 pub struct Follower {
-    environment: RwLock<Environment>,
+    environment: RwLock<EnvironmentFrontier>,
     accounts: RwLock<HashMap<String, Account>>,
     open: AtomicBool,
     floor: AtomicU64,
@@ -113,13 +268,7 @@ impl Follower {
     #[must_use]
     pub fn new(environment: impl Into<String>, anchor: Vec<BlockId>) -> Self {
         Self {
-            environment: RwLock::new(Environment {
-                name: environment.into(),
-                keys: anchor.into(),
-                sequence: 0,
-                digest: [0; 32],
-                issued_at: 0,
-            }),
+            environment: RwLock::new(EnvironmentFrontier::genesis(environment, anchor)),
             accounts: RwLock::default(),
             open: AtomicBool::new(false),
             floor: AtomicU64::new(0),
@@ -144,28 +293,25 @@ impl Follower {
     /// # Errors
     /// Malformed, forged, gapped, rolled-back or future-dated records.
     pub fn apply(&self, record: &[u8], now: u64) -> Result<Applied, VerifyError> {
-        let record = TrustRecordProto::decode(record)
-            .map_err(|_| VerifyError::Malformed)
-            .and_then(|proto| TrustRecord::try_from(proto).map_err(VerifyError::from))?;
-        let result = match &record.record {
+        let record = decode(record)?.record;
+        let result = match &record {
             TrustRecordKind::Environment(signed) => {
-                let result = self.environment_record(signed, now);
+                let result = self
+                    .environment
+                    .write()
+                    .map_err(|_| VerifyError::Unavailable)
+                    .and_then(|mut environment| environment.apply(signed, now));
                 if result.is_err() {
                     self.fence();
-                    return result;
+                    return result.map(|(applied, _)| applied);
                 }
                 result
             }
-            TrustRecordKind::Keyring(signed) => self
-                .account_record(&signed.snapshot.account_id, |account, environment| {
-                    keyring(account, signed, environment, now)
-                }),
+            TrustRecordKind::Keyring(signed) => {
+                self.account_record(&signed.snapshot.account_id, &record, now)
+            }
             TrustRecordKind::Revocation(signed) => {
-                let id = match &signed.publication {
-                    RevocationPublication::Delta(delta) => &delta.account_id,
-                    RevocationPublication::Checkpoint(checkpoint) => &checkpoint.account_id,
-                };
-                self.account_record(id, |account, _| revocation(account, id, signed, now))
+                self.account_record(publication_account(signed), &record, now)
             }
         };
         match result {
@@ -182,59 +328,11 @@ impl Follower {
         result.map(|(applied, _)| applied)
     }
 
-    fn environment_record(
-        &self,
-        signed: &SignedEnvironmentKeyring,
-        now: u64,
-    ) -> Result<(Applied, u64), VerifyError> {
-        let mut environment = self
-            .environment
-            .write()
-            .map_err(|_| VerifyError::Unavailable)?;
-        let next = &signed.keyring;
-        if next.environment != environment.name {
-            return Err(VerifyError::Trust);
-        }
-        if next.sequence <= environment.sequence {
-            return Ok((Applied::Duplicate, environment.issued_at));
-        }
-        if environment.sequence.checked_add(1) != Some(next.sequence)
-            || next.previous_digest != environment.digest
-            || next.issued_at_unix_seconds < environment.issued_at
-            || next.issued_at_unix_seconds > now
-        {
-            return Err(VerifyError::Trust);
-        }
-        let mut message = Vec::new();
-        claims_message(
-            &mut message,
-            ENVIRONMENT_DOMAIN,
-            &EnvironmentKeyringProto::from(next.clone()),
-        )?;
-        signed_by(&environment.keys, &message, &signed.signature)?;
-        let keys = next
-            .keys
-            .iter()
-            .map(|key| {
-                key.as_slice()
-                    .try_into()
-                    .map_err(|_| VerifyError::Malformed)
-            })
-            .collect::<Result<Vec<BlockId>, _>>()?;
-        *environment = Environment {
-            name: next.environment.clone(),
-            keys: keys.into(),
-            sequence: next.sequence,
-            digest: block_id(&message, &signed.signature),
-            issued_at: next.issued_at_unix_seconds,
-        };
-        Ok((Applied::Changed, next.issued_at_unix_seconds))
-    }
-
     fn account_record(
         &self,
         id: &str,
-        apply: impl FnOnce(&mut Account, &[BlockId]) -> Result<(Applied, u64), VerifyError>,
+        record: &TrustRecordKind,
+        now: u64,
     ) -> Result<(Applied, u64), VerifyError> {
         let environment = self
             .environment
@@ -247,7 +345,7 @@ impl Follower {
             .write()
             .map_err(|_| VerifyError::Unavailable)?;
         let account = accounts.entry(id.to_owned()).or_default();
-        let result = apply(account, &environment);
+        let result = account.apply(id, record, &environment, now);
         match &result {
             Ok((Applied::Changed, _)) => account.poisoned = false,
             Ok((Applied::Duplicate, _)) => {}
@@ -383,7 +481,23 @@ fn keyring(
         KEYRING_DOMAIN,
         &KeyringSnapshotProto::from(next.clone()),
     )?;
-    signed_by(environment, &message, &signed.signature)?;
+    // The environment attests every root it sets; the current root alone may
+    // only re-sign itself, so it can narrow (raise its epoch, revoke keys or
+    // blocks) but never rotate.
+    let kept = account
+        .keyring
+        .as_ref()
+        .filter(|current| {
+            current
+                .root
+                .first()
+                .is_some_and(|root| root.as_slice() == next.root_public_key.as_slice())
+        })
+        .map(|current| current.root.clone());
+    signed_by(environment, &message, &signed.signature).or_else(|refused| match &kept {
+        Some(root) => signed_by(root, &message, &signed.signature),
+        None => Err(refused),
+    })?;
     let root: BlockId = next
         .root_public_key
         .as_slice()
@@ -421,15 +535,19 @@ fn revocation(
         .as_ref()
         .and_then(|keyring| keyring.root.first())
         .ok_or(VerifyError::Trust)?;
+    // "Everything before an epoch" is the keyring's minimum_key_epoch alone.
     let (sequence, issued_at) = match &signed.publication {
-        RevocationPublication::Delta(delta) => (delta.sequence, delta.issued_at_unix_seconds),
-        RevocationPublication::Checkpoint(checkpoint) => {
+        RevocationPublication::Delta(delta) if delta.revoke_all_before_epoch.is_none() => {
+            (delta.sequence, delta.issued_at_unix_seconds)
+        }
+        RevocationPublication::Checkpoint(checkpoint) if checkpoint.minimum_key_epoch == 0 => {
             (checkpoint.sequence, checkpoint.issued_at_unix_seconds)
         }
+        _ => return Err(VerifyError::Trust),
     };
     if let Some(state) = &mut account.revocations {
         if sequence <= state.frontier().0 {
-            return Ok((Applied::Duplicate, state.floor().1));
+            return Ok((Applied::Duplicate, state.published_at()));
         }
         // Gap-checked and rollback-refusing; a refusal changes nothing.
         state.apply(signed, &root, now)?;
@@ -455,10 +573,10 @@ impl Trust for Follower {
 
     fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
         self.with_account(account, |keyring, revocations| {
-            let (epoch, published) = revocations.floor();
+            let published = revocations.published_at();
             AccountState {
                 issuer_keys: Keys::Shared(keyring.root.clone()),
-                minimum_key_epoch: keyring.minimum_key_epoch.max(epoch),
+                minimum_key_epoch: keyring.minimum_key_epoch,
                 not_before_unix_seconds: keyring.issued_at.max(published),
             }
         })

@@ -3,8 +3,8 @@ use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
 mod follower;
 mod issuer;
-pub use follower::{Applied, Follower, account_path, environment_path};
-pub use issuer::{AccountRoot, Certification, Issuer};
+pub use follower::{Applied, EnvironmentFrontier, Follower, account_path, environment_path};
+pub use issuer::{AccountRoot, Certification, Issuer, KeyringFrontier};
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
 #[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

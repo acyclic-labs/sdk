@@ -183,9 +183,9 @@ impl RevocationState {
         }
     }
 
-    /// Explicit epoch floor and latest accepted publication time.
-    pub(crate) const fn floor(&self) -> (u64, u64) {
-        (self.minimum_key_epoch, self.published_at)
+    /// Latest accepted publication time.
+    pub(crate) const fn published_at(&self) -> u64 {
+        self.published_at
     }
 
     /// Last accepted sequence and exact signed-publication digest. Persist with
