@@ -330,14 +330,10 @@ where
 
     /// `agent` when it is the root or one of its descendants.
     fn within_tree<'a>(&self, agent: &'a AgentPath) -> Result<&'a AgentPath, Error> {
-        let mut cursor = Some(agent.clone());
-        while let Some(path) = cursor {
-            if path == self.root {
-                return Ok(agent);
-            }
-            cursor = path.parent();
-        }
-        Err(Error::NoSuchAgent)
+        self.root
+            .contains(agent)
+            .then_some(agent)
+            .ok_or(Error::NoSuchAgent)
     }
 
     /// The `fs:/` resource announcing the root's tool output, on a host whose
