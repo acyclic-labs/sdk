@@ -8,6 +8,7 @@ import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } 
 
 export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly endpoint: string;
+  /** Optional caller response capacity; omission imposes no logical total. */
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
@@ -24,7 +25,7 @@ const STATUS: Readonly<Record<number, wire.ErrorCode>> = {
 export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly credential: CredentialProvider;
   private readonly endpoint: URL;
-  private readonly maximumResponse: number;
+  private readonly maximumResponse: number | undefined;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
   private readonly timeoutMs: number | undefined;
@@ -33,8 +34,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const endpoint = new URL(options.endpoint);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
     this.credential = credentialProvider(options);
-    this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
-    if (!Number.isSafeInteger(this.maximumResponse) || this.maximumResponse < 1 || this.maximumResponse > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
+    this.maximumResponse = options.maximumResponseBytes;
+    if (this.maximumResponse !== undefined && (!Number.isSafeInteger(this.maximumResponse) || this.maximumResponse < 1)) throw new RangeError("maximumResponseBytes must be a positive safe integer");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v1/objects/";
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -69,7 +70,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private async *send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): AsyncGenerator<Uint8Array, void> {
     controller.signal.throwIfAborted();
     const streaming = route === "blobs/availability";
-    const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, Number.MAX_SAFE_INTEGER);
+    const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, input.byteLength);
     if (sizes) sizes.requestBytes = request.byteLength;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let admitted: CredentialRequest | undefined;
@@ -92,7 +93,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         }
       }
       const declared = Number(response.headers.get("content-length") ?? 0);
-      if (declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+      if (this.maximumResponse !== undefined && declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
       const chunks: Uint8Array[] = [];
       let size = 0;
       if (reader !== undefined) while (true) {
@@ -100,7 +101,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         if (response.status === 200) checkCredential(lease);
         if (done) break;
         size += value.byteLength;
-        if (size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        if (this.maximumResponse !== undefined && size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
         chunks.push(value);
       }
       if (sizes) sizes.responseBytes = size;
@@ -109,12 +110,12 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
       if (response.status !== 200) {
         let detail: wire.ErrorDetail | undefined;
-        try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, this.maximumResponse)); } catch { /* the status classifies it */ }
+        try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, data.byteLength)); } catch { /* the status classifies it */ }
         throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : STATUS[response.status] ?? wire.ErrorCode.UNAVAILABLE);
       }
       checkCredential(lease);
       let decoded: Uint8Array;
-      try { decoded = decode_objects_v1_json(objects_v1_http_type(route, true), data, this.maximumResponse); }
+      try { decoded = decode_objects_v1_json(objects_v1_http_type(route, true), data, data.byteLength); }
       catch { throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE); }
       checkCredential(lease);
       admitted = lease;
