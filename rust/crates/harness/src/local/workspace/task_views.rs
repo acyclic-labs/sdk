@@ -186,6 +186,21 @@ impl LocalWorkspace {
         let workspace = Arc::new(workspace);
         Ok(workspace)
     }
+    /// Returns the physical binding already admitted by checkout selection.
+    /// Publication shares the state guard and cannot create another mount owner.
+    pub(in crate::local) fn cached_selected_workspace(
+        self: &Arc<Self>,
+        state: &State,
+    ) -> Option<Arc<LocalWorkspace>> {
+        let view = state.active.as_ref().unwrap_or_else(|| self.view());
+        if self.mounted.is_none() || view.workspace().id() == state.initial_view {
+            return Some(Arc::clone(self));
+        }
+        state.workspace.as_ref().and_then(|(selected, workspace)| {
+            (*selected == view.workspace().id()).then(|| Arc::clone(workspace))
+        })
+    }
+
     // The caller owns this checkout's state guard. A sparse mount follows one
     // workspace; switching selects a separate mount instead of staging across
     // the mount's filesystem boundary. Failed mounts can be retried from state.
@@ -204,10 +219,8 @@ impl LocalWorkspace {
             state.mounts = Arc::clone(&self.mounts);
             return Ok(self.clone());
         }
-        if let Some((selected, workspace)) = &state.workspace
-            && *selected == id
-        {
-            return Ok(workspace.clone());
+        if let Some(workspace) = self.cached_selected_workspace(state) {
+            return Ok(workspace);
         }
         owner.verify().await?;
         let mounted = self.mount_task_source(view).await?;

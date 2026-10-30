@@ -45,6 +45,142 @@ async fn native_fixture() -> Result<(
 }
 
 #[tokio::test]
+async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -> Result<()> {
+    let (_directory, _state, harness, initial) = native_fixture().await?;
+    let task = Arc::new(crate::runtime::test_context::agent_context(
+        RuntimeScope::new(harness.signed.capabilities().clone(), Default::default())?,
+        None,
+    )?);
+    let root = &initial.tools.workspace;
+    let stop = acyclic_fs::CancellationToken::new();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &stop)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let view = root
+        .view()
+        .open_related(
+            root.view().workspace().clone(),
+            &mut acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                work: &work,
+                cancellation: &stop,
+            },
+        )
+        .await
+        .map_err(storage)?;
+    let mounted = root
+        .mount_task_view(
+            view,
+            &*task,
+            None,
+            &crate::filesystem::NativeMountAuthority::admitted(
+                harness.verifier.clone(),
+                harness.signed.copy(&mut None)?,
+            ),
+        )
+        .await?;
+    let tools = Arc::new(
+        CheckoutTools::new(
+            Arc::clone(&mounted),
+            &harness.project,
+            Arc::new(acyclic_stream::SystemUnixMillisClock),
+            &harness.signed,
+            &harness.verifier,
+        )
+        .await?,
+    );
+    let publisher = CheckoutPublisher::new(
+        Arc::clone(&tools),
+        Arc::clone(&harness.files),
+        &harness.project,
+        &harness.verifier,
+        harness.limits.file_bytes,
+    );
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "branch.txt",
+            b"original",
+            "text/plain",
+            "branch.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let context = ToolContext::new(task, OperationId::new(), "select-branch")?;
+    tools
+        .execute(
+            ToolInvocation {
+                operation_id: context.operation_id(),
+                call_id: context.call_id().into(),
+                name: "fs".into(),
+                arguments: serde_json::json!({"command": "checkout -b topic"}),
+            },
+            Some(context),
+        )
+        .await?;
+    let selected = {
+        let state = lock_owned(StateArc::clone(&tools.state)).await;
+        publisher.selected_workspace(&state)?
+    };
+    assert_ne!(selected.path, mounted.path);
+    for broken in [false, true] {
+        let operation = OperationId::new();
+        let bytes = if broken {
+            b"counterfactual".as_slice()
+        } else {
+            b"selected".as_slice()
+        };
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(broken);
+        let staged = publisher
+            .stage(
+                operation,
+                "branch.txt",
+                bytes,
+                "text/plain",
+                "branch.txt",
+                crate::conversation::ContentAccess::default(),
+            )?
+            .await;
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
+        let (file, _) = staged?;
+        let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
+        assert_eq!(
+            visible == bytes,
+            !broken,
+            "publication advanced the wrong branch mount"
+        );
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(broken);
+        let recovered = publisher
+            .observe_staged_once(operation, 64, crate::conversation::ContentAccess::default())?
+            .await;
+        super::tests::PUBLISH_TO_INITIAL_MOUNT.set(false);
+        assert_eq!(recovered?.0, Some(file.clone()));
+        let visible = std::fs::read(selected.path.join("branch.txt")).map_err(storage)?;
+        assert_eq!(
+            visible == bytes,
+            !broken,
+            "recovery advanced the wrong branch mount"
+        );
+        // The original observation repairs the deliberately unadvanced branch
+        // without another write or generation, and retains the immutable receipt.
+        assert_eq!(
+            publisher
+                .observe_staged_once(operation, 64, crate::conversation::ContentAccess::default(),)?
+                .await?
+                .0,
+            Some(file)
+        );
+        assert_eq!(
+            std::fs::read(selected.path.join("branch.txt")).map_err(storage)?,
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(mounted.path.join("branch.txt")).map_err(storage)?,
+            b"original"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn file_publication_materializes_its_exact_committed_bytes() -> Result<()> {
     let (directory, _state, harness, publisher) = native_fixture().await?;
     let (file, _) = publisher
