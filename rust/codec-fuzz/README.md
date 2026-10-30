@@ -44,8 +44,13 @@ changed context. Warm responses also reach retention and renewal admission for
 absolute and idle policies: malformed related messages, absent request identity,
 foreign context/commitment and changed expiry/timeout must refuse. Six additional
 writer producers require positive pair admission before capture (12 binary/JSON
-inputs). Normalization comparisons respect the transport byte ceiling for both
-encodings. The one
+inputs). Evaluation admission binds the complete original specification and
+refuses a changed specification; its admitted view/spec pair adds four pending
+inputs. Six Context provenance alternatives and a publication receipt add 14
+pending inputs, each requiring positive admission. One shared pair oracle keeps
+normalization, foreign caller identity and malformed related-message controls
+together. Normalization comparisons respect the transport byte ceiling for
+both encodings. The one
 round-trip helper also serves Auth; no service codec is reimplemented here.
 Run views also reach both public watch-start projections. Run events exercise
 the actual watch state: admission advances it atomically, refused gaps,

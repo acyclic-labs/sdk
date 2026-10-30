@@ -2,6 +2,8 @@
 use prost::Message;
 use std::fmt::Debug;
 mod actors;
+mod context;
+mod evaluation;
 mod objects;
 mod warm;
 
@@ -33,25 +35,39 @@ fn admit<W: Message + Default, T>(bytes: &[u8], decode: impl FnOnce(W) -> T) {
 }
 
 fn inference<W: Message + Default>(bytes: &[u8], kind: &str, identity: impl FnOnce(&W) -> &[u8]) {
-    use acyclic_inference::validate_customer_wire;
     let Ok(wire) = W::decode(bytes) else {
         return;
     };
-    let expected = identity(&wire);
-    if validate_customer_wire(kind, bytes, expected, &[]).is_ok() {
+    inference_pair(kind, bytes, &wire, identity(&wire), &[]);
+}
+
+fn inference_pair(
+    kind: &str,
+    bytes: &[u8],
+    wire: &impl Message,
+    expected: &[u8],
+    related: &[u8],
+) -> bool {
+    use acyclic_inference::validate_customer_wire;
+    let accepted = validate_customer_wire(kind, bytes, expected, related).is_ok();
+    if accepted {
         let canonical = wire.encode_to_vec();
         // Equivalent protobuf encodings can have different widths. Semantic
         // agreement applies only while both fit the transport's domain.
         if canonical.len() <= acyclic_inference::MAXIMUM_MESSAGE_BYTES {
-            assert!(validate_customer_wire(kind, &canonical, expected, &[]).is_ok());
+            assert!(validate_customer_wire(kind, &canonical, expected, related).is_ok());
         }
         // A view is never transferable to a different caller-selected identity.
         if !expected.is_empty() {
             let mut foreign = expected.to_vec();
             foreign[0] ^= 1;
-            assert!(validate_customer_wire(kind, bytes, &foreign, &[]).is_err());
+            assert!(validate_customer_wire(kind, bytes, &foreign, related).is_err());
+        }
+        if !related.is_empty() {
+            assert!(validate_customer_wire(kind, bytes, expected, &[0xff]).is_err());
         }
     }
+    accepted
 }
 
 fn generated_run(bytes: &[u8]) {
@@ -59,14 +75,13 @@ fn generated_run(bytes: &[u8]) {
     let Ok(view) = wire::RunView::decode(bytes) else {
         return;
     };
-    if validate_customer_wire("generated_run_view", bytes, &view.run_id, &view.input).is_ok() {
-        let canonical = view.encode_to_vec();
-        if canonical.len() <= acyclic_inference::MAXIMUM_MESSAGE_BYTES {
-            assert!(
-                validate_customer_wire("generated_run_view", &canonical, &view.run_id, &view.input)
-                    .is_ok()
-            );
-        }
+    if inference_pair(
+        "generated_run_view",
+        bytes,
+        &view,
+        &view.run_id,
+        &view.input,
+    ) {
         // A generated result must answer the caller's original input context.
         let mut foreign = view.input.clone();
         *foreign
@@ -315,6 +330,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
             inference::<acyclic_inference::wire::EvaluationSpec>(bytes, "evaluation_spec", |_| &[]);
         }
         "inference.customer.v1.EvaluationView" => {
+            evaluation::check(bytes);
             inference::<acyclic_inference::wire::EvaluationView>(
                 bytes,
                 "evaluation_view",
@@ -399,5 +415,7 @@ pub(super) fn seeds(
     seeds.extend(actors::seeds()?);
     seeds.extend(objects::seeds()?);
     seeds.extend(warm::seeds()?);
+    seeds.extend(evaluation::seeds()?);
+    seeds.extend(context::seeds()?);
     Ok(seeds)
 }
