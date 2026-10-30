@@ -10,6 +10,8 @@ use std::{collections::VecDeque, sync::Mutex};
 
 #[path = "agent_model/awaiting.rs"]
 mod awaiting;
+#[path = "agent_model/corpus.rs"]
+mod corpus;
 #[path = "agent_model/driver.rs"]
 mod driver;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
@@ -914,6 +916,7 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
 
 #[test]
 fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
+    let generated = corpus::seeds()?;
     let corpus =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/inbox_record");
     let mut seen = 0;
@@ -921,6 +924,11 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| "corpus name")?;
         let data = std::fs::read(entry.path())?;
+        assert_eq!(
+            Some(&data),
+            generated.get(name.as_str()),
+            "stale corpus seed {name}; recovery: bun scripts/generate-contracts.mjs write harness"
+        );
         let Some((selector, bytes)) = data.split_first() else {
             continue;
         };
@@ -936,7 +944,7 @@ fn fuzz_corpus_seeds_decode_as_labelled() -> Result {
         assert_eq!(accepted, expected, "corpus seed {name}");
         seen += 1;
     }
-    assert!(seen >= 13);
+    assert_eq!(seen, generated.len());
     Ok(())
 }
 

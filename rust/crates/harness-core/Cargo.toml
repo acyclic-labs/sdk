@@ -1,5 +1,5 @@
 [package]
-include = ["clippy.toml", "Cargo.toml", "build.rs", "src/**", "proto/**", "docs/**", "tests/**"]
+include = ["clippy.toml", "Cargo.toml", "build.rs", "src/**", "proto/**", "docs/**", "tests/**", "examples/**"]
 autotests = false
 autobins = false
 autoexamples = false
@@ -13,6 +13,10 @@ publish.workspace = true
 description = "Runtime, contracts and storage behind the acyclic-harness facade"
 documentation = "https://docs.rs/acyclic-harness-core"
 build = "build.rs"
+
+[[example]]
+name = "agent-record-corpus"
+path = "examples/agent-record-corpus.rs"
 
 [[test]]
 name = "agent-model"
