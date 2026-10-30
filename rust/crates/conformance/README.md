@@ -19,3 +19,37 @@ The first [cross-host baseline comparison](benchmarks/2026-09-18-local-fs.json) 
 The Objects benchmark measures logical current-key publication and ordered, bounded pagination: `cargo run --locked -p acyclic-objects --example bench-objects -- 2000 100`. It verifies every returned key and exact metadata. Public version-listing and snapshot benchmark modes are retired.
 
 The historical filesystem workload corpus remains available to proof producers. The public `acyclic_fs::conformance` suite executes portable workspace semantics and request budgets against memory and durable local provider compositions. Mounted interfaces require their own actual mount qualification. Harness retains report-to-receipt validation; the Objects walkthrough does not produce per-case acceptance receipts. See the [source](https://github.com/acyclic-labs/sdk/tree/main/rust/crates/conformance) and the [protocol directory](https://github.com/acyclic-labs/sdk/tree/main/proto) for the underlying contracts.
+
+The shared native hot-path benchmark runs on demand:
+
+```sh
+cargo bench --locked -p acyclic-conformance --features local-hotpath --bench local_hotpath -- --root /path/to/fresh-directory --source "$(git rev-parse HEAD)"
+```
+
+Select a fresh directory on the device being measured. The benchmark uses full
+durability and one active operation on one executor thread. It calibrates a
+dirty in-place flush, cross-thread rendezvous delivery, an uncontended call,
+1 KiB copy and BLAKE3 throughput, and a warm 1 KiB read. A separate new-file,
+write, flush and directory measurement distinguishes publication from an
+in-place barrier. Setup composes actual agent actors, inbox subtrees and volumes
+in bounded batches at populations of 1 and 100,000; it is excluded from timing.
+The workload explicitly admits this population rather than using the provider's
+default capacity ceilings. Population roots execute no model turns.
+
+JSON lines retain executable identity, raw observations in acquisition order,
+nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
+component medians. Encoding contributes its minimum payload transfer; this is
+an optimistic semantic floor, not a measurement of a particular serializer.
+The p50 and p99 thresholds are respectively 1.5 and 3 times that same floor.
+These are single-operation latency measurements, not throughput or concurrency
+claims. Payloads and exact reads are checked outside the measured intervals.
+Filesystem reads select an immutable generation; staged writes and dirty
+transaction publication are timed separately. Objects PUT ends at stored-byte
+admission; the explicit crash-survival flush occurs outside its interval, as
+required by the distinct `Blobs::put` and `Blobs::flush` contracts.
+Follow parks at the tail before
+its append producer starts and measures notification-waker entry through record
+delivery; append durability completes concurrently in its own interval.
+Missing original execution or completion producers emit explicit
+refusal rows instead of fabricated quantiles; a report with refusals is
+incomplete.
