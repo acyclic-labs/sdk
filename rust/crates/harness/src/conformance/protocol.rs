@@ -219,6 +219,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
                 Reply::Answered {
                     sequence,
                     entry: settled,
+                    ..
                 },
         } = &answered
         else {

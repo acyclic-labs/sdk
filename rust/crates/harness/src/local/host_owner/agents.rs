@@ -442,6 +442,7 @@ impl HostDriver {
             input,
             output,
             outcome: Default::default(),
+            goal: None,
         };
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {
@@ -710,7 +711,9 @@ impl NativeAgents {
     ) -> Result<Value> {
         Ok(
             match self.host.reply(agent, id, inbox).await.map_err(storage)? {
-                crate::agent::Reply::Answered { sequence, entry } => {
+                crate::agent::Reply::Answered {
+                    sequence, entry, ..
+                } => {
                     let state = self.state(agent).await?;
                     let settled: Session =
                         serde_json::from_slice(&self.driver.read(&state, &entry.output).await?)

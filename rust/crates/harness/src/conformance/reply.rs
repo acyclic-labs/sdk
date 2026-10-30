@@ -90,6 +90,7 @@ fn settle(inbox: u64, input: TurnInput) -> std::result::Result<TurnStep, Error> 
         input,
         output,
         outcome: Default::default(),
+        goal: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
