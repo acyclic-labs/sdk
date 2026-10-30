@@ -2456,3 +2456,9 @@ Allowed bounds retained after inspection:
 - Protective framing/decompression bounds need a concrete physical encoding or bomb-protection contract; a small logical envelope is not protection.
 
 Validation obligations for each changed mechanism: preserve atomicity and authority; waits name their actual producer and report producer loss; admission/check overhead is constant in unrelated history/population. Negative controls restore a former cap, suppress/drop the producer, or grow unrelated history. Full requested output necessarily costs its own bytes/items; this is not a population scan. Record required syscalls, durability barriers, round trips, allocations and copies in the PR, including before/after counts where known.
+
+## Rejecting source rule
+
+Pending: `scripts/check-no-polling.mjs <baseline-revision>` compares real Git objects with tracked and untracked sources in the working tree. `scripts/no-polling.mjs` rejects new timer/readiness references, aliases, embedded timer programs and unclassified loops. JavaScript/TypeScript uses the existing TypeScript parser; native sources retain raw-string and nested-comment boundaries. Each disposition names one exact source fingerprint, classification, producer, terminal and negative control. Changing executable tokens reopens dispositions in that source unit; an accepted occurrence cannot authorize another copy.
+
+The source controls cover direct timers, imported and assigned aliases, wrapped timer values, template substitutions, regex boundaries, escaped identifiers, rechecks, child-status probes, timed condition waits, actual Git baselines and untracked sources. They are not yet executed. Required-check integration, exact disposition review and cross-file/computed-helper coverage remain pending; this source checkpoint does not close the static-rule obligation. Run the contributor command after installing dependencies: `bun run check:no-polling origin/main`.
