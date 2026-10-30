@@ -1,6 +1,7 @@
 //! Actual process/file primitives composed with the production Streams owner.
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
+use std::process::Command;
 
 pub(super) fn enrollment(machine: MachineId) -> MachineObservation {
     MachineObservation {
@@ -33,7 +34,6 @@ pub(super) fn options() -> LocalOptions {
     LocalOptions {
         cwd: std::fs::canonicalize(std::env::temp_dir()).unwrap(),
         environment: BTreeMap::from([("ACYCLIC_TEST_MACHINE_PROCESS".into(), "credit".into())]),
-        inherit_environment: true,
         process_custody: None,
     }
 }
@@ -49,6 +49,93 @@ fn child() -> ExecCommand {
         5_000,
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn admitted_guest_environment_excludes_ambient_host_values()
+-> Result<(), Box<dyn std::error::Error>> {
+    const HOST: &str = "ACYCLIC_TEST_MACHINE_ENV_HOST";
+    let executable = std::env::current_exe()?;
+    if std::env::var_os(HOST).is_none() {
+        // Seed a separate host before its runtime starts; never mutate this
+        // test process's environment while other tests or workers can run.
+        let output = Command::new(&executable)
+            .args([
+                "--exact",
+                "local::provider_tests::admitted_guest_environment_excludes_ambient_host_values",
+                "--nocapture",
+            ])
+            .env(HOST, "1")
+            .env("OPENAI_API_KEY", "harmless-machine-sentinel")
+            .env("BASH_ENV", "harmless-machine-startup-sentinel")
+            .env(
+                "ACYCLIC_MACHINE_PRIVATE_VALUE",
+                "harmless-ordinary-sentinel",
+            )
+            .env("ACYCLIC_MACHINE_ROUTE", "ambient")
+            .output()?;
+        assert!(output.status.success(), "isolated host failed: {output:?}");
+        return Ok(());
+    }
+
+    let mut environment = BTreeMap::from([
+        ("ACYCLIC_TEST_MACHINE_PROCESS".into(), "environment".into()),
+        ("ACYCLIC_MACHINE_ROUTE".into(), "admitted".into()),
+    ]);
+    // Native executable discovery belongs to the admitted map, too.
+    for name in ["PATH", "PATHEXT", "SystemRoot"] {
+        if let Ok(value) = std::env::var(name) {
+            environment.insert(name.into(), value);
+        }
+    }
+    let argv = ["--exact", "local::tests::child", "--nocapture"];
+    // The former inherited launch reaches the SAME real-child oracle with
+    // the same explicit values. Only the ambient host projection differs.
+    let inherited = Command::new(&executable)
+        .args(argv)
+        .envs(&environment)
+        .output()?;
+    assert_eq!(inherited.status.code(), Some(91));
+
+    let machine = MachineId::new();
+    let local = provider(
+        enrollment(machine),
+        LocalOptions {
+            cwd: std::fs::canonicalize(std::env::temp_dir())?,
+            environment,
+            process_custody: None,
+        },
+        Arc::new(MemoryStream::default()),
+        StreamPath::new(format!("machine-tests/{machine}"))?,
+    )
+    .await?;
+    let command = ExecCommand::new(
+        std::iter::once(executable.to_str().unwrap().to_owned())
+            .chain(argv.into_iter().map(str::to_owned))
+            .collect(),
+        5_000,
+    )?;
+    let mut output = local.exec(machine, command).await?;
+    let mut exited = false;
+    while let Some(frame) = output.next().await {
+        match frame? {
+            ExecOutput::ExitCode(code) => {
+                assert_eq!(code, 0, "admitted child inherited ambient host values");
+                assert!(!exited);
+                exited = true;
+            }
+            ExecOutput::Stopped(stop) => panic!("original child did not settle: {stop:?}"),
+            ExecOutput::Data(_) | ExecOutput::Stderr(_) => assert!(!exited),
+        }
+    }
+    assert!(exited, "original child must publish its terminal result");
+    assert_eq!(
+        local
+            .destroy_machine(machine, IdempotencyKey::new())
+            .await?,
+        MutationOutcome::MachineDestroyed(machine)
+    );
+    Ok(())
 }
 
 #[tokio::test]

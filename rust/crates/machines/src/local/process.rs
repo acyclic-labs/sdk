@@ -15,8 +15,8 @@ use std::{
 /// This is not a filesystem authority or a serialized guest enrollment.
 pub struct LocalOptions {
     pub cwd: PathBuf,
+    /// Complete admitted child environment. Ambient host values are never inherited.
     pub environment: BTreeMap<String, String>,
-    pub inherit_environment: bool,
     pub process_custody: Option<Arc<ProcessCustody>>,
 }
 
@@ -108,10 +108,8 @@ impl LocalMachine {
                         .next()
                         .ok_or_else(|| StartFailure::Refused(io::ErrorKind::InvalidInput.into()))?;
                     let mut process = Command::new(executable);
-                    if !options.inherit_environment {
-                        process.env_clear();
-                    }
                     process
+                        .env_clear()
                         .args(argv)
                         .current_dir(
                             command
