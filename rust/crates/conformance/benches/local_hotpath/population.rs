@@ -191,7 +191,7 @@ impl Fixture {
                     .value,
                 initialization: VolumeInitialization::new(
                     VolumeConfig::portable(Lifecycle::Durable),
-                    None,
+                    Some(acyclic_fs::access::INITIAL_POLICY),
                 ),
                 creation: CreationOperation::populated(
                     acyclic_fs::OperationId::from_bytes(u128::try_from(index)?.to_le_bytes()),
