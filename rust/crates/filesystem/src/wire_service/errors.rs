@@ -291,6 +291,7 @@ fn mutation_code(error: &crate::kernel::GenerationMutationError) -> Code {
         },
         E::Config(_)
         | E::InvalidInitialLinkCount
+        | E::InvalidInitialBindings
         | E::DirectoryCycle
         | E::NotDirectory
         | E::IsDirectory => Code::InvalidArgument,

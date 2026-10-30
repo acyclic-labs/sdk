@@ -29,6 +29,7 @@ fn fixture() -> (
     )
     .unwrap();
     let record = FileRecord {
+        bindings: None,
         file_id: id,
         kind: FileKind::Fifo,
         link_count: 1,

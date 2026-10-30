@@ -212,7 +212,7 @@ project!(ClosureError, {
     | E::LogicalBytesOverflow | E::RangeOverflow | E::Work(_) => Code::ResourceExhausted,
     E::WrongObjectKind | E::RoutingAlias | E::RoutingBoundsMismatch | E::DuplicateFileRecord(_)
     | E::MissingRootFile | E::RootIsNotDirectory | E::UnsupportedVolumeSemantics
-    | E::MissingFileRecord(_) | E::NamespaceKindMismatch(_) | E::LinkCountMismatch(_)
+    | E::MissingFileRecord(_) | E::NamespaceKindMismatch(_) | E::LinkCountMismatch(_) | E::BindingRelationMismatch(_)
     | E::DirectoryHardLink(_) | E::MissingDirectoryTree(_) | E::UnreachableFileRecords
     | E::BlobLengthMismatch | E::BlobSpanOutsideObject => Code::DataLoss,
     E::Storage(error) => object_code(error),

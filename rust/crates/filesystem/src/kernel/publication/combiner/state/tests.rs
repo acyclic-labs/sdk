@@ -64,6 +64,7 @@ fn provisional_metadata_receipt_crash_retry_uses_the_production_admission_state(
 
 fn delta(key: u8) -> GenerationDiff {
     let record = |value| FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([key; 16]),
         kind: FileKind::Regular,
         link_count: 1,

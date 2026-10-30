@@ -195,6 +195,7 @@ fn collection_hold_retirement_preserves_the_original_accounting_credit()
         .live_bytes();
     let config = crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral);
     let record = crate::kernel::FileRecord {
+        bindings: None,
         file_id: crate::FileId::new(),
         kind: crate::kernel::FileKind::Regular,
         link_count: 1,

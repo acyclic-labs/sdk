@@ -172,6 +172,7 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
             merged.map(|(root, count)| {
                 (
                     FileRecord {
+                        bindings: ours.bindings,
                         file_id: ours.file_id,
                         kind,
                         link_count: ours.link_count,
@@ -666,6 +667,7 @@ async fn merge_inline_record_async<S: AsyncObjectStore>(
             super::file_table::InlineFileData::new(bytes).map_err(|_| FsError::InvalidDiff)
         })?;
     Ok(Some(FileRecord {
+        bindings: ours.bindings,
         file_id: ours.file_id,
         kind,
         link_count: ours.link_count,

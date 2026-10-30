@@ -52,6 +52,7 @@ fn file(payload: &[u8], sealed: bool, number: u64) -> FileRecord {
         ),
     };
     FileRecord {
+        bindings: None,
         file_id: crate::FileId::from_bytes([2; 16]),
         kind,
         link_count: 1,

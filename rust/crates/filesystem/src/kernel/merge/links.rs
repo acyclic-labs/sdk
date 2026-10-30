@@ -111,6 +111,16 @@ struct DirectoryTransition {
     before: Option<ObjectId>,
     after: Option<ObjectId>,
     contribution: Owned<Vec<(FileId, i64)>>,
+    diff: Owned<super::persistent_diff::Diff<LogicalName, super::TreeEntry>>,
+}
+
+impl DirectoryTransition {
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let diff = self.diff.retire(accounting);
+        let contribution = self.contribution.retire(accounting);
+        diff?;
+        contribution
+    }
 }
 
 fn add_delta(
@@ -144,7 +154,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(), FsError> {
+) -> Result<Owned<Vec<DirectoryTransition>>, FsError> {
     let mut transitions: Owned<Vec<DirectoryTransition>> = Owned::allocate(0, accounting)?;
     let result = async {
         loop {
@@ -161,11 +171,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                     )?;
                     if before == after {
                         if let Ok(index) = cached {
-                            transitions
-                                .value
-                                .remove(index)
-                                .contribution
-                                .retire(accounting)?;
+                            transitions.value.remove(index).retire(accounting)?;
                         }
                         continue;
                     }
@@ -205,9 +211,11 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                             Ok(())
                         })();
                         let count = diff.value.changes.len();
-                        diff.retire(accounting)?;
                         if let Err(error) = result {
-                            contribution.retire(accounting)?;
+                            let retired_diff = diff.retire(accounting);
+                            let retired_contribution = contribution.retire(accounting);
+                            retired_diff?;
+                            retired_contribution?;
                             return Err(error);
                         }
                         state.remaining_changes = state
@@ -221,6 +229,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                             before,
                             after,
                             contribution,
+                            diff,
                         };
                         match cached {
                             Ok(index) => {
@@ -231,7 +240,7 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
                                         .ok_or(FsError::InvalidDiff)?,
                                     entry,
                                 );
-                                previous.contribution.retire(accounting)?;
+                                previous.retire(accounting)?;
                             }
                             Err(index) => {
                                 transitions.ensure_for_push(usize::MAX, accounting)?;
@@ -295,9 +304,102 @@ async fn adjust_link_counts<S: AsyncObjectStore>(
         }
     }
     .await;
-    for transition in transitions.value.drain(..) {
-        transition.contribution.retire(accounting)?;
+    if let Err(error) = result {
+        retire_transitions(transitions, accounting)?;
+        return Err(error);
     }
-    transitions.retire(accounting)?;
+    Ok(transitions)
+}
+
+fn retire_transitions(
+    mut transitions: Owned<Vec<DirectoryTransition>>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    let mut failure = None;
+    for transition in transitions.value.drain(..) {
+        if let Err(error) = transition.retire(accounting) {
+            failure.get_or_insert(error);
+        }
+    }
+    let retired = transitions.retire(accounting);
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    retired
+}
+
+async fn rewrite_merge_bindings<S: AsyncObjectStore>(
+    store: &S,
+    root_file_id: FileId,
+    limits: DecodeLimits,
+    state: &mut MergeState,
+    transitions: &[DirectoryTransition],
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<(), FsError> {
+    let mut edits = Owned::<Vec<super::bindings::FileBindingEdit>>::allocate(0, accounting)?;
+    let result = async {
+        for (_, (before, after)) in &mut state.records.value {
+            if let Some(after) = after {
+                after.bindings = before.and_then(|record| record.bindings);
+            }
+        }
+        for transition in transitions {
+            for (order, change) in transition.diff.value.changes.iter().enumerate() {
+                let order = u32::try_from(order).map_err(|_| WorkError::Overflow)?;
+                for (file, present) in change
+                    .before
+                    .as_ref()
+                    .map(|entry| (entry.file_id, false))
+                    .into_iter()
+                    .chain(change.after.as_ref().map(|entry| (entry.file_id, true)))
+                {
+                    let (before, after) = state.record(file, accounting)?;
+                    if after.is_none() {
+                        continue;
+                    }
+                    if file == root_file_id
+                        || before.is_some_and(|record| record.bindings.is_none())
+                    {
+                        return Err(FsError::InvalidDiff);
+                    }
+                    super::bindings::push_edit(
+                        &mut edits,
+                        file,
+                        order,
+                        transition.directory,
+                        &change.key,
+                        present,
+                        limits.maximum_name_bytes,
+                        accounting,
+                    )?;
+                }
+            }
+        }
+        super::bindings::sort_edits(&mut edits, accounting)?;
+        for group in edits
+            .value
+            .chunk_by(|left, right| left.file_id == right.file_id)
+        {
+            let file = group.first().ok_or(FsError::InvalidDiff)?.file_id;
+            let (before, after) = state.record(file, accounting)?;
+            let mut after = after.ok_or(FsError::InvalidDiff)?;
+            let root = super::bindings::apply_with_accounting(
+                store,
+                before.and_then(|record| record.bindings),
+                group,
+                u32::try_from(group.len()).map_err(|_| WorkError::Overflow)?,
+                limits,
+                accounting,
+                cancellation,
+            )
+            .await?;
+            after.bindings = Some(root);
+            state.replace(file, (before, Some(after)), accounting)?;
+        }
+        Ok(())
+    }
+    .await;
+    edits.retire(accounting)?;
     result
 }

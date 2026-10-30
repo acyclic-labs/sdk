@@ -142,6 +142,7 @@ async fn generation(
     files.insert(
         0,
         FileRecord {
+            bindings: None,
             file_id: root_file_id,
             kind: FileKind::Directory,
             link_count: 1,
@@ -170,6 +171,7 @@ fn regular(
     extents: ObjectId,
 ) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Regular,
         link_count: 1,

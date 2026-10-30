@@ -179,6 +179,7 @@ async fn payload_bytes(
         store,
         FileRangeRequest {
             record: FileRecord {
+                bindings: None,
                 file_id: FileId::from_bytes([247; 16]),
                 kind: FileKind::Regular,
                 link_count: 1,

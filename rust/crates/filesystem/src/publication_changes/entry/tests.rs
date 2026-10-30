@@ -5,6 +5,7 @@ use crate::model::FilesystemProfile;
 
 fn record(number: u8) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: crate::FileId::from_bytes([number; 16]),
         kind: FileKind::Regular,
         link_count: 1,

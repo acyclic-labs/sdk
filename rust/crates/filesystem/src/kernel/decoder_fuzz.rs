@@ -271,6 +271,7 @@ mod tests {
             .unwrap(),
             2 => encode_file_table_page(
                 &FileTablePage::Leaf(vec![FileRecord {
+                    bindings: None,
                     file_id: FileId::from_bytes([2; 16]),
                     kind: FileKind::Regular,
                     link_count: 1,

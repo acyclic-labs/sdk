@@ -14,6 +14,7 @@ fn meter() -> NativeMaterializationWork {
 }
 fn record() -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: crate::FileId::from_bytes([1; 16]),
         kind: FileKind::Fifo,
         link_count: 1,

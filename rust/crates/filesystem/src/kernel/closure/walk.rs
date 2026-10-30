@@ -10,7 +10,13 @@ type FileTableProof<'a> = (
     ProofVec<'a, (FileId, FileRecord)>,
     Option<DirectoryProofs<'a>>,
 );
+mod bindings;
 mod incremental;
+
+struct BindingProof<'a> {
+    root: ObjectId,
+    leaves: ProofVec<'a, (crate::kernel::bindings::BindingPage, ProofGuard)>,
+}
 
 #[derive(Default)]
 struct NamespaceFact {
@@ -27,6 +33,7 @@ pub(crate) struct ProofContext<'a, S> {
     // ObjectId includes its kind: complete blob and extent proofs can share
     // one invocation-owned length table without a second allocation domain.
     proven_lengths: ProofVec<'a, (ObjectId, u64)>,
+    binding_proofs: ProofVec<'a, (FileId, BindingProof<'a>)>,
     pub(super) meter: ProofMeter<'a>,
     object_bytes: u64,
 }
@@ -45,6 +52,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             objects: ProofVec::new(&meter),
             publication: None,
             proven_lengths: ProofVec::new(&meter),
+            binding_proofs: ProofVec::new(&meter),
             object_bytes: 0,
             meter,
         }
@@ -204,6 +212,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
             self.objects = ProofVec::new(&self.meter);
             set_insert(&mut self.objects, generation_root)?;
             self.proven_lengths = ProofVec::new(&self.meter);
+            self.binding_proofs = ProofVec::new(&self.meter);
             self.object_bytes = root_object_bytes;
         }
         let (records, directories) = self.prove_file_table(root.0.file_table).await?;
@@ -427,6 +436,14 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
     }
 
     async fn prove_record(
+        &mut self,
+        record: &FileRecord,
+    ) -> Result<Option<ProofVec<'a, (TreePage, ProofGuard)>>, crate::FsError> {
+        self.prove_bindings(record).await?;
+        self.prove_record_contents(record).await
+    }
+
+    async fn prove_record_contents(
         &mut self,
         record: &FileRecord,
     ) -> Result<Option<ProofVec<'a, (TreePage, ProofGuard)>>, crate::FsError> {
@@ -806,6 +823,7 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
         if facts.values.iter().any(|fact| !fact.reachable) {
             return Err(ClosureError::UnreachableFileRecords.into());
         }
+        self.validate_binding_relations(root, records, directories)?;
         Ok(())
     }
 

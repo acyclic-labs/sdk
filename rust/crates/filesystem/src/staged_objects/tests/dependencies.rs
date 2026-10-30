@@ -43,6 +43,7 @@ async fn parent_first_scope_drains_spilled_children_before_resident_parents()
     assert!(matches!(store.lookup(metadata_id), Lookup::Spilled { .. }));
     let root_file_id = FileId::from_bytes([9; 16]);
     let table = FileTablePage::Leaf(vec![FileRecord {
+        bindings: None,
         file_id: root_file_id,
         kind: crate::kernel::FileKind::Directory,
         link_count: 1,

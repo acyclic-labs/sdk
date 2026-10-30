@@ -655,6 +655,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         identity.copy_from_slice(&derived_digest(ROOT_FILE_DOMAIN, volume_id).as_bytes()[..16]);
         let root_file_id = FileId::from_bytes(identity);
         let record = FileRecord {
+            bindings: None,
             file_id: root_file_id,
             kind: FileKind::Directory,
             link_count: 1,

@@ -183,6 +183,7 @@ fn namespace_diff(count: usize, chain: bool) -> TestResult<crate::GenerationDiff
     for index in 0..=count {
         let directory = index == 0 || chain;
         let record = FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes((index as u128).to_be_bytes()),
             kind: if directory {
                 FileKind::Directory

@@ -152,6 +152,7 @@ async fn compose_directory<O: AsyncObjectStore>(
     if current.kind != before.kind
         || current.metadata != before.metadata
         || current.link_count != before.link_count
+        || current.bindings != before.bindings
     {
         return Err(FsError::InvalidDiff);
     }

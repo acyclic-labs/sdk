@@ -48,6 +48,9 @@ pub enum GenerationMutationError {
     /// A newly created record must begin with exactly one namespace binding.
     #[error("new file record must have link count one")]
     InvalidInitialLinkCount,
+    /// New identities receive their relation from this candidate's namespace edits.
+    #[error("new file record cannot supply a binding relation")]
+    InvalidInitialBindings,
     /// The volume does not admit symbolic links.
     #[error("symbolic links are disabled for this volume")]
     UnsupportedSymbolicLink,
@@ -254,6 +257,15 @@ pub(crate) async fn apply_generation_mutations_retaining_with_accounting<S: Asyn
     let operations = plan.into_operations();
     release_allocation(plan_allocation, plan_bytes, accounting)?;
     state
+        .rewrite_bindings(
+            store,
+            generation.root_file_id,
+            config,
+            accounting,
+            cancellation,
+        )
+        .await?;
+    state
         .rewrite_directories(store, config, accounting, cancellation)
         .await?;
     state
@@ -374,6 +386,114 @@ enum RegularAction {
 }
 
 impl Owned<TransactionState> {
+    async fn rewrite_bindings<S: AsyncObjectStore>(
+        &mut self,
+        store: &S,
+        root_file_id: FileId,
+        config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), crate::FsError> {
+        let mut edits =
+            super::persistent_point::Owned::<Vec<super::bindings::FileBindingEdit>>::allocate(
+                0, accounting,
+            )?;
+        let result = async {
+            for edit in &self.value.directory_edits {
+                account_items(accounting, 1)?;
+                let (name, removed, inserted) = match edit
+                    .mutation
+                    .as_ref()
+                    .ok_or(GenerationMutationError::InconsistentState)?
+                {
+                    TreeMutation::Insert(entry) => (&entry.name, None, Some(entry.file_id)),
+                    TreeMutation::Remove {
+                        name,
+                        expected_file_id: Some(id),
+                    } => (name, Some(*id), None),
+                    TreeMutation::Replace {
+                        entry,
+                        expected_file_id,
+                    } => (&entry.name, Some(*expected_file_id), Some(entry.file_id)),
+                    TreeMutation::Remove {
+                        expected_file_id: None,
+                        ..
+                    } => return Err(GenerationMutationError::InconsistentState.into()),
+                };
+                for (file_id, present) in removed
+                    .map(|id| (id, false))
+                    .into_iter()
+                    .chain(inserted.map(|id| (id, true)))
+                {
+                    let index = super::search::binary_search_with_accounting(
+                        &self.value.records,
+                        accounting,
+                        |record| record.working.file_id.cmp(&file_id),
+                    )?
+                    .map_err(|_| GenerationMutationError::InconsistentState)?;
+                    let record = self
+                        .value
+                        .records
+                        .get(index)
+                        .ok_or(GenerationMutationError::InconsistentState)?;
+                    // A removed file has no published record or reverse tree to rewrite.
+                    if !record.present {
+                        continue;
+                    }
+                    if file_id == root_file_id
+                        || record.base.is_some_and(|base| base.bindings.is_none())
+                    {
+                        return Err(GenerationMutationError::InconsistentState.into());
+                    }
+                    super::bindings::push_edit(
+                        &mut edits,
+                        file_id,
+                        edit.order,
+                        edit.directory_id,
+                        name,
+                        present,
+                        config.limits.maximum_component_bytes,
+                        accounting,
+                    )?;
+                }
+            }
+            super::bindings::sort_edits(&mut edits, accounting)?;
+            for group in edits
+                .value
+                .chunk_by(|left, right| left.file_id == right.file_id)
+            {
+                let file_id = group
+                    .first()
+                    .ok_or(GenerationMutationError::InconsistentState)?
+                    .file_id;
+                let root = self.leaf(accounting, |state, leaf| {
+                    Ok(state
+                        .record(leaf, file_id)?
+                        .base
+                        .and_then(|base| base.bindings))
+                })?;
+                let bindings = super::bindings::apply_with_accounting(
+                    store,
+                    root,
+                    group,
+                    u32::try_from(group.len()).map_err(|_| WorkError::Overflow)?,
+                    DecodeLimits::for_volume(config),
+                    accounting,
+                    cancellation,
+                )
+                .await?;
+                self.leaf(accounting, |state, leaf| {
+                    state.record_mut(leaf, file_id)?.working.bindings = Some(bindings);
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        }
+        .await;
+        edits.retire(accounting)?;
+        result
+    }
+
     fn leaf<T>(
         &mut self,
         accounting: &mut KernelAccounting<'_>,
@@ -1509,9 +1629,10 @@ impl TransactionState {
                 return Ok(());
             }
             if current.file_id == source.file_id {
-                let link_count = self.record(leaf, source.file_id)?.working.link_count;
+                let current = self.record(leaf, source.file_id)?.working;
                 self.record_mut(leaf, source.file_id)?.working = FileRecord {
-                    link_count,
+                    link_count: current.link_count,
+                    bindings: current.bindings,
                     ..source
                 };
                 return Ok(());
@@ -1547,6 +1668,7 @@ impl TransactionState {
                 return Err(failed(GenerationMutationError::UnsupportedHardLink));
             }
             desired.working = FileRecord {
+                bindings: desired.working.bindings,
                 link_count: desired
                     .working
                     .link_count
@@ -1556,6 +1678,7 @@ impl TransactionState {
             };
         } else {
             desired.working = FileRecord {
+                bindings: desired.base.and_then(|base| base.bindings),
                 link_count: 1,
                 ..source
             };
@@ -2148,6 +2271,11 @@ fn preflight_generation_mutations(
                 if matches!(operation, Mutation::Create { .. }) && record.link_count != 1 {
                     return Err(crate::FsError::Mutation(
                         GenerationMutationError::InvalidInitialLinkCount,
+                    ));
+                }
+                if matches!(operation, Mutation::Create { .. }) && record.bindings.is_some() {
+                    return Err(crate::FsError::Mutation(
+                        GenerationMutationError::InvalidInitialBindings,
                     ));
                 }
                 if record.kind == FileKind::SymbolicLink && !config.symbolic_links {

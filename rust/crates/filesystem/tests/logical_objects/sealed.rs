@@ -235,6 +235,7 @@ async fn sealed_references_reopen_across_generations_with_real_cas_closure()
     }
     store.put_many_hashed(&objects, &mut work).await?;
     let record = FileRecord {
+        bindings: None,
         file_id: lineage,
         kind: FileKind::Directory,
         link_count: 1,

@@ -264,7 +264,7 @@ where
     store: &'a S,
     limits: DecodeLimits,
     accounting: &'accounting mut KernelAccounting<'work>,
-    visited: Owned<VisitedObjectSet>,
+    visited: Option<Owned<VisitedObjectSet>>,
     maximum_seen_height: u16,
     cancellation: &'a CancellationToken,
     marker: PhantomData<(F, M)>,
@@ -273,6 +273,32 @@ where
 pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
     root: ObjectId,
+    mutations: &[M],
+    maximum_mutations: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<ObjectId>, crate::FsError>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F>,
+{
+    apply_optional_root_with_accounting::<S, F, M>(
+        store,
+        Some(root),
+        mutations,
+        maximum_mutations,
+        limits,
+        accounting,
+        cancellation,
+    )
+    .await
+}
+
+pub(crate) async fn apply_optional_root_with_accounting<S, F, M>(
+    store: &S,
+    root: Option<ObjectId>,
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -309,7 +335,14 @@ where
             usize::try_from(limits.maximum_visited_pages)
                 .map_err(|_| M::map_error(Error::InvalidLimits))?,
         );
-    let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+    let visited = if root.is_some() {
+        Some(VisitedObjectSet::new_with_accounting(
+            maximum_visited,
+            accounting,
+        )?)
+    } else {
+        None
+    };
     let mut context = Context::<S, F, M> {
         store,
         limits,
@@ -319,9 +352,20 @@ where
         cancellation,
         marker: PhantomData,
     };
-    let summaries = context.rewrite(root, &ordered.value).await?;
+    let summaries = match root {
+        Some(root) => context.rewrite(root, &ordered.value).await?,
+        None => {
+            context.maximum_seen_height = 1;
+            let values = context.apply_structural_mutations(&[], &ordered.value)?;
+            let result = context.write_leaf_chunks(&values.value).await;
+            values.retire(context.accounting)?;
+            result?
+        }
+    };
     let root = context.finish_root(summaries).await?;
-    context.visited.retire(context.accounting)?;
+    if let Some(visited) = context.visited.take() {
+        visited.retire(context.accounting)?;
+    }
     ordered.retire(context.accounting)?;
     Ok(OperationReceipt {
         value: root,
@@ -418,7 +462,9 @@ where
         }
         self.maximum_seen_height = self.maximum_seen_height.max(request.height);
         let inserted = VisitedObjectSet::insert_with_accounting(
-            &mut self.visited,
+            self.visited
+                .as_mut()
+                .ok_or_else(|| M::map_error(Error::MutationContract))?,
             request.page,
             self.accounting,
         )?;

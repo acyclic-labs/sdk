@@ -53,6 +53,7 @@ async fn minimal_generation(
     let table = put_file_table_page(
         store,
         &FileTablePage::Leaf(vec![FileRecord {
+            bindings: None,
             file_id: root_file_id,
             kind: FileKind::Directory,
             link_count: 1,

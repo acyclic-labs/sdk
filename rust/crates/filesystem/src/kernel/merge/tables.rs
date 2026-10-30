@@ -280,7 +280,20 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
             if !state.conflicts.value.is_empty() || state.truncated {
                 return Ok(None);
             }
-            adjust_link_counts(store, limits, &mut state, accounting, cancellation).await?;
+            let transitions =
+                adjust_link_counts(store, limits, &mut state, accounting, cancellation).await?;
+            let bindings = rewrite_merge_bindings(
+                store,
+                request.ours.root_file_id,
+                limits,
+                &mut state,
+                &transitions.value,
+                accounting,
+                cancellation,
+            )
+            .await;
+            retire_transitions(transitions, accounting)?;
+            bindings?;
             let mut mutations = Owned::allocate(0, accounting)?;
             let result: Result<ObjectId, FsError> = async {
                 for (file, (before, after)) in &state.records.value {

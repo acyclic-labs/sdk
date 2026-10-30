@@ -15,6 +15,7 @@ mod accounting;
 
 fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([7; 16]),
         kind: FileKind::Regular,
         link_count: 1,
@@ -126,6 +127,7 @@ async fn cancellation_kind_and_payload_fail_at_the_first_boundary()
 
     let metadata = inline_record(b"")?.metadata;
     let not_regular = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([8; 16]),
         kind: FileKind::Directory,
         link_count: 1,
@@ -321,6 +323,7 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
         __object_work.receipt(__object_result)
     }?;
     let record = FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([12; 16]),
         kind: FileKind::Regular,
         link_count: 1,

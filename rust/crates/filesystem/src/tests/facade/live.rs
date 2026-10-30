@@ -325,6 +325,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced() -> Te
     let mutation = Mutation::Create {
         path: path("idempotent")?,
         record: FileRecord {
+            bindings: None,
             file_id: FileId::from_bytes([120; 16]),
             kind: FileKind::Regular,
             link_count: 1,

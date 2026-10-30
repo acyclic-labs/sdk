@@ -26,6 +26,7 @@ async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
     let sparse = probe
         .capture_record_async(
             Some(FileRecord {
+                bindings: None,
                 file_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -139,6 +140,7 @@ async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let file_id = FileId::from_bytes([1; 16]);
     let record = Some(FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Regular,
         link_count: 1,

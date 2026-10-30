@@ -35,6 +35,7 @@ use crate::test_support::put_tree_page as put;
 
 fn file_record(id: u8) -> Result<FileRecord, Box<dyn std::error::Error>> {
     Ok(FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([id; 16]),
         kind: FileKind::Regular,
         link_count: 1,

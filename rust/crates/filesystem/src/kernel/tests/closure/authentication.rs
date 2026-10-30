@@ -66,6 +66,7 @@ async fn authenticated_generation_counts_hardlinked_inline_file_once()
         vec![
             directory_record(root_id, 1, metadata_id, entries),
             FileRecord {
+                bindings: None,
                 file_id,
                 kind: FileKind::Regular,
                 link_count: 2,
@@ -310,6 +311,7 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
         vec![
             directory_record(root_id, 1, metadata_id, tree),
             FileRecord {
+                bindings: None,
                 file_id: symlink_id,
                 kind: FileKind::SymbolicLink,
                 link_count: 1,
@@ -320,6 +322,7 @@ async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
                 },
             },
             FileRecord {
+                bindings: None,
                 file_id: reparse_id,
                 kind: FileKind::ReparsePoint,
                 link_count: 1,
@@ -421,6 +424,7 @@ async fn shared_regular_data_and_metadata_are_authenticated_once()
     let mut records = vec![directory_record(root_id, 1, metadata_id, tree)];
     for file_id in child_ids {
         records.push(FileRecord {
+            bindings: None,
             file_id,
             kind: FileKind::Regular,
             link_count: 1,

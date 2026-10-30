@@ -150,6 +150,7 @@ async fn fixture(
         store,
         &FileTablePage::Leaf(vec![
             FileRecord {
+                bindings: None,
                 file_id: root_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -157,6 +158,7 @@ async fn fixture(
                 payload: FilePayload::Directory { entries: root_tree },
             },
             FileRecord {
+                bindings: None,
                 file_id: src_id,
                 kind: FileKind::Directory,
                 link_count: 2,
@@ -164,6 +166,7 @@ async fn fixture(
                 payload: FilePayload::Directory { entries: src_tree },
             },
             FileRecord {
+                bindings: None,
                 file_id,
                 kind: FileKind::Regular,
                 link_count: 1,
@@ -206,6 +209,7 @@ async fn binding_fixture(
     )
     .await?;
     let mut records = vec![FileRecord {
+        bindings: None,
         file_id: root_id,
         kind: FileKind::Directory,
         link_count: 1,
@@ -224,6 +228,7 @@ async fn binding_fixture(
             _ => return Err("test fixture supports directory or regular records".into()),
         };
         records.push(FileRecord {
+            bindings: None,
             file_id: child_id,
             kind,
             link_count: 1,

@@ -119,6 +119,7 @@ fn record(key: u8) -> FileRecord {
         _ => (FileKind::Fifo, FilePayload::Empty),
     };
     FileRecord {
+        bindings: (key % 2 != 0).then(|| object(ObjectKind::BindingPage)),
         file_id: FileId::from_bytes([key; 16]),
         kind,
         link_count: 1,
@@ -241,7 +242,7 @@ fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix
     let bytes = encode(&FileTablePage::Leaf(vec![record(6), record(13)]));
     let mut cases = Vec::new();
     // Version, page tag, leaf kind, zero links and payload tag failures.
-    for (offset, value) in [(8, 255), (10, 255), (31, 255), (72, 255), (31, 1)] {
+    for (offset, value) in [(8, 255), (10, 255), (31, 255), (73, 255), (31, 1)] {
         let mut malformed = bytes.clone();
         malformed[offset] = value;
         cases.push(malformed);
@@ -253,7 +254,7 @@ fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix
     excessive[11..15].copy_from_slice(&u32::MAX.to_le_bytes());
     cases.push(excessive);
     let mut duplicate = bytes.clone();
-    duplicate[73..89].copy_from_slice(&bytes[15..31]);
+    duplicate[74..90].copy_from_slice(&bytes[15..31]);
     cases.push(duplicate);
     let mut empty_internal = bytes[..15].to_vec();
     empty_internal[10] = 2;
@@ -261,7 +262,7 @@ fn independent_reference_matches_crafted_malformed_pages_and_every_denied_prefix
     cases.push(empty_internal);
     let inline = encode(&FileTablePage::Leaf(vec![record(5)]));
     let mut large_inline = inline.clone();
-    large_inline[73] = 65;
+    large_inline[74 + 33] = 65;
     cases.push(large_inline);
     let internal = encode(&FileTablePage::Internal(vec![
         Child {

@@ -26,6 +26,168 @@ pub(crate) struct Binding {
 pub(crate) struct BindingFormat;
 pub(crate) type BindingPage = Page<BindingFormat>;
 
+/// A direct edge edit in the original namespace mutation order.
+pub(crate) struct BindingMutation {
+    pub(crate) binding: Binding,
+    pub(crate) present: bool,
+}
+
+impl super::persistent_btree::Mutation<BindingFormat> for BindingMutation {
+    type Error = super::TreeMutationError;
+
+    fn key(&self) -> &Binding {
+        &self.binding
+    }
+
+    fn changes_cardinality(&self) -> bool {
+        true
+    }
+
+    fn replacement<'a>(
+        &'a self,
+        current: Option<&Binding>,
+    ) -> Result<Option<&'a Binding>, Self::Error> {
+        match (self.present, current.is_some()) {
+            (true, false) => Ok(Some(&self.binding)),
+            (false, true) => Ok(None),
+            (true, true) => Err(Self::Error::AlreadyExists),
+            (false, false) => Err(Self::Error::Missing),
+        }
+    }
+
+    fn map_error(error: super::persistent_btree::Error<Self::Error>) -> FsError {
+        super::tree_mutation::map_error(error).into()
+    }
+}
+
+pub(crate) struct FileBindingEdit {
+    pub(crate) file_id: FileId,
+    order: u32,
+    mutation: BindingMutation,
+}
+
+impl super::persistent_btree::Mutation<BindingFormat> for FileBindingEdit {
+    type Error = super::TreeMutationError;
+
+    fn key(&self) -> &Binding {
+        &self.mutation.binding
+    }
+
+    fn changes_cardinality(&self) -> bool {
+        true
+    }
+
+    fn replacement<'a>(
+        &'a self,
+        current: Option<&Binding>,
+    ) -> Result<Option<&'a Binding>, Self::Error> {
+        super::persistent_btree::Mutation::replacement(&self.mutation, current)
+    }
+
+    fn map_error(error: super::persistent_btree::Error<Self::Error>) -> crate::FsError {
+        super::tree_mutation::map_error(error).into()
+    }
+}
+
+pub(crate) fn push_edit(
+    edits: &mut super::persistent_point::Owned<Vec<FileBindingEdit>>,
+    file_id: FileId,
+    order: u32,
+    parent: FileId,
+    name: &LogicalName,
+    present: bool,
+    maximum_name_bytes: u32,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    edits.ensure_for_push(usize::MAX, accounting)?;
+    let copied = WorkCounters {
+        bytes_copied: 16,
+        ..WorkCounters::UNCHARGED
+    };
+    accounting.admit(copied)?;
+    let (name, mut allocation) = super::persistent_io::clone_key::<super::tree_mutation::TreeFormat>(
+        name,
+        maximum_name_bytes,
+        accounting,
+        None,
+        0,
+    )?;
+    let bytes = name.logical_owned_bytes();
+    edits.value.push(FileBindingEdit {
+        file_id,
+        order,
+        mutation: BindingMutation {
+            binding: Binding { parent, name },
+            present,
+        },
+    });
+    edits.allocation.absorb(&mut allocation)?;
+    edits.bytes = edits
+        .bytes
+        .checked_add(bytes)
+        .ok_or(crate::WorkError::Overflow)?;
+    accounting.record_completed(copied)?;
+    Ok(())
+}
+
+pub(crate) fn sort_edits(
+    edits: &mut super::persistent_point::Owned<Vec<FileBindingEdit>>,
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<(), FsError> {
+    super::sort::heap_sort(
+        &mut edits.value,
+        accounting,
+        |left, right, accounting| {
+            let work = WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            };
+            accounting.admit(work)?;
+            let order = left
+                .file_id
+                .cmp(&right.file_id)
+                .then_with(|| left.order.cmp(&right.order))
+                .then_with(|| left.mutation.present.cmp(&right.mutation.present));
+            accounting.record_completed(work)?;
+            Ok::<_, FsError>(order)
+        },
+        |values, left, right, _| {
+            values.swap(left, right);
+            Ok(())
+        },
+        |accounting| accounting.check(),
+    )
+}
+
+/// Updates exactly one file's edge set without traversing any other file or directory.
+pub(crate) async fn apply_with_accounting<S, M>(
+    store: &S,
+    root: Option<ObjectId>,
+    mutations: &[M],
+    maximum_mutations: u32,
+    limits: DecodeLimits,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &crate::CancellationToken,
+) -> Result<ObjectId, FsError>
+where
+    S: crate::AsyncObjectStore,
+    M: super::persistent_btree::Mutation<BindingFormat>,
+{
+    Ok(
+        super::persistent_btree::apply_optional_root_with_accounting::<S, BindingFormat, M>(
+            store,
+            root,
+            mutations,
+            maximum_mutations,
+            limits,
+            accounting,
+            cancellation,
+        )
+        .await?
+        .value,
+    )
+}
+
 impl Format for BindingFormat {
     type Key = Binding;
     type Value = Binding;

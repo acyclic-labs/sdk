@@ -274,7 +274,7 @@ pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
     }
 }
 
-fn map_error(error: persistent_btree::Error<TreeMutationError>) -> TreeMutationError {
+pub(super) fn map_error(error: persistent_btree::Error<TreeMutationError>) -> TreeMutationError {
     match error {
         persistent_btree::Error::Empty => TreeMutationError::Empty,
         persistent_btree::Error::TooManyMutations => TreeMutationError::TooManyMutations,

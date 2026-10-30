@@ -173,6 +173,9 @@ pub(crate) fn visit_object_references(
                     FileTablePage::Leaf(items) => {
                         for item in items {
                             visit(item.metadata)?;
+                            if let Some(bindings) = item.bindings {
+                                visit(bindings)?;
+                            }
                             match item.payload {
                                 FilePayload::Regular { extents, .. } => visit(extents)?,
                                 FilePayload::Directory { entries } => visit(entries)?,

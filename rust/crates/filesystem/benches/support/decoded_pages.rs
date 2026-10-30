@@ -32,6 +32,7 @@ fn page(count: u8) -> FileTablePage {
     FileTablePage::Leaf(
         (1..=count)
             .map(|key| FileRecord {
+                bindings: None,
                 file_id: FileId::from_bytes([key; 16]),
                 kind: FileKind::Fifo,
                 link_count: 1,

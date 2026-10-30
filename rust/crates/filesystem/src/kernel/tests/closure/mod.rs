@@ -45,6 +45,7 @@ async fn minimal_generation(
             put_file_table_page(
                 store,
                 &FileTablePage::Leaf(vec![FileRecord {
+                    bindings: None,
                     file_id: root_file_id,
                     kind: FileKind::Directory,
                     link_count: 1,
@@ -96,6 +97,7 @@ fn directory_record(
     entries: ObjectId,
 ) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id,
         kind: FileKind::Directory,
         link_count,
@@ -138,6 +140,7 @@ async fn generation_with_regular_extent(
         vec![
             directory_record(root_id, 1, metadata_id, entries),
             FileRecord {
+                bindings: None,
                 file_id: child_id,
                 kind: FileKind::Regular,
                 link_count: 1,

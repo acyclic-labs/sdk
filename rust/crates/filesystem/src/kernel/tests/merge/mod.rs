@@ -55,6 +55,7 @@ fn record(
     kind: FileKind,
 ) -> FileRecord {
     FileRecord {
+        bindings: None,
         file_id: FileId::from_bytes([file; 16]),
         kind,
         link_count,
@@ -153,6 +154,10 @@ async fn adjust_test_link_counts(
         }
         let result =
             adjust_link_counts(store, limits, &mut state, &mut accounting, cancellation).await;
+        let result = match result {
+            Ok(transitions) => retire_transitions(transitions, &mut accounting),
+            Err(error) => Err(error),
+        };
         for (file, value) in &state.records.value {
             *records.get_mut(file).ok_or(FsError::InvalidDiff)? = *value;
         }

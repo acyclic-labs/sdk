@@ -71,6 +71,7 @@ async fn generation_diff_is_semantic_and_bounded() -> TestResult {
             vec![Mutation::Create {
                 path: path("ordered-last")?,
                 record: FileRecord {
+                    bindings: None,
                     file_id: FileId::from_bytes([0xff; 16]),
                     kind: FileKind::Regular,
                     link_count: 1,

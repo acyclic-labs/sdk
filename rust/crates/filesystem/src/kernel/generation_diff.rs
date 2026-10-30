@@ -26,6 +26,7 @@ impl FileRecordChange {
                 && after.kind == super::FileKind::Directory
                 && before.metadata == after.metadata
                 && before.link_count == after.link_count
+                && before.bindings == after.bindings
                 && matches!(before.payload, super::FilePayload::Directory { .. })
                 && matches!(after.payload, super::FilePayload::Directory { .. }))
     }

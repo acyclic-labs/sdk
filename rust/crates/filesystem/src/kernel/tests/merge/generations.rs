@@ -234,6 +234,7 @@ async fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier(
     let only_a = put_tree(&store, vec![a]).await?;
     let only_b = put_tree(&store, vec![b]).await?;
     let base = FileRecord {
+        bindings: None,
         file_id: directory_id,
         kind: FileKind::Directory,
         link_count: 1,
@@ -361,6 +362,7 @@ async fn sibling_additions_merge_entries_and_reconcile_directory_times()
     let only_b = put_tree(&store, vec![b.clone()]).await?;
     let both = put_tree(&store, vec![a, b]).await?;
     let dir = |metadata, entries| FileRecord {
+        bindings: None,
         file_id: directory_id,
         kind: FileKind::Directory,
         link_count: 1,
