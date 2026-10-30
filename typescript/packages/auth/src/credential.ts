@@ -137,7 +137,7 @@ export class CredentialCache {
   #flight: Flight | undefined;
   readonly #refresh: (rejected: CredentialSnapshot | undefined, signal: AbortSignal) => Promise<CredentialSnapshot>;
   readonly #observe: () => CredentialValidity;
-  readonly #changes = new Set<AbortController>();
+  #changes = new Set<AbortController>();
   readonly provider: CredentialProvider;
 
   constructor(
@@ -245,8 +245,11 @@ export class CredentialCache {
   }
 
   #notify(): void {
-    const changes = [...this.#changes];
-    this.#changes.clear();
+    const changes = this.#changes;
+    if (changes.size === 0) return;
+    // Detach the admitted generation before callbacks may register another.
+    // Delivery visits its subscribers directly, without copying their owners.
+    this.#changes = new Set();
     for (const controller of changes) controller.abort();
   }
 
