@@ -1,5 +1,6 @@
 use super::*;
 use crate::FsError;
+use crate::kernel::Owned as KernelOwned;
 use crate::kernel::changed_paths::{ChangedPath, Cursor};
 
 async fn changed(
@@ -125,7 +126,7 @@ async fn verify(
             .iter()
             .map(|row| row.path.retained_bytes())
             .sum::<u64>();
-    Owned::new(rows, allocation, bytes).retire(&mut work)?;
+    KernelOwned::new(rows, allocation, bytes).retire(&mut work)?;
     assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
 
     if let [Some(before), Some(after)] = roots {
@@ -146,7 +147,7 @@ async fn verify(
             expected
         );
         let bytes = delta.retained_bytes()?;
-        Owned::new(delta, allocation, bytes).retire(&mut work)?;
+        KernelOwned::new(delta, allocation, bytes).retire(&mut work)?;
         assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
     }
     Ok(())
