@@ -24,6 +24,7 @@ copy a codec into a model. The obligations are:
 | `bounded_resource_pairs_round_trip_and_refuse_other_versions` | Opaque four-byte accounts and IDs preserve every bit through the versioned resource codec; old versions and unversioned fields refuse before field parsing. |
 | `bounded_actor_triples_round_trip_and_refuse_resource_encodings` | Admitted four-byte account, namespace and ID triples round-trip; Actor and Resource grammars are disjoint, and old/unknown Actor versions refuse before fields. |
 | `usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions` | Every admitted 40-byte checkpoint has one encoding and a representable signed USN; truncations and old/unknown versions refuse before fields. |
+| `log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds` | Both four/eight-byte log prefixes preserve every length bit under arbitrary configured bounds, including reversed bounds. Narrow overflows, out-of-domain lengths and truncated prefixes refuse; every admitted prefix has one canonical spelling. |
 
 Kani's unwinding assertions check the stated bounds; there are no waits or
 timeouts. ID operations inspect a fixed maximum of 113 bytes, with no heap
@@ -35,6 +36,9 @@ The gRPC proof bounds its input to the complete five-byte transport header;
 full message bodies remain in the chunked fuzz oracle. The debit proof obtains
 its charge from the real encoder, rather than duplicating protobuf size rules.
 These added harnesses and the expanded seal negative control are unexecuted.
+The log-prefix harness covers exactly the bounded prefix codec. It does not
+prove full-frame extent arithmetic, body allocation or SHA-256; the shared
+format inventory records the separate extent-arithmetic admission work.
 
 These harnesses establish properties only when their Kani run succeeds. They
 do not establish that unrelated consumers use the codecs: that is a separate

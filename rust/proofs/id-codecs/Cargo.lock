@@ -118,6 +118,7 @@ version = "0.0.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-fs",
+ "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-stream",
 ]
