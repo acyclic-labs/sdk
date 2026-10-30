@@ -57,7 +57,7 @@ pub use client::{ApplicationDelivery, ApplicationSubscription, Client};
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open, verify_follow_data,
     verify_initial_retry_yield, verify_interest_accounting, verify_link_isolation,
-    verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
+    verify_node_dials, verify_pool_lifetime, verify_registration_cancellation,
     verify_terminal_cursor_dial,
 };
 #[cfg(loom)]

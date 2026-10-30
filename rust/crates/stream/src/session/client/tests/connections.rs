@@ -298,7 +298,7 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     assert_eq!(next(&mut records).await?, tail);
     assert_eq!(next(&mut later).await?, tail);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
-    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 2);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     assert_eq!(
         *fixture

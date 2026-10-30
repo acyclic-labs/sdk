@@ -160,8 +160,7 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
     assert_eq!(next(&mut records).await?.sequence, 2);
     let yielded = next(&mut records).await?;
     assert_eq!(yielded.sequence, 3);
-    new.controls
-        .send(Err(Status::unavailable("disconnect checked session")))?;
+    new.reset()?;
     wait_guard(&new, 3, yielded.commit_id).await?;
     append(&provider, "events", 1).await?;
     assert_eq!(next(&mut records).await?.sequence, 4);

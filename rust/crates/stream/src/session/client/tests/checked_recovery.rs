@@ -6,6 +6,8 @@ use proptest::prelude::*;
 struct Received {
     // One fixture lock, never nested or held across an await/wakeup.
     last: Mutex<Option<(u64, u64, CommitId)>>,
+    attempts: AtomicU64,
+    ended: Mutex<Option<(u64, StreamError)>>,
     changed: tokio::sync::Notify,
 }
 impl Received {
@@ -23,6 +25,24 @@ impl Received {
         self.changed.notify_one();
     }
 }
+struct ResponseOwner {
+    received: std::sync::Arc<Received>,
+    attempt: u64,
+    cause: StreamError,
+}
+impl Drop for ResponseOwner {
+    fn drop(&mut self) {
+        let mut ended = self.received.ended.lock().unwrap();
+        if ended
+            .as_ref()
+            .is_none_or(|(attempt, _)| *attempt < self.attempt)
+        {
+            *ended = Some((self.attempt, self.cause.clone()));
+        }
+        drop(ended);
+        self.received.changed.notify_one();
+    }
+}
 struct Observed {
     inner: transport::Endpoint,
     received: std::sync::Arc<Received>,
@@ -33,6 +53,11 @@ impl transport::Transport for Observed {
         &self,
         source: transport::Requests,
     ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
+        let mut owner = ResponseOwner {
+            received: self.received.clone(),
+            attempt: self.received.attempts.fetch_add(1, Ordering::Relaxed) + 1,
+            cause: StreamError::Unavailable,
+        };
         Box::pin(async move {
             let received = self.received.clone();
             let broken = self.received_anchor_mutant;
@@ -53,9 +78,20 @@ impl transport::Transport for Observed {
                 }
                 frame
             });
-            let source = self.inner.session(Box::pin(requests)).await?;
+            let source = match self.inner.session(Box::pin(requests)).await {
+                Ok(source) => source,
+                Err(error) => {
+                    owner.cause = error.clone();
+                    return Err(error);
+                }
+            };
             let received = self.received.clone();
             Ok(Box::pin(source.map(move |frame| {
+                if let Err(error) = &frame {
+                    owner.cause = error.clone();
+                }
+                // Retain the complete drop owner through the original response.
+                let _owner = &owner;
                 if let Ok(wire::SessionFrame {
                     generation,
                     body: Some(Body::Data(data)),
@@ -113,14 +149,16 @@ async fn buffered(received: &Received, generation: u64, next: u64, tail: u64) ->
         {
             return Ok(());
         }
-        tokio::time::timeout(Duration::from_secs(1), changed)
-            .await
-            .map_err(|error| {
-                format!(
-                    "buffered generation={generation} next={next} expected={expected} last={:?}: {error}",
-                    *received.last.lock().unwrap()
-                )
-            })?;
+        if let Some((_, cause)) = received
+            .ended
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|(attempt, _)| *attempt >= generation)
+        {
+            return Err(cause.clone().into());
+        }
+        changed.await;
     }
 }
 /// Wait for `target` to resume follow 1 at `generation`, from the last yielded commit.
@@ -224,8 +262,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
                     }),
                 )))?;
             } else {
-                old.controls
-                    .send(Err(Status::unavailable("property recovery")))?;
+                old.reset()?;
             }
             generation += 1;
             // An unpolled cursor still owns its old-generation deliveries.
@@ -239,10 +276,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
             if *append {
                 append_one(&provider, &mut ledger).await?;
             } else if next < ledger.len() as u64 {
-                let frame = tokio::time::timeout(Duration::from_secs(1), data.next())
-                    .await
-                    .map_err(|error| format!("yield generation={generation} next={next}: {error}"))?
-                    .ok_or("ALL ended")??;
+                let frame = data.next().await.ok_or("ALL ended")??;
                 let Some(Item::Record(record)) = frame.item else {
                     return Err("ALL returned another item".into());
                 };
@@ -276,6 +310,38 @@ proptest! {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn buffered_observation_ends_when_its_original_response_producer_fails() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let fixture = Fixture::open(provider, "home").await?;
+    let received = std::sync::Arc::new(Received::default());
+    let client = Client::with_transport(
+        endpoint(fixture._channel.clone(), &received, false),
+        std::sync::Arc::new(|_| Box::pin(async { Err(StreamError::InvalidResponse) })),
+        std::sync::Arc::new(PlatformExecutor),
+    );
+    client.register_credential(0, crate::session::testing::credential())?;
+    let mut records = client
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+        .map_ok(crate::records_only)
+        .await?;
+    let mut waiting = Box::pin(buffered(&received, 1, 1, 3));
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    fixture
+        .controls
+        .send(Err(Status::permission_denied("original response refused")))?;
+    let error = waiting
+        .await
+        .expect_err("a closed producer cannot deliver its missing buffer");
+    assert_eq!(
+        error.downcast_ref::<StreamError>(),
+        Some(&StreamError::AccessDenied)
+    );
+    assert_eq!(records.next().await, Some(Err(StreamError::AccessDenied)));
+    Ok(())
 }
 
 #[test]

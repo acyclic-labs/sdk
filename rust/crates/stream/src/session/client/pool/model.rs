@@ -430,8 +430,9 @@ pub fn verify_link_isolation(broken: bool) {
     });
 }
 
-/// Real deadline race and cursor destruction, with Loom-instrumented guard state.
-pub fn verify_registration_deadline(broken: bool) {
+/// Original ready-producer completion/drop races cursor cancellation, with
+/// Loom-instrumented admission, cancellation and removal state.
+pub fn verify_registration_cancellation(broken: bool) {
     use std::future::Future as _;
     for (complete, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
         loom::model(move || {
@@ -452,29 +453,25 @@ pub fn verify_registration_deadline(broken: bool) {
             let (_, receiver) = mpsc::channel(2);
             let progress = Arc::new(Progress::new(0));
             let cursor = client.cursor(1, Arc::clone(&progress), receiver).unwrap();
-            let expiry = Arc::new(gate::Gate::new());
-            let opened = Arc::new(gate::Gate::new());
-            let expiring = Arc::clone(&expiry);
-            let expiry_thread = loom::thread::spawn(move || expiring.set(true).unwrap());
-            let opening = Arc::clone(&opened);
+            let (ready, opened) = oneshot::channel::<Result<u64, StreamError>>();
             let open_thread = loom::thread::spawn(move || {
                 if complete {
-                    opening.set(true).unwrap();
+                    let _cancelled = ready.send(Ok(1));
                 }
             });
             let mut registration = Some(Box::pin(async move {
-                future::select(
-                    Box::pin(async {
-                        opened.changed(false).await.unwrap();
-                    }),
-                    Box::pin(async {
-                        if broken {
-                            future::pending::<()>().await;
-                        }
-                        expiry.changed(false).await.unwrap();
-                    }),
-                )
-                .await;
+                let result = opened.await.unwrap_or(Err(StreamError::Unavailable));
+                if broken && result.is_err() {
+                    future::pending::<()>().await;
+                }
+                assert_eq!(
+                    result,
+                    if complete {
+                        Ok(1)
+                    } else {
+                        Err(StreamError::Unavailable)
+                    }
+                );
                 drop(cursor); // Existing guard owns cancellation and removal.
             }));
             let wakes = Arc::new(AtomicU64::new(0));
@@ -485,7 +482,6 @@ pub fn verify_registration_deadline(broken: bool) {
             if cancel {
                 drop(registration.take());
             }
-            expiry_thread.join().unwrap();
             open_thread.join().unwrap();
             if !cancel && early.is_pending() {
                 assert!(
@@ -495,7 +491,7 @@ pub fn verify_registration_deadline(broken: bool) {
                         .as_mut()
                         .poll(&mut context)
                         .is_ready(),
-                    "expired registration must complete"
+                    "registration producer completion or loss must finish"
                 );
                 assert!(
                     wakes.load(Ordering::Acquire) > 0,

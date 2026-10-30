@@ -2,10 +2,7 @@ use super::*;
 use crate::grpc;
 use crate::{AppendRequest, MemoryStream, OwnedBytes, RecordStream};
 use futures::TryFutureExt as _;
-use std::{
-    sync::atomic::{AtomicUsize, Ordering},
-    time::Duration,
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tonic::Request;
 use tonic::{Response as Reply, Status, Streaming, transport::Endpoint};
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
@@ -407,7 +404,7 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
         assert_eq!(next(&mut b).await?.sequence, sequence);
     }
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
-    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 2);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())
 }

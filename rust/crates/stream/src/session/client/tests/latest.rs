@@ -350,8 +350,7 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
     }
     assert_eq!(attention, [4]);
     assert!(super::tenk::quiescent(std::slice::from_mut(&mut raw)).await);
-    new.controls
-        .send(Err(Status::unavailable("fixture reconnect")))?;
+    new.reset()?;
     new.until(|counts| {
         counts
             .resumes

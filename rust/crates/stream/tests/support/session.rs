@@ -21,6 +21,142 @@ use tonic::{
 use wire::stream_session_service_server::{StreamSessionService, StreamSessionServiceServer};
 use wire::{session_frame::Body, session_subscription::Kind};
 
+/// Only live accepted sockets are retained. Reset shuts down their original
+/// OS connection; errors observed by clients come from real HTTP/2 I/O.
+#[derive(Default)]
+pub(super) struct Connections(Mutex<std::collections::HashMap<usize, std::net::TcpStream>>);
+
+pub(super) struct Socket {
+    socket: tokio::net::TcpStream,
+    connections: Arc<Connections>,
+    id: usize,
+}
+
+impl Connections {
+    pub(super) fn incoming(
+        self: &Arc<Self>,
+        listener: tokio::net::TcpListener,
+        counts: Arc<Counts>,
+    ) -> impl futures::Stream<Item = std::io::Result<Socket>> + Send + 'static {
+        let connections = Arc::clone(self);
+        stream::try_unfold(listener, move |listener| {
+            let connections = Arc::clone(&connections);
+            let counts = Arc::clone(&counts);
+            async move {
+                let (socket, _) = listener.accept().await?;
+                socket.set_nodelay(true)?;
+                #[cfg(unix)]
+                let retained = std::net::TcpStream::from(
+                    std::os::fd::AsFd::as_fd(&socket).try_clone_to_owned()?,
+                );
+                #[cfg(windows)]
+                let retained = std::net::TcpStream::from(
+                    std::os::windows::io::AsSocket::as_socket(&socket).try_clone_to_owned()?,
+                );
+                let id = counts.connections.fetch_add(1, Ordering::Relaxed);
+                connections
+                    .0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("accepted sockets poisoned"))?
+                    .insert(id, retained);
+                Ok::<_, std::io::Error>(Some((
+                    Socket {
+                        socket,
+                        connections,
+                        id,
+                    },
+                    listener,
+                )))
+            }
+        })
+    }
+
+    pub(super) fn reset(&self) -> std::io::Result<()> {
+        // Detach under the registry lock; shutdown never runs with it held.
+        let sockets = std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .map_err(|_| std::io::Error::other("accepted sockets poisoned"))?,
+        );
+        if sockets.is_empty() {
+            return Err(std::io::Error::from(std::io::ErrorKind::NotConnected));
+        }
+        for socket in sockets.into_values() {
+            socket.shutdown(std::net::Shutdown::Both)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Socket {
+    fn drop(&mut self) {
+        self.connections
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+impl tonic::transport::server::Connected for Socket {
+    type ConnectInfo = <tokio::net::TcpStream as tonic::transport::server::Connected>::ConnectInfo;
+    fn connect_info(&self) -> Self::ConnectInfo {
+        <tokio::net::TcpStream as tonic::transport::server::Connected>::connect_info(&self.socket)
+    }
+}
+
+impl tokio::io::AsyncRead for Socket {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncRead::poll_read(std::pin::Pin::new(&mut self.get_mut().socket), cx, buffer)
+    }
+}
+
+impl tokio::io::AsyncWrite for Socket {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        tokio::io::AsyncWrite::poll_write(
+            std::pin::Pin::new(&mut self.get_mut().socket),
+            cx,
+            buffer,
+        )
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_flush(std::pin::Pin::new(&mut self.get_mut().socket), cx)
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        tokio::io::AsyncWrite::poll_shutdown(std::pin::Pin::new(&mut self.get_mut().socket), cx)
+    }
+}
+
+/// Retain the actual serving task's completion, including abort or unwind.
+pub(super) fn serve(
+    serving: impl std::future::Future<Output = Result<(), tonic::transport::Error>> + Send + 'static,
+) -> (
+    tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    tokio::sync::watch::Receiver<()>,
+) {
+    let (alive, ended) = tokio::sync::watch::channel(());
+    let server = tokio::spawn(async move {
+        let _alive = alive;
+        serving.await
+    });
+    (server, ended)
+}
+
 pub(super) struct Options {
     pub(super) tls: bool,
     pub(super) withhold_welcome: bool,
@@ -267,7 +403,8 @@ pub(super) struct Fixture {
     pub(super) tls_client: Option<grpc::Client>,
     pub(super) counts: Arc<Counts>,
     pub(super) server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-    server_ended: tokio::sync::watch::Receiver<()>,
+    pub(super) server_ended: tokio::sync::watch::Receiver<()>,
+    pub(super) connections: Arc<Connections>,
 }
 impl Fixture {
     pub(super) async fn with_options<P: StreamProvider>(
@@ -290,16 +427,8 @@ impl Fixture {
         };
         let counts = Arc::new(Counts::default());
         *counts.node.lock().map_err(|_| "fixture node poisoned")? = node.into();
-        let accepted = Arc::clone(&counts);
-        let incoming = stream::try_unfold(listener, move |listener| {
-            let counts = Arc::clone(&accepted);
-            async move {
-                let (socket, _) = listener.accept().await?;
-                socket.set_nodelay(true)?;
-                counts.connections.fetch_add(1, Ordering::Relaxed);
-                Ok::<_, std::io::Error>(Some((socket, listener)))
-            }
-        });
+        let connections = Arc::new(Connections::default());
+        let incoming = connections.incoming(listener, Arc::clone(&counts));
         let (controls, _) = tokio::sync::broadcast::channel(16);
         let unary = grpc::Service::new(Arc::clone(&provider));
         let unary_counts = Arc::clone(&counts);
@@ -319,7 +448,6 @@ impl Fixture {
                 ),
             ))?;
         }
-        let (alive, server_ended) = tokio::sync::watch::channel(());
         let serving = builder
             .add_service(
                 wire::stream_service_server::StreamServiceServer::with_interceptor(
@@ -332,10 +460,7 @@ impl Fixture {
             )
             .add_service(StreamSessionServiceServer::new(host))
             .serve_with_incoming(incoming);
-        let server = tokio::spawn(async move {
-            let _alive = alive;
-            serving.await
-        });
+        let (server, server_ended) = serve(serving);
         let tls_client = match pem.as_ref() {
             Some(pem) => Some(
                 grpc::Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await?,
@@ -361,11 +486,11 @@ impl Fixture {
             counts,
             server,
             server_ended,
+            connections,
         })
     }
     pub(super) fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.controls
-            .send(Err(Status::unavailable("fixture Session reset")))?;
+        self.connections.reset()?;
         Ok(())
     }
     pub(super) async fn until(&self, ready: impl Fn(&Counts) -> bool) -> Result<(), StreamError> {
@@ -384,6 +509,7 @@ impl Fixture {
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        let _closed = self.connections.reset();
         self.server.abort();
     }
 }
