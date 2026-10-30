@@ -1070,6 +1070,37 @@ fn actor_machine_names_a_machines_binding_and_a_host_only_endpoint()
         machine(|m| m.volume_provider.family = "machines".into()),
         rule
     );
+    // Negative controls, one per host-only declaration rule: a name that is no
+    // identifier, repeats another host endpoint, or is also a guest binding; an
+    // authority that is not lowercase, empty or on port 0; and a credential
+    // reference that is not below a store collection.
+    let host = |change: &dyn Fn(&mut HostFetch)| {
+        refused(&|environment: &mut Environment| {
+            if let Some(entry) = environment.entries.first_mut() {
+                let mut second = entry.host_fetch.first().cloned().expect("host endpoint");
+                second.name = "objectsEndpoint".into();
+                change(&mut second);
+                entry.host_fetch.push(second);
+            }
+        })
+    };
+    assert_eq!(host(&|_| {}), None);
+    let name = Some("host-fetch-name".to_owned());
+    assert_eq!(host(&|h| h.name = "objects-endpoint".into()), name);
+    assert_eq!(host(&|h| h.name = "machinesEndpoint".into()), name);
+    assert_eq!(host(&|h| h.name = "WORKSPACE".into()), name);
+    let authority = Some("https-authority".to_owned());
+    assert_eq!(
+        host(&|h| h.origin.host = "Machines.example.com".into()),
+        authority
+    );
+    assert_eq!(host(&|h| h.origin.host = String::new()), authority);
+    assert_eq!(host(&|h| h.origin.port = 0), authority);
+    assert_eq!(
+        host(&|h| h.credential.reference =
+            SecretReference::new("secrets:/leaf".into()).expect("reference")),
+        Some("secret-reference".to_owned())
+    );
     // Both credential schemes admit, and the guest can reach neither the
     // endpoint's credential nor its origin under either of them.
     let exposed = Some("host-fetch-exposed".to_owned());

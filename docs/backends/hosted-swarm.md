@@ -320,4 +320,8 @@ Objects v1 request; every `ObjectsV1Provider` is one. The harness opens it as
 other Objects v1 host: a read is one `GetBlob`, an existence check one
 `HeadBlob`, a put one `PutBlob` per object (at most the shared batch window in
 flight), and a publication root, when set, one `Retain`. The grant needs
-`objects/head`, `objects/get`, `objects/put` and `objects/retain`.
+`objects/head`, `objects/get`, `objects/put` and `objects/retain`. The host
+serves the binding through the entry's second host-only `hostFetch` endpoint,
+`objectsEndpoint`: the same origin as the Machines endpoint, always with the
+account leaf. Like the Machines endpoint, neither its origin nor its leaf ever
+reaches the guest.
