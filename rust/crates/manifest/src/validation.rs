@@ -466,11 +466,11 @@ fn validate_entries<'a>(
                     *work += 1;
                 }
                 // Shared constructor checks positive ActorLimits, starts, IDs and placement anchors.
-                lower_actor_unchecked(bindings, secrets, entry, "manifest-admission")?;
+                lower_actor_unchecked(bindings, secrets, entry, "manifest-admission", None)?;
                 subscribed.insert(entry.name.as_str(), streams);
             }
             EntryRuntime::Worker { .. } => {
-                lower_worker_unchecked(bindings, secrets, entry, "manifest-admission")?;
+                lower_worker_unchecked(bindings, secrets, entry, "manifest-admission", None)?;
             }
         }
         selected.insert(entry.name.as_str(), selection);
@@ -575,19 +575,43 @@ pub fn lower_actor(
         "entry",
         "undeclared-entry",
     )?;
+    require(
+        matches!(entry.runtime, EntryRuntime::ActorNamespace { .. }),
+        "entry",
+        "actor-required",
+    )?;
+    lower_admitted(environment, entry, idempotency_key, None)
+}
+
+// Only the public checked lowerers and an owned PreparedEntry call this path.
+// Neither constructs a second manifest nor re-admits the selected declaration.
+pub(crate) fn lower_admitted(
+    environment: &Environment,
+    entry: &Entry,
+    idempotency_key: &str,
+    source: Option<acyclic_actors::domain::EntrySource>,
+) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
     let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
     let secrets = environment
         .secrets
         .iter()
         .map(|s| (s.name.as_str(), s))
         .collect();
-    lower_actor_unchecked(&bindings, &secrets, entry, idempotency_key)
+    match entry.runtime {
+        EntryRuntime::ActorNamespace { .. } => {
+            lower_actor_unchecked(&bindings, &secrets, entry, idempotency_key, source)
+        }
+        EntryRuntime::Worker { .. } => {
+            lower_worker_unchecked(&bindings, &secrets, entry, idempotency_key, source)
+        }
+    }
 }
 fn lower_actor_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
     secrets: &HashMap<&str, &SecretRef>,
     entry: &Entry,
     idempotency_key: &str,
+    source: Option<acyclic_actors::domain::EntrySource>,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
     use acyclic_actors::domain::DeploymentRequest;
     let EntryRuntime::ActorNamespace {
@@ -602,18 +626,19 @@ fn lower_actor_unchecked(
     let (digest, selected) = deployment_parts(bindings, entry)?;
     let selected_secrets = deployment_secrets(secrets, entry)?;
     let selected_fetch = deployment_fetch(entry)?;
-    DeploymentRequest::new(
-        acyclic_actors::domain::ActorNamespace::new(entry.name.clone())
-            .map_err(|_| ManifestError::invalid("entry.name", "namespace"))?,
-        digest,
-        selected,
-        limits.0,
-        subscriptions.iter().map(|s| s.0.clone()).collect(),
-        idempotency_key.into(),
-    )
-    .and_then(|request| request.with_jurisdiction(jurisdiction.clone()))
-    .and_then(|request| request.with_secrets(selected_secrets))
-    .and_then(|request| request.with_fetch(selected_fetch))
+    DeploymentRequest::try_from(acyclic_actors::wire::DeploymentRequest {
+        entry_source: source.map(Into::into),
+        name: entry.name.clone(),
+        code_sha256: digest.into(),
+        bindings: selected.into_iter().map(Into::into).collect(),
+        limits: Some(limits.0.into()),
+        subscriptions: subscriptions.iter().map(|s| s.0.clone().into()).collect(),
+        idempotency_key: idempotency_key.into(),
+        jurisdiction: jurisdiction.clone(),
+        secrets: selected_secrets.into_iter().map(Into::into).collect(),
+        fetch: selected_fetch.map(Into::into),
+        ..Default::default()
+    })
     .map_err(|_| ManifestError::invalid("entry.runtime", "actors-admission"))
 }
 
@@ -853,21 +878,21 @@ pub fn lower_worker(
         "entry",
         "undeclared-entry",
     )?;
-    let bindings = environment.bindings.iter().map(|b| (b.name(), b)).collect();
-    let secrets = environment
-        .secrets
-        .iter()
-        .map(|s| (s.name.as_str(), s))
-        .collect();
-    lower_worker_unchecked(&bindings, &secrets, entry, idempotency_key)
+    require(
+        matches!(entry.runtime, EntryRuntime::Worker { .. }),
+        "entry",
+        "worker-required",
+    )?;
+    lower_admitted(environment, entry, idempotency_key, None)
 }
 fn lower_worker_unchecked(
     bindings: &HashMap<&str, &Contract<Binding>>,
     secrets: &HashMap<&str, &SecretRef>,
     entry: &Entry,
     idempotency_key: &str,
+    source: Option<acyclic_actors::domain::EntrySource>,
 ) -> Result<acyclic_actors::domain::DeploymentRequest, ManifestError> {
-    use acyclic_actors::domain::{ActorNamespace, DeploymentRequest, WorkerLimits};
+    use acyclic_actors::domain::DeploymentRequest;
     let EntryRuntime::Worker { limits } = &entry.runtime else {
         return Err(ManifestError::invalid("entry", "worker-required"));
     };
@@ -876,22 +901,21 @@ fn lower_worker_unchecked(
     let (digest, selected) = deployment_parts(bindings, entry)?;
     let selected_secrets = deployment_secrets(secrets, entry)?;
     let selected_fetch = deployment_fetch(entry)?;
-    let limits = WorkerLimits::new(
-        limits.cpu_millis,
-        limits.memory_bytes,
-        limits.timeout_millis,
-    )
-    .map_err(|_| ManifestError::invalid("entry.runtime", "worker-limits"))?;
-    DeploymentRequest::worker(
-        ActorNamespace::new(entry.name.clone())
-            .map_err(|_| ManifestError::invalid("entry.name", "worker-label"))?,
-        digest,
-        selected,
-        limits,
-        idempotency_key.into(),
-    )
-    .and_then(|request| request.with_secrets(selected_secrets))
-    .and_then(|request| request.with_fetch(selected_fetch))
+    DeploymentRequest::try_from(acyclic_actors::wire::DeploymentRequest {
+        entry_source: source.map(Into::into),
+        name: entry.name.clone(),
+        code_sha256: digest.into(),
+        bindings: selected.into_iter().map(Into::into).collect(),
+        worker_limits: Some(acyclic_actors::wire::WorkerLimits {
+            cpu_millis: limits.cpu_millis,
+            memory_bytes: limits.memory_bytes,
+            timeout_millis: limits.timeout_millis,
+        }),
+        idempotency_key: idempotency_key.into(),
+        secrets: selected_secrets.into_iter().map(Into::into).collect(),
+        fetch: selected_fetch.map(Into::into),
+        ..Default::default()
+    })
     .map_err(|_| ManifestError::invalid("entry.runtime", "workers-admission"))
 }
 fn deployment_fetch(

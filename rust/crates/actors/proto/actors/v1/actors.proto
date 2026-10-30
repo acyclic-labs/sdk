@@ -48,6 +48,7 @@ message ActorObservation {
   optional uint64 checkpoint_unix_millis = 6;
   uint64 checkpoint_epoch = 7;
   uint64 configuration_revision = 8;
+  EntrySource entry_source = 9;
   optional string namespace = 90;
   bytes account_id = 91;
   optional string observation_stream_path = 92;
@@ -112,6 +113,7 @@ message DeploymentObservation {
   uint64 revision = 3;
   string jurisdiction = 4;
   bytes account_id = 5;
+  EntrySource entry_source = 6;
 }
 
 message DeploymentRequest {
@@ -127,6 +129,7 @@ message DeploymentRequest {
   WorkerLimits worker_limits = 11;
   repeated SecretSelection secrets = 12;
   FetchBinding fetch = 13;
+  EntrySource entry_source = 14;
 }
 
 message DeploymentResponse {
@@ -136,6 +139,13 @@ message DeploymentResponse {
 message EgressRule {
   string host = 1;
   uint32 port = 2;
+}
+
+message EntrySource {
+  bytes digest = 1;
+  uint64 length = 2;
+  string environment = 3;
+  string entry = 4;
 }
 
 message Error {
@@ -265,6 +275,7 @@ message UpdateNamespaceRequest {
   bytes account_id = 91;
   repeated SecretSelection secrets = 7;
   FetchBinding fetch = 8;
+  EntrySource entry_source = 9;
 }
 
 message UpdateNamespaceResponse {

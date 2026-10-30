@@ -14,6 +14,7 @@ acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-manifest = { version = "=0.2.0", path = "../manifest" }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 thiserror.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

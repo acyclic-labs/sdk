@@ -30,6 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut actors_grpc = actors::grpc::connect(endpoint, token, Some(ca.as_bytes())).await?;
     let actors_http = actors::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let request = actors::wire::DeploymentRequest {
+        entry_source: None,
         name: "example".into(),
         code_sha256: vec![1; 32],
         limits: Some(actors::wire::ActorLimits {
@@ -46,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     actors_grpc.deploy_namespace(request.clone()).await?;
     actors_http.deploy_namespace(&request).await?;
     let request = actors::wire::DeploymentRequest {
+        entry_source: None,
         secrets: Vec::new(),
         fetch: None,
         limits: None,
@@ -59,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     actors_grpc.deploy_worker(request.clone()).await?;
     actors_http.deploy_worker(&request).await?;
     let request = actors::wire::UpdateNamespaceRequest {
+        entry_source: None,
         namespace_id: "example".into(),
         code_sha256: vec![1; 32],
         limits: Some(actors::wire::ActorLimits {

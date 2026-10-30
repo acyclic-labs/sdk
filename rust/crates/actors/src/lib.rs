@@ -86,6 +86,7 @@ mod tests {
     #[test]
     fn subscription_start_is_exactly_one_choice() -> Result<(), ContractError> {
         let mut create = wire::DeploymentRequest {
+            entry_source: None,
             secrets: Vec::new(),
             fetch: None,
             worker_limits: None,
@@ -310,6 +311,7 @@ mod tests {
         assert!(matches!(
             client
                 .deploy_namespace(&wire::DeploymentRequest {
+                    entry_source: None,
                     name: "tracing".into(),
                     code_sha256: vec![1; 32],
                     limits: Some(wire::ActorLimits {

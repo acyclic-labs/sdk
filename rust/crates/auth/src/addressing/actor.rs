@@ -29,21 +29,28 @@ pub fn validate_actor_id(bytes: &[u8]) -> Result<(), IdentityError> {
 pub struct NamespaceId(String);
 
 impl NamespaceId {
-    /// Parse an exact namespace spelling, including the reserved legacy scope.
-    pub fn new(bytes: &[u8]) -> Result<Self, IdentityError> {
+    fn validated_text(bytes: &[u8]) -> Result<&str, IdentityError> {
         if !valid_name(bytes) {
             return Err(IdentityError::InvalidNamespace);
         }
-        let text = std::str::from_utf8(bytes).map_err(|_| IdentityError::InvalidNamespace)?;
-        Ok(Self(text.to_owned()))
+        std::str::from_utf8(bytes).map_err(|_| IdentityError::InvalidNamespace)
     }
-    /// Admit an explicitly deployed namespace, excluding the legacy scope.
-    pub fn for_deployment(bytes: &[u8]) -> Result<Self, IdentityError> {
-        let value = Self::new(bytes)?;
-        if value.as_str() == DEFAULT_ACTOR_NAMESPACE {
+
+    /// Parse an exact namespace spelling, including the reserved legacy scope.
+    pub fn new(bytes: &[u8]) -> Result<Self, IdentityError> {
+        Ok(Self(Self::validated_text(bytes)?.to_owned()))
+    }
+    /// Validate an explicitly deployed namespace without allocating its spelling.
+    pub fn validate_deployment(bytes: &[u8]) -> Result<&str, IdentityError> {
+        let value = Self::validated_text(bytes)?;
+        if value == DEFAULT_ACTOR_NAMESPACE {
             return Err(IdentityError::ReservedNamespace);
         }
         Ok(value)
+    }
+    /// Admit an explicitly deployed namespace, excluding the legacy scope.
+    pub fn for_deployment(bytes: &[u8]) -> Result<Self, IdentityError> {
+        Ok(Self(Self::validate_deployment(bytes)?.to_owned()))
     }
     /// Resolve an absent legacy wire field to its reserved namespace.
     pub fn from_legacy_field(value: Option<&str>) -> Result<Self, IdentityError> {

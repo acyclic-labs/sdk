@@ -9,6 +9,17 @@ Code and bindings are updated by a full configuration CAS. Checkpoint schema
 compatibility or migration is checked before activation; a failed update keeps
 the previous version active, and paused subscriptions remain paused.
 
+Deployment and update requests can carry `EntrySource`: an exact selected
+immutable Objects digest, descriptor length, environment and entry. Its entry
+must match the deployment namespace or Worker name. It identifies the complete
+selected module closure, while the original account and resource grants remain
+the only authority. Services persist it in the same accepted configuration as
+the code digest and preserve it in deployment and actor observations, including
+restore and idempotent reconciliation. An update without a source explicitly
+removes that selection. The shared Workers entry loader verifies observations
+through the original Objects provider; this crate introduces no execution or
+storage path for attachments.
+
 The service owns execution, fencing, checkpoint storage, and hibernation. This
 crate validates customer-authored requests through its typed semantic domain
 (`ActorId`, `CodeSha256`, `PositiveU64`, finite states, nested records, and

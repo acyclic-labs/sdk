@@ -1,4 +1,7 @@
 //! One retained immutable entry closure for Actors and Workers.
+use acyclic_actors::domain::{
+    ActorObservation, CodeSha256, DeploymentObservation, DeploymentRequest, EntrySource,
+};
 use acyclic_manifest::{EntryClosure, EntryObject, ManifestError, PreparedEntry};
 use acyclic_objects::{
     Blobs, ByteRange, Digest, Kind, Object, Released, Retained, RootId, Verified,
@@ -23,6 +26,15 @@ pub struct PublishedEntry {
     pub object: Verified,
     /// Original retention result, including its covering account revision.
     pub retention: Retained,
+}
+
+/// A canonical deployment request whose exact immutable closure is retained.
+#[derive(Debug)]
+pub struct PublishedDeployment {
+    /// Submit unchanged through the original Actors client and deployment intent.
+    pub request: DeploymentRequest,
+    /// Original Objects publication and durability acknowledgements.
+    pub publication: PublishedEntry,
 }
 
 /// Publication and loading share the caller's existing account provider.
@@ -65,7 +77,32 @@ impl<P: Blobs> EntryStore<P> {
         root: &RootId,
         prepared: PreparedEntry,
     ) -> Result<PublishedEntry, Error> {
-        let (closure, payloads) = prepared.into_parts();
+        let (closure, payloads) = prepared.into_parts()?;
+        self.publish_parts(root, closure, payloads).await
+    }
+
+    /// Lower and retain the same admitted selection before its deployment call.
+    /// Invalid configuration or intent fails before any Objects operation.
+    pub async fn publish_deployment(
+        &self,
+        root: &RootId,
+        prepared: PreparedEntry,
+        idempotency_key: &str,
+    ) -> Result<PublishedDeployment, Error> {
+        let (request, closure, payloads) = prepared.into_deployment(idempotency_key)?.into_parts();
+        let publication = self.publish_parts(root, closure, payloads).await?;
+        Ok(PublishedDeployment {
+            request,
+            publication,
+        })
+    }
+
+    async fn publish_parts(
+        &self,
+        root: &RootId,
+        closure: acyclic_stream::SealedBytes,
+        payloads: Vec<acyclic_stream::SealedBytes>,
+    ) -> Result<PublishedEntry, Error> {
         let references = payloads.iter().map(Digest::sealed).collect();
         let batch = payloads
             .into_iter()
@@ -87,12 +124,63 @@ impl<P: Blobs> EntryStore<P> {
         environment: &str,
         entry: &str,
     ) -> Result<LoadedEntry<'_, P>, Error> {
-        EntryClosure::admit_length(reference.length)?;
-        let descriptor = self
-            .objects
-            .get(reference.digest, ByteRange::FULL, reference.length)
+        self.load_selected(reference.digest, reference.length, environment, entry)
+            .await
+    }
+
+    /// Restore a deployment from its original accepted observation. Missing or
+    /// mismatched selection fails closed, without falling back to a code SHA.
+    pub async fn load_deployment(
+        &self,
+        observation: &DeploymentObservation,
+    ) -> Result<LoadedEntry<'_, P>, Error> {
+        let source = observation
+            .entry_source()
+            .filter(|source| source.entry() == observation.name().as_str())
+            .ok_or_else(|| ManifestError::invalid("entryClosure", "accepted-source"))?;
+        self.load_source(source, observation.code_sha256()).await
+    }
+
+    /// Restore an actor using the exact selection in its accepted namespace
+    /// configuration, independent of its instance id or checkpoint history.
+    pub async fn load_actor(
+        &self,
+        observation: &ActorObservation,
+    ) -> Result<LoadedEntry<'_, P>, Error> {
+        let source = observation
+            .entry_source()
+            .filter(|source| source.entry() == observation.namespace())
+            .ok_or_else(|| ManifestError::invalid("entryClosure", "accepted-source"))?;
+        self.load_source(source, observation.code_sha256()).await
+    }
+
+    async fn load_source(
+        &self,
+        source: &EntrySource,
+        code: &CodeSha256,
+    ) -> Result<LoadedEntry<'_, P>, Error> {
+        let loaded = self
+            .load_selected(
+                source.digest(),
+                source.length(),
+                source.environment(),
+                source.entry(),
+            )
             .await?;
-        exact(&descriptor, reference.length)?;
+        loaded.closure.verify_code(code)?;
+        Ok(loaded)
+    }
+
+    async fn load_selected(
+        &self,
+        digest: Digest,
+        length: u64,
+        environment: &str,
+        entry: &str,
+    ) -> Result<LoadedEntry<'_, P>, Error> {
+        EntryClosure::admit_length(length)?;
+        let descriptor = self.objects.get(digest, ByteRange::FULL, length).await?;
+        exact(&descriptor, length)?;
         let closure = EntryClosure::decode(descriptor.body(), environment, entry)?;
         let edges: HashSet<_> = closure
             .objects()

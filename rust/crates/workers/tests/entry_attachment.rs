@@ -1,11 +1,13 @@
 //! Selected immutable attachment through the real account-scoped Objects engine.
 #![cfg(not(target_arch = "wasm32"))]
+use acyclic_actors::{domain, wire};
 use acyclic_manifest::{
     AssetRole, DeploymentManifest, EntryAsset, EntryClosure, ManifestError, PreparedEntry,
 };
 use acyclic_objects::{Blobs, Digest, MemoryMedium, Put, RootId, Store, Verified, wire::ErrorCode};
 use acyclic_stream::{OwnedBytes, testing::Counted};
 use acyclic_workers::entry::{EntryStore, Error};
+use prost::Message as _;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
@@ -88,7 +90,15 @@ fn preparation_controls() -> TestResult {
         artifact,
         vec![("selected.wasm".into(), module)],
     )?;
-    let (descriptor, payloads) = prepared.into_parts();
+    let (request, descriptor, payloads) = prepared.into_deployment("original-intent")?.into_parts();
+    assert_eq!(
+        request
+            .entry_source()
+            .ok_or("selected source")?
+            .digest()
+            .as_bytes(),
+        descriptor.digest()
+    );
     let bytes: usize = payloads.iter().map(|body| body.bytes().len()).sum();
     assert_eq!(
         acyclic_stream::hashed_on_this_thread() - before,
@@ -117,7 +127,7 @@ fn preparation_controls() -> TestResult {
         CODE.to_vec().into(),
         vec![("selected.wasm".into(), MODULE.to_vec().into())],
     )?
-    .into_parts();
+    .into_parts()?;
     assert_eq!(
         unchanged.digest(),
         descriptor.digest(),
@@ -142,6 +152,33 @@ fn preparation_controls() -> TestResult {
     );
     assert!(
         matches!(result, Err(error) if error == ManifestError::invalid("assets", "asset-digest"))
+    );
+    let mut worker = manifest(MODULE)?;
+    let environment = worker.environments.first_mut().ok_or("environment")?;
+    environment.crons.clear();
+    environment.entries.first_mut().ok_or("entry")?.runtime =
+        serde_json::from_value(json!({"kind":"worker","limits":{
+            "cpuMillis":1,"memoryBytes":1024,"timeoutMillis":10
+        }}))?;
+    let (request, descriptor, _) = PreparedEntry::new(
+        worker,
+        "production",
+        "agent",
+        CODE.to_vec().into(),
+        vec![("selected.wasm".into(), MODULE.to_vec().into())],
+    )?
+    .into_deployment("worker-intent")?
+    .into_parts();
+    assert!(request.limits().is_none());
+    assert!(request.worker_limits().is_some());
+    assert!(request.subscriptions().is_empty());
+    assert_eq!(
+        request
+            .entry_source()
+            .ok_or("worker source")?
+            .digest()
+            .as_bytes(),
+        descriptor.digest()
     );
     Ok(())
 }
@@ -187,6 +224,174 @@ async fn untrusted_descriptor<P: Blobs>(
     Ok(())
 }
 
+async fn accepted_configuration<P: Blobs>(
+    store: &EntryStore<Counted<P>>,
+    provider: &Counted<P>,
+) -> TestResult {
+    let root = RootId::new(b"deployment:configuration".to_vec())?;
+    let before = provider.requests();
+    assert!(
+        store
+            .publish_deployment(&root, prepare(MODULE)?, "")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        provider.requests().since(before).data(),
+        0,
+        "intent admission precedes I/O"
+    );
+    let published = store
+        .publish_deployment(&root, prepare(MODULE)?, "original-intent")
+        .await?;
+    assert_eq!(
+        provider.requests().since(before).data(),
+        3,
+        "lowering adds no reads"
+    );
+    let source = published.request.entry_source().ok_or("selected source")?;
+    assert_eq!(source.digest(), published.publication.object.digest);
+    assert_eq!(source.length(), published.publication.object.length);
+    assert_eq!(published.request.idempotency_key(), "original-intent");
+    assert_eq!(
+        published
+            .request
+            .bindings()
+            .iter()
+            .map(|binding| binding.name())
+            .collect::<Vec<_>>(),
+        vec!["INBOX"]
+    );
+    assert_eq!(published.request.secrets().len(), 1);
+    let request: wire::DeploymentRequest = published.request.clone().into();
+    let decoded = wire::DeploymentRequest::decode(request.encode_to_vec().as_slice())?;
+    assert_eq!(
+        domain::DeploymentRequest::try_from(decoded)?,
+        published.request
+    );
+    for bad_source in [
+        wire::EntrySource {
+            digest: vec![1; 31],
+            ..source.clone().into()
+        },
+        wire::EntrySource {
+            length: 0,
+            ..source.clone().into()
+        },
+        wire::EntrySource {
+            environment: "../foreign".into(),
+            ..source.clone().into()
+        },
+        wire::EntrySource {
+            entry: "other".into(),
+            ..source.clone().into()
+        },
+    ] {
+        let invalid = wire::DeploymentRequest {
+            entry_source: Some(bad_source),
+            ..request.clone()
+        };
+        assert!(matches!(
+            domain::DeploymentRequest::try_from(invalid),
+            Err(domain::DomainError::Contract(
+                acyclic_actors::ContractError::InvalidArgument
+            ))
+        ));
+    }
+    // The server observation contract carries the original accepted source.
+    // This is a protocol round trip over real Objects, not a hosted execution claim.
+    let observed = wire::DeploymentObservation {
+        name: request.name.clone(),
+        code_sha256: request.code_sha256.clone(),
+        revision: 7,
+        jurisdiction: request.jurisdiction.clone(),
+        account_id: b"selected".to_vec(),
+        entry_source: request.entry_source.clone(),
+    };
+    let restored = domain::DeploymentObservation::try_from(wire::DeploymentObservation::decode(
+        observed.encode_to_vec().as_slice(),
+    )?)?;
+    let before = provider.requests();
+    let loaded = store.load_deployment(&restored).await?;
+    assert_eq!(
+        provider.requests().since(before).data(),
+        1,
+        "restore reads only its descriptor"
+    );
+    assert_eq!(&**loaded.module("selected.wasm").await?.body(), MODULE);
+    let before = provider.requests();
+    let absent = domain::DeploymentObservation::try_from(wire::DeploymentObservation {
+        entry_source: None,
+        ..observed.clone()
+    })?;
+    assert!(
+        matches!(store.load_deployment(&absent).await, Err(Error::Manifest(error)) if error.rule == "accepted-source")
+    );
+    let foreign = domain::DeploymentObservation::try_from(wire::DeploymentObservation {
+        name: "other".into(),
+        ..observed.clone()
+    })?;
+    assert!(
+        matches!(store.load_deployment(&foreign).await, Err(Error::Manifest(error)) if error.rule == "accepted-source")
+    );
+    assert_eq!(
+        provider.requests().since(before).data(),
+        0,
+        "missing or mismatched selection does no I/O"
+    );
+    let changed = domain::DeploymentObservation::try_from(wire::DeploymentObservation {
+        code_sha256: vec![2; 32],
+        ..observed
+    })?;
+    assert!(
+        matches!(store.load_deployment(&changed).await, Err(Error::Manifest(error)) if error.rule == "artifact-digest")
+    );
+    let actor = wire::ActorObservation {
+        actor_id: "child-instance".into(),
+        code_sha256: request.code_sha256.clone(),
+        namespace: Some(request.name.clone()),
+        account_id: b"selected".to_vec(),
+        state: wire::ActorState::Active as i32,
+        configuration_revision: 7,
+        checkpoint_epoch: 19,
+        entry_source: request.entry_source.clone(),
+        ..Default::default()
+    };
+    let actor = domain::ActorObservation::try_from(wire::ActorObservation::decode(
+        actor.encode_to_vec().as_slice(),
+    )?)?;
+    let before = provider.requests();
+    let restored_actor = store.load_actor(&actor).await?;
+    assert_eq!(provider.requests().since(before).data(), 1);
+    assert_eq!(restored_actor.descriptor().head().digest, source.digest());
+    assert_eq!(&**restored_actor.artifact().await?.body(), CODE);
+    let update = wire::UpdateNamespaceRequest {
+        namespace_id: request.name.clone(),
+        code_sha256: request.code_sha256.clone(),
+        bindings: request.bindings.clone(),
+        limits: request.limits.clone(),
+        expected_configuration_revision: 7,
+        idempotency_key: "original-update".into(),
+        secrets: request.secrets.clone(),
+        fetch: request.fetch.clone(),
+        entry_source: request.entry_source.clone(),
+        ..Default::default()
+    };
+    let update = domain::UpdateNamespaceRequest::try_from(wire::UpdateNamespaceRequest::decode(
+        update.encode_to_vec().as_slice(),
+    )?)?;
+    assert_eq!(update.entry_source(), Some(source));
+    let retry = store
+        .publish_deployment(&root, prepare(MODULE)?, "original-intent")
+        .await?;
+    assert_eq!(
+        retry.request, published.request,
+        "the original intent retains exact selection"
+    );
+    store.release(&root).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     preparation_controls()?;
@@ -204,6 +409,7 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     );
     assert_eq!(provider.requests().control(), 0);
     assert_eq!(first.retention.references, 1);
+    accepted_configuration(&store, &provider).await?;
     let mut oversized = first.object.clone();
     oversized.length = u64::try_from(EntryClosure::MAX_ENCODED_BYTES)? + 1;
     let before = provider.requests();

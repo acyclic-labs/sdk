@@ -4,6 +4,8 @@ use ts_rs::{Config, ExportError, TS, TypeVisitor};
 
 mod identity;
 pub use identity::*;
+mod entry_source;
+pub use entry_source::*;
 mod configuration;
 pub use configuration::*;
 mod observations;

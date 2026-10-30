@@ -26,6 +26,19 @@ canonicalization keeps those compiler inputs stable. Project messages, fields,
 services and custom options still come independently from Buf and are compared
 exactly. The Rust descriptor is never substituted for the Buf output.
 
-Both current fixtures include reference-only secret and Fetch selections.
+Both current fixtures include reference-only secret and Fetch selections and
+the selected immutable entry source on deployment, update and observations.
+The 2026-10-30 Rust capture used the same compiled descriptor through the
+existing Actors metadata exporter, whose maintained-proto comparison passed:
+
+```
+cargo run --locked -p acyclic-actors --example actors-http-routes -- target/entry-configuration/routes.json --proto-out target/entry-configuration/proto
+cmp target/entry-configuration/proto/actors/v1/actors.proto rust/crates/actors/proto/actors/v1/actors.proto
+```
+
+Its emitted `target/entry-configuration/Actors.service.bin` was copied to both
+Rust descriptor paths above. The independent Buf capture used the commands
+above and the same maintained protobuf input.
+
 `actors-pre-secrets.bin` retains the unmodified actual
 predecessor descriptor; its separate provenance file identifies that capture.

@@ -3,6 +3,7 @@ use super::*;
 macro_rules! typescript_message_roots {
     ($callback:ident) => {
         $callback!(
+            EntrySource,
             ActorObservation,
             DeploymentObservation,
             DeleteWorkerRequest,
