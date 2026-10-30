@@ -69,6 +69,14 @@ scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
 Existing temporary-file capture consumers retain their separate file-size
 polling policy, which is not a hard disk-usage limit.
 
+`ProcessReadiness` resolves to `Ready`, `Deadline`, `Cancelled`, or
+`ServiceFailed`. The first terminal event wins. A fatal OS wait error or loss
+of the shared readiness producer settles armed and future waits with the same
+retained failure, including waits without deadlines. Interruption preserves
+interest. Cancelling an observation does not certify process retirement or
+release outstanding kernel buffers; the original process owner still joins
+physical cleanup. Collected and streamed capture propagate this same outcome.
+
 Process ownership stays in `process_tree.rs` inside this existing crate. File
 backends remain separate modules. `process_output(command, timeout, max_bytes)`
 provides bounded short-command capture; `process_status(command, timeout)`

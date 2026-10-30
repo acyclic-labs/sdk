@@ -128,16 +128,26 @@ pub struct ProcessTree {
 
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
-/// It holds no thread and fires once.
+/// It holds no thread and retains its first typed terminal outcome.
 pub struct ProcessReadiness(events::Wait);
 
+pub use events::ProcessWaitOutcome;
+
+impl ProcessReadiness {
+    /// Cancels this observation without releasing the original process owner.
+    /// An already settled readiness or service failure remains the outcome.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
 impl std::future::Future for ProcessReadiness {
-    type Output = ();
+    type Output = ProcessWaitOutcome;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
+    ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.0).poll(context)
     }
 }
@@ -814,7 +824,11 @@ impl ProcessTree {
                 match pump.turn(self, &mut check, &mut observe, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
-                        Ok(wait) => wait.block(),
+                        Ok(wait) => {
+                            if let Err(error) = wait.block().into_result() {
+                                break Err(error);
+                            }
+                        }
                         Err(error) => break Err(error),
                     },
                 }
@@ -876,7 +890,11 @@ impl ProcessTree {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
                             match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
-                                Ok(wait) => wait.block(),
+                                Ok(wait) => {
+                                    if let Err(error) = wait.block().into_result() {
+                                        break Err(error);
+                                    }
+                                }
                                 Err(error) => break Err(error),
                             }
                         }
@@ -1025,8 +1043,7 @@ impl ProcessTree {
                         return Err(io::ErrorKind::TimedOut.into());
                     }
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        self.arm_exit(deadline)?.block();
-                        Ok(())
+                        self.arm_exit(deadline)?.block().into_result()
                     })?;
                 }
                 if let Some(child) = self.child.as_mut() {

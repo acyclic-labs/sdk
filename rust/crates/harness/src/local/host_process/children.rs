@@ -392,10 +392,12 @@ impl NativeChildren {
     fn arm(&self, reference: &str, running: &mut Running) -> Result<()> {
         let mut wait = running.process.readiness()?;
         let mut context = Context::from_waker(&running.wake);
-        if std::pin::Pin::new(&mut wait).poll(&mut context).is_ready() {
-            self.ready.push(reference);
-        } else {
-            running.armed = Some(wait);
+        match std::pin::Pin::new(&mut wait).poll(&mut context) {
+            Poll::Ready(outcome) => {
+                outcome.into_result().map_err(storage)?;
+                self.ready.push(reference);
+            }
+            Poll::Pending => running.armed = Some(wait),
         }
         Ok(())
     }
@@ -409,8 +411,14 @@ impl NativeChildren {
             let Some(mut running) = self.children.remove(&reference) else {
                 continue;
             };
-            running.armed = None;
-            let result = match self.refresh(&reference, &mut running) {
+            let readiness = running.armed.take().map_or(Ok(()), |mut wait| {
+                let mut context = Context::from_waker(&running.wake);
+                match std::pin::Pin::new(&mut wait).poll(&mut context) {
+                    Poll::Ready(outcome) => outcome.into_result().map_err(storage),
+                    Poll::Pending => Ok(()),
+                }
+            });
+            let result = match readiness.and_then(|()| self.refresh(&reference, &mut running)) {
                 Ok(Some(mut settled)) => self.launch(&reference, &mut settled),
                 Ok(None) => {
                     let armed = if running.process.take_output_progress() {
