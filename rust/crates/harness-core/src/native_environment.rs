@@ -71,6 +71,33 @@ pub fn variable(name: &str) -> Option<OsString> {
     variable_with_user_locations(name, true)
 }
 
+/// Snapshots the native owner's closed allowlist for locating ordinary tools.
+///
+/// An admitted shell may locate the owner's installed tools without receiving
+/// its home, configuration, loader hooks or credentials. Call once when binding
+/// the executor, then pass this explicit map through preparation and env_clear.
+#[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+pub fn tool_environment() -> std::io::Result<std::collections::BTreeMap<String, String>> {
+    [
+        "PATH",
+        #[cfg(windows)]
+        "PATHEXT",
+        #[cfg(windows)]
+        "SystemRoot",
+    ]
+    .into_iter()
+    .filter_map(|name| variable(name).map(|value| (name, value)))
+    .map(|(name, value)| {
+        value.into_string().map(|value| (name.into(), value)).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("approved tool setting {name} is not UTF-8; recovery: supply a UTF-8 tool location before opening the executor"),
+            )
+        })
+    })
+    .collect()
+}
+
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 /// Resolves the native home directory for an ambient composition.
 pub fn home() -> Option<PathBuf> {

@@ -78,7 +78,13 @@ pub fn prepare<T>(
         mount.check(Action::List, &path, now)?;
     }
     invocation.cwd = cwd;
-    invocation.environment.extend(mounts.environment()?);
+    for (name, value) in mounts.environment()? {
+        if invocation.environment.insert(name, value).is_some() {
+            return Err(Error::Invalid(
+                "volume discovery hint collides with the explicit process environment".into(),
+            ));
+        }
+    }
     // Shell commands receive only the host's explicit ordinary variables and
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.

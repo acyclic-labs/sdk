@@ -202,7 +202,6 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     }
     let home = crate::native_environment::variable(CHILD).expect("fixture-owned child home");
     let home = home.to_str().expect("UTF-8 fixture path");
-    let path = crate::native_environment::variable("PATH").expect("fixture-owned tool path");
     std::fs::create_dir_all(temp.path().join(".volumes/data"))
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mounts = table(
@@ -218,18 +217,11 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     let configured = |inherit_environment| {
         let mut invocation = invocation(&mounts.root);
         invocation.inherit_environment = inherit_environment;
+        invocation.environment = crate::native_environment::tool_environment().unwrap();
         invocation.environment.insert("HOME".into(), home.into());
-        invocation.environment.insert(
-            "PATH".into(),
-            path.to_str().expect("UTF-8 fixture path").into(),
-        );
         invocation
             .environment
             .insert("ACYCLIC_TEST_ORDINARY".into(), "approved".into());
-        invocation.environment.insert(
-            "ACYCLIC_VOLUME_DATA_MODE".into(),
-            "stale explicit mode".into(),
-        );
         invocation
     };
     for inherit_environment in [false, true] {
@@ -250,6 +242,24 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
         );
         assert!(output.stderr.is_empty());
     }
+    let mut collision = configured(false);
+    collision.environment.insert(
+        "ACYCLIC_VOLUME_DATA_MODE".into(),
+        "stale explicit mode".into(),
+    );
+    assert!(matches!(
+        prepare(input.clone(), &mounts, collision, 1),
+        Err(Error::Invalid(_))
+    ));
+    // An empty production map loses a tool outside the shell's default path.
+    let mut missing_path = prepare(input.clone(), &mounts, configured(false), 1)?;
+    missing_path.environment.remove("PATH");
+    let output = capture::capture_with_custody(missing_path, |(), _| Ok(()), || Ok(()), (), None)
+        .await?
+        .0
+        .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
+    assert!(!output.success);
+    assert!(output.stdout.is_empty());
     let mut invalid = configured(false);
     invalid
         .environment
