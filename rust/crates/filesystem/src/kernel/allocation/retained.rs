@@ -93,6 +93,18 @@ enum ReadAccountingState {
     Native(crate::NativeMaterializationWork),
 }
 
+impl Drop for ReadAccounting {
+    fn drop(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let ReadAccountingState::Native(work) = &self.state {
+            // ReadOwner destroys its physical state first. Checkout custody
+            // publishes retirement there; reconcile that original aggregate
+            // now, including its final shared header, without admitting work.
+            work.receipt();
+        }
+    }
+}
+
 impl ReadAccounting {
     /// Consumes a fresh immutable-read frame, retaining its original cancel and
     /// work. A borrowed frame cannot be consumed or silently abandoned.
