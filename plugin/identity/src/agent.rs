@@ -126,9 +126,17 @@ impl Identity {
             .map_err(|_| Error::new("invalid_response", "invalid agent challenge"))
     }
 
-    pub(super) async fn signup(&self, store: &Store) -> Result<Value, Error> {
-        let (private_key, session) = if store.path.exists() {
-            let credentials = store.credentials(&self.endpoint)?;
+    pub(super) async fn signup(&self, store: &Arc<Store>) -> Result<Value, Error> {
+        let existing = store
+            .at_endpoint(&self.endpoint, |store, endpoint| {
+                if store.path.exists() {
+                    store.credentials(endpoint).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .await?;
+        let (private_key, session) = if let Some(credentials) = existing {
             match credentials.agent {
                 Some(Agent::Pending { private_key }) => (private_key, credentials.session),
                 _ => {
@@ -166,7 +174,12 @@ impl Identity {
                 private_key: private_key.clone(),
             }),
         };
-        store.save(&credentials)?;
+        credentials = store
+            .transact(move |store| {
+                store.save(&credentials)?;
+                Ok(credentials)
+            })
+            .await?;
         let signature = URL_SAFE_NO_PAD.encode(
             key.sign(
                 &format!(
@@ -209,12 +222,16 @@ impl Identity {
             private_key,
             registration,
         });
-        store.save(&credentials)?;
+        store
+            .transact(move |store| store.save(&credentials))
+            .await?;
         Ok(result)
     }
 
-    pub(super) async fn renew_agent(&self, store: &Store) -> Result<Value, Error> {
-        let mut credentials = store.credentials(&self.endpoint)?;
+    pub(super) async fn renew_agent(&self, store: &Arc<Store>) -> Result<Value, Error> {
+        let mut credentials = store
+            .at_endpoint(&self.endpoint, Store::credentials)
+            .await?;
         let agent = credentials.agent.as_mut().ok_or_else(|| {
             Error::new(
                 "login_required",
@@ -263,7 +280,9 @@ impl Identity {
             registration.birth = renewal.birth;
             registration.expires_at = renewal.expires_at;
         }
-        store.save(&credentials)?;
+        store
+            .transact(move |store| store.save(&credentials))
+            .await?;
         Ok(value)
     }
 }

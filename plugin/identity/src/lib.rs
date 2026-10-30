@@ -15,6 +15,7 @@ use std::fs;
 use std::fs::File;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -124,7 +125,32 @@ struct Store {
 }
 
 impl Store {
-    fn open(path: &Path) -> Result<Self, Error> {
+    async fn open_native(path: &Path) -> Result<Arc<Self>, Error> {
+        let path = path.to_owned();
+        acyclic_native_runtime::run_blocking_io(move || Self::open(&path), None)?.await?
+    }
+
+    /// The accepted native transaction retains the original lock even if its
+    /// asynchronous waiter disappears. No worker waits for network responses.
+    async fn transact<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&Self) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let store = Arc::clone(self);
+        acyclic_native_runtime::run_blocking_io(move || operation(&store), None)?.await?
+    }
+
+    async fn at_endpoint<T: Send + 'static>(
+        self: &Arc<Self>,
+        endpoint: &str,
+        operation: impl FnOnce(&Self, &str) -> Result<T, Error> + Send + 'static,
+    ) -> Result<T, Error> {
+        let endpoint = endpoint.to_owned();
+        self.transact(move |store| operation(store, &endpoint))
+            .await
+    }
+
+    fn open(path: &Path) -> Result<Arc<Self>, Error> {
         let path = std::path::absolute(path)?;
         let parent = path
             .parent()
@@ -178,7 +204,7 @@ impl Store {
         // fixed sidecar belongs to an interrupted former writer.
         private_file::validate_destination_for_upgrade(&sidecar(&path, ".next"))?;
         private_file::discard_unpublished(&sidecar(&path, ".next"))?;
-        Ok(Self { path, _lock: lock })
+        Ok(Arc::new(Self { path, _lock: lock }))
     }
 
     fn credentials(&self, endpoint: &str) -> Result<Credentials, Error> {
@@ -226,7 +252,7 @@ impl Store {
     fn login_agent_for(
         &self,
         endpoint: &str,
-        device: &DeviceCode,
+        device: &LoginBinding,
     ) -> Result<Option<agent::Agent>, Error> {
         let agent = self.login_agent(endpoint)?;
         let identity = agent
@@ -273,7 +299,7 @@ impl Store {
         &self,
         endpoint: &str,
         session: Session,
-        device: &DeviceCode,
+        device: &LoginBinding,
     ) -> Result<Session, Error> {
         let mut credentials = Credentials {
             endpoint: endpoint.to_owned(),
@@ -358,6 +384,15 @@ fn now() -> Result<u64, Error> {
         .map_err(|_| Error::new("clock_error", "clock precedes Unix epoch"))
 }
 
+/// Non-secret identity constraints retained across device approval. Native
+/// persistence takes only this binding, never the device code or PKCE verifier.
+#[derive(Clone, Default)]
+struct LoginBinding {
+    upgrade: Option<(String, String)>,
+    agent_identity: Option<(String, String)>,
+    upgrade_tier: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct DeviceCode {
     device_code: String,
@@ -370,13 +405,9 @@ struct DeviceCode {
     #[serde(skip)]
     verifier: String,
     #[serde(skip)]
-    upgrade: Option<(String, String)>,
-    #[serde(skip)]
-    agent_identity: Option<(String, String)>,
+    binding: LoginBinding,
     #[serde(skip)]
     reconcile_upgrade: bool,
-    #[serde(skip)]
-    upgrade_tier: Option<String>,
 }
 
 fn random_secret() -> Result<String, Error> {
@@ -466,10 +497,12 @@ impl Identity {
         Ok(value)
     }
 
-    async fn device_code(&self, kind: &str, store: &Store) -> Result<DeviceCode, Error> {
+    async fn device_code(&self, kind: &str, store: &Arc<Store>) -> Result<DeviceCode, Error> {
         let verifier = random_secret()?;
         let mut upgrade = None;
-        let agent = store.login_agent(&self.endpoint)?;
+        let agent = store
+            .at_endpoint(&self.endpoint, Store::login_agent)
+            .await?;
         let agent_identity = agent
             .as_ref()
             .map(|agent| {
@@ -531,24 +564,38 @@ impl Identity {
             ));
         }
         device.verifier = verifier;
-        device.upgrade = upgrade;
-        device.agent_identity = agent_identity;
+        device.binding.upgrade = upgrade;
+        device.binding.agent_identity = agent_identity;
         device.reconcile_upgrade = reconcile_upgrade;
         Ok(device)
     }
 
     async fn complete_login(
         &self,
-        store: &Store,
+        store: &Arc<Store>,
         session: Session,
         device: &mut DeviceCode,
     ) -> Result<Session, Error> {
         if !device.reconcile_upgrade {
-            return store.complete_login(&self.endpoint, session, device);
+            let binding = device.binding.clone();
+            return store
+                .at_endpoint(&self.endpoint, move |store, endpoint| {
+                    store.complete_login(endpoint, session, &binding)
+                })
+                .await;
         }
-        store.login_agent_for(&self.endpoint, device)?;
+        let binding = device.binding.clone();
+        store
+            .at_endpoint(&self.endpoint, move |store, endpoint| {
+                store.login_agent_for(endpoint, &binding)
+            })
+            .await?;
         // Keep issued tokens even if the organization read fails after login.
-        let session = store.write(&self.endpoint, session)?;
+        let session = store
+            .at_endpoint(&self.endpoint, move |store, endpoint| {
+                store.write(endpoint, session)
+            })
+            .await?;
         let value = Self::response(
             self.client
                 .get(format!("{}/v1/identity/orgs", self.endpoint))
@@ -556,6 +603,7 @@ impl Identity {
         )
         .await?;
         let (org_id, _) = device
+            .binding
             .upgrade
             .as_ref()
             .ok_or_else(|| Error::new("invalid_response", "missing upgrade identity"))?;
@@ -569,8 +617,13 @@ impl Identity {
             .and_then(|org| org.get("tier").and_then(Value::as_str))
             .filter(|tier| matches!(*tier, "agent" | "oauth" | "usage"))
             .ok_or_else(|| Error::new("invalid_response", "missing agent organization tier"))?;
-        device.upgrade_tier = Some(tier.to_owned());
-        store.complete_login(&self.endpoint, session, device)
+        device.binding.upgrade_tier = Some(tier.to_owned());
+        let binding = device.binding.clone();
+        store
+            .at_endpoint(&self.endpoint, move |store, endpoint| {
+                store.complete_login(endpoint, session, &binding)
+            })
+            .await
     }
 
     async fn token(&self, fields: &[(&str, &str)]) -> Result<Session, Error> {
@@ -635,20 +688,24 @@ impl Identity {
         }
     }
 
-    async fn refresh(&self, store: &Store, session: &Session) -> Result<Session, Error> {
+    async fn refresh(&self, store: &Arc<Store>, session: &Session) -> Result<Session, Error> {
         // Consume the on-disk token before dispatch so interruption cannot replay it.
-        store.clear()?;
+        store.transact(Store::clear).await?;
         let next = self
             .token(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", &session.refresh_token),
             ])
             .await?;
-        store.write(&self.endpoint, next)
+        store
+            .at_endpoint(&self.endpoint, move |store, endpoint| {
+                store.write(endpoint, next)
+            })
+            .await
     }
 
-    async fn logout(&self, store: &Store) -> Result<Value, Error> {
-        let credentials = match store.credentials(&self.endpoint) {
+    async fn logout(&self, store: &Arc<Store>) -> Result<Value, Error> {
+        let credentials = match store.at_endpoint(&self.endpoint, Store::credentials).await {
             Ok(credentials) => credentials,
             Err(error) if error.code == "login_required" => {
                 return Ok(json!({"authenticated": false}));
@@ -686,22 +743,22 @@ impl Identity {
                 "invalid revocation response",
             ));
         }
-        store.clear()?;
+        store.transact(Store::clear).await?;
         Ok(json!({"authenticated": false}))
     }
 
-    async fn get(&self, store: &Store, path: &str) -> Result<Value, Error> {
+    async fn get(&self, store: &Arc<Store>, path: &str) -> Result<Value, Error> {
         self.authenticated_json(store, reqwest::Method::GET, path)
             .await
     }
 
     async fn authenticated_json(
         &self,
-        store: &Store,
+        store: &Arc<Store>,
         method: reqwest::Method,
         path: &str,
     ) -> Result<Value, Error> {
-        let mut session = store.read(&self.endpoint)?;
+        let mut session = store.at_endpoint(&self.endpoint, Store::read).await?;
         let refreshed = session.expires_at <= now()?.saturating_add(30);
         if refreshed {
             session = self.refresh(store, &session).await?;
@@ -734,7 +791,7 @@ impl Identity {
         Self::decode(response).await
     }
 
-    async fn bearer(&self, store: &Store, org: &str, output: &Path) -> Result<Value, Error> {
+    async fn bearer(&self, store: &Arc<Store>, org: &str, output: &Path) -> Result<Value, Error> {
         let name = output
             .file_name()
             .ok_or_else(|| Error::new("usage_error", "bearer output needs a filename"))?
@@ -947,7 +1004,7 @@ pub fn run(
 async fn execute(arguments: &[String]) -> Result<Value, Error> {
     let options = Options::parse(arguments)?;
     let identity = Identity::new(&options.endpoint)?;
-    let store = Store::open(&options.credentials)?;
+    let store = Store::open_native(&options.credentials).await?;
     match options.command.as_str() {
         "login" => {
             let mut device = identity.device_code("cli", &store).await?;
@@ -982,10 +1039,15 @@ async fn execute(arguments: &[String]) -> Result<Value, Error> {
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }
         "refresh" => {
-            if store.credentials(&identity.endpoint)?.session.is_none() {
+            if store
+                .at_endpoint(&identity.endpoint, Store::credentials)
+                .await?
+                .session
+                .is_none()
+            {
                 return identity.renew_agent(&store).await;
             }
-            let session = store.read(&identity.endpoint)?;
+            let session = store.at_endpoint(&identity.endpoint, Store::read).await?;
             let session = identity.refresh(&store, &session).await?;
             Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
         }

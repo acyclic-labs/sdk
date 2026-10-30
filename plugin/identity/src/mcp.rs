@@ -30,7 +30,7 @@ impl Server {
 
     async fn call(&mut self, name: &str) -> Result<Value, Error> {
         if name == "identity_login" {
-            let store = Store::open(&self.credentials)?;
+            let store = Store::open_native(&self.credentials).await?;
             let device = self.identity.device_code("mcp", &store).await?;
             let result = json!({"user_code": device.user_code,
                 "verification_uri": device.verification_uri,
@@ -39,7 +39,7 @@ impl Server {
             self.pending = Some((device, tokio::time::Instant::now()));
             return Ok(result);
         }
-        let store = Store::open(&self.credentials)?;
+        let store = Store::open_native(&self.credentials).await?;
         match name {
             "identity_login_complete" => {
                 let cancellation = self.login_cancelled.take();
@@ -56,7 +56,12 @@ impl Server {
                     .as_mut()
                     .ok_or_else(|| Error::new("login_required", "call identity_login first"))?;
                 let session = match async {
-                    store.login_agent_for(&self.identity.endpoint, device)?;
+                    let binding = device.binding.clone();
+                    store
+                        .at_endpoint(&self.identity.endpoint, move |store, endpoint| {
+                            store.login_agent_for(endpoint, &binding)
+                        })
+                        .await?;
                     self.identity.login(device, *started, cancelled).await
                 }
                 .await
@@ -97,13 +102,16 @@ impl Server {
             }
             "identity_refresh" => {
                 if store
-                    .credentials(&self.identity.endpoint)?
+                    .at_endpoint(&self.identity.endpoint, Store::credentials)
+                    .await?
                     .session
                     .is_none()
                 {
                     return self.identity.renew_agent(&store).await;
                 }
-                let session = store.read(&self.identity.endpoint)?;
+                let session = store
+                    .at_endpoint(&self.identity.endpoint, Store::read)
+                    .await?;
                 let session = self.identity.refresh(&store, &session).await?;
                 Ok(json!({"authenticated": true, "expires_at": session.expires_at}))
             }
@@ -345,10 +353,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn operation_producer_loss_settles_the_parked_request() {
+    async fn native_credential_transactions_preserve_coordination_and_lock_custody() {
         let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("identity.json");
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        // The former synchronous open does real IO but cannot satisfy the
+        // same admission observation. This negative completes without a wait.
+        let old_path = directory.path().join("synchronous.json");
+        let mut synchronous = Box::pin(schedule.scope(async { Store::open(&old_path) }));
+        tokio::select! {
+            result = &mut synchronous => drop(result.expect("synchronous negative owner")),
+            boundary = boundaries.recv() => {
+                boundary.expect("unexpected native admission").release();
+                panic!("synchronous negative unexpectedly admitted native work");
+            }
+        }
+        let mut opening = Box::pin(schedule.scope(Store::open_native(&path)));
+        let submitted = tokio::select! {
+            result = &mut opening => panic!("cold open bypassed native admission: {}", result.is_ok()),
+            boundary = boundaries.recv() => boundary.expect("native open submission"),
+        };
+        assert_eq!(submitted.name, "native:submitted");
+        submitted.release();
+        let completed = boundaries.recv().await.expect("native open completion");
+        assert_eq!(completed.name, "native:completed");
+        completed.release();
+        let store = opening.await.expect("native credential owner");
+        schedule.drained().await;
+
+        let original_thread = std::thread::current().id();
+        let (physical, completed_write) = tokio::sync::oneshot::channel();
+        let retained = Arc::clone(&store);
+        let mut saving = Box::pin(schedule.scope(async move {
+            retained
+                .transact(move |store| {
+                    store.save(&Credentials {
+                        endpoint: "https://example.test".into(),
+                        session: None,
+                        agent: None,
+                    })?;
+                    let _ = physical.send(std::thread::current().id());
+                    Ok(())
+                })
+                .await
+        }));
+        let submitted = tokio::select! {
+            result = &mut saving => panic!("credential commit bypassed native admission: {}", result.is_ok()),
+            boundary = boundaries.recv() => boundary.expect("native credential submission"),
+        };
+        assert_eq!(submitted.name, "native:submitted");
+        // Drop both asynchronous owners while the accepted job is held. A
+        // path-only copy would release the lock and fail this negative control.
+        drop(saving);
+        drop(store);
+        assert_eq!(
+            Store::open(&path)
+                .err()
+                .expect("accepted job retains lock")
+                .code,
+            "credentials_busy"
+        );
+
+        // A separate partition uses the same native service without this lock.
+        let independent = Store::open_native(&directory.path().join("other.json"))
+            .await
+            .expect("independent credential owner");
+        independent
+            .transact(Store::clear)
+            .await
+            .expect("independent transaction");
+        drop(independent);
+        let mut client = connect(
+            server(directory.path().join("ping.json")),
+            &Output::default(),
+            None,
+        );
+        client.reply().await;
+        client.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}));
+        assert_eq!(client.reply().await.get("id"), Some(&json!(1)));
+
         let server = Arc::new(tokio::sync::Mutex::new(server(
-            directory.path().join("identity.json"),
+            directory.path().join("lost-operation.json"),
         )));
         // Hold admission before any credential access or HTTP operation. The
         // real task owns the completion producer while waiting for this lock.
@@ -393,6 +478,28 @@ mod tests {
         );
         assert!(identities.active.is_none());
         drop(held);
+        client.close();
+        client
+            .served
+            .await
+            .expect("served task")
+            .expect("served transport");
+
+        submitted.release();
+        let completed = boundaries.recv().await.expect("native commit completion");
+        assert_eq!(completed.name, "native:completed");
+        completed.release();
+        schedule.drained().await;
+        assert_ne!(
+            completed_write.await.expect("physical commit witness"),
+            original_thread,
+            "durable credential work ran on the coordination thread"
+        );
+        let reopened = Store::open_native(&path).await.expect("retired lock");
+        reopened
+            .at_endpoint("https://example.test", Store::credentials)
+            .await
+            .expect("accepted commit survived waiter loss");
     }
 
     #[tokio::test]
