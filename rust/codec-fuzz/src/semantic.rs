@@ -4,6 +4,7 @@ use std::fmt::Debug;
 mod actors;
 mod context;
 mod evaluation;
+mod filesystem;
 mod harness;
 mod harness_protocol;
 mod objects;
@@ -198,6 +199,7 @@ fn pending_run() -> acyclic_inference::wire::RunView {
 }
 
 pub(super) fn check(name: &str, bytes: &[u8]) {
+    filesystem::check(name, bytes);
     objects::check(name, bytes);
     harness::check(name, bytes);
     harness_protocol::check(name, bytes);
@@ -419,6 +421,7 @@ pub(super) fn seeds(
         ));
     }
     seeds.extend(actors::seeds()?);
+    seeds.extend(filesystem::seeds());
     seeds.extend(objects::seeds()?);
     seeds.extend(warm::seeds()?);
     seeds.extend(evaluation::seeds()?);

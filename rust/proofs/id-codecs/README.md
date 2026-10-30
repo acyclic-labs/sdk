@@ -9,6 +9,7 @@ copy a codec into a model. The obligations are:
 
 | Harness | Safety and negative control |
 | --- | --- |
+| `scalar_metadata_preserves_all_facts_and_refuses_missing_opaque_bodies` | Every optional u32/u64/i64 scalar survives the public wire writer/parser, including zero and signed extrema; each opaque-presence flag refuses without its separate body. |
 | `every_object_kind_and_storage_association_round_trips` | Every bit of all eight kinds, digests and optional sealed associations survives encoding. Plain and sealed lengths differ. |
 | `generation_preserves_the_complete_root` | A GenerationId retains the exact root, locator, file identity and origin generation. A raw 32-byte digest is rejected. |
 | `arbitrary_bytes_have_one_canonical_identity_or_are_rejected` | Accepted encodings reproduce every input byte; invalid tags, widths and non-root generation kinds are rejected. Inputs cover all lengths through the maximum plus one. |
