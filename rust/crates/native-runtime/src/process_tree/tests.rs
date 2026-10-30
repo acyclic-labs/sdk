@@ -1,4 +1,4 @@
-use super::ProcessTree;
+use super::{CaptureSchedule, ProcessTree};
 
 use std::io;
 
@@ -33,7 +33,7 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
             }
         };
         let result = tree.wait_with_output(
-            std::time::Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             Some(input),
             || Ok(()),
@@ -67,9 +67,10 @@ fn early_stdin_closure_preserves_literal_capture_but_rejects_incomplete_exchange
 #[test]
 fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Result<()> {
     use std::process::Stdio;
-    let mut command = std::process::Command::new("/bin/sh");
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+    let address = listener.local_addr()?.to_string();
+    let mut command = command("stream-notify", std::path::Path::new(&address));
     command
-        .args(["-c", "exec sleep 60"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -84,17 +85,12 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     meter.blocked_write = Some(Box::new(move || {
         // SAFETY: the unreaped direct child reserves this pid.
         assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
-        while super::platform::observe_exit_id(pid, None)
-            .expect("observe the killed child")
-            .is_none()
-        {
-            std::thread::yield_now();
-        }
+        super::platform::await_exiting_id(pid, None).expect("observe the killed child");
     }));
     let failure = tree
         .wait_with_output(
-            std::time::Duration::from_secs(5),
-            16,
+            CaptureSchedule::Unbounded,
+            256,
             Some(crate::CaptureInput::Exchange {
                 initial: &input,
                 maximum: input.len(),
@@ -103,8 +99,8 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
             |_| Ok(crate::ProcessInput::default()),
             Some(&meter),
             Some([
-                Vec::with_capacity(16),
-                Vec::with_capacity(16),
+                Vec::with_capacity(256),
+                Vec::with_capacity(256),
                 Vec::with_capacity(input.len()),
             ]),
             None,
@@ -164,10 +160,7 @@ fn prepared_closed_spawn_uses_owned_birth_environment_and_no_late_allocation() -
         original.memory.load(std::sync::atomic::Ordering::Acquire),
         bytes
     );
-    assert_eq!(
-        tree.wait(std::time::Duration::from_secs(5))?.code(),
-        Some(7)
-    );
+    assert_eq!(tree.wait_exit(None)?.code(), Some(7));
     assert!(!tree.is_reaped());
     assert_eq!(
         original.memory.load(std::sync::atomic::Ordering::Acquire),
@@ -233,7 +226,7 @@ fn measured_kill_with_denied_observation_keeps_owned_child() -> io::Result<()> {
     meter.operation_denial = Some(crate::NativeOperationKind::Read);
     assert!(tree.terminate(Some(&meter)).is_err());
     assert!(!tree.is_reaped());
-    tree.wait(Duration::from_secs(5))?;
+    tree.wait_exit(None)?;
     tree.terminate(None)?;
     assert!(tree.is_reaped());
     Ok(())
@@ -253,7 +246,7 @@ fn suspended_child_launch_fits_its_input_item_allowance() -> io::Result<()> {
     let mut custody = None;
     let spawned = ProcessTree::spawn_controlled(&mut command, Some(&meter), &mut custody);
     let mut tree = custody.take().ok_or(io::ErrorKind::NotFound)?;
-    let status = spawned.and_then(|()| tree.wait(Duration::from_secs(5)));
+    let status = spawned.and_then(|()| tree.wait_exit(None));
     tree.terminate(None)?;
     assert_eq!(status?.code(), Some(7));
     assert!(tree.is_reaped());
@@ -411,8 +404,6 @@ fn process_tree_helper() {
 fn stream_notify_helper(root: &std::path::Path) {
     let mut peer = std::net::TcpStream::connect(root.to_string_lossy().as_ref())
         .expect("connect stream observer");
-    peer.set_read_timeout(Some(Duration::from_secs(2)))
-        .expect("stream handshake deadline");
     std::io::stdout()
         .write_all(b"stream-stdout")
         .expect("stream stdout");
@@ -543,10 +534,9 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
     let cancelled = std::cell::Cell::new(false);
     let wake = super::wake::ProcessWake::new().expect("cancellation wake");
     let mut observed = Vec::new();
-    let started = Instant::now();
     let error = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             None,
             || {
@@ -584,10 +574,6 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
         "the complete live tree acknowledged readiness"
     );
     assert!(error.cleanup_completed && tree.is_reaped());
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "notification must interrupt capture before its deadline"
-    );
     assert_no_escape(temporary.path());
 }
 
@@ -626,8 +612,7 @@ fn graceful_cleanup_handles_an_exited_leader_and_its_descendants() {
             ready(temporary.path(), "tree-ready", || tree_exited(&mut tree));
         }
         if mode != "child" {
-            tree.wait(Duration::from_secs(5))
-                .expect("observe leader exit");
+            tree.wait_exit(None).expect("observe leader exit");
         }
         let status = tree
             .terminate_after(Duration::from_secs(1))
@@ -650,7 +635,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
     let output = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             None,
             || Ok(()),
@@ -685,7 +670,7 @@ fn collection_closes_stdin_and_preserves_explicit_environment() {
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
     assert_eq!(
         tree.wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             output.stdout.len() + output.stderr.len() - 1,
             None,
             || Ok(()),
@@ -713,7 +698,7 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
     let mut observed = Vec::new();
     let failure = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             Some(crate::CaptureInput::Literal(&input)),
             || {
@@ -796,7 +781,7 @@ fn queued_stdin_backpressure_keeps_cancellation_and_exclusive_custody() {
     );
     let failure = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             None,
             || Ok(()),
@@ -823,7 +808,7 @@ fn queued_stdin_refuses_a_second_capture_before_any_capture_turn() {
         .expect("queue prompt");
     let result = super::pump::Pump::new(
         &mut tree,
-        Duration::from_secs(5).into(),
+        CaptureSchedule::Unbounded,
         4096,
         None,
         None,
@@ -899,7 +884,7 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
         .collect();
     let output = tree
         .wait_with_output(
-            Duration::from_secs(60),
+            CaptureSchedule::Unbounded,
             2 * BULK_BYTES,
             Some(crate::CaptureInput::Literal(&input)),
             || Ok(()),
@@ -925,7 +910,7 @@ fn streaming_exchange_uses_the_same_bounded_capture_and_cleanup_owner() {
     let mut phase = 0;
     let output = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             Some(crate::CaptureInput::Exchange {
                 initial: b"first\n",
@@ -987,7 +972,7 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
         let mut acknowledged = false;
         let output = tree
             .wait_with_output(
-                Duration::from_secs(2),
+                CaptureSchedule::Unbounded,
                 4096,
                 input,
                 || Ok(()),
@@ -1005,7 +990,6 @@ fn streaming_output_observes_both_pipes_before_exit_without_an_exchange() -> io:
                         && observed_stderr.ends_with(b"stream-stderr")
                     {
                         let (mut peer, _) = listener.accept()?;
-                        peer.set_write_timeout(Some(Duration::from_secs(2)))?;
                         peer.write_all(&[1])?;
                         acknowledged = true;
                     }
@@ -1061,7 +1045,7 @@ fn streaming_input_overflow_parser_failure_and_deadline_preserve_cleanup() {
         let mut seen = Vec::new();
         let failure = tree
             .wait_with_output(
-                Duration::from_secs(5),
+                CaptureSchedule::Unbounded,
                 4096,
                 Some(crate::CaptureInput::Exchange {
                     initial: b"first\n",
@@ -1180,16 +1164,16 @@ fn stopped_capture_preserves_output_prefix_and_cleanup_observation() {
 
 #[test]
 fn capture_timeout_and_output_overflow_reap_owned_tree() {
-    for (mode, timeout, limit, kind) in [
+    for (mode, schedule, limit, kind) in [
         (
             "child",
-            Duration::from_millis(20),
+            CaptureSchedule::new(Duration::from_millis(20)),
             4096,
             std::io::ErrorKind::TimedOut,
         ),
         (
             "flood",
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             16384,
             std::io::ErrorKind::FileTooLarge,
         ),
@@ -1205,10 +1189,9 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
             );
             assert!(tree.child.is_some());
         }
-        let started = Instant::now();
         let error = tree
             .wait_with_output(
-                timeout,
+                schedule,
                 limit,
                 None,
                 || Ok(()),
@@ -1224,7 +1207,6 @@ fn capture_timeout_and_output_overflow_reap_owned_tree() {
         if mode == "flood" {
             assert_eq!(error.stdout.len() + error.stderr.len(), limit);
         }
-        assert!(started.elapsed() < Duration::from_secs(7));
         assert!(tree.child.is_none());
         tree.terminate(None).expect("repeat cleanup");
         assert_no_escape(temporary.path());
@@ -1237,7 +1219,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
     let output = ProcessTree::spawn(&mut command("bulk", temporary.path()))
         .expect("spawn bulk writer")
         .wait_with_output(
-            Duration::from_secs(60),
+            CaptureSchedule::Unbounded,
             2 * BULK_BYTES,
             None,
             || Ok(()),
@@ -1262,7 +1244,7 @@ fn bulk_output_is_collected_fully_within_its_exact_bound() {
     let error = ProcessTree::spawn(&mut command("bulk", temporary.path()))
         .expect("spawn bulk writer")
         .wait_with_output(
-            Duration::from_secs(60),
+            CaptureSchedule::Unbounded,
             output.stdout.len() - 1,
             None,
             || Ok(()),
@@ -1283,7 +1265,7 @@ fn exited_parent_does_not_leave_descendant_holding_output_open() {
         ProcessTree::spawn(&mut command("exit-parent", temporary.path())).expect("spawn tree");
     let output = tree
         .wait_with_output(
-            Duration::from_secs(5),
+            CaptureSchedule::Unbounded,
             4096,
             None,
             || Ok(()),
@@ -1306,16 +1288,7 @@ fn exit_observation_retains_group_leader_until_cleanup() {
     let mut command = command("output", temporary.path());
     command.env("EXPLICIT_PROCESS_INPUT", "allowed");
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while tree.try_wait(None).expect("poll exit").is_none() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(1));
-    }
-    assert!(
-        tree.wait(Duration::from_secs(5))
-            .expect("wait exit")
-            .success()
-    );
+    assert!(tree.wait_exit(None).expect("wait exit").success());
     assert!(
         super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
             .expect("leader remains waitable")
@@ -1326,12 +1299,7 @@ fn exit_observation_retains_group_leader_until_cleanup() {
     assert!(tree.child.is_none());
     let mut tree = ProcessTree::spawn(&mut self::command("exit-code", temporary.path()))
         .expect("spawn nonzero exit");
-    assert_eq!(
-        tree.wait(Duration::from_secs(5))
-            .expect("nonzero exit")
-            .code(),
-        Some(7)
-    );
+    assert_eq!(tree.wait_exit(None).expect("nonzero exit").code(), Some(7));
     tree.terminate(None).expect("reap nonzero exit");
 
     let mut tree = ProcessTree::spawn(&mut self::command("child", temporary.path()))
@@ -1339,9 +1307,7 @@ fn exit_observation_retains_group_leader_until_cleanup() {
     tree.terminate_descendants().expect("signal tree");
     use std::os::unix::process::ExitStatusExt as _;
     assert_eq!(
-        tree.wait(Duration::from_secs(5))
-            .expect("signal exit")
-            .signal(),
+        tree.wait_exit(None).expect("signal exit").signal(),
         Some(libc::SIGKILL)
     );
     tree.terminate(None).expect("reap signal exit");
@@ -1352,9 +1318,13 @@ mod seeded_capture {
     use super::ProcessTree;
     use crate::testing::Schedule;
     use crate::{CaptureHandler, CaptureSchedule, ProcessInput, ProcessOutput};
-    use std::{io, process::Stdio, time::Duration};
+    use std::io::Write as _;
+    use std::{io, process::Stdio};
 
-    struct Collect(Vec<u8>);
+    struct Collect {
+        bytes: Vec<u8>,
+        release: Option<std::process::ChildStdin>,
+    }
 
     impl CaptureHandler for Collect {
         fn check(&mut self) -> io::Result<()> {
@@ -1363,7 +1333,11 @@ mod seeded_capture {
 
         fn observe(&mut self, chunk: ProcessOutput<'_>) -> io::Result<ProcessInput> {
             if let ProcessOutput::Stdout(bytes) = chunk {
-                self.0.extend_from_slice(bytes);
+                self.bytes.extend_from_slice(bytes);
+                if let Some(mut release) = self.release.take() {
+                    assert_eq!(self.bytes, b"d");
+                    release.write_all(b"continue\n")?;
+                }
             }
             Ok(ProcessInput::default())
         }
@@ -1377,23 +1351,32 @@ mod seeded_capture {
         stdout: Vec<u8>,
     }
 
-    /// Captures `script` in a seeded scope; `scheduled` forces the turns
+    /// Captures an output handshake; `scheduled` forces the turns
     /// the scope would otherwise see as one physical submission.
-    fn seeded(script: &str, scheduled: bool) -> io::Result<Observed> {
+    fn seeded(split: bool, scheduled: bool) -> io::Result<Observed> {
+        let script = if split {
+            "printf d; IFS= read -r ack && test \"$ack\" = continue && printf st"
+        } else {
+            "printf dst"
+        };
         let mut command = crate::shell_command(script, Some("sh"))?;
         command
-            .stdin(Stdio::null())
+            .stdin(if split { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let tree = ProcessTree::spawn(&mut command)?;
+        let mut tree = ProcessTree::spawn(&mut command)?;
+        let release = tree.take_stdin();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
         runtime.block_on(async {
             tokio::time::pause();
             let (schedule, mut boundaries) = Schedule::seeded(71);
-            let capture = CaptureSchedule::new(Duration::from_secs(30));
-            let collect = Collect(Vec::new());
+            let capture = CaptureSchedule::Unbounded;
+            let collect = Collect {
+                bytes: Vec::new(),
+                release,
+            };
             let operation = async move {
                 if scheduled {
                     tree.capture_driven(capture, 64, None, collect, None).await
@@ -1417,7 +1400,7 @@ mod seeded_capture {
             schedule.drained().await;
             let output = outcome.result.map_err(|failure| failure.error)?;
             assert!(output.status.success());
-            assert_eq!(output.stdout, outcome.handler.0);
+            assert_eq!(output.stdout, outcome.handler.bytes);
             Ok(Observed {
                 trace: schedule.trace(),
                 boundaries: phases,
@@ -1438,16 +1421,16 @@ mod seeded_capture {
 
     #[test]
     fn seeded_capture_is_one_submission_however_output_arrives() -> io::Result<()> {
-        let steady = seeded("printf dst", false)?;
+        let steady = seeded(false, false)?;
         assert_eq!(steady.stdout, b"dst");
         assert!(one_submission(&steady), "{steady:?}");
         // The same output split across readiness events, so a turn at a time
         // takes at least as many turns. The seeded schedule must not see it.
-        let split = seeded("printf d; sleep 0.05; printf st", false)?;
+        let split = seeded(true, false)?;
         assert_eq!(steady, split, "OS readiness reached the seeded schedule");
         // Negative control: scheduling the same capture a turn at a time
         // exposes its turns, which the oracle rejects.
-        let scheduled = seeded("printf dst", true)?;
+        let scheduled = seeded(false, true)?;
         assert_eq!(scheduled.stdout, b"dst");
         assert!(!one_submission(&scheduled), "{scheduled:?}");
         Ok(())

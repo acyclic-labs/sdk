@@ -50,10 +50,9 @@ fn event_capture_child() -> io::Result<()> {
     } else if mode == "cancel" {
         println!("CONTROL_READY");
         std::io::stdout().flush()?;
-        // Only the owning process tree can release this fixture.
-        loop {
-            std::thread::park();
-        }
+        // The parent retains stdin while the original control event stops
+        // capture. Producer loss returns UnexpectedEof instead of hanging.
+        std::io::stdin().read_exact(&mut [0])?;
     } else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -141,6 +140,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
 #[test]
 fn control_notification_interrupts_a_silent_child_and_reaps_it() -> io::Result<()> {
     let mut process = child("cancel")?;
+    let _input = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
     let wake = super::wake::ProcessWake::new()?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let signal = wake.clone();
@@ -154,7 +154,7 @@ fn control_notification_interrupts_a_silent_child_and_reaps_it() -> io::Result<(
         signal.notify()
     });
     let result = process.wait_with_output(
-        Duration::from_secs(1),
+        CaptureSchedule::Unbounded,
         16 * 1024,
         None,
         || {
@@ -197,7 +197,7 @@ fn backpressure_waits_for_both_output_channels_and_remaining_input() -> io::Resu
     let input: Vec<_> = (0u8..251).cycle().take(8 * 1024 * 1024).collect();
     let output = process
         .wait_with_output(
-            Duration::from_secs(3),
+            CaptureSchedule::Unbounded,
             512 * 1024,
             Some(CaptureInput::Literal(&input)),
             || Ok(()),
