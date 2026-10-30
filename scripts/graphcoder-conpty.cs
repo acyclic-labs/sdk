@@ -86,9 +86,11 @@ public static class GraphcoderConPty {
     static void AdmitSuspendedProcess(uint pid) {
         string endpoint = Environment.GetEnvironmentVariable("ACYCLIC_PROCESS_CUSTODY_ADMISSION");
         int separator = endpoint == null ? -1 : endpoint.LastIndexOf(':');
-        int port;
-        if (separator < 0 || endpoint.Substring(0, separator) != "127.0.0.1" ||
-            !Int32.TryParse(endpoint.Substring(separator + 1), out port))
+        int slash = endpoint == null ? -1 : endpoint.LastIndexOf('/');
+        int port; ulong tree;
+        if (separator < 0 || slash < separator || endpoint.Substring(0, separator) != "127.0.0.1" ||
+            !Int32.TryParse(endpoint.Substring(separator + 1, slash - separator - 1), out port) ||
+            !UInt64.TryParse(endpoint.Substring(slash + 1), out tree))
             throw new InvalidOperationException("missing native custody admission endpoint");
         // The native core validates Job membership and owns the stable wait.
         // This adapter retains the original suspended process until its ACK.
@@ -96,7 +98,9 @@ public static class GraphcoderConPty {
             client.NoDelay = true;
             client.Connect(IPAddress.Loopback, port);
             using (var stream = client.GetStream()) {
-                byte[] bytes = { (byte)pid, (byte)(pid >> 8), (byte)(pid >> 16), (byte)(pid >> 24) };
+                var bytes = new byte[12];
+                BitConverter.GetBytes(pid).CopyTo(bytes, 0);
+                BitConverter.GetBytes(tree).CopyTo(bytes, 4);
                 stream.Write(bytes, 0, bytes.Length);
                 if (stream.ReadByte() != 1) throw new IOException("native custodian rejected ConPTY child");
             }

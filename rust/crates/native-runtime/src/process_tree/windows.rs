@@ -8,7 +8,6 @@ use std::process::Child;
 use std::process::Command;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, NTSTATUS, RtlNtStatusToDosError,
-    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
@@ -19,7 +18,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -296,31 +295,16 @@ fn spawn_in_job(
     }
     initialized?;
     let tree = custody.as_mut().ok_or(io::ErrorKind::NotFound)?;
-    // A named tree's custodian holds its Job until every member has exited.
-    let mut custodian = tree
-        .custody
-        .as_mut()
-        .map(|record| super::custodian::launch(tree.guard.job, record))
-        .transpose()?;
-    if let Some(custodian) = &custodian {
-        command.env(super::custodian_admission::ENV, &custodian.endpoint);
+    if let Some(record) = &tree.custody {
+        command.env(super::custodian_admission::ENV, record.admission());
     }
-    let started = start_in_job(command, meter, tree, custodian.as_ref());
-    if started.is_err()
-        && let Some(custodian) = custodian.as_mut()
-    {
-        // Never started, the tree has no member for the custodian to await.
-        let _ = custodian.child.kill();
-        let _ = custodian.child.wait();
-    }
-    started
+    start_in_job(command, meter, tree)
 }
 
 fn start_in_job(
     command: &mut Command,
     meter: Option<&dyn crate::NativeReadMeter>,
     tree: &mut super::ProcessTree,
-    custodian: Option<&super::custodian::Custodian>,
 ) -> io::Result<()> {
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -343,8 +327,9 @@ fn start_in_job(
             Ok(())
         }
     })?;
-    if let Some(custodian) = custodian {
-        super::custodian_admission::admit(&custodian.endpoint, child.id())?;
+    // A named tree's custodian holds its Job until every member has exited.
+    if let Some(record) = tree.custody.as_mut() {
+        record.watch(tree.guard.job, child.as_raw_handle().cast())?;
     }
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
         #[link(name = "ntdll")]

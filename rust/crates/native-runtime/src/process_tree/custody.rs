@@ -99,6 +99,14 @@ pub(super) struct Record {
     pid: libc::pid_t,
     #[cfg(windows)]
     path: PathBuf,
+    /// The tree's number with this owner's custodian, which the record names.
+    #[cfg(windows)]
+    tree: usize,
+    #[cfg(windows)]
+    custodian: std::sync::Arc<super::custodian::Custodian>,
+    /// Set once the custodian watches the tree, which may then have members.
+    #[cfg(windows)]
+    link: Option<super::custodian::Link>,
 }
 
 impl ProcessCustody {
@@ -214,7 +222,9 @@ impl Record {
         }
         #[cfg(windows)]
         {
-            windows::await_record(self)?;
+            if let Some(link) = &self.link {
+                link.await_members()?;
+            }
             match fs::remove_file(&self.path) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
                 _ => Ok(()),
@@ -513,7 +523,7 @@ use unix::fence;
 #[cfg(windows)]
 mod windows {
     use super::{Path, ProcessCustody, Record, fs, io};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, HANDLE, WAIT_FAILED};
     use windows_sys::Win32::System::JobObjects::{
         JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList, OpenJobObjectW,
@@ -541,49 +551,54 @@ mod windows {
         pub(in crate::process_tree) fn record(&self) -> io::Result<(Record, Vec<u16>)> {
             // One sequence for the whole process: Job names share one
             // namespace across every custody directory this process owns.
-            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+            let tree = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let custodian = super::super::custodian::current()?;
             // This process's PID and creation time name it among every
             // process, past or present, that may have shared the directory.
             let name = format!(
-                "{PREFIX}{}-{}-{sequence}",
+                "{PREFIX}{}-{}-{tree}",
                 std::process::id(),
                 crate::process_identity::current_process_started()?
             );
-            let path = self.path.join(&name);
+            // The record names the custodian from its creation, so a fence
+            // always knows whose exit ends every member of the tree.
+            let path = self
+                .path
+                .join(format!("{name}{CUSTODIAN}{}", custodian.identity()));
             fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&path)?;
-            Ok((Record { path }, job_name(&name)))
+            Ok((
+                Record {
+                    path,
+                    tree,
+                    custodian,
+                    link: None,
+                },
+                job_name(&name),
+            ))
         }
     }
 
     /// Separates a record's tree from the custodian it names.
     const CUSTODIAN: &str = "-custodian-";
 
-    pub(super) fn await_record(record: &Record) -> io::Result<()> {
-        let name = record
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or(io::ErrorKind::InvalidData)?;
-        if let Some((_, identity)) = name.split_once(CUSTODIAN) {
-            super::super::custodian::await_custodian(identity)?;
-        }
-        Ok(())
-    }
-
     impl Record {
-        /// Names the tree's custodian in the record, before any member
-        /// starts. The rename is atomic: a fence sees the record with the
-        /// custodian or without it, and without it no member ever started.
-        pub(in crate::process_tree) fn name_custodian(&mut self, identity: &str) -> io::Result<()> {
-            let mut named = self.path.clone().into_os_string();
-            named.push(CUSTODIAN);
-            named.push(identity);
-            fs::rename(&self.path, &named)?;
-            self.path = named.into();
+        /// Where a member admits a suspended process it started itself.
+        pub(in crate::process_tree) fn admission(&self) -> String {
+            self.custodian.admission(self.tree)
+        }
+
+        /// Hands the tree's Job and its suspended first member to the
+        /// custodian; the member may resume only once this succeeds.
+        pub(in crate::process_tree) fn watch(
+            &mut self,
+            job: HANDLE,
+            process: HANDLE,
+        ) -> io::Result<()> {
+            self.link = Some(self.custodian.open(self.tree, job, process)?);
             Ok(())
         }
     }
@@ -615,7 +630,11 @@ mod windows {
         // A missing Job proves that the custodian closed it after member
         // retirement, but its own process and retained pipe handles can still
         // be live. The recorded identity is the same barrier in either case.
-        if let Some(custodian) = custodian {
+        // This owner's own custodian outlives it, so a tree of this owner
+        // is awaited through its listed members alone.
+        if let Some(custodian) = custodian
+            && !super::super::custodian::is_current(custodian)?
+        {
             super::super::custodian::await_custodian(custodian)?;
         }
         match fs::remove_file(path) {

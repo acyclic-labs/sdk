@@ -1,11 +1,14 @@
-//! Acknowledged admission of a suspended process into the existing custodian.
+//! Acknowledged admission of a suspended process into the owner's custodian.
 //!
-//! A PID is only a rendezvous: the spawning caller retains its process handle
+//! A PID is only a rendezvous: the spawning member retains its process handle
 //! and does not resume it until the custodian holds and watches the same Job
-//! member. This also serves thin terminal adapters that cannot use `std::Command`.
+//! member. This serves thin terminal adapters that start members themselves.
+//! [`ENV`] holds `127.0.0.1:<port>/<tree>`; a request is the little-endian
+//! PID followed by the little-endian 64-bit tree, and the reply is one byte,
+//! 1 once the process is watched as a member of that tree.
 
 use std::io::{self, Read as _, Write as _};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener};
 use std::sync::mpsc::{self, Receiver};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::IO::PostQueuedCompletionStatus;
@@ -15,6 +18,7 @@ pub(super) const ADMIT: usize = usize::MAX - 2;
 
 pub(super) struct Request {
     pub pid: u32,
+    pub tree: usize,
     pub reply: mpsc::SyncSender<bool>,
 }
 
@@ -38,14 +42,24 @@ impl Server {
             .spawn(move || {
                 for stream in self.listener.incoming() {
                     let Ok(mut stream) = stream else { break };
-                    let mut pid = [0; 4];
-                    if stream.read_exact(&mut pid).is_err() {
+                    let mut request = [0; 12];
+                    if stream.read_exact(&mut request).is_err() {
                         continue;
                     }
+                    let (pid, tree) = request.split_at(4);
+                    let (Ok(pid), Some(tree)) = (
+                        <[u8; 4]>::try_from(pid),
+                        <[u8; 8]>::try_from(tree)
+                            .ok()
+                            .and_then(|tree| usize::try_from(u64::from_le_bytes(tree)).ok()),
+                    ) else {
+                        continue;
+                    };
                     let (reply, result) = mpsc::sync_channel(0);
                     if send
                         .send(Request {
                             pid: u32::from_le_bytes(pid),
+                            tree,
                             reply,
                         })
                         .is_err()
@@ -69,19 +83,5 @@ impl Server {
                 }
             })?;
         Ok(receive)
-    }
-}
-
-/// The caller must hold this suspended process's handle through the reply.
-pub(super) fn admit(endpoint: &str, pid: u32) -> io::Result<()> {
-    let mut stream = TcpStream::connect(endpoint)?;
-    stream.set_nodelay(true)?;
-    stream.write_all(&pid.to_le_bytes())?;
-    let mut reply = [0];
-    stream.read_exact(&mut reply)?;
-    if reply == [1] {
-        Ok(())
-    } else {
-        Err(io::Error::other("custodian rejected process admission"))
     }
 }
