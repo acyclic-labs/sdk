@@ -11,7 +11,8 @@ use crate::{
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::testing::{Counted, RequestClass};
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<P: Blobs> Blobs for Counted<P> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         self.record(RequestClass::Data);

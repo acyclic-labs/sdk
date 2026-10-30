@@ -416,6 +416,15 @@ impl Default for Shared {
     }
 }
 
+/// Drive one owned operation until the real medium reaches its selected cut.
+/// Unexpected completion fails immediately rather than waiting without a producer.
+async fn drive_to_park<F: Future>(operation: std::pin::Pin<&mut F>, reached: &tokio::sync::Notify) {
+    tokio::select! {
+        () = reached.notified() => {},
+        _ = operation => panic!("operation ended before its selected medium cut"),
+    }
+}
+
 struct Pause {
     operation: &'static str,
     fragment: String,
@@ -826,7 +835,8 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
     Ok(())
 }
 
-#[tokio::test]
+#[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 async fn a_delete_never_removes_a_writers_pending_reference()
 -> Result<(), Box<dyn std::error::Error>> {
     // The deleter marks and passes its index check; a parent writer creates its
@@ -850,23 +860,19 @@ async fn a_delete_never_removes_a_writers_pending_reference()
         .digest;
     let (deleter_reached, deleter_release) =
         medium.park_after("list", format!("/i/{}/", child.to_hex()), 1);
-    let deleted = tokio::spawn({
-        let deleting = deleting.clone();
-        async move { deleting.delete(child).await }
-    });
-    deleter_reached.notified().await;
+    let deleted = deleting.delete(child);
+    tokio::pin!(deleted);
+    drive_to_park(deleted.as_mut(), &deleter_reached).await;
     let (writer_reached, writer_release) =
         medium.park("create", format!("/i/{}/e", child.to_hex()));
-    let written = tokio::spawn({
-        let writing = writing.clone();
-        async move { writing.put(vec![8; 32].into(), vec![child]).await }
-    });
-    writer_reached.notified().await;
+    let written = writing.put(vec![8; 32].into(), vec![child]);
+    tokio::pin!(written);
+    drive_to_park(written.as_mut(), &writer_reached).await;
     deleter_release.notify_one();
-    assert_eq!(deleted.await??, Delete::Deleted);
+    assert_eq!(deleted.await?, Delete::Deleted);
     assert!(reputting.put(body, Vec::new()).await?.verified().is_some());
     writer_release.notify_one();
-    assert!(written.await??.verified().is_some());
+    assert!(written.await?.verified().is_some());
     assert_eq!(deleting.delete(child).await?, Delete::Referenced);
     assert_eq!(writing.head(child).await?.length, 32);
     Ok(())
@@ -893,11 +899,9 @@ async fn stalled_delete_then_reput(
         .ok_or("unknown")?
         .digest;
     let (reached, release) = medium.park_after("list", format!("/i/{}/", digest.to_hex()), 1);
-    let stalled = tokio::spawn({
-        let deleting = deleting.clone();
-        async move { deleting.delete(digest).await }
-    });
-    reached.notified().await;
+    let stalled = deleting.delete(digest);
+    tokio::pin!(stalled);
+    drive_to_park(stalled.as_mut(), &reached).await;
     for _ in 0..3 {
         others.collect().await?;
     }
@@ -912,7 +916,7 @@ async fn stalled_delete_then_reput(
     others.retain(&RootId::new(*b"root")?, vec![digest]).await?;
     release.notify_one();
     let deleted = stalled
-        .await?
+        .await
         .map(|deletion| deletion.outcome)
         .map_err(|error| error.code);
     let readable = others.get(digest, ByteRange::FULL, 32).await.is_ok();
@@ -1021,19 +1025,16 @@ async fn stalled_put(
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
     let (reached, release) = medium.park_after(operation, fragment, skip);
-    let put = tokio::spawn({
-        let writer = writer.clone();
-        let body = body.clone();
-        async move { writer.put(body, Vec::new()).await }
-    });
-    reached.notified().await;
+    let put = writer.put(body.clone(), Vec::new());
+    tokio::pin!(put);
+    drive_to_park(put.as_mut(), &reached).await;
     for _ in 0..passes {
         collector.collect().await?;
     }
     let fenced = !stored_under(&medium, digest, "/e/").await?;
     release.notify_one();
     // A put reads nothing back, so it reports what it wrote.
-    let outcome = put.await??;
+    let outcome = put.await?;
     assert!(
         matches!(outcome, Put::Created { .. }),
         "{stall:?}: {outcome:?}"
@@ -1117,31 +1118,26 @@ async fn a_delayed_collector_never_removes_a_later_version()
     let body = OwnedBytes::from(vec![8; 64]);
     let digest = Digest::of(&body);
     let (reached, release) = medium.park("create", "/p/");
-    let put = tokio::spawn({
-        let writer = writer.clone();
-        let body = body.clone();
-        async move { writer.put(body, Vec::new()).await }
-    });
-    reached.notified().await;
+    let put = writer.put(body.clone(), Vec::new());
+    tokio::pin!(put);
+    drive_to_park(put.as_mut(), &reached).await;
     collector.collect().await?;
     collector.collect().await?;
     // The third pass parks right after removing the envelope, before its payload.
     let (removed, resume) = medium.park("remove", "/e/");
-    let collecting = tokio::spawn({
-        let collector = collector.clone();
-        async move { collector.collect().await }
-    });
-    removed.notified().await;
+    let collecting = collector.collect();
+    tokio::pin!(collecting);
+    drive_to_park(collecting.as_mut(), &removed).await;
     release.notify_one();
     // Its version is gone; a commit of it fails its check.
-    assert!(matches!(put.await??, Put::Created { .. }));
+    assert!(matches!(put.await?, Put::Created { .. }));
     // A later put of the same digest publishes a fresh version meanwhile.
     assert!(matches!(
         writer.put(body.clone(), Vec::new()).await?,
         Put::Created { .. }
     ));
     resume.notify_one();
-    collecting.await??;
+    collecting.await?;
     let read = writer.get(digest, ByteRange::FULL, 64).await?;
     assert_eq!(read.body().as_ref(), body.as_ref());
     // Negative control: the removed version's payload really is gone.
@@ -1210,17 +1206,14 @@ async fn equal_puts(
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
     let (reached, release) = medium.park_after(operation, fragment, skip);
-    let stalled = tokio::spawn({
-        let first = first.clone();
-        let body = body.clone();
-        async move { first.put(body, Vec::new()).await }
-    });
-    reached.notified().await;
+    let stalled = first.put(body.clone(), Vec::new());
+    tokio::pin!(stalled);
+    drive_to_park(stalled.as_mut(), &reached).await;
     *medium.ambiguous.lock().unwrap() = lossy.then_some("/p/");
     let other = second.put(body.clone(), Vec::new()).await?;
     *medium.ambiguous.lock().unwrap() = None;
     release.notify_one();
-    let outcomes = [stalled.await??, other];
+    let outcomes = [stalled.await?, other];
     if !lossy {
         let read = second.get(digest, ByteRange::FULL, 64).await?;
         assert_eq!(read.body().as_ref(), body.as_ref());
@@ -1273,11 +1266,9 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     }
     // Its envelope is created; its payload is still to come.
     let (reached, release) = medium.park("create", "/e/");
-    let stalled = tokio::spawn({
-        let blobs = blobs.clone();
-        async move { blobs.put(vec![99; 16].into(), Vec::new()).await }
-    });
-    reached.notified().await;
+    let stalled = blobs.put(vec![99; 16].into(), Vec::new());
+    tokio::pin!(stalled);
+    drive_to_park(stalled.as_mut(), &reached).await;
     let mut listed = Vec::new();
     let mut after = None;
     loop {
@@ -1293,7 +1284,7 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     published.sort();
     assert_eq!(listed, published, "the pending put is not listed");
     release.notify_one();
-    assert!(matches!(stalled.await??, Put::Created { .. }));
+    assert!(matches!(stalled.await?, Put::Created { .. }));
     // Control: once published, it lists.
     assert_eq!(blobs.list(None, 100).await?.digests.len(), 5);
     Ok(())
@@ -2274,7 +2265,8 @@ impl Overlap {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Blobs for Overlap {
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, crate::Error> {
         self.enter(self.inner.put(body, references)).await

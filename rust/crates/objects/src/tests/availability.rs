@@ -35,10 +35,9 @@ pub(crate) async fn verify(medium: impl Medium) -> TestResult {
     );
 
     let (reached, release) = medium.park("create", key.clone());
-    let writer = account.clone();
-    let repair_body = body.clone();
-    let repair = tokio::spawn(async move { writer.put(repair_body, Vec::new()).await });
-    reached.notified().await;
+    let repair = account.put(body.clone(), Vec::new());
+    tokio::pin!(repair);
+    drive_to_park(repair.as_mut(), &reached).await;
     // The physical write is in flight at registration; its acknowledgement
     // has not yet published an invalidation. Verification races completion.
     let mut observation = account.availability(digest).await?;
@@ -46,7 +45,7 @@ pub(crate) async fn verify(medium: impl Medium) -> TestResult {
     let initial = observation.cursor();
     assert!(observation.changed().now_or_never().is_none());
     release.notify_one();
-    let repaired = repair.await??;
+    let repaired = repair.await?;
     assert!(matches!(repaired, Put::AlreadyExists { .. }));
     let repaired = repaired.verified().ok_or("repair was unknown")?;
     assert_eq!(repaired.revision, original.revision);
@@ -76,11 +75,12 @@ pub(crate) async fn verify(medium: impl Medium) -> TestResult {
     // uncertain. Closing the source ends the original wait instead of hanging.
     assert!(medium.inner.remove(&key).await?);
     let (reached, _release) = medium.park("create", key);
-    let writer = account.clone();
-    let repair = tokio::spawn(async move { writer.put(body, Vec::new()).await });
-    reached.notified().await;
-    repair.abort();
-    assert!(repair.await.unwrap_err().is_cancelled());
+    {
+        let repair = account.put(body, Vec::new());
+        tokio::pin!(repair);
+        drive_to_park(repair.as_mut(), &reached).await;
+        // Dropping the original pending operation cancels its publication owner.
+    }
     assert_eq!(
         observation.changed().await.unwrap_err().code,
         ErrorCode::Unavailable

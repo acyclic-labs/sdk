@@ -25,7 +25,9 @@ pub async fn availability(
 /// an error; it never fabricates a successful verification or catalog revision.
 pub fn availability_frames(
     observation: crate::Availability,
-) -> impl futures::Stream<Item = Result<wire::AvailabilityCursor, Error>> + Send + 'static {
+) -> impl futures::Stream<Item = Result<wire::AvailabilityCursor, Error>>
++ acyclic_stream::ProviderTask
++ 'static {
     use futures::{StreamExt as _, stream};
     let initial = observation.cursor();
     stream::once(std::future::ready(Ok(initial.into()))).chain(stream::try_unfold(
@@ -44,7 +46,7 @@ pub async fn invoke_stream(
     blobs: &dyn Blobs,
     route: &str,
     input: Bytes,
-) -> Result<futures::stream::BoxStream<'static, Result<Vec<u8>, Error>>, Error> {
+) -> Result<acyclic_stream::BoxProviderStream<'static, Result<Vec<u8>, Error>>, Error> {
     use futures::StreamExt as _;
     if route != "blobs/availability" {
         return Err(wire::ErrorCode::InvalidArgument.into());
@@ -247,17 +249,30 @@ fn decode<T: Message + Default>(bytes: Bytes) -> Result<T, Error> {
 /// The route's semantic failure, or `InvalidArgument` for an unknown route or
 /// a malformed input.
 pub async fn invoke(blobs: &dyn Blobs, route: &str, input: Bytes) -> Result<Vec<u8>, Error> {
+    Ok(invoke_at(blobs, route, input).await?.0)
+}
+
+/// Serves the canonical binary operation without discarding its original revision.
+/// The transport must keep the body and this revision in the same admitted reply.
+pub async fn invoke_at(
+    blobs: &dyn Blobs,
+    route: &str,
+    input: Bytes,
+) -> Result<Served<Vec<u8>>, Error> {
+    fn encode<T: Message>((body, revision): Served<T>) -> Served<Vec<u8>> {
+        (body.encode_to_vec(), revision)
+    }
     Ok(match route {
-        "blobs/put" => put_blob(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/put-manifest" => put_manifest(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/get" => get_blob(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/head" => head_blob(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/delete" => delete_blob(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/list" => list_blobs(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/retain" => retain(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/release" => release(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/collect" => collect(blobs, decode(input)?).await?.0.encode_to_vec(),
-        "blobs/usage" => usage(blobs, decode(input)?).await?.0.encode_to_vec(),
+        "blobs/put" => encode(put_blob(blobs, decode(input)?).await?),
+        "blobs/put-manifest" => encode(put_manifest(blobs, decode(input)?).await?),
+        "blobs/get" => encode(get_blob(blobs, decode(input)?).await?),
+        "blobs/head" => encode(head_blob(blobs, decode(input)?).await?),
+        "blobs/delete" => encode(delete_blob(blobs, decode(input)?).await?),
+        "blobs/list" => encode(list_blobs(blobs, decode(input)?).await?),
+        "blobs/retain" => encode(retain(blobs, decode(input)?).await?),
+        "blobs/release" => encode(release(blobs, decode(input)?).await?),
+        "blobs/collect" => encode(collect(blobs, decode(input)?).await?),
+        "blobs/usage" => encode(usage(blobs, decode(input)?).await?),
         _ => return Err(wire::ErrorCode::InvalidArgument.into()),
     })
 }

@@ -266,8 +266,9 @@ impl PartialEq for Object {
 ///
 /// The provider's account is the entire namespace; nothing here can name,
 /// dedupe against or disclose another account's blobs.
-#[async_trait::async_trait]
-pub trait Blobs: Send + Sync {
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub trait Blobs: acyclic_stream::ProviderPlatform {
     /// Registers exact-key physical availability invalidations in this account.
     /// Subscribe before verifying; changes racing verification remain pending.
     /// Reconnect requires a fresh subscribe/verify handshake. Events certify no
@@ -440,7 +441,8 @@ pub trait Blobs: Send + Sync {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {
         (**self).availability(digest).await

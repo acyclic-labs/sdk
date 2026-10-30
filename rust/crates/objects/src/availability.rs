@@ -1,8 +1,8 @@
 //! Coalesced physical-availability invalidations, scoped by the owning account.
 use crate::{Digest, Error, wire::ErrorCode};
+use acyclic_stream::{BoxProviderStream, ProviderTask};
 use futures::{Stream, StreamExt, stream};
 use std::collections::HashMap;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::watch;
 
@@ -69,7 +69,7 @@ impl TryFrom<crate::wire::AvailabilityCursor> for AvailabilityCursor {
 /// never certifies successful repair, existence, integrity or durability.
 pub struct Availability {
     cursor: AvailabilityCursor,
-    changes: Pin<Box<dyn Stream<Item = Result<AvailabilityCursor, Error>> + Send>>,
+    changes: BoxProviderStream<'static, Result<AvailabilityCursor, Error>>,
 }
 
 impl Availability {
@@ -78,7 +78,7 @@ impl Availability {
     /// end `changes` or yield a typed error, never an empty healthy subscription.
     pub fn new(
         initial: AvailabilityCursor,
-        changes: impl Stream<Item = Result<AvailabilityCursor, Error>> + Send + 'static,
+        changes: impl Stream<Item = Result<AvailabilityCursor, Error>> + ProviderTask + 'static,
     ) -> Self {
         Self {
             cursor: initial,
@@ -313,7 +313,7 @@ impl Drop for Registration {
     }
 }
 
-#[cfg(objects_client)]
+#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 pub(crate) mod client;
 #[cfg(test)]
 mod tests;

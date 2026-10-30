@@ -16,7 +16,7 @@ fn parked(availability: &mut Availability, wakes: &Arc<Wakes>) {
     assert!(
         availability
             .changed()
-            .boxed()
+            .boxed_local()
             .as_mut()
             .poll(&mut context)
             .is_pending()
