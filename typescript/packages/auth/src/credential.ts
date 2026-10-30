@@ -77,9 +77,11 @@ export async function* credentialStream<T>(
   stream: AsyncIterable<T>, lease: CredentialRequest, rejected: (error: unknown) => boolean,
 ): AsyncIterable<T> {
   try {
+    lease.check();
     for await (const value of stream) {
       lease.check();
       yield value;
+      lease.check();
     }
     lease.check();
   }

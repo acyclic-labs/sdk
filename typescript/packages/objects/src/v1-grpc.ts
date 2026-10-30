@@ -1,6 +1,7 @@
-import { credentialProvider, credentialStream, resolveCredential, type CredentialOptions } from "@acyclic-labs/actors/credential";
+import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { rootCertificates } from "node:tls";
-import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/connect";
+import { createClient, Code, ConnectError } from "@connectrpc/connect";
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
@@ -37,21 +38,7 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const timeoutMs = options.timeoutMs ?? 30000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
-  const authenticate: Interceptor = next => async request => {
-    const lease = await resolveCredential(credential, request.signal);
-    request.header.set("authorization", `Bearer ${lease.token()}`);
-    lease.check();
-    const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
-    try {
-      const response = await next(request);
-      lease.check();
-      return response.stream ? { ...response, message: credentialStream(response.message, lease, rejected) } : response;
-    }
-    catch (error) {
-      if (rejected(error)) lease.reject();
-      throw error;
-    }
-  };
+  const authenticate = credentialInterceptor(credential);
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
   const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: timeoutMs, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), readMaxBytes: maximum, writeMaxBytes: maximum });

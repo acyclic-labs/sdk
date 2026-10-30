@@ -235,9 +235,10 @@ test("stream trailers reject only their exact lease; denial and cancellation pre
   const rejected = (error: unknown) => error === unauthenticated;
   const stream = credentialStream(response(unauthenticated), old, rejected)[Symbol.asyncIterator]();
   expect((await stream.next()).value).toBe(1);
+  const lateRejection = stream.next();
   old.reject();
   const current = await resolveCredential(cache.provider);
-  await expect(stream.next()).rejects.toBe(unauthenticated);
+  await expect(lateRejection).rejects.toBe(unauthenticated);
   current.check();
   for (const failure of [new Error("policy denial"), new DOMException("cancelled", "AbortError")]) {
     await expect(Array.fromAsync(credentialStream(response(failure), current, rejected))).rejects.toBe(failure);

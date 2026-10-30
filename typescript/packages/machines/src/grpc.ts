@@ -1,6 +1,6 @@
-import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
+import { credentialProvider, type CredentialOptions } from "@acyclic-labs/auth/credential";
+import { credentialInterceptor } from "@acyclic-labs/auth/credential-connect";
 import { rootCertificates } from "node:tls";
-import type { Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { createMachinesClient } from "./transport.js";
 export { MAX_OUTPUT_READ_BYTES, type MachinesExecRequest } from "./transport.js";
@@ -25,10 +25,7 @@ export function createMachinesGrpcTransport(options: MachinesGrpcOptions) {
   const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
-  const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
-    return next(request);
-  };
+  const authenticate = credentialInterceptor(credential);
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
   const transport = createGrpcTransport({
     sessionManager: session, baseUrl: endpoint.href,
