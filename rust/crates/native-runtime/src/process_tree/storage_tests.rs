@@ -49,7 +49,7 @@ fn bounded_poll_scopes_preserve_original_storage_and_retirement_credit() {
 fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
     let root = tempfile::tempdir().unwrap();
     let original = Arc::new(crate::tests::ReadBudgetMeter::new(256, 65536));
-    let observer: Arc<dyn crate::NativeReadMeter> = original;
+    let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let mut command = super::super::tests::command("stderr-bulk", root.path());
     command.stdout(std::process::Stdio::null());
@@ -62,14 +62,21 @@ fn stderr_tail_is_bounded_and_drained_after_stdout_closes() {
         assert_eq!(io.read_stdout(&mut [0; 1024]).unwrap(), Some(0));
         let drain = io.drain_stderr().unwrap();
         read_bytes += drain.read_bytes;
-        if let Some(status) = io.try_wait().unwrap() {
-            assert_eq!(status.code(), Some(7));
-            if drain.closed {
-                break;
-            }
+        if drain.closed {
+            break;
         }
-        std::thread::yield_now();
+        if drain.read_bytes == 0 {
+            io.readiness().unwrap().0.block();
+        }
     }
+    let status = slot
+        .slot_mut()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .wait_exit(Some(original.as_ref()))
+        .unwrap();
+    assert_eq!(status.code(), Some(7));
     assert!(
         read_bytes >= 262_144,
         "stderr progress was hidden from the scheduler"
@@ -148,14 +155,17 @@ fn malformed_private_storage_cannot_acknowledge_quiescence_or_spawn() {
 }
 
 #[test]
-fn native_session_polling_retains_the_original_meter_and_process_owner() {
+fn native_session_events_retain_the_original_meter_and_process_owner() {
     let root = tempfile::tempdir().unwrap();
     let custody = ProcessCustody::open(root.path()).unwrap();
     let original = Arc::new(crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX));
     let observer: Arc<dyn crate::NativeReadMeter> = original.clone();
     let mut slot = ProcessTreeStorage::new(&observer).unwrap();
     let mut command = super::super::tests::command("stdin-save", root.path());
-    command.stdin(std::process::Stdio::piped());
+    command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     slot.spawn(&mut command, Some(&custody)).unwrap();
     let before = original.used_operations.load(Ordering::Acquire);
     slot.queue_stdin(b"one retained native prompt".to_vec())
@@ -167,18 +177,22 @@ fn native_session_polling_retains_the_original_meter_and_process_owner() {
     );
     assert!(
         !slot.is_reaped(),
-        "failed polling cannot drop process custody"
+        "refused input cannot drop process custody"
     );
     original.cancelled.store(false, Ordering::Release);
     while !slot.pump_stdin().unwrap() {
-        std::thread::yield_now();
+        slot.io(&observer).unwrap().readiness().unwrap().0.block();
     }
     slot.require_stdin_complete().unwrap();
-    let mut output = [0; 1024];
-    while slot.try_wait().unwrap().is_none() {
-        slot.read_stdout(&mut output).unwrap();
-        std::thread::yield_now();
-    }
+    assert!(
+        slot.slot_mut()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .wait_exit(Some(original.as_ref()))
+            .unwrap()
+            .success()
+    );
     assert_eq!(
         std::fs::read(root.path().join("stdin-captured")).unwrap(),
         b"one retained native prompt"
