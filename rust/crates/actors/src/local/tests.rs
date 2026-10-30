@@ -5,6 +5,8 @@ use bytes::Bytes;
 use futures::TryStreamExt;
 use proptest::prelude::*;
 
+mod hot_path;
+
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// The original publication owns response, cursor, checkpoint and retry. A
@@ -411,6 +413,7 @@ async fn place<P: StreamProvider + ?Sized>(
     store
         .claim(&store.load(address).await?, 1, key("place")?)
         .await
+        .map(|_| ())
 }
 
 async fn atomic_history<P: StreamProvider + ?Sized>(

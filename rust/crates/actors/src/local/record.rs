@@ -35,7 +35,7 @@ struct Record {
     #[prost(bool, tag = "7")]
     paused: bool,
     #[prost(btree_map = "string, bytes", tag = "8")]
-    metadata: BTreeMap<String, Vec<u8>>,
+    metadata: BTreeMap<String, bytes::Bytes>,
     #[prost(uint64, tag = "9")]
     journal_tail: u64,
 }
@@ -89,7 +89,7 @@ impl State {
             metadata: self
                 .metadata
                 .iter()
-                .map(|(key, value)| (key.clone(), value.to_vec()))
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
             journal_tail: self.journal_tail,
         };
@@ -134,11 +134,7 @@ impl State {
                 delivered_generation: record.alarm_delivered_generation,
             },
             paused: record.paused,
-            metadata: record
-                .metadata
-                .into_iter()
-                .map(|(key, value)| (key, value.into()))
-                .collect(),
+            metadata: record.metadata,
             journal_tail: record.journal_tail,
         })
     }

@@ -124,12 +124,24 @@ this same materializer and native producer, not a private guest storage API.
 append and alarm operations expire at callback return. Failure rolls back the
 callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.
+Native read-only transactions borrow the admitted in-memory cut, allocate
+nothing and leave the binding clean; flushing a clean binding performs no I/O.
+Native rollback records only touched keys and the journal's original length,
+including when a callback unwinds.
 `flush` publishes all pending metadata, journal frames and alarm in **one**
 conditional Stream commit against the original actor head and journal tail.
 Only its confirmed result acknowledges durability. Failed/unknown publication
 fences the binding; an unknown result retains its original PreparedPublish and
 never dispatches the guest callback again. The delivery/checkpoint owner takes
 the updated Snapshot through `finish` before its next normal publication.
+
+When state and the delivery's checkpoint have the same durability boundary,
+use `ActorStateBinding::prepare_publish` instead of flushing first. It joins
+metadata, journal, alarm, consumed input, checkpoint, response and effects in
+the original conditional commit. `Store::submit_retained` returns the confirmed
+authored Snapshot without a reread or decode; `Store::claim` likewise returns
+its confirmed placement cut. The original owner and exact-head fences still
+apply. A retained cut is a snapshot, not a fresh observation of another owner.
 
 Metadata is retained with the actor checkpoint/epoch/alarm state. Journal frames
 stay in the canonical `<state-path>/journal` stream and are read in requested

@@ -1,5 +1,5 @@
 //! The actor's original state cut owns metadata, journal and alarm publication.
-use super::{Error, Snapshot, State, Store, change_alarm, owned};
+use super::{Alarm, Error, Publication, Snapshot, State, Store, change_alarm, owned};
 use crate::guest::{AlarmChange, Effect};
 use acyclic_stream::{
     CommitCondition, CommitMutation, IdempotencyKey, ReadRequest, StreamPath, StreamProvider,
@@ -12,15 +12,21 @@ use futures::TryStreamExt as _;
 pub struct ActorStateTransaction<'a> {
     state: &'a mut State,
     journal: &'a mut Vec<Bytes>,
+    undo: Vec<(String, Option<Bytes>)>,
+    alarm: Alarm,
+    journal_tail: u64,
+    journal_len: usize,
+    accepted: bool,
 }
 impl ActorStateTransaction<'_> {
     /// Read this transaction's own writes and its original committed cut.
     pub fn get(&self, key: &str) -> Option<&Bytes> {
         self.state.metadata.get(key)
     }
-    /// Stage metadata; only flush confirms durability.
+    /// Stage metadata; only a successful publication confirms durability.
     pub fn put(&mut self, key: String, value: Bytes) {
-        self.state.metadata.insert(key, value);
+        let previous = self.state.metadata.insert(key.clone(), value);
+        self.undo.push((key, previous));
     }
     /// Enumerate this actor's metadata in canonical key order.
     pub fn entries(&self) -> impl ExactSizeIterator<Item = (&str, &Bytes)> {
@@ -59,9 +65,25 @@ impl ActorStateTransaction<'_> {
         )
     }
 }
-struct Pending {
-    state: State,
-    journal: Vec<Bytes>,
+impl Drop for ActorStateTransaction<'_> {
+    fn drop(&mut self) {
+        if self.accepted {
+            return;
+        }
+        for (key, previous) in self.undo.drain(..).rev() {
+            match previous {
+                Some(value) => {
+                    self.state.metadata.insert(key, value);
+                }
+                None => {
+                    self.state.metadata.remove(&key);
+                }
+            }
+        }
+        self.state.alarm = self.alarm.clone();
+        self.state.journal_tail = self.journal_tail;
+        self.journal.truncate(self.journal_len);
+    }
 }
 
 /// Local producer for one admitted actor's public durable state binding.
@@ -74,7 +96,10 @@ pub struct ActorStateBinding<'a, P: StreamProvider + ?Sized> {
     store: &'a Store<P>,
     snapshot: Snapshot,
     epoch: u64,
-    pending: Option<Pending>,
+    journal: Vec<Bytes>,
+    committed_alarm: Alarm,
+    committed_journal_tail: u64,
+    dirty: bool,
     fenced: bool,
 }
 impl<P: StreamProvider + ?Sized> Store<P> {
@@ -84,13 +109,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         snapshot: Snapshot,
         epoch: u64,
     ) -> Result<ActorStateBinding<'_, P>, Error> {
-        owned(&snapshot, epoch)?;
+        let state = owned(&snapshot, epoch)?;
+        let committed_alarm = state.alarm.clone();
+        let committed_journal_tail = state.journal_tail;
         self.actor(snapshot.path())?;
         Ok(ActorStateBinding {
             store: self,
             snapshot,
             epoch,
-            pending: None,
+            journal: Vec::new(),
+            committed_alarm,
+            committed_journal_tail,
+            dirty: false,
             fenced: false,
         })
     }
@@ -98,7 +128,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
 impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     /// Seed the shared JavaScript projection from this exact admitted cut.
     pub fn seed(&self) -> Result<crate::guest::ActorStateSeed, Error> {
-        if self.fenced || self.pending.is_some() {
+        if self.fenced || self.dirty {
             return Err(Error::Conflict);
         }
         let state = owned(&self.snapshot, self.epoch)?;
@@ -143,13 +173,14 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
     /// Return the updated cut to the original delivery/checkpoint owner.
     /// Pending or uncertain work cannot disappear behind an older snapshot.
     pub fn finish(self) -> Result<Snapshot, Error> {
-        if self.fenced || self.pending.is_some() {
+        if self.fenced || self.dirty {
             return Err(Error::Conflict);
         }
         Ok(self.snapshot)
     }
     /// Run synchronously. Callback failure leaves the previous pending group
-    /// intact. Only flush confirms the group's durability.
+    /// intact, including on unwind. Reads borrow the retained cut without
+    /// allocation, I/O or marking it dirty. Publication confirms durability.
     pub fn transaction<T>(
         &mut self,
         action: impl FnOnce(&mut ActorStateTransaction<'_>) -> Result<T, Error>,
@@ -157,18 +188,24 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if self.fenced {
             return Err(Error::Conflict);
         }
-        let (mut state, mut journal) = match &self.pending {
-            Some(pending) => (pending.state.clone(), pending.journal.clone()),
-            None => (owned(&self.snapshot, self.epoch)?.clone(), Vec::new()),
-        };
+        let state = self.snapshot.state.as_mut().ok_or(Error::Conflict)?;
         if state.paused {
             return Err(Error::Paused);
         }
-        let value = action(&mut ActorStateTransaction {
-            state: &mut state,
-            journal: &mut journal,
-        })?;
-        self.pending = Some(Pending { state, journal });
+        let mut transaction = ActorStateTransaction {
+            alarm: state.alarm.clone(),
+            journal_tail: state.journal_tail,
+            journal_len: self.journal.len(),
+            state,
+            journal: &mut self.journal,
+            undo: Vec::new(),
+            accepted: false,
+        };
+        let value = action(&mut transaction)?;
+        self.dirty |= !transaction.undo.is_empty()
+            || transaction.alarm != transaction.state.alarm
+            || transaction.journal_tail != transaction.state.journal_tail;
+        transaction.accepted = true;
         Ok(value)
     }
     /// Page only the journal frames at this binding's committed cut. Later
@@ -182,11 +219,10 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if self.fenced {
             return Err(Error::Conflict);
         }
-        let state = owned(&self.snapshot, self.epoch)?;
-        if from > state.journal_tail || limit == 0 {
+        if from > self.committed_journal_tail || limit == 0 {
             return Err(Error::Invalid("invalid actor journal page"));
         }
-        let count = (state.journal_tail - from).min(u64::from(limit));
+        let count = (self.committed_journal_tail - from).min(u64::from(limit));
         if count == 0 {
             return Ok(Vec::new());
         }
@@ -225,26 +261,86 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         if self.fenced {
             return Err(Error::Conflict);
         }
-        let Some(pending) = self.pending.take() else {
+        if !self.dirty {
             return Ok(());
-        };
+        }
         self.fenced = true;
-        let mut effects = if pending.journal.is_empty() {
+        let effects = self.effects()?;
+        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
+        let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
+        self.snapshot = self
+            .store
+            .submit_retained(prepared)
+            .await?
+            .ok_or(Error::Invalid("state commit omitted its original receipt"))?;
+        let state = owned(&self.snapshot, self.epoch)?;
+        self.committed_alarm = state.alarm.clone();
+        self.committed_journal_tail = state.journal_tail;
+        self.dirty = false;
+        self.fenced = false;
+        Ok(())
+    }
+
+    /// Join staged metadata, journal and alarm with the delivery's checkpoint,
+    /// consumed cursor, response and effects. Submit the returned publication
+    /// once through the original Store; no preceding flush is needed.
+    pub fn prepare_publish(
+        mut self,
+        trigger: &crate::guest::Trigger,
+        delivered: Option<&acyclic_stream::Record>,
+        mut transition: crate::guest::Transition,
+        key: IdempotencyKey,
+    ) -> Result<super::PreparedPublish, Error> {
+        if self.fenced {
+            return Err(Error::Conflict);
+        }
+        let journal = self.journal_path()?;
+        if transition
+            .effects
+            .iter()
+            .any(|effect| super::mutation_targets(&effect.mutation, &journal))
+        {
+            return Err(Error::Invalid(
+                "guest effect targets the host's actor journal",
+            ));
+        }
+        transition.effects.extend(self.effects()?);
+        let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
+        let mut prepared = self.store.prepare_publication(
+            &self.snapshot,
+            state,
+            &self.committed_alarm,
+            Publication {
+                trigger,
+                delivered,
+                transition,
+                key,
+            },
+        )?;
+        prepared.journal = Some(journal);
+        Ok(prepared)
+    }
+
+    fn effects(&mut self) -> Result<Vec<Effect>, Error> {
+        let mut effects = if self.journal.is_empty() {
             Vec::new()
         } else {
             let path = self.journal_path()?;
             vec![Effect {
                 conditions: vec![CommitCondition::Tail {
                     path: path.clone(),
-                    expected: owned(&self.snapshot, self.epoch)?.journal_tail,
+                    expected: self.committed_journal_tail,
                 }],
                 mutation: CommitMutation::Append {
                     path,
-                    records: pending.journal.into_iter().map(Into::into).collect(),
+                    records: std::mem::take(&mut self.journal)
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
                 },
             }]
         };
-        if pending.state.alarm != owned(&self.snapshot, self.epoch)?.alarm {
+        if owned(&self.snapshot, self.epoch)?.alarm != self.committed_alarm {
             // The same durable activation feed drives the original runtime's
             // ready index and sole timer. A new deadline (or clear) must wake
             // an already idle actor, atomically with its committed alarm.
@@ -253,16 +349,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                     .activation(&self.store.actor(self.snapshot.path())?),
             );
         }
-        let prepared = self
-            .store
-            .prepare(&self.snapshot, &pending.state, effects, key)?;
-        self.snapshot = self
-            .store
-            .submit_retained(prepared)
-            .await?
-            .ok_or(Error::Invalid("state commit omitted its original receipt"))?;
-        self.fenced = false;
-        Ok(())
+        Ok(effects)
     }
     fn journal_path(&self) -> Result<StreamPath, Error> {
         Ok(StreamPath::new(format!(

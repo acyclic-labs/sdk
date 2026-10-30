@@ -681,9 +681,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     )
                     .await
                 {
-                    Ok(()) => {
+                    Ok(claimed) => {
                         inner.epoch = epoch;
-                        inner.observed = None;
+                        inner.observed = Some(Arc::new(claimed));
                     }
                     Err(Error::Conflict) => inner.observed = None,
                     Err(error) => {
