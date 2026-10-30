@@ -115,8 +115,9 @@ or returned body records `err`/`cancelled`, including an unpolled returned body.
 A public async RPC future that is never polled creates no span.
 This is the consumer's lifetime: submitted native work may continue after
 consumer cancellation and retain its own span until actual completion. Native
-filesystem receipt spans record a terminal result only when the operation
-returns; an abandoned future leaves its outcome unset.
+filesystem receipt spans record an explicit result only when the operation
+returns. Abandonment without an owned terminal result projects `incomplete`;
+it does not reconstruct a result from cancellation.
 
 Stream gRPC bodies also require EOF for success and record `cancelled` on
 unfinished consumer drop. Detached provider work
@@ -177,8 +178,9 @@ Do not add a second set of counters.
 - Convenience entry points that delegate to an instrumented implementation
   share that implementation's span. Blocking workers retain the caller's span
   and scoped subscriber through the actual work, including after caller drop.
-  An abandoned operation has no terminal outcome unless it returns; a retained
-  worker span is not evidence that its caller succeeded.
+  A retained worker span is not evidence that its caller succeeded. Its
+  original worker records the terminal result; lost producers project
+  `incomplete` without asserting that accepted work failed.
 
 ## Enablement
 
