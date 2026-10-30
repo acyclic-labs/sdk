@@ -41,7 +41,7 @@ pub use cache::verify_cache;
 pub use pool::model::{
     verify_abandoned_reconnect, verify_cancel_before_open, verify_follow_data,
     verify_interest_accounting, verify_link_isolation, verify_node_dials, verify_pool_lifetime,
-    verify_registration_deadline, verify_terminal_cursor_dial,
+    verify_registration_cancellation, verify_terminal_cursor_dial,
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;

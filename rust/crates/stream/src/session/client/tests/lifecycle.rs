@@ -20,8 +20,8 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     )
 }
 
-#[tokio::test(start_paused = true)]
-async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult {
+#[tokio::test]
+async fn registration_producer_loss_removes_only_its_interest() -> TestResult {
     let (client, mut commands) = waiting_client();
     let mut stalled = Box::pin(
         client
@@ -61,8 +61,9 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
         .send(Ok(healthy_id))
         .map_err(|_| "sibling cancelled")?;
     let healthy = healthy.await?;
-    tokio::time::advance(Duration::from_secs(10)).await;
-    assert!(matches!(stalled.await, Err(StreamError::DeadlineElapsed)));
+    assert!(futures::poll!(stalled.as_mut()).is_pending());
+    drop(_held);
+    assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
     assert_eq!(client.pool.removed.next().await?, id);
     assert_eq!(client.pool.active.load(Ordering::Acquire), 1);
     drop(healthy);
@@ -71,8 +72,8 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     Ok(())
 }
 
-#[tokio::test(start_paused = true)]
-async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestResult {
+#[tokio::test]
+async fn cancellation_withdraws_blocked_queue_admission() -> TestResult {
     let (client, mut commands) = waiting_client();
     let mut first = Box::pin(
         client
@@ -94,14 +95,14 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
             .map_ok(crate::records_only),
     );
     assert!(futures::poll!(blocked.as_mut()).is_pending());
-    tokio::time::advance(Duration::from_secs(10)).await;
-    assert!(matches!(blocked.await, Err(StreamError::DeadlineElapsed)));
+    drop(blocked);
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 1);
     drop(first);
     assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     assert!(commands.try_recv().is_ok());
     assert!(
         commands.try_recv().is_err(),
-        "expired admission must not enqueue an Open"
+        "cancelled admission must not enqueue an Open"
     );
     Ok(())
 }
@@ -115,7 +116,7 @@ fn assert_channel_traces(capture: &acyclic_grpc_observability::tests::Capture) -
     };
     assert_eq!(
         first.fields.get("error.kind").map(String::as_str),
-        Some("deadline_elapsed")
+        Some("unavailable")
     );
     assert_eq!(
         second.fields.get("registration").map(String::as_str),
@@ -163,7 +164,6 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
         .build()?;
     runtime.block_on(
         async {
-            tokio::time::pause();
             let (client, mut commands) = waiting_client();
             let mut stalled = Box::pin(
                 client
@@ -179,11 +179,10 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                     .map_ok(crate::records_only),
             );
             assert!(futures::poll!(stalled.as_mut()).is_pending());
-            let _held = commands.recv().await.ok_or("missing Open")?;
-            tokio::time::advance(Duration::from_secs(10)).await;
-            assert!(matches!(stalled.await, Err(StreamError::DeadlineElapsed)));
-            drop(_held);
-            tokio::time::resume();
+            let held = commands.recv().await.ok_or("missing Open")?;
+            assert!(futures::poll!(stalled.as_mut()).is_pending());
+            drop(held);
+            assert!(matches!(stalled.await, Err(StreamError::Unavailable)));
             let memory = Arc::new(MemoryStream::default());
             append(&memory, "private/events", 1).await?;
             let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
@@ -195,9 +194,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                 ))
                 .map_ok(crate::records_only)
                 .await?;
-            fixture
-                .controls
-                .send(Err(Status::unavailable("fixture reconnect")))?;
+            fixture.reset()?;
             loop {
                 let changed = fixture.counts.changed.notified();
                 if fixture
@@ -263,6 +260,42 @@ fn assert_physical_sessions(sessions: &[acyclic_grpc_observability::tests::Captu
         ],
         "physical session outcomes must distinguish failure from closure"
     );
+}
+
+/// A server refusal is terminal. A new caller may open a fresh session; only
+/// actual connection loss exercises automatic recovery in the shared fixture.
+#[tokio::test]
+async fn peer_unavailability_ends_the_original_session_and_allows_a_caller_reopen() -> TestResult {
+    let memory = Arc::new(MemoryStream::default());
+    append(&memory, "events", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
+    let client = fixture.client()?;
+    let request = || Ok::<_, StreamError>(crate::FollowRequest::new(StreamPath::new("events")?, 1));
+    let mut records = client
+        .follow(request()?)
+        .map_ok(crate::records_only)
+        .await?;
+    fixture
+        .controls
+        .send(Err(Status::unavailable("application refusal")))?;
+    assert_eq!(
+        records.next().await,
+        Some(Err(StreamError::InvalidResponse))
+    );
+    assert!(records.next().await.is_none());
+    fixture
+        .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
+        .await?;
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
+    let mut reopened = client
+        .follow(request()?)
+        .map_ok(crate::records_only)
+        .await?;
+    append(&memory, "events", 1).await?;
+    assert_eq!(next(&mut reopened).await?.sequence, 1);
+    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 2);
+    assert_eq!(fixture.counts.connections.load(Ordering::Relaxed), 1);
+    Ok(())
 }
 
 #[test]

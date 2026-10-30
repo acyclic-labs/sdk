@@ -121,6 +121,7 @@ struct RotatingHost {
     calls: std::sync::Arc<AtomicUsize>,
     changed: std::sync::Arc<tokio::sync::Notify>,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
+    connections: Arc<fixture::Connections>,
 }
 #[tonic::async_trait]
 impl StreamSessionService for RotatingHost {
@@ -140,7 +141,10 @@ impl StreamSessionService for RotatingHost {
             return Err(Status::unauthenticated("expired credential"));
         }
         if call == 1 {
-            return Err(Status::unavailable("retry this physical RPC"));
+            self.connections
+                .reset()
+                .map_err(|error| Status::from_error(Box::new(error)))?;
+            return Err(Status::internal("original transport closed"));
         }
         let output = self.service.session(request).await?.into_inner();
         let controls = stream::unfold(self.controls.subscribe(), |mut receiver| async move {
@@ -154,9 +158,11 @@ struct RotatingFixture {
     endpoint: String,
     controls: tokio::sync::broadcast::Sender<Result<wire::SessionFrame, Status>>,
     server: tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+    connections: Arc<fixture::Connections>,
 }
 impl Drop for RotatingFixture {
     fn drop(&mut self) {
+        let _closed = self.connections.reset();
         self.server.abort();
     }
 }
@@ -172,13 +178,8 @@ impl RotatingFixture {
         use tonic::transport::{Identity, Server, ServerTlsConfig};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-        let incoming = stream::unfold(listener, |listener| async move {
-            listener
-                .accept()
-                .await
-                .ok()
-                .map(|(socket, _)| (Ok::<_, std::io::Error>(socket), listener))
-        });
+        let connections = Arc::new(fixture::Connections::default());
+        let incoming = connections.incoming(listener, Arc::new(Counts::default()));
         let (controls, _) = tokio::sync::broadcast::channel(8);
         let host = RotatingHost {
             service: crate::session::Service::new(
@@ -190,6 +191,7 @@ impl RotatingFixture {
             calls,
             changed,
             controls: controls.clone(),
+            connections: Arc::clone(&connections),
         };
         let server = tokio::spawn(
             Server::builder()
@@ -201,6 +203,7 @@ impl RotatingFixture {
             endpoint,
             controls,
             server,
+            connections,
         })
     }
 }
@@ -244,7 +247,7 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
             .await?;
         assert_eq!(next(&mut records).await?.sequence, 0);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        old.controls.send(Err(Status::unavailable("disconnect")))?;
+        old.connections.reset()?;
         loop {
             let notified = changed.notified();
             if calls.load(Ordering::SeqCst) == 3 {
