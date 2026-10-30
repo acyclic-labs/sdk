@@ -392,10 +392,63 @@ async fn accepted_configuration<P: Blobs>(
     Ok(())
 }
 
+/// Only accepted observation bytes and durable Objects survive a loader restart.
+async fn restored_selection(durable: &MemoryMedium) -> TestResult {
+    let publisher = EntryStore::new(Store::new(durable.clone()).account(b"selected")?);
+    let roots = [
+        RootId::new(b"deployment:restart".to_vec())?,
+        RootId::new(b"deployment:restart-changed".to_vec())?,
+    ];
+    let mut accepted = Vec::new();
+    for (root, module) in roots.iter().zip([MODULE, CHANGED]) {
+        let request: wire::DeploymentRequest = publisher
+            .publish_deployment(root, prepare(module)?, "restart-intent")
+            .await?
+            .request
+            .into();
+        let observation = wire::DeploymentObservation {
+            name: request.name.clone(),
+            code_sha256: request.code_sha256.clone(),
+            revision: 7,
+            jurisdiction: request.jurisdiction.clone(),
+            account_id: b"selected".to_vec(),
+            entry_source: request.entry_source.clone(),
+        };
+        accepted.push((observation.encode_to_vec(), request));
+    }
+    let (original, changed) = (&accepted[0].1, &accepted[1].1);
+    assert_eq!(original.code_sha256, changed.code_sha256, "unchanged JS");
+    assert_ne!(
+        original.entry_source, changed.entry_source,
+        "a changed sibling changes the accepted identity"
+    );
+    // A restarted loader holds no builder files, cache or publication state.
+    let restarted = Counted::new(Store::new(durable.clone()).account(b"selected")?);
+    let store = EntryStore::new(restarted.clone());
+    for ((bytes, _), module) in accepted.iter().zip([MODULE, CHANGED]) {
+        let observation = domain::DeploymentObservation::try_from(
+            wire::DeploymentObservation::decode(bytes.as_slice())?,
+        )?;
+        let before = restarted.requests();
+        let loaded = store.load_deployment(&observation).await?;
+        assert_eq!(&**loaded.module("selected.wasm").await?.body(), module);
+        assert_eq!(
+            restarted.requests().since(before).data(),
+            2,
+            "descriptor and selected module only"
+        );
+    }
+    for root in &roots {
+        store.release(root).await?;
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
     preparation_controls()?;
-    let medium = Store::new(MemoryMedium::default());
+    let durable = MemoryMedium::default();
+    let medium = Store::new(durable.clone());
     let account = medium.account(b"selected")?;
     let provider = Counted::new(account.clone());
     let store = EntryStore::new(provider.clone());
@@ -504,5 +557,5 @@ async fn selected_entry_retains_exact_closure_and_loads_lazily() -> TestResult {
         1,
         "failed batch has no descriptor or retention follow-up"
     );
-    Ok(())
+    restored_selection(&durable).await
 }
