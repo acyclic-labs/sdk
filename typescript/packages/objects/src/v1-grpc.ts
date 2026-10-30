@@ -15,6 +15,7 @@ import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, obje
 export interface ObjectsV1GrpcOptions extends CredentialOptions {
   readonly endpoint: string;
   readonly caCertificate?: string;
+  /** Optional caller message capacity; omission retains the wire encoding maximum. */
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
   /** Optional caller deadline in milliseconds; omitted or zero is unbounded. */
@@ -35,8 +36,8 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
-  const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   const timeoutMs = options.timeoutMs;
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 0x7fff_ffff)) throw new RangeError("timeoutMs must be a non-negative int32");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
