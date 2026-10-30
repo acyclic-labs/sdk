@@ -209,8 +209,9 @@ impl Delivery {
     pub(super) fn abandon(&self) {
         if self.notify_lost() {
             let mut work = self.callback_work();
-            if let Err(error) = self.deliver(&[HostChange::Everything], &mut work) {
-                self.failed_with_work(error, &mut work);
+            match self.deliver(&[HostChange::Everything], &mut work) {
+                Ok(()) => self.sink.delivery_lost(),
+                Err(error) => self.failed_with_work(error, &mut work),
             }
         }
     }
