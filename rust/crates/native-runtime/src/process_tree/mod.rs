@@ -1123,16 +1123,11 @@ impl ProcessTree {
             // The exited leader still holds its PID, so no new tree's record
             // can take this name before it is removed.
             custody::Record::retire(&mut self.custody, meter)?;
-            let (reaped, recorded) =
-                platform::reap_exit_id(self.owned_child_id()? as libc::pid_t, meter)?;
-            if reaped.is_some() {
-                self.child.take();
-                self.native_child.take();
-            }
+            let (_, recorded) =
+                platform::reap_exited_id(self.owned_child_id()? as libc::pid_t, meter)?;
+            self.child.take();
+            self.native_child.take();
             recorded?;
-            if reaped.is_none() {
-                return Err(io::ErrorKind::Other.into());
-            }
         }
         // No native child or configuration pointer can refer to this frame
         // after the physical reap and configuration cleanup above.
