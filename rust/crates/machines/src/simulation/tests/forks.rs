@@ -1,10 +1,6 @@
 use super::*;
 
 #[tokio::test]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "indices are preceded by an assert_eq!(children.len(), 2), proving them in-bounds"
-)]
 async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     let provider = SimulatedMachines::default();
     let create_key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000008")
@@ -27,7 +23,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
     }) = provider
         .fork(
             checkpoint.id,
-            NonZeroU32::new(2).unwrap_or(NonZeroU32::MIN),
+            NonZeroU32::new(1_025).unwrap_or(NonZeroU32::MIN),
             fork_key,
         )
         .await
@@ -41,18 +37,31 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
             inherited: ForkFidelity::MemoryAndDisk,
         }
     );
-    assert_eq!(children.len(), 2);
-    assert_ne!(children[0].id, children[1].id);
-    assert_ne!(children[0].id, machine.id);
+    assert_eq!(children.len(), 1_025);
+    let mut selected = children.iter();
+    let first = selected.next().unwrap_or_else(|| unreachable!());
+    let second = selected.next().unwrap_or_else(|| unreachable!());
+    assert_ne!(first.id, second.id);
+    assert_ne!(first.id, machine.id);
     // The stored contract names the checkpoint, so every read agrees with the reply.
-    let listed = provider
-        .list_machines(None, 16)
-        .await
-        .unwrap_or_else(|_| unreachable!());
+    let mut listed = std::collections::BTreeMap::new();
+    let mut after = None;
+    loop {
+        let page = provider
+            .list_machines(after, MAX_PAGE_SIZE)
+            .await
+            .unwrap_or_else(|_| unreachable!());
+        for machine in page.machines {
+            assert!(listed.insert(machine.id, machine).is_none());
+        }
+        let Some(next) = page.next else { break };
+        assert!(after.is_none_or(|previous| next > previous));
+        after = Some(next);
+    }
     for child in &children {
         assert_eq!(child.contract.image, Image::Checkpoint(checkpoint.id));
         assert_eq!(provider.inspect_machine(child.id).await.as_ref(), Ok(child));
-        assert!(listed.machines.contains(child));
+        assert_eq!(listed.get(&child.id), Some(child));
     }
     provider
         .destroy_checkpoint(
@@ -63,7 +72,7 @@ async fn checkpoint_fork_lifetimes_and_endpoints_are_independent() {
         .await
         .unwrap_or_else(|_| unreachable!());
     assert!(provider.inspect_machine(machine.id).await.is_ok());
-    assert!(provider.inspect_machine(children[0].id).await.is_ok());
+    assert!(provider.inspect_machine(first.id).await.is_ok());
 }
 
 #[tokio::test]
@@ -211,11 +220,6 @@ async fn live_fork_forks_a_suspended_source_without_waking_it() {
             .fork_machine(MachineId::new(), two(), key(0x23))
             .await,
         Err(ProviderError::NotFound(_))
-    ));
-    let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap_or(NonZeroU32::MAX);
-    assert!(matches!(
-        provider.fork_machine(parent.id, too_many, key(0x24)).await,
-        Err(ProviderError::Invalid(_))
     ));
 }
 
