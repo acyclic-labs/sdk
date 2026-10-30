@@ -2,6 +2,25 @@ use super::*;
 use crate::local::host_owner::SessionAction;
 use std::time::Duration;
 
+async fn projection_event(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<notify::Result<notify::Event>>,
+    owner: &mut tokio::task::JoinHandle<Result<()>>,
+) -> Result<()> {
+    let failed = |cause| {
+        Error::Storage(format!(
+            "step=observe workspace conformance: {cause}; recovery=cargo test --locked -p acyclic-harness --no-default-features --features filesystem-local,native-execution --lib local::host_files::tests::workspace_projection_uses_shared_results_without_client_state -- --exact"
+        ))
+    };
+    tokio::select! {
+        event = events.recv() => match event {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(error)) => Err(failed(error.to_string())),
+            None => Err(failed("notification producer closed".into())),
+        },
+        result = owner => Err(failed(format!("workspace owner ended: {result:?}"))),
+    }
+}
+
 #[test]
 fn projection_reads_cannot_wake_either_endpoint() {
     use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
@@ -41,6 +60,16 @@ fn projection_reads_cannot_wake_either_endpoint() {
 async fn workspace_projection_uses_shared_results_without_client_state() -> Result<()> {
     let checkout = tempfile::tempdir().map_err(storage)?;
     let state = tempfile::tempdir().map_err(storage)?;
+    let (changed, mut changes) = tokio::sync::mpsc::unbounded_channel();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if projection_changed(&event) {
+            let _ = changed.send(event);
+        }
+    })
+    .map_err(storage)?;
+    watcher
+        .watch(checkout.path(), RecursiveMode::Recursive)
+        .map_err(storage)?;
     let local = Arc::new(
         LocalHarness::open(
             LocalHarnessConfig::native_host(checkout.path())
@@ -48,19 +77,22 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         )
         .await?,
     );
-    let owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
+    let mut owner = tokio::spawn(Box::pin(serve(Arc::clone(&local))));
     let descriptor = checkout.path().join(DIRECTORY).join("owner.json");
     tokio::time::timeout(Duration::from_secs(2), async {
         while !descriptor.is_file() {
-            assert!(
-                !owner.is_finished(),
-                "workspace owner stopped before readiness"
-            );
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
+        Ok::<_, Error>(())
     })
     .await
-    .map_err(storage)?;
+    .map_err(storage)??;
+    // Follow only coordination files once published, before any native view
+    // is admitted. The observer never traverses mounted agent filesystems.
+    watcher.unwatch(checkout.path()).map_err(storage)?;
+    watcher
+        .watch(&checkout.path().join(DIRECTORY), RecursiveMode::Recursive)
+        .map_err(storage)?;
     assert!(
         serve(Arc::clone(&local)).await.is_err(),
         "a second workspace owner must not dispatch the same requests"
@@ -234,8 +266,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .next()
             .is_some()
         {
-            assert!(!owner.is_finished(), "invalid request stopped the owner");
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
         Ok::<_, Error>(())
     })
@@ -273,7 +304,7 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             if pending == 0 {
                 return Ok::<_, Error>(());
             }
-            tokio::task::yield_now().await;
+            projection_event(&mut changes, &mut owner).await?;
         }
     })
     .await
@@ -292,6 +323,76 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         lock(&bridge.watching).watched.is_empty(),
         "a key nothing awaits must not stay watched"
     );
+    // The real connection has completed ordinary requests. Lose its
+    // notification producer while two registered replies remain outstanding:
+    // both must finish without publishing a reply or waiting for owner death.
+    let (first, first_reply) = mpsc::sync_channel(1);
+    let first = bridge.wait(WORKSPACE, OperationId::new(), first)?;
+    let (second, second_reply) = mpsc::sync_channel(1);
+    let second = bridge.wait(WORKSPACE, OperationId::new(), second)?;
+    assert!(matches!(
+        first_reply.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    bridge
+        .shared
+        .note(Err(notify::Error::io(std::io::Error::from(
+            std::io::ErrorKind::BrokenPipe,
+        ))));
+    let first_failure = match first_reply
+        .try_recv()
+        .expect("watch failure settles the first reply")
+    {
+        Delivery::Reply(Err(Error::Storage(failure))) => failure,
+        _ => panic!("watch failure must retain its storage cause"),
+    };
+    let failure = lock(&bridge.shared.waiters)
+        .failure
+        .clone()
+        .expect("the first notification cause remains available");
+    assert_eq!(
+        first_failure,
+        format!("operation={}; {failure}", first.operation)
+    );
+    assert!(Error::Storage(first_failure).uncertain());
+    assert!(failure.contains("step=observe native workspace files:"));
+    assert!(failure.ends_with("recovery=acyclic agents"));
+    assert!(matches!(
+        second_reply.try_recv(),
+        Ok(Delivery::Reply(Err(Error::Storage(ref error))))
+            if error == &format!("operation={}; {failure}", second.operation)
+    ));
+    drop((first, second));
+    bridge
+        .shared
+        .note(Err(notify::Error::io(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ))));
+    let cwd = std::fs::canonicalize(checkout.path()).map_err(storage)?;
+    assert!(
+        Arc::ptr_eq(&lock(&REGISTRY).bridge(&cwd)?, &bridge),
+        "a failed live connection must not reopen its notification source"
+    );
+    assert!(matches!(request(&cwd, HostAction::Agents {
+        task: serde_json::from_value(result["task"].clone()).map_err(storage)?,
+    }), Err(Error::Storage(ref error)) if error == &failure));
+    assert_eq!(
+        std::fs::read_dir(&requests).map_err(storage)?.count(),
+        0,
+        "a refused connection must not publish a request with no response producer"
+    );
+    assert!(lock(&bridge.shared.waiters).keys.is_empty());
+    assert!(lock(&bridge.watching).watched.is_empty());
+    assert!(
+        !owner.is_finished(),
+        "client failure must not kill the workspace owner"
+    );
+    let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
+    drop(producer);
+    assert!(matches!(
+        projection_event(&mut ended, &mut owner).await,
+        Err(Error::Storage(ref error)) if error.contains("notification producer closed")
+    ));
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
     owner.abort();
@@ -365,11 +466,10 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         touched.names,
         BTreeSet::from(["a.json".into(), "b.json".into()])
     );
-    // Negative controls: an overflow, an error or a foreign path cannot name
+    // Negative controls: an overflow or a foreign path cannot name
     // every changed request, so each forces exactly one rescan.
     for event in [
         Ok(notify::Event::new(notify::EventKind::Other).set_flag(Flag::Rescan)),
-        Err(notify::Error::generic("queue overflow")),
         Ok(notify::Event::new(notify::EventKind::Any).add_path(root.path().join("..").join("x"))),
         Ok(notify::Event::new(notify::EventKind::Any)),
     ] {
@@ -385,6 +485,7 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         Touched {
             names: BTreeSet::from(["absent.json".into()]),
             rescan: false,
+            failure: None,
         },
     )?;
     assert_eq!(served.rescans, 0);
@@ -394,8 +495,35 @@ fn notifications_name_requests_and_only_overflow_rescans() -> Result<()> {
         Touched {
             names: BTreeSet::new(),
             rescan: true,
+            failure: None,
         },
     )?;
     assert_eq!(served.rescans, 1);
+    // Notification errors mean the producer is unavailable, unlike a
+    // successful overflow event. Do not scan or dispatch after that failure.
+    notices.note(&Err(notify::Error::io(std::io::Error::from(
+        std::io::ErrorKind::BrokenPipe,
+    ))));
+    let failure = notices.take();
+    assert!(!failure.rescan);
+    let error = served
+        .touch(&requests, session, failure)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("step=observe native workspace files:"));
+    notices.note(&named(notify::EventKind::Any, "later.json"));
+    let later = notices.take();
+    assert!(later.names.is_empty());
+    assert_eq!(
+        served
+            .touch(&requests, session, later)
+            .unwrap_err()
+            .to_string(),
+        error
+    );
+    assert_eq!(
+        served.rescans, 1,
+        "producer failure must not trigger another scan"
+    );
     Ok(())
 }

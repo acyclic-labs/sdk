@@ -12,21 +12,41 @@ const binary = process.env.ACYCLIC_TEST_BINARY;
 assert.ok(binary && isAbsolute(binary), `step=admit shipping executable; recovery=${recovery}`);
 const packageRoot = fileURLToPath(new URL("../../", import.meta.url));
 
-for (const host of ["claude-code", "pi"]) {
-  test(`${host} CLI installs, preserves foreign settings and uninstalls through private publication`, async t => {
+for (const host of ["claude-code", "pi"]) for (const selection of ["settings argument", "native profile"]) {
+  test(`${host} CLI installs, preserves foreign settings and uninstalls using ${selection}`, async t => {
     const processes = new Processes();
     let fixture;
     let step = "create isolated settings fixture";
     try {
       fixture = hostFixtureDirectory("settings-publication-");
       const home = join(fixture, "home");
-      const settings = join(fixture, "settings with spaces");
-      mkdirSync(settings);
+      const profile = join(fixture, "settings with spaces");
+      const settings = selection === "native profile" && host === "pi" ? join(profile, "extensions") : profile;
+      mkdirSync(settings, { recursive: true });
       const env = environment(home, { PATH: process.env.PATH ?? "", LANG: "C.UTF-8" });
+      if (selection === "native profile") {
+        env[host === "pi" ? "PI_CODING_AGENT_DIR" : "CLAUDE_CONFIG_DIR"] = profile;
+        // A selected native profile owns configuration without a home lookup.
+        // The previous installer either ignored the selector or resolved home
+        // before considering it; this input refuses both paths.
+        delete env.HOME;
+        delete env.USERPROFILE;
+      }
       for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "E2E_PROCESS_HOST"]) {
         if (process.env[key]) env[key] = process.env[key];
       }
       const path = join(settings, host === "pi" ? "acyclic.ts" : "settings.json");
+      if (selection === "native profile") {
+        step = "refuse an empty native profile without a default home";
+        const refused = await processes.runOwned(binary,
+          ["install", host, "--plugin-root", packageRoot], {
+            cwd: fixture,
+            env: { ...env, [host === "pi" ? "PI_CODING_AGENT_DIR" : "CLAUDE_CONFIG_DIR"]: "" },
+          });
+        t.diagnostic(JSON.stringify(refused));
+        assert.notEqual(refused.code, 0, `step=${step}; recovery=${recovery}`);
+        assert.match(refused.stderr, /host home is unset/, `step=${step}; recovery=${recovery}`);
+      }
       const foreign = {
         permissions: { allow: ["Read"], deny: ["Bash(rm *)"] }, fixtureMarker: "preserve",
         hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign-fixture-hook" }] }] },
@@ -34,7 +54,8 @@ for (const host of ["claude-code", "pi"]) {
       if (host === "claude-code") writeFileSync(path, JSON.stringify(foreign), { flag: "wx", mode: 0o600 });
       const invoke = async command => {
         step = `${command} ${host} via shipping CLI`;
-        const argv = [command, host, "--plugin-root", packageRoot, "--settings", path];
+        const argv = [command, host, "--plugin-root", packageRoot,
+          ...(selection === "settings argument" ? ["--settings", path] : [])];
         const result = await processes.runOwned(binary, argv, { cwd: fixture, env });
         t.diagnostic(JSON.stringify({ argv, ...result }));
         assert.equal(result.signal, null);

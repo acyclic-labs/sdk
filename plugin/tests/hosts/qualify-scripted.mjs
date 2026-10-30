@@ -23,7 +23,7 @@ export function scriptedScenario(artifacts,codex,selection){
  const binary=artifacts.artifacts.acyclic.path;
  if(name==='bounded-framing')return {name,selection,
   args:[join(here,'mcp-framing.py'),binary],
-  accepts:run=>JSON.parse(run.stdout).cases.length===9};
+  accepts:run=>JSON.parse(run.stdout).cases.length===21};
  const graphcoder=artifacts.artifacts.graphcoder.path;
  if(kind==='scale')return {name,selection,
   args:[join(here,'shared-mount-scale.py'),binary,graphcoder,name],

@@ -15,6 +15,7 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
   let closed: Promise<void> | undefined;
   let child: childProcess.ChildProcess | undefined;
   let exits = 0;
+  let spawns = 0;
   const hooks = new Map<string, (...args: any[]) => Promise<void>>();
   const tools = new Map<string, { execute: (...args: any[]) => Promise<unknown> }>();
   mock.module("node:child_process", () => ({ ...native,
@@ -23,6 +24,7 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
       return { stdin: { end() {} } };
     },
     spawn: () => {
+      spawns++;
       child = native.spawn(missing, [], { stdio: "pipe", windowsHide: true });
       child.on("exit", () => exits++);
       closed = new Promise(resolve => child!.once("close", () => resolve()));
@@ -37,12 +39,22 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
       registerTool: (tool: any) => tools.set(tool.name, tool) });
     const ctx = { cwd: directory, sessionManager: { getSessionId: () => "fixture", getSessionFile: () => undefined } };
     await hooks.get("session_start")!({}, ctx);
-    await assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), /ENOENT/);
+    const cancelled = new AbortController(); cancelled.abort();
+    await assert.rejects(tools.get("spawn")!.execute("cancelled", { reference: "child", prompt: "fixture" }, cancelled.signal), /cancelled/);
+    assert.equal(spawns, 0, "cancelled dispatch must not allocate a native process");
+    const refused = assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), /ENOENT/);
+    const initializing = new AbortController();
+    const request = tools.get("wait")!.execute("initializing", { reference: "child" }, initializing.signal);
+    initializing.abort();
+    await assert.rejects(request, /cancelled/);
+    await refused;
     await closed;
     assert.equal(exits, 0, "a failed native spawn never emits exit");
     assert(child);
     assert.doesNotThrow(() => child!.stdin!.emit("error", new Error("closed native stdin")),
       "a failed native pipe must not crash Pi");
+    await assert.rejects(tools.get("spawn")!.execute("later", { reference: "later", prompt: "fixture" }), /ENOENT/);
+    assert.equal(spawns, 1, "terminal native failure must refuse subsequent calls without another process");
     let finished = false;
     const shutdown = hooks.get("session_shutdown")!({}, ctx).then(() => { finished = true; });
     // close has already happened; all remaining work is resolved promises and
