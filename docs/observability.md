@@ -14,6 +14,9 @@ each `acyclic.*` span declaring `outcome`. Record completion through the shared
 first explicit completion, even if descendants retain its handle. A closed span
 without a result is `incomplete`; this does not assert that its accepted work
 failed. RPC method names distinguish operations using the same span factory.
+`Completion` owns unfinished work independently of tracing handles, so producer
+drop publishes `incomplete` immediately. Caller-owned read/RPC cancellation may
+retain its explicit `cancelled` error contract through the same guard.
 
 The layer's `Sink` contract is the OpenTelemetry export boundary. Exporters
 receive the original static metadata, method, elapsed duration and outcome;

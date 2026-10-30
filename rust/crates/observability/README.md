@@ -37,12 +37,18 @@ SLOs are ordinary, authorized files in a volume, for example
 ```
 
 Read and follow that file through the volume's existing reader and change event.
-Decode it as `Slo`, validate it and select `Metrics::query` (or `query_rpc`). The
-live view evaluates the latest snapshot against that file. There is no SLO
+Decode it as `Slo` and select `Metrics::query_slo`, which validates the file and
+selects its exact operation and optional method. `SloQuery::snapshot` and
+`changed` return the serializable file, evidence and verdict together. There is no SLO
 endpoint, separate settings store or readiness poll. Empty cohorts are unknown.
 A latency threshold crossing a histogram bucket is unknown if that ambiguity
 can change the verdict; the view never claims precision the histogram lacks.
 Version mismatches and a query naming another operation are typed refusals.
+
+On a volume-query file replacement, construct the replacement `SloQuery` from
+the newly authorized bytes. Select its completion event alongside the volume's
+existing change event. Removal ends that file's view; malformed replacements
+are errors. No per-file worker, directory scan or readiness probe is needed.
 
 Run the independent operation lifecycle and allocation witnesses with:
 

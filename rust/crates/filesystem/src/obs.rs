@@ -99,7 +99,8 @@ pub(crate) fn outcome_on<T, E: ErrorKind>(
     result: Result<T, E>,
 ) -> Result<T, E> {
     #[cfg(not(target_arch = "wasm32"))]
-    record_outcome(span, result.as_ref().err().map(E::kind));
+    return acyclic_observability::finish(span, result, E::kind);
+    #[cfg(target_arch = "wasm32")]
     result
 }
 
