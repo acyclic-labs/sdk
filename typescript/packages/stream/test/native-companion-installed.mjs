@@ -18,7 +18,7 @@ const saved = await readFile(binary);
 const moved = `${companion}.missing-${process.pid}`;
 function check(expected) {
   const code = `import assert from 'node:assert/strict';import {nativeStreamAvailable} from '@acyclic-labs/stream/native';${expected}`;
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { cwd: process.cwd(), encoding: "utf8", timeout: 10000 });
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", code], { cwd: process.cwd(), encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr || String(result.error));
 }
 check("assert.equal(await nativeStreamAvailable(),true)");

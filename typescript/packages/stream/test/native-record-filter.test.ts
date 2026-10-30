@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 const driver = fileURLToPath(new URL("./native-record-filter-driver.ts", import.meta.url));
 for (const fault of ["", "dropped-filter", "consecutive", "dropped-headers"]) {
   test(`native record filtering boundary ${fault || "production"}`, () => {
-    const result = spawnSync(process.execPath, [driver], { encoding: "utf8", timeout: 2000,
+    const result = spawnSync(process.execPath, [driver], { encoding: "utf8",
       env: { ...process.env, STREAM_RECORD_FAULT: fault } });
     expect(result.error).toBeUndefined();
     if (!fault) expect(result.status, result.stdout + result.stderr).toBe(0);

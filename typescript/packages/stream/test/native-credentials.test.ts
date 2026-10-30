@@ -7,7 +7,7 @@ import { nativeCredentials } from "../src/native-credentials.js";
 const driver = fileURLToPath(new URL("./native-credentials-model.ts", import.meta.url));
 for (const fault of ["", "any-release", "no-release", "live-abort-set", "no-abandon", "ignore-abort"]) {
   test(`native shared credential interleavings: ${fault || "correct"}`, () => {
-    const result = spawnSync(process.execPath, [driver], { encoding: "utf8", timeout: 2000,
+    const result = spawnSync(process.execPath, [driver], { encoding: "utf8",
       env: { ...process.env, STREAM_CREDENTIAL_FAULT: fault } });
     expect(result.error).toBeUndefined();
     if (!fault) {

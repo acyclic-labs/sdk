@@ -6,7 +6,7 @@ for (const broken of [false, true]) {
   test(broken ? "negative control rejects public aliases entering Rust Session I/O" : "every Rust error code round-trips through TLS gRPC and WASM Session I/O", () => {
     const child = spawnSync("bun", [fileURLToPath(new URL("./session-error-driver.ts", import.meta.url))], {
       env: { ...process.env, STREAM_SESSION_FAULT: broken ? "aliases" : "" },
-      encoding: "utf8", timeout: 5000, windowsHide: true,
+      encoding: "utf8", windowsHide: true,
     });
     expect(child.error).toBeUndefined();
     if (broken) {

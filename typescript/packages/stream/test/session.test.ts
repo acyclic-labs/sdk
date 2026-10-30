@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import { SessionFollowSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "../src/session.js";
+import { StreamError } from "../src/types.js";
 import { SessionQueue } from "../src/session-queue.js";
 import { SessionFilterSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
@@ -157,24 +158,57 @@ test("aborting a suspended iterator releases its channel reservation immediately
   expect(node.outstandingFrames).toBe(0);
 });
 
-test("concurrent first follows share a bounded silent-peer handshake", async () => {
-  let connections = 0;
-  const client = new StreamSessions(async () => {
-    connections += 1;
+test("concurrent first follows share a silent peer until cancellation or terminal failure", async () => {
+  for (const producerLost of [false, true]) {
+    let connections = 0, closes = 0;
+    let hello!: () => void;
+    const sentHello = new Promise<void>(resolve => { hello = resolve; });
     const incoming = new SessionQueue<SessionFrame>(2);
-    return { incoming, async send() {}, close() { incoming.end(); } };
-  });
-  const first = client.follow("one", { from: 0n });
-  const second = client.follow("two", { from: 0n });
-  const results = await Promise.allSettled([first.next(), second.next()]);
-  expect(results.every(result => result.status === "rejected" && result.reason.code === "unavailable")).toBe(true);
-  expect(connections).toBe(3);
-}, 4_000);
+    const client = new StreamSessions(async () => {
+      connections += 1;
+      return { incoming, async send(input) { if (input.body.case === "hello") hello(); },
+        close() { closes += 1; incoming.end(); } };
+    });
+    const firstCancel = new AbortController();
+    const secondCancel = new AbortController();
+    const first = client.follow("one", { from: 0n, signal: firstCancel.signal });
+    const second = client.follow("two", { from: 0n, signal: secondCancel.signal });
+    let firstSettled = false, secondSettled = false;
+    const left = first.next().finally(() => { firstSettled = true; });
+    const right = second.next().finally(() => { secondSettled = true; });
+    // Observe failures immediately, before publishing the terminal peer event.
+    const results = Promise.allSettled([left, right]);
+    await sentHello;
+    await checkpoint();
+    expect(connections).toBe(1);
+    expect(firstSettled).toBe(false);
+    expect(secondSettled).toBe(false);
+    if (producerLost) {
+      incoming.end(new StreamError("invalid_response", "peer cannot produce a Welcome"));
+      const outcomes = await results;
+      expect(outcomes.every(result => result.status === "rejected" && result.reason.code === "invalid_response")).toBe(true);
+    } else {
+      firstCancel.abort();
+      await expect(left).resolves.toMatchObject({ done: true });
+      expect(secondSettled).toBe(false);
+      expect(closes).toBe(0);
+      secondCancel.abort();
+      await expect(right).resolves.toMatchObject({ done: true });
+      await results;
+    }
+    await checkpoint();
+    expect(closes).toBe(1);
+    expect(connections).toBe(1);
+  }
+});
 
-test("Welcome followed by EOF cannot strand the first subscription", async () => {
+test("Welcome followed by EOF resumes the first subscription on a live peer", async () => {
   const node = new SessionNode();
+  node.append("events");
+  let connects = 0;
   const client = new StreamSessions(async (target, signal) => {
     const transport = await node.connect(target, signal);
+    if (++connects !== 1) return transport;
     return { ...transport, async send(input) {
       if (input.body.case === "hello") {
         await transport.send(input);
@@ -182,26 +216,10 @@ test("Welcome followed by EOF cannot strand the first subscription", async () =>
       }
     } };
   });
-  const nativeSetTimeout = globalThis.setTimeout;
-  const nativeClearTimeout = globalThis.clearTimeout;
-  const handle = {};
-  let expire: (() => void) | undefined;
-  Object.assign(globalThis, {
-    setTimeout(callback: () => void, milliseconds?: number, ...args: unknown[]) {
-      if (milliseconds !== 10_000) return nativeSetTimeout(callback, milliseconds, ...args);
-      expire = callback;
-      return handle;
-    },
-    clearTimeout(timer: ReturnType<typeof setTimeout>) {
-      if (timer !== handle) nativeClearTimeout(timer);
-    },
-  });
-  try {
-    const pending = client.follow("events", { from: 0n }).next();
-    await node.until(() => node.connections.length >= 2);
-    expect(expire).toBeDefined();
-    expire!();
-    await expect(pending).rejects.toMatchObject({ code: "deadline_elapsed" });
-    await node.until(() => node.active === 0);
-  } finally { Object.assign(globalThis, { setTimeout: nativeSetTimeout, clearTimeout: nativeClearTimeout }); }
+  const follow = client.follow("events", { from: 0n });
+  expect((await follow.next()).value?.sequence).toBe(0n);
+  expect(connects).toBe(2);
+  expect(node.connections.filter(connection => !connection.closed).length).toBe(1);
+  await follow.return(undefined);
+  await node.until(() => node.active === 0);
 });

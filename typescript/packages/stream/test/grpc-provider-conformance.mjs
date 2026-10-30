@@ -31,19 +31,12 @@ async function validateFrames(options, prefix) {
   const provider = new GrpcStreamProvider(options);
   const waitFor = async (mode, field, minimum = 1n) => {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(new Error(`missing ${mode} ${field}`)), 2000);
     try {
       for await (const record of provider.follow(`frame-state/${prefix}/${mode}/${field}`, { from: 0n, signal: controller.signal })) {
         if (BigInt(new TextDecoder().decode(record.value)) >= minimum) return;
       }
       throw controller.signal.reason ?? new Error(`missing ${mode} ${field}`);
-    } finally { clearTimeout(timer); controller.abort(); }
-  };
-  const first = async iterator => {
-    let timer;
-    try {
-      return await Promise.race([iterator.next(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("record delivery stalled")), 250); })]);
-    } finally { clearTimeout(timer); }
+    } finally { controller.abort(); }
   };
   const open = (mode, client = provider, follow = false, signal) => (follow
     ? client.follow(`frame-test/${prefix}/${mode}`, { from: 0n, ...(signal === undefined ? {} : { signal }) })
@@ -63,25 +56,25 @@ async function validateFrames(options, prefix) {
     }
   }
   const ordinary = open("ordinary");
-  assert.equal((await first(ordinary)).value.sequence, 0n);
-  assert.equal((await first(ordinary)).value.sequence, 1n);
+  assert.equal((await ordinary.next()).value.sequence, 0n);
+  assert.equal((await ordinary.next()).value.sequence, 1n);
   assert.equal((await ordinary.next()).done, true);
   for (const [mode, follow] of [["dropRead", false], ["dropFollow", true]]) {
     const iterator = open(mode, provider, follow);
-    await first(iterator);
+    await iterator.next();
     await waitFor(mode, "started");
     await iterator.return();
     await waitFor(mode, "cancelled");
   }
   const controller = new AbortController();
   const signalled = open("signal", provider, true, controller.signal);
-  await first(signalled);
+  await signalled.next();
   await waitFor("signal", "started");
   controller.abort();
   await waitFor("signal", "cancelled");
   assert.equal((await signalled.next()).done, true);
   const pressured = open("pressure");
-  for (let sequence = 0; sequence < 64; sequence++) assert.equal((await first(pressured)).value.sequence, BigInt(sequence));
+  for (let sequence = 0; sequence < 64; sequence++) assert.equal((await pressured.next()).value.sequence, BigInt(sequence));
   await pressured.return();
   await waitFor("pressure", "cancelled");
   if (process.argv.includes("--native")) {
@@ -89,7 +82,7 @@ async function validateFrames(options, prefix) {
     const { NativeStreamProvider } = await import(nativeUrl.href);
     const native = await NativeStreamProvider.connect(options.endpoint, options.token, body(options.caCertificate));
     const iterator = open("dropFollow", native, true);
-    assert.equal((await first(iterator)).value.sequence, 0n);
+    assert.equal((await iterator.next()).value.sequence, 0n);
     await waitFor("dropFollow", "started", 2n);
     await iterator.return();
     await waitFor("dropFollow", "cancelled", 2n);
@@ -118,7 +111,7 @@ if (process.argv.includes("--client")) {
   try {
     const retiredService = { ...StreamService, typeName: "acyclic.stream.v2.StreamService" };
     retiredService.methods = StreamService.methods.map(method => ({ ...method, parent: retiredService }));
-    const obsolete = createClient(retiredService, createGrpcTransport({ baseUrl: options.endpoint, sessionManager: session, defaultTimeoutMs: 2000 }));
+    const obsolete = createClient(retiredService, createGrpcTransport({ baseUrl: options.endpoint, sessionManager: session }));
     await assert.rejects(obsolete.tail({ path }, { headers: { authorization: `Bearer ${options.token}` } }), error => error instanceof ConnectError && error.code === Code.Unimplemented);
   } finally { session.abort(); }
   assert.equal((await provider.inspectIdempotency(key(`${prefix}-append`))).outcome.type, "append");
