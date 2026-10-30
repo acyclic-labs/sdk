@@ -20,7 +20,7 @@ test("Machines retains exact leases through original RPC and duplex body owners"
   let retired = Promise.withResolvers<void>();
   const cache = new CredentialCache(async () => {
     refreshes++;
-    return new CredentialSnapshot("synthetic-test-only", revision, now + 10);
+    return new CredentialSnapshot(`synthetic-test-only-${refreshes}`, revision, now + 10);
   }, () => ({ revision, nowUnixSeconds: now }));
   const server = createSecureServer({
     cert: readFileSync(new URL("./fixtures/server.pem", import.meta.url)),
@@ -29,7 +29,7 @@ test("Machines retains exact leases through original RPC and duplex body owners"
     router.service(wire.MachinesService, {
       async create(_request, context) {
         calls++;
-        expect(context.requestHeader.get("authorization")).toBe("Bearer synthetic-test-only");
+        expect(context.requestHeader.get("authorization")).toMatch(/^Bearer synthetic-test-only-[1-9]\d*$/);
         const selected = mode;
         if (selected === "late401") {
           entered.resolve();
@@ -79,6 +79,12 @@ test("Machines retains exact leases through original RPC and duplex body owners"
     for (const count of [1, 100, 1000]) await Promise.all(Array.from({ length: count }, () => client.machines.create(request)));
     expect(calls).toBe(1101);
     expect(refreshes).toBe(1);
+    for (const count of [1, 100, 1000]) {
+      now += 10;
+      await Promise.all(Array.from({ length: count }, () => client.machines.create(request)));
+    }
+    expect(calls).toBe(2202);
+    expect(refreshes).toBe(4);
 
     mode = "late401";
     const late = outcome(client.machines.create(request));
