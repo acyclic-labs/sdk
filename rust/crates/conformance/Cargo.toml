@@ -10,6 +10,7 @@ description = "Internal black-box conformance suites for Acyclic service provide
 readme = "README.md"
 
 [features]
+local-hotpath = ["acyclic-harness/filesystem-local", "acyclic-fs/local", "acyclic-objects/local", "acyclic-stream/local"]
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
 actors-hosting = ["client-session", "acyclic-harness/serve", "acyclic-harness/conformance", "dep:acyclic-auth"]
@@ -96,6 +97,11 @@ required-features = ["local-runner"]
 name = "write_validation"
 harness = false
 required-features = ["local-runner"]
+
+[[bench]]
+name = "local_hotpath"
+harness = false
+required-features = ["local-hotpath"]
 
 [[bench]]
 name = "native_observation"
