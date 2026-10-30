@@ -18,10 +18,6 @@ pub(super) struct Writer {
 }
 
 impl Writer {
-    pub(super) fn pending(&self) -> bool {
-        !self.pending.0.is_empty() || !self.pending.1.is_empty()
-    }
-
     pub(super) async fn open(context: &ToolContext, request: Vec<u8>) -> Result<Self> {
         let maximum =
             context
@@ -96,7 +92,10 @@ impl Writer {
                 })?;
             }
         }
-        Ok(())
+        let runtime = self.runtime.clone();
+        await_publication(&runtime, || async {
+            self.flush(stderr).await.map_err(std::io::Error::other)
+        })
     }
 
     // Retain the bytes and sequence until their file is staged.
