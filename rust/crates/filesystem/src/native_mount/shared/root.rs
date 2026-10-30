@@ -50,7 +50,7 @@ pub fn shared_view_namespace_contains(
 ) -> Result<bool, NativeMountError> {
     #[cfg(target_os = "macos")]
     {
-        let namespace = native_view_root(admission)?;
+        let namespace = with_native_view_root(admission, |root| Ok(root.path().to_path_buf()))?;
         let Ok(relative) = destination.strip_prefix(namespace) else {
             return Ok(false);
         };
@@ -113,13 +113,16 @@ fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
 // under the admitted namespace, while its existing destination fence and
 // startup recovery retain mount custody. The host never selects this backend.
 #[cfg(target_os = "macos")]
-fn native_view_root(admission: Option<&crate::HeldRoot>) -> Result<PathBuf, NativeMountError> {
+fn with_native_view_root<T>(
+    admission: Option<&crate::HeldRoot>,
+    use_root: impl FnOnce(&crate::HeldRoot) -> Result<T, NativeMountError>,
+) -> Result<T, NativeMountError> {
     match admission {
         Some(admitted) => {
             verify_placement(admitted)?;
-            Ok(admitted.path().to_path_buf())
+            use_root(admitted)
         }
-        None => Ok(default_view_roots()?.path().to_path_buf()),
+        None => use_root(&default_view_roots()?),
     }
 }
 
@@ -215,13 +218,19 @@ pub(crate) fn shared_view_destination(
 ) -> Result<IssuedDestination, NativeMountError> {
     #[cfg(target_os = "macos")]
     {
-        Ok(IssuedDestination {
-            path: native_view_root(admission)?.join(format!(
-                "{:032x}",
-                u128::from_be_bytes(crate::MountId::new().into_bytes())
-            )),
-            claim: None,
-        })
+        // A Darwin view is its own native mount, which needs an existing
+        // directory. Create the fresh name exclusively in the held root,
+        // never through a link; durability buys nothing for a mount point.
+        let name = PathBuf::from(format!(
+            "{:032x}",
+            u128::from_be_bytes(crate::MountId::new().into_bytes())
+        ));
+        let path = with_native_view_root(admission, |root| {
+            root.root
+                .create_dir(&name, &mut crate::native_host::ordinary_work())?;
+            Ok(root.path().join(&name))
+        })?;
+        Ok(IssuedDestination { path, claim: None })
     }
     #[cfg(not(target_os = "macos"))]
     {
