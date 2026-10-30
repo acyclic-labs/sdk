@@ -59,7 +59,7 @@ export function assertClientWasmExports(value: unknown): void {
   const controls = hasClass(exports, "WasmAgentControls", "wasmagentcontrols", ["prepare", "observe", "free"], true);
   const invocation = hasClass(exports, "WasmAgentInvocation", "wasmagentinvocation", ["bytes", "execute", "free"]);
   const explorer = hasClass(exports, "WasmExplorer", "wasmexplorer", [
-    "frame", "history", "health", "setViewport", "scroll", "hover", "focus", "expand", "collapse",
+    "drive", "frame", "history", "health", "wakeIn", "setViewport", "scroll", "hover", "focus", "expand", "collapse",
     "open", "close", "seek", "jumpEnd", "networkChanged", "snapshot", "restore", "free",
   ], true);
   if (typeof exports.discoverAgentControls !== "function" || typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !explorer) {
