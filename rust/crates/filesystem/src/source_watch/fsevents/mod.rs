@@ -15,6 +15,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+#[cfg(test)]
 use std::time::Duration;
 
 mod events;
@@ -82,7 +83,11 @@ impl NativeSourceWatch {
             let reader = shared.clone();
             let handler = Arc::new(move |events: EventBatch<'_>| {
                 let mut work = reader.delivery.callback_work();
-                if let Err(error) = reader.events(events.iter(), &mut work) {
+                let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    reader.events(events.iter(), &mut work)
+                }))
+                .unwrap_or(Err(DemandError::WorkerUnavailable));
+                if let Err(error) = delivered {
                     reader.delivery.failed_with_work(error, &mut work);
                 }
             });
@@ -116,7 +121,6 @@ impl NativeSourceWatch {
 
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
-        _timeout: Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
@@ -137,7 +141,7 @@ impl NativeSourceWatch {
 
     #[cfg(test)]
     pub(crate) fn fence(&self) -> io::Result<()> {
-        self.fence_with_work(Duration::ZERO, &mut crate::native_host::ordinary_work())
+        self.fence_with_work(&mut crate::native_host::ordinary_work())
             .map(|_| ())
             .map_err(crate::demand::native_demand_read_error)
     }
@@ -263,6 +267,7 @@ impl crate::fsevents::StreamTerminal for Shared {
         }
         self.delivery.exact.store(false, Ordering::Release);
         self.stream_bytes.store(0, Ordering::Release);
+        self.delivery.sink.delivery_lost();
     }
 }
 

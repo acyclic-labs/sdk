@@ -593,7 +593,7 @@ fn measured_fence_rejects_denied_reads_and_abandons_a_replaced_root() -> TestRes
     let cancellation = CancellationToken::new();
     let mut denied = DemandWork::new(WorkBudget::default(), &cancellation);
     assert!(matches!(
-        watch.fence_with_work(Duration::ZERO, &mut denied),
+        watch.fence_with_work(&mut denied),
         Err(DemandError::Work(_))
     ));
     assert_eq!(denied.work, WorkCounters::default());
@@ -608,7 +608,7 @@ fn measured_fence_rejects_denied_reads_and_abandons_a_replaced_root() -> TestRes
         },
         &cancellation,
     );
-    assert!(!watch.fence_with_work(Duration::ZERO, &mut work)?);
+    assert!(!watch.fence_with_work(&mut work)?);
     assert!(!watch.delivery().is_exact());
     assert_eq!(work.work.source_entries_visited, 0);
     Ok(())

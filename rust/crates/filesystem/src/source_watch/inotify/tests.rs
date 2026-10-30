@@ -214,7 +214,7 @@ fn foreign_fence_keeps_deferred_cleanup_storage_on_the_watch_owner()
         &CancellationToken::new(),
     )));
     let mut caller = crate::NativeMaterializationWork::from_meter(incoming.clone());
-    assert!(watch.fence_events_with_work(std::time::Duration::MAX, &mut caller)?);
+    assert!(watch.fence_events_with_work(&mut caller)?);
     assert!(original.lock().receipt().allocation_operations > owner_before.allocation_operations);
     assert!(incoming.lock().receipt().source_bytes_read > 0);
     assert!(incoming.lock().receipt().bytes_copied > 0);
@@ -700,7 +700,7 @@ fn original_late_callback_cancellation_retains_the_driver_until_admitted_quiesce
     // parked until the test explicitly admits terminal cleanup below.
     watch.shared.reading().blocked = true;
     std::fs::write(root.path().join("reported"), b"changed")?;
-    let _ = watch.fence_events_with_work(std::time::Duration::MAX, &mut work);
+    let _ = watch.fence_events_with_work(&mut work);
     {
         let reading = watch.shared.reading();
         assert!(reading.filled > reading.cursor);

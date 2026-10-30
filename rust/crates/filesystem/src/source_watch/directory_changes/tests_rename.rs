@@ -71,7 +71,7 @@ fn a_completed_native_rename_reaches_the_sink_in_one_batch()
         &mut work,
     )?;
     std::fs::rename(root.path().join("before"), root.path().join("after"))?;
-    let complete = watch.fence_with_work(Duration::from_secs(5), &mut work)?;
+    let complete = watch.fence_with_work(&mut work)?;
     watch.stop_with_work(&mut work)?;
     assert!(complete);
     assert_eq!(sink.pairs.load(Ordering::Acquire), 1);

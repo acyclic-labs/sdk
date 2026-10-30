@@ -305,15 +305,8 @@ fn a_removed_root_makes_the_watch_inexact() -> TestResult {
     std::fs::create_dir(&root)?;
     let (watch, recorded) = watch(&root)?;
     std::fs::remove_dir(&root)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while watch.is_exact() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the watch stayed exact"
-        );
-        let _ = watch.fence();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    watch.fence()?;
+    assert!(!watch.is_exact());
     assert!(Recorded::everything(&recorded.take()));
     Ok(())
 }
@@ -345,15 +338,8 @@ fn a_root_whose_path_moves_makes_the_watch_inexact() -> TestResult {
     watch.fence()?;
     assert!(watch.is_exact());
     std::fs::rename(parent.path().join("a"), parent.path().join("b"))?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while watch.is_exact() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the watch stayed exact"
-        );
-        let _ = watch.fence();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    watch.fence()?;
+    assert!(!watch.is_exact());
     assert!(Recorded::everything(&recorded.take()));
     Ok(())
 }
@@ -480,7 +466,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         directory.path().join("after-precancel"),
         b"real notification",
     )?;
-    watch.fence_with_work(std::time::Duration::from_secs(10), &mut work)?;
+    watch.fence_with_work(&mut work)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut changes = recorded.take();
     while !Recorded::reported(&changes, Path::new("after-precancel"))

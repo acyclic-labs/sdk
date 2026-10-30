@@ -1,6 +1,5 @@
 use super::*;
 use std::os::unix::fs::PermissionsExt as _;
-use std::time::Duration;
 
 #[test]
 fn root_attributes_are_metadata_hints_and_replacements_still_fail_closed()
@@ -19,7 +18,7 @@ fn root_attributes_are_metadata_hints_and_replacements_still_fail_closed()
     let identity = watch.root_identity();
     let mode = std::fs::metadata(&root)?.permissions().mode();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(mode ^ 0o040))?;
-    watch.fence(Duration::from_secs(1))?;
+    watch.fence()?;
     let observed = watch.poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert!(
         matches!(

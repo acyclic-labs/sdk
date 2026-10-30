@@ -52,7 +52,7 @@ impl Shared {
             return;
         }
         let mut work = self.delivery.callback_work();
-        if let Err(error) = self.drain(&mut reads, None, &mut work) {
+        if let Err(error) = self.drain(&mut reads, false, &mut work) {
             reads.blocked = true;
             self.delivery.failed_with_work(error, &mut work);
         }
@@ -175,12 +175,12 @@ impl Shared {
     fn drain<W: SourceDemandReadWork>(
         &self,
         reads: &mut Reads,
-        deadline: Option<(Instant, Duration)>,
+        fence: bool,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         loop {
             work.check()?;
-            if self.stopping.load(Ordering::Acquire) || expired(deadline) {
+            if self.stopping.load(Ordering::Acquire) {
                 return Ok(false);
             }
             if reads.loss {
@@ -194,7 +194,7 @@ impl Shared {
                 reads.loss = false;
             }
             while reads.cursor < reads.filled {
-                if self.stopping.load(Ordering::Acquire) || expired(deadline) {
+                if self.stopping.load(Ordering::Acquire) {
                     return Ok(false);
                 }
                 work.started_io(ITEM)?;
@@ -269,7 +269,7 @@ impl Shared {
                 self.reissue(reads, work)?
             };
             if !completed {
-                if deadline.is_none() {
+                if !fence {
                     return Ok(self.delivery.is_exact());
                 }
                 // A fence: the read may already hold changes the hub has
@@ -393,13 +393,12 @@ impl NativeSourceWatch {
     #[cfg(test)]
     pub(crate) fn fence(&self) -> io::Result<()> {
         let mut work = self.shared.delivery.callback_work();
-        self.fence_with_work(Duration::from_secs(10), &mut work)
+        self.fence_with_work(&mut work)
             .map(|_| ())
             .map_err(crate::native_host::ordinary_error)
     }
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
-        timeout: Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
@@ -409,18 +408,17 @@ impl NativeSourceWatch {
         self.shared.delivery.take_failure(work)?;
         // The hub collects every completion, so it cannot wait for one; a
         // fence from its callbacks reports everything instead.
-        if timeout.is_zero() || hub::serving() {
+        if hub::serving() {
             self.shared
                 .delivery
                 .deliver_wide(&[HostChangeWide::Everything], work)?;
             return Ok(false);
         }
-        let started = Instant::now();
         let mut reads = self.shared.lock_reads();
-        let result = self.shared.collect(&mut reads, work).and_then(|()| {
-            self.shared
-                .drain(&mut reads, Some((started, timeout)), work)
-        });
+        let result = self
+            .shared
+            .collect(&mut reads, work)
+            .and_then(|()| self.shared.drain(&mut reads, true, work));
         reads.blocked = !matches!(result, Ok(true));
         drop(reads);
         if matches!(result, Ok(false)) {
@@ -436,9 +434,6 @@ impl NativeSourceWatch {
         }
         result
     }
-}
-fn expired(deadline: Option<(Instant, Duration)>) -> bool {
-    deadline.is_some_and(|(started, timeout)| started.elapsed() >= timeout)
 }
 pub(super) fn notification(
     record: &[u8],

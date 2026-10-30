@@ -29,16 +29,13 @@ impl SourceWatch for NativeWatch {
         accounting: &mut crate::kernel::KernelAccounting<'_>,
     ) -> Result<SourceFence, DemandError> {
         let mut context = callback_work(accounting)?;
-        let result = self
-            .watch
-            .fence_with_work(std::time::Duration::from_secs(10), &mut context)
-            .map(|confirmed| {
-                if confirmed {
-                    SourceFence::Confirmed
-                } else {
-                    SourceFence::Unconfirmed
-                }
-            });
+        let result = self.watch.fence_with_work(&mut context).map(|confirmed| {
+            if confirmed {
+                SourceFence::Confirmed
+            } else {
+                SourceFence::Unconfirmed
+            }
+        });
         finish_context(result, context, accounting)
     }
     fn stop(

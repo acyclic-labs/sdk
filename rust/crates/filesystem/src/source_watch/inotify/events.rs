@@ -29,15 +29,9 @@ impl Shared {
         #[cfg(test)]
         self.polling.store(false, Ordering::Release);
         let mut work = self.delivery.callback_work();
-        let started = std::time::Instant::now();
         let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             work.started_io(READ)?;
-            self.read_events_and_deliver_locked(
-                &mut reading,
-                started,
-                std::time::Duration::MAX,
-                &mut work,
-            )
+            self.read_events_and_deliver_locked(&mut reading, &mut work)
         }));
         #[cfg(test)]
         self.polling.store(true, Ordering::Release);
@@ -107,16 +101,14 @@ impl Shared {
 
     pub(super) fn read_events_and_deliver<W: SourceDemandReadWork>(
         &self,
-        timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
         if self.delivery.original.is_some() && !self.delivery.is_exact() {
             return Ok(false);
         }
-        let started = std::time::Instant::now();
         let mut reading = self.reading();
-        self.read_events_and_deliver_locked(&mut reading, started, timeout, work)
+        self.read_events_and_deliver_locked(&mut reading, work)
     }
 
     /// [`Self::read_events_and_deliver`] under a held cursor.
@@ -127,8 +119,6 @@ impl Shared {
     fn read_events_and_deliver_locked<W: SourceDemandReadWork>(
         &self,
         reading: &mut RawReads,
-        started: std::time::Instant,
-        timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
@@ -141,16 +131,9 @@ impl Shared {
         let result = (|| {
             loop {
                 work.check()?;
-                if started.elapsed() >= timeout {
-                    self.delivery.invalidate(work)?;
-                    return Ok(false);
-                }
                 while let Some(path) = reading.cleanup.last().filter(|_| reading.alias_cursor == 0)
                 {
-                    if started.elapsed() >= timeout {
-                        self.delivery.invalidate(work)?;
-                        return Ok(false);
-                    }
+                    work.check()?;
                     self.unadmit_with_work(path, work)?;
                     let path = reading.cleanup.pop().ok_or(DemandError::InvalidRequest)?;
                     let bytes = path.capacity() as u64;
@@ -265,10 +248,7 @@ impl Shared {
                         })
                     != 0;
                 loop {
-                    if started.elapsed() >= timeout {
-                        self.delivery.invalidate(work)?;
-                        return Ok(false);
-                    }
+                    work.check()?;
                     let watches = self.watches.lock().unwrap_or_else(PoisonError::into_inner);
                     let Some((alias, watched)) = watches.get(reading.alias_cursor) else {
                         break;

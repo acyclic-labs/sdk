@@ -27,7 +27,6 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
 use thiserror::Error;
 
 mod registration;
@@ -533,7 +532,6 @@ impl crate::source_watch::HostChangeSink for RootHints {
 
 /// Holds a lost delivery batch as the watch's state: it stays invalidated,
 /// and every fence waiting on it wakes to refuse, until a rescan begins.
-#[cfg(any(test, target_os = "macos"))]
 fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
     if let Ok(mut state) = shared.lock() {
         state
@@ -541,6 +539,40 @@ fn lose_delivery(shared: &Mutex<SharedState>, fenced: &Condvar) {
             .get_or_insert(WatchInvalidationReason::BackendError);
     }
     fenced.notify_all();
+}
+
+/// The adapter's callback owns the producer lifetime, including startup
+/// failure and background-thread termination.
+#[cfg(not(windows))]
+struct AdapterDelivery {
+    shared: Arc<Mutex<SharedState>>,
+    fenced: Arc<Condvar>,
+}
+
+#[cfg(not(windows))]
+impl AdapterDelivery {
+    fn completed(&self, event: &notify::Result<Event>) {
+        if let Ok(mut state) = self.shared.lock() {
+            if let Ok(event) = event
+                && state
+                    .fence
+                    .as_ref()
+                    .is_some_and(|fence| event.paths.contains(fence))
+            {
+                state.fence = None;
+                self.fenced.notify_all();
+            } else if state.invalidation.is_some() {
+                self.fenced.notify_all();
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+impl Drop for AdapterDelivery {
+    fn drop(&mut self) {
+        lose_delivery(&self.shared, &self.fenced);
+    }
 }
 
 #[cfg(any(target_os = "linux", windows))]
@@ -1026,6 +1058,10 @@ struct WindowsRootSink {
 impl crate::source_watch::HostChangeSink for WindowsRootSink {
     fn logical_owned_bytes(&self) -> u64 {
         size_of::<Self>() as u64
+    }
+
+    fn delivery_lost(&self) {
+        lose_delivery(&self.delivery.shared, &self.delivery.fenced);
     }
     fn host_changed(
         &self,
@@ -1959,26 +1995,20 @@ impl NativeWatch {
                 maximum_queued_changes: options.maximum_queued_changes,
                 _root_allocation: context_allocation,
             };
-            let callback_shared = Arc::clone(&shared);
-            let callback_fenced = Arc::clone(&fenced);
+            let delivery = AdapterDelivery {
+                shared: Arc::clone(&shared),
+                fenced: Arc::clone(&fenced),
+            };
             let callback_queued = Arc::clone(&queued);
             Some(move |event: notify::Result<Event>| {
                 accept_native_event(
                     &event,
                     &context,
                     &sender,
-                    &callback_shared,
+                    &delivery.shared,
                     &callback_queued,
                 );
-                if let (Ok(event), Ok(mut state)) = (&event, callback_shared.lock())
-                    && state
-                        .fence
-                        .as_ref()
-                        .is_some_and(|fence| event.paths.contains(fence))
-                {
-                    state.fence = None;
-                    callback_fenced.notify_all();
-                }
+                delivery.completed(&event);
             })
         } else {
             None
@@ -3296,16 +3326,14 @@ impl NativeWatch {
     /// Fences the actual native producers on the caller's original work.
     pub fn fence_with_native_work(
         &mut self,
-        timeout: Duration,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeWatchError> {
         let mut source = crate::NativeMaterializationWork::clone(work);
-        self.fence_with_work(timeout, &mut source)
+        self.fence_with_work(&mut source)
     }
 
     fn fence_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
-        timeout: Duration,
         work: &mut W,
     ) -> Result<(), NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
@@ -3325,16 +3353,6 @@ impl NativeWatch {
             self.fenced.notify_all();
             return Err(error);
         }
-        let started = Instant::now();
-        if timeout.is_zero() {
-            self.shared
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .invalidation
-                .get_or_insert(WatchInvalidationReason::NativeRescanRequired);
-            self.fenced.notify_all();
-            return Ok(());
-        }
         if !self
             .root_unchanged_with_work(work)
             .map_err(demand_watch_error)?
@@ -3348,13 +3366,11 @@ impl NativeWatch {
         }
         let delivered = match &self.watcher {
             #[cfg(target_os = "macos")]
-            NativeWatchDriver::Source(_) => {
-                self.fence_fsevents(timeout.saturating_sub(started.elapsed()), work)?
-            }
+            NativeWatchDriver::Source(_) => self.fence_fsevents(work)?,
             #[cfg(not(target_os = "macos"))]
-            NativeWatchDriver::Source(watcher) => watcher
-                .fence_with_work(timeout.saturating_sub(started.elapsed()), work)
-                .map_err(demand_watch_error)?,
+            NativeWatchDriver::Source(watcher) => {
+                watcher.fence_with_work(work).map_err(demand_watch_error)?
+            }
             NativeWatchDriver::StartupFailure(owner) => {
                 return Err(demand_watch_error(
                     crate::demand::DemandError::SourceWatchStartup(Arc::clone(owner)),
@@ -3399,10 +3415,13 @@ impl NativeWatch {
     #[cfg(target_os = "macos")]
     fn fence_fsevents<W: crate::demand::SourceDemandReadWork>(
         &mut self,
-        timeout: Duration,
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
         self.take_lost_delivery(work)?;
+        // The serial producer cannot wait for its own next callback.
+        if crate::fsevents::on_queue() {
+            return Ok(false);
+        }
         if !self.confirmable()? {
             return Ok(false);
         }
@@ -3411,8 +3430,7 @@ impl NativeWatch {
             ..WorkCounters::UNCHARGED
         })
         .map_err(demand_watch_error)?;
-        let delivered =
-            self.place_cookie(|_, _| Ok(()))?.is_some() && self.await_cookie(timeout)?;
+        let delivered = self.place_cookie(|_, _| Ok(()))?.is_some() && self.await_cookie()?;
         // Every batch before the cookie has now arrived or failed, and a
         // failure is already held as state; this reports it once.
         self.take_lost_delivery(work)?;
@@ -3494,10 +3512,27 @@ impl NativeWatch {
         }
     }
 
-    /// Waits until every host change completed before this call is queued.
-    pub fn fence(&mut self, timeout: Duration) -> Result<(), NativeWatchError> {
+    /// Marks the current hints incomplete when the caller loses continuity.
+    /// The next batch requires a rescan; no host I/O is performed.
+    pub fn invalidate(&mut self) -> Result<(), NativeWatchError> {
+        self.shared
+            .lock()
+            .map_err(|_| NativeWatchError::StatePoisoned)?
+            .invalidation
+            .get_or_insert(WatchInvalidationReason::NativeRescanRequired);
+        self.fenced.notify_all();
+        Ok(())
+    }
+
+    /// Waits for native delivery to settle. The next batch either contains
+    /// the changes completed before this call or requires a rescan.
+    pub fn fence(&mut self) -> Result<(), NativeWatchError> {
+        #[cfg(target_os = "macos")]
+        if crate::fsevents::on_queue() {
+            return self.invalidate();
+        }
         if let Some(work) = self.original_work.clone() {
-            return self.fence_with_native_work(timeout, &work);
+            return self.fence_with_native_work(&work);
         }
         #[cfg(not(windows))]
         let adapter = matches!(self.watcher, NativeWatchDriver::Adapter(_));
@@ -3506,12 +3541,12 @@ impl NativeWatch {
         if !adapter || self.pending_source_watch.is_some() {
             let mut work =
                 crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-            return self.fence_with_work(timeout, &mut work);
+            return self.fence_with_work(&mut work);
         }
         let delivered = self
             .place_cookie(Self::watch_fence_home)
             .is_ok_and(|placed| placed.is_some())
-            && self.await_cookie(timeout).is_ok_and(|delivered| delivered);
+            && self.await_cookie().is_ok_and(|delivered| delivered);
         let mut state = self
             .shared
             .lock()
@@ -3582,24 +3617,18 @@ impl NativeWatch {
         Ok(true)
     }
 
-    /// Reports whether the armed cookie's notification arrived in time, with
+    /// Reports whether the armed cookie's notification arrived, with
     /// no delivery lost before it.
-    pub(crate) fn await_cookie(&self, timeout: Duration) -> Result<bool, NativeWatchError> {
-        let deadline = Instant::now() + timeout;
+    pub(crate) fn await_cookie(&self) -> Result<bool, NativeWatchError> {
         let mut state = self
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
         while state.fence.is_some() && state.invalidation.is_none() {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Ok(false);
-            }
             state = self
                 .fenced
-                .wait_timeout(state, remaining)
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .0;
+                .wait(state)
+                .map_err(|_| NativeWatchError::StatePoisoned)?;
         }
         Ok(state.invalidation.is_none())
     }
@@ -4694,7 +4723,7 @@ mod demand_admission_tests {
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         let cancellation = CancellationToken::new();
         let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        held.fence_with_work(Duration::from_secs(1), &mut work)?;
+        held.fence_with_work(&mut work)?;
         assert_eq!(
             held.windows_registered(),
             0,
@@ -4706,7 +4735,7 @@ mod demand_admission_tests {
         );
         assert_eq!(std::fs::read(root.path().join("folder"))?, b"replacement");
         held.accept_lazy_baseline()?;
-        held.fence_with_work(Duration::from_secs(1), &mut work)?;
+        held.fence_with_work(&mut work)?;
         assert_eq!(held.invalidation()?, None);
         Ok(())
     }
@@ -4780,24 +4809,11 @@ mod demand_admission_tests {
         }
         std::fs::write(root.path().join("a/f"), b"after")?;
         let expected = namespace("/a/f")?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(16, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if matches!(receipt.value, WatchBatch::Changes { ref changes, .. }
-                if changes.iter().any(|change| matches!(change,
-                    WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected)))
-            {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the native child hint was not delivered"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        let seen = settled_changes(&watch, &expected)?;
+        assert!(
+            seen.iter().any(|change| matches!(change,
+            WatchChange::Modified(path) | WatchChange::MetadataChanged(path) if path == &expected))
+        );
         let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
         held.begin_rescan()?;
         assert_eq!(held.windows_registered(), 0);
@@ -4805,36 +4821,28 @@ mod demand_admission_tests {
     }
 
     #[cfg(windows)]
-    fn changes_until(
+    fn settled_changes(
         watch: &Mutex<NativeWatch>,
         expected: &NamespacePath,
     ) -> Result<Vec<WatchChange>, Box<dyn std::error::Error>> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut held = watch.lock().map_err(|_| NativeWatchError::StatePoisoned)?;
+        held.fence()?;
         let mut seen = Vec::new();
         loop {
-            let receipt = watch
-                .lock()
-                .map_err(|_| NativeWatchError::StatePoisoned)?
-                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
-            if let WatchBatch::Changes { changes, .. } = receipt.value {
-                seen.extend(changes);
+            match held
+                .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+                .value
+            {
+                WatchBatch::Changes { changes, .. } if changes.is_empty() => break,
+                WatchBatch::Changes { changes, .. } => seen.extend(changes),
+                other => return Err(format!("settled watch requires a rescan: {other:?}").into()),
             }
-            if seen.iter().any(|change| match change {
-                WatchChange::Renamed { from, to } => from == expected || to == expected,
-                WatchChange::Created(path)
-                | WatchChange::Removed(path)
-                | WatchChange::Modified(path)
-                | WatchChange::MetadataChanged(path)
-                | WatchChange::Arrived(path) => path == expected,
-            }) {
-                return Ok(seen);
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{expected:?} never arrived: {seen:?}"
-            );
-            std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(
+            mentions(&seen, expected),
+            "{expected:?} was absent after delivery settled: {seen:?}"
+        );
+        Ok(seen)
     }
 
     #[cfg(windows)]
@@ -4874,17 +4882,17 @@ mod demand_admission_tests {
         )?;
         std::fs::write(root.path().join("b/g"), b"unobserved")?;
         std::fs::write(root.path().join("a/e"), b"observed")?;
-        let seen = changes_until(&watch, &namespace("/a/e")?)?;
+        let seen = settled_changes(&watch, &namespace("/a/e")?)?;
         assert!(!mentions(&seen, &namespace("/b/g")?), "{seen:?}");
         std::fs::rename(root.path().join("a/f"), root.path().join("b/f"))?;
-        let seen = changes_until(&watch, &namespace("/a/f")?)?;
+        let seen = settled_changes(&watch, &namespace("/a/f")?)?;
         assert!(
             seen.contains(&WatchChange::Removed(namespace("/a/f")?)),
             "{seen:?}"
         );
         assert!(!mentions(&seen, &namespace("/b/f")?), "{seen:?}");
         std::fs::rename(root.path().join("b/h"), root.path().join("a/h"))?;
-        let seen = changes_until(&watch, &namespace("/a/h")?)?;
+        let seen = settled_changes(&watch, &namespace("/a/h")?)?;
         assert!(
             seen.contains(&WatchChange::Created(namespace("/a/h")?)),
             "{seen:?}"
@@ -4902,7 +4910,7 @@ mod demand_admission_tests {
         // The marker's parent is the root, which every watch observes; the
         // change before it in the same handle has been filtered by then.
         std::fs::write(root.join(marker), b"marker")?;
-        changes_until(watch, &namespace(&format!("/{marker}"))?)
+        settled_changes(watch, &namespace(&format!("/{marker}"))?)
     }
 
     #[cfg(windows)]
@@ -5004,7 +5012,7 @@ mod demand_admission_tests {
         let fence_items = |held: &mut NativeWatch| -> Result<u64, NativeWatchError> {
             let cancellation = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            held.fence_with_work(Duration::from_secs(5), &mut work)?;
+            held.fence_with_work(&mut work)?;
             Ok(work.work.items_examined)
         };
         let handles = || {

@@ -47,7 +47,7 @@ impl Drop for OnQueue {
     }
 }
 
-pub(super) fn on_queue() -> bool {
+pub(crate) fn on_queue() -> bool {
     ON_QUEUE.with(std::cell::Cell::get)
 }
 

@@ -612,8 +612,6 @@ fn live_native_backend_delivers_a_bounded_relative_change() -> Result<(), Box<dy
 #[test]
 fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directories()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
-
     let root = tempfile::tempdir()?;
     std::fs::create_dir(root.path().join("observed"))?;
     let file = root.path().join("observed/file");
@@ -624,7 +622,7 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     watch.accept_lazy_baseline()?;
 
     std::fs::write(&file, b"unobserved")?;
-    std::thread::sleep(Duration::from_millis(100));
+    watch.fence()?;
     assert!(matches!(
         watch
             .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
@@ -636,33 +634,22 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
     let observed = NamespacePath::from_portable(&portable, VolumeLimits::default())?;
     watch.watch_directory(&observed)?;
     std::fs::write(&file, b"after")?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 2,
-                    WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
-                }) =>
-            {
-                break;
-            }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
-        }
-    }
+    watch.fence()?;
+    let observed = watch
+        .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+        .value;
+    assert!(
+        matches!(&observed, WatchBatch::Changes { changes, .. }
+        if changes.iter().any(|change| match change {
+            WatchChange::Created(path)
+            | WatchChange::Modified(path)
+            | WatchChange::Arrived(path)
+            | WatchChange::MetadataChanged(path)
+            | WatchChange::Removed(path) => path.depth() == 2,
+            WatchChange::Renamed { from, to } => from.depth() == 2 || to.depth() == 2,
+        })),
+        "{observed:?}"
+    );
     Ok(())
 }
 
@@ -670,8 +657,6 @@ fn linux_demand_watch_ignores_unobserved_subtrees_and_tracks_observed_directorie
 #[test]
 fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
-
     let root = tempfile::tempdir()?;
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.recursive = false;
@@ -683,33 +668,22 @@ fn linux_demand_watch_tracks_the_nearest_existing_parent_of_an_absent_directory(
     watch.watch_directory(&absent)?;
     std::fs::create_dir(root.path().join("future"))?;
 
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        match watch
-            .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::Changes { changes, .. }
-                if changes.iter().any(|change| match change {
-                    WatchChange::Created(path)
-                    | WatchChange::Modified(path)
-                    | WatchChange::Arrived(path)
-                    | WatchChange::MetadataChanged(path)
-                    | WatchChange::Removed(path) => path.depth() == 1,
-                    WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
-                }) =>
-            {
-                break;
-            }
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            WatchBatch::Changes { .. } => return Err("demand watcher timed out".into()),
-            WatchBatch::RescanRequired { reason, .. } => {
-                return Err(format!("demand watcher invalidated: {reason}").into());
-            }
-        }
-    }
+    watch.fence()?;
+    let observed = watch
+        .poll(8, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+        .value;
+    assert!(
+        matches!(&observed, WatchBatch::Changes { changes, .. }
+        if changes.iter().any(|change| match change {
+            WatchChange::Created(path)
+            | WatchChange::Modified(path)
+            | WatchChange::Arrived(path)
+            | WatchChange::MetadataChanged(path)
+            | WatchChange::Removed(path) => path.depth() == 1,
+            WatchChange::Renamed { from, to } => from.depth() == 1 || to.depth() == 1,
+        })),
+        "{observed:?}"
+    );
     Ok(())
 }
 
@@ -751,40 +725,37 @@ fn live_native_backend_fences_a_replaced_root_without_backend_assistance()
 #[test]
 fn live_native_backend_saturation_fails_closed_and_recovers()
 -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::{Duration, Instant};
-
     let directory = tempfile::tempdir()?;
+    let excluded_home = directory.path().join(".fences");
+    std::fs::create_dir(&excluded_home)?;
     let mut options = NativeWatchOptions::new(VolumeLimits::default());
     options.maximum_queued_changes = 1;
     let mut watch = NativeWatch::open(directory.path(), options)?;
+    let excluded = relative_namespace_path(
+        directory.path(),
+        &excluded_home,
+        native_filesystem_profile(),
+        VolumeLimits::default(),
+    )?;
+    watch.exclude_subtrees(&[excluded])?;
     let rescan = watch.begin_rescan()?;
     assert!(matches!(
         watch.finish_rescan(rescan)?,
         WatchBatch::Changes { .. }
     ));
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut attempt = 0_u32;
-    let reason = loop {
-        for index in 0..64_u32 {
-            std::fs::write(
-                directory
-                    .path()
-                    .join(format!("saturation-{attempt:04}-{index:04}")),
-                index.to_le_bytes(),
-            )?;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-        match watch
-            .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
-            .value
-        {
-            WatchBatch::RescanRequired { reason, .. } => break reason,
-            WatchBatch::Changes { .. } if Instant::now() < deadline => {
-                attempt = attempt.checked_add(1).ok_or("attempt overflow")?;
-            }
-            WatchBatch::Changes { .. } => return Err("watcher saturation timed out".into()),
-        }
+    for index in 0..64_u32 {
+        std::fs::write(
+            directory.path().join(format!("saturation-{index:04}")),
+            index.to_le_bytes(),
+        )?;
+    }
+    watch.fence()?;
+    let observed = watch
+        .poll(1, WorkBudget::UNBOUNDED, &CancellationToken::new())?
+        .value;
+    let WatchBatch::RescanRequired { reason, .. } = observed else {
+        return Err(format!("saturated producer did not require a rescan: {observed:?}").into());
     };
     assert!(matches!(
         reason,
