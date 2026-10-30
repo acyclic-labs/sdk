@@ -61,6 +61,7 @@ fn isolated_registration(direct: bool) -> TestResult {
         dispatch(captured.clone())
     };
     runtime.block_on(async {
+        let transport_error = closed_transport().await?;
         let client = unconnected()?;
         // Register the real unary RPC callsite without a thread-local subscriber
         // while the capture dispatcher exists, before any captured attempt.
@@ -73,7 +74,7 @@ fn isolated_registration(direct: bool) -> TestResult {
             let response = client
                 .unary((), |_, _| {
                     let result = if std::mem::take(&mut first) {
-                        Err(Status::unavailable("retry"))
+                        Err(transport_error.clone())
                     } else {
                         Ok(Response::new(()))
                     };

@@ -484,8 +484,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
 /// Whether the outcome of an attempt is unknown because the transport was lost.
 pub(crate) fn retryable(error: &Status) -> bool {
     match error.code() {
-        Code::Unavailable => return true,
-        Code::Unknown | Code::Cancelled => {}
+        Code::Unavailable | Code::Unknown | Code::Cancelled => {}
         _ => return false,
     }
     let mut cause = std::error::Error::source(error);
