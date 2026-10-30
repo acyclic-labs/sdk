@@ -36,7 +36,7 @@ pub(crate) use file_span;
 /// An operation span and the originating context for its work.
 pub struct OperationSpan {
     span: Span,
-    context: Span,
+    caller: Span,
     dispatch: Dispatch,
 }
 
@@ -56,14 +56,14 @@ impl OperationSpan {
         let dispatch = span
             .with_subscriber(|(_, dispatch)| dispatch.clone())
             .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
-        let context = if span.is_disabled() {
-            Span::current()
+        let caller = if dispatch.is::<tracing::subscriber::NoSubscriber>() {
+            Span::none()
         } else {
-            span.clone()
+            with_dispatch(&dispatch, Span::current)
         };
         Self {
             span,
-            context,
+            caller,
             dispatch,
         }
     }
@@ -73,7 +73,7 @@ impl OperationSpan {
             .with_subscriber(|(_, dispatch)| dispatch.clone())
             .unwrap_or_else(|| tracing::dispatcher::get_default(Clone::clone));
         Self {
-            context: span.clone(),
+            caller: Span::none(),
             span,
             dispatch,
         }
@@ -89,12 +89,16 @@ impl OperationSpan {
         if let (Some(registry), Some(origin)) = (registry, origin)
             && std::ptr::eq(registry, origin)
         {
-            self.span.follows_from(cause.context.id());
+            self.span.follows_from(cause.context().id());
         }
     }
     /// Borrows the operation's poll/drop context, including a filtered caller.
     pub fn context(&self) -> &Span {
-        &self.context
+        if self.span.is_disabled() {
+            &self.caller
+        } else {
+            &self.span
+        }
     }
     /// Runs work under its originating dispatcher and context.
     pub fn in_scope<T>(&self, work: impl FnOnce() -> T) -> T {
@@ -107,7 +111,11 @@ impl OperationSpan {
         {
             return work();
         }
-        with_dispatch(&self.dispatch, || self.context.in_scope(work))
+        // A registry span can be enabled while one of its layers filters it.
+        // Enter the retained caller as well so that layer keeps its ancestry.
+        with_dispatch(&self.dispatch, || {
+            self.caller.in_scope(|| self.span.in_scope(work))
+        })
     }
     /// Retains a producer's context through polling and destruction.
     pub fn scope<T>(&self, inner: T) -> Scoped<T> {
@@ -138,10 +146,10 @@ impl Clone for OperationSpan {
     fn clone(&self) -> Self {
         let clone = || Self {
             span: self.span.clone(),
-            context: self.context.clone(),
+            caller: self.caller.clone(),
             dispatch: self.dispatch.clone(),
         };
-        if self.span.is_none() && self.context.is_none() {
+        if self.span.is_none() && self.caller.is_none() {
             clone()
         } else {
             with_dispatch(&self.dispatch, clone)
@@ -156,12 +164,12 @@ impl std::ops::Deref for OperationSpan {
 }
 impl Drop for OperationSpan {
     fn drop(&mut self) {
-        if self.span.is_none() && self.context.is_none() {
+        if self.span.is_none() && self.caller.is_none() {
             return;
         }
         with_dispatch(&self.dispatch, || {
             self.span = Span::none();
-            self.context = Span::none();
+            self.caller = Span::none();
         });
     }
 }
