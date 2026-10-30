@@ -728,9 +728,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             // another host may already have paused or replaced this placement.
             // Until canonical control invalidation is available, observe the
             // real provider before every handler attempt, including alarms.
-            let admitted = Arc::new(self.store.load(actor).await?);
-            if admitted.tail != snapshot.tail || admitted.anchor != snapshot.anchor {
-                inner.observed = Some(admitted);
+            if let Some(admitted) = self.store.observe(&snapshot).await? {
+                inner.observed = Some(Arc::new(admitted));
                 continue;
             }
             let epoch = inner.epoch;

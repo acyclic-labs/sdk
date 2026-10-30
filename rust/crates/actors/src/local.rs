@@ -20,7 +20,7 @@ use crate::guest::{
 use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    IdempotencyKey, Record, StreamError, StreamPath, StreamProvider,
+    IdempotencyKey, PathHead, Record, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -173,6 +173,29 @@ impl Snapshot {
     /// The actor's state stream.
     pub const fn path(&self) -> &StreamPath {
         &self.path
+    }
+
+    fn from_head(path: StreamPath, head: Option<PathHead>) -> Result<Self, Error> {
+        let (tail, last) = head.map_or((0, None), |head| (head.tail, head.last));
+        if tail == 0 {
+            return Ok(Self {
+                path,
+                tail,
+                anchor: None,
+                state: None,
+            });
+        }
+        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
+        if record.sequence != tail - 1 {
+            return Err(Error::Invalid("checkpoint cursor changed"));
+        }
+        let state = State::decode(&record.value)?;
+        Ok(Self {
+            path,
+            tail,
+            anchor: Some(record.commit_id),
+            state: Some(state),
+        })
     }
 }
 
@@ -483,30 +506,35 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
-        let (tail, last) = match self.provider.head(path.clone()).await {
-            Ok(head) => (head.tail, head.last),
-            Err(StreamError::NotFound) => (0, None),
-            Err(error) => return Err(error.into()),
-        };
-        if tail == 0 {
-            return Ok(Snapshot {
-                path,
-                tail,
-                anchor: None,
-                state: None,
-            });
+        let head = self.head(&path).await?;
+        Snapshot::from_head(path, head)
+    }
+
+    /// Observe the original path once. None confirms its tail and commit anchor
+    /// were unchanged at this observation, without decoding the retained state
+    /// again. A changed cut is decoded. This is not permission to start external
+    /// effects after a later control change; publication still uses its original
+    /// exact-head/epoch fence.
+    pub async fn observe(&self, previous: &Snapshot) -> Result<Option<Snapshot>, Error> {
+        let head = self.head(previous.path()).await?;
+        let tail = head.as_ref().map_or(0, |head| head.tail);
+        let anchor = head
+            .as_ref()
+            .filter(|head| head.tail != 0)
+            .and_then(|head| head.last.as_ref())
+            .map(|record| record.commit_id);
+        if tail == previous.tail && anchor == previous.anchor {
+            return Ok(None);
         }
-        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
-        if record.sequence != tail - 1 {
-            return Err(Error::Invalid("checkpoint cursor changed"));
+        Snapshot::from_head(previous.path.clone(), head).map(Some)
+    }
+
+    async fn head(&self, path: &StreamPath) -> Result<Option<PathHead>, Error> {
+        match self.provider.head(path.clone()).await {
+            Ok(head) => Ok(Some(head)),
+            Err(StreamError::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
         }
-        let state = State::decode(&record.value)?;
-        Ok(Snapshot {
-            path,
-            tail,
-            anchor: Some(record.commit_id),
-            state: Some(state),
-        })
     }
 
     /// Establish a strictly newer epoch while preserving checkpoint, cursors,

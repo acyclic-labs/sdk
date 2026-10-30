@@ -142,6 +142,9 @@ the original conditional commit. `Store::submit_retained` returns the confirmed
 authored Snapshot without a reread or decode; `Store::claim` likewise returns
 its confirmed placement cut. The original owner and exact-head fences still
 apply. A retained cut is a snapshot, not a fresh observation of another owner.
+`Store::observe` performs the required fresh head observation before handler
+admission. An unchanged tail and commit anchor retain the original typed state
+without decoding it again; a changed cut is decoded before delivery continues.
 
 Metadata is retained with the actor checkpoint/epoch/alarm state. Journal frames
 stay in the canonical `<state-path>/journal` stream and are read in requested

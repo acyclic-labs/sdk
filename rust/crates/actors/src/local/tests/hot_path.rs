@@ -47,6 +47,7 @@ impl acyclic_stream::PersistenceCut for PhysicalCut {
 #[tokio::test]
 async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     resident_work().await?;
+    observation_work().await?;
     let directory = tempfile::tempdir()?;
     let address = actor("hot-path")?;
     {
@@ -203,6 +204,77 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
     alarm_replacement().await?;
     alarm_publication_wakes().await?;
     physical_loss().await?;
+    Ok(())
+}
+
+async fn observation_work() -> TestResult {
+    use futures::FutureExt as _;
+
+    for population in [1_usize, 1_000] {
+        let provider = Arc::new(Counted::new(MemoryStream::default()));
+        let store = Store::new(provider.clone(), state_root()?);
+        let address = actor("observed")?;
+        let absent = store.load(&address).await?;
+        assert!(store.observe(&absent).await?.is_none());
+        place(&store, &address).await?;
+        let created = store.observe(&absent).await?.ok_or("unobserved creation")?;
+        let mut binding = store.bind_state(created, 1)?;
+        binding.transaction(|state| {
+            for index in 0..population {
+                state.put(format!("key-{index:06}"), Bytes::from_static(b"resident"));
+            }
+            Ok(())
+        })?;
+        binding.flush(key("observe/seed")?).await?;
+        let snapshot = binding.finish()?;
+        let before = provider.requests();
+        // With no competing work, MemoryStream completes in one poll. Both
+        // paths pay the same real head observation; only the control decodes.
+        let head = acyclic_test_support::measure(|| {
+            provider
+                .head(snapshot.path().clone())
+                .now_or_never()
+                .unwrap()
+                .unwrap();
+        });
+        let observed = acyclic_test_support::measure(|| {
+            assert!(
+                store
+                    .observe(&snapshot)
+                    .now_or_never()
+                    .unwrap()
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        // Negative control executes the old unconditional Actor state decode.
+        let loaded = acyclic_test_support::measure(|| {
+            store.load(&address).now_or_never().unwrap().unwrap();
+        });
+        assert_eq!(observed.count_total, head.count_total);
+        assert!(loaded.count_total >= observed.count_total + u64::try_from(population)?);
+        assert_eq!(provider.requests().since(before).control(), 3);
+        assert_eq!(provider.requests().since(before).data(), 0);
+        println!(
+            "observed_metadata={population} head_allocations={} observe_allocations={} load_allocations={}",
+            head.count_total, observed.count_total, loaded.count_total
+        );
+        store
+            .set_paused(&snapshot, 1, true, key("observe/pause")?)
+            .await?;
+        let paused = assert_requests!(
+            provider,
+            store.observe(&snapshot).await,
+            control = 1,
+            data = 0
+        )?
+        .ok_or("unobserved pause")?;
+        assert!(paused.state().ok_or("missing paused state")?.paused());
+        let claimed = store.claim(&paused, 2, key("observe/claim")?).await?;
+        let replaced = store.observe(&paused).await?.ok_or("unobserved takeover")?;
+        assert_eq!(replaced.state(), claimed.state());
+        assert!(store.observe(&claimed).await?.is_none());
+    }
     Ok(())
 }
 
