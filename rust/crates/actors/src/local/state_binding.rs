@@ -265,7 +265,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             return Ok(());
         }
         self.fenced = true;
-        let effects = self.effects()?;
+        let effects = self.effects(AlarmChange::Keep)?;
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let prepared = self.store.prepare(&self.snapshot, state, effects, key)?;
         self.snapshot = self
@@ -304,7 +304,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 "guest effect targets the host's actor journal",
             ));
         }
-        transition.effects.extend(self.effects()?);
+        transition.effects.extend(self.effects(transition.alarm)?);
         let state = self.snapshot.state.take().ok_or(Error::Conflict)?;
         let mut prepared = self.store.prepare_publication(
             &self.snapshot,
@@ -321,7 +321,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
         Ok(prepared)
     }
 
-    fn effects(&mut self) -> Result<Vec<Effect>, Error> {
+    fn effects(&mut self, alarm: AlarmChange) -> Result<Vec<Effect>, Error> {
         let mut effects = if self.journal.is_empty() {
             Vec::new()
         } else {
@@ -340,10 +340,13 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 },
             }]
         };
-        if owned(&self.snapshot, self.epoch)?.alarm != self.committed_alarm {
+        if alarm != AlarmChange::Keep
+            || owned(&self.snapshot, self.epoch)?.alarm != self.committed_alarm
+        {
             // The same durable activation feed drives the original runtime's
             // ready index and sole timer. A new deadline (or clear) must wake
-            // an already idle actor, atomically with its committed alarm.
+            // an already idle actor, whether staged here or in the delivery's
+            // transition. Both changes share one activation entry and commit.
             effects.push(
                 self.store
                     .activation(&self.store.actor(self.snapshot.path())?),

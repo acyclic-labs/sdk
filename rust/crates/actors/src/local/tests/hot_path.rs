@@ -201,6 +201,7 @@ async fn actor_state_hot_path_counts_and_reopen() -> TestResult {
         Some(b"journal".as_slice())
     );
     alarm_replacement().await?;
+    alarm_publication_wakes().await?;
     physical_loss().await?;
     Ok(())
 }
@@ -402,5 +403,65 @@ async fn alarm_replacement() -> TestResult {
         ),
         Err(Error::Conflict)
     ));
+    Ok(())
+}
+
+async fn alarm_publication_wakes() -> TestResult {
+    for staged in [false, true] {
+        for change in [
+            AlarmChange::Keep,
+            AlarmChange::Clear,
+            AlarmChange::Set {
+                deadline_unix_ms: 30,
+            },
+        ] {
+            let provider = Arc::new(Counted::new(MemoryStream::default()));
+            let store = Store::new(provider.clone(), state_root()?);
+            let address = actor("alarm-wake")?;
+            place(&store, &address).await?;
+            let mut binding = store.bind_state(store.load(&address).await?, 1)?;
+            binding.transaction(|state| state.alarm(Some(10)))?;
+            binding.flush(key("wake/initial")?).await?;
+            let mut binding = store.bind_state(binding.finish()?, 1)?;
+            if staged {
+                binding.transaction(|state| state.alarm(Some(20)))?;
+            }
+            let from = provider.tail(store.root().clone()).await?;
+            let prepared = binding.prepare_publish(
+                &record(0),
+                None,
+                transition(1, change),
+                key("wake/joined")?,
+            )?;
+            let confirmed = assert_requests!(
+                provider,
+                store.submit_retained(prepared).await,
+                control = 0,
+                data = 1
+            )?
+            .ok_or("missing alarm receipt")?;
+            let wakes = u64::from(staged || change != AlarmChange::Keep);
+            assert_eq!(
+                provider.tail(store.root().clone()).await?,
+                from + wakes,
+                "alarm changes in either source wake once; Keep alone never wakes"
+            );
+            if wakes != 0 {
+                let mut records = provider
+                    .read(ReadRequest {
+                        path: store.root().clone(),
+                        from,
+                        limit: 1,
+                        key: None,
+                        at_least: Default::default(),
+                    })
+                    .await?;
+                let wake = records.try_next().await?.ok_or("missing alarm wake")?;
+                assert_eq!(wake.value.as_ref(), address.encode());
+                assert_eq!(Some(wake.commit_id), confirmed.anchor);
+                assert!(records.try_next().await?.is_none());
+            }
+        }
+    }
     Ok(())
 }

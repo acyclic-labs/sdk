@@ -598,10 +598,11 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         transition: Transition,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
+        let state = owned(previous, epoch)?;
         self.prepare_publication(
             previous,
-            owned(previous, epoch)?.clone(),
-            &owned(previous, epoch)?.alarm,
+            state.clone(),
+            &state.alarm,
             Publication {
                 trigger,
                 delivered,
@@ -614,7 +615,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     fn prepare_publication(
         &self,
         previous: &Snapshot,
-        state: State,
+        mut state: State,
         original_alarm: &Alarm,
         publication: Publication<'_>,
     ) -> Result<PreparedPublish, Error> {
@@ -645,6 +646,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         } else {
             None
         };
+        let previous_checkpoint = state.checkpoint.take();
+        let state = next(state, original_alarm, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
         let composition = match &transition.participant {
@@ -657,14 +660,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     ))?
                     .open(
                         &self.actor(&previous.path)?,
-                        state.checkpoint(),
+                        previous_checkpoint.as_ref(),
                         delivered,
                         &transition.checkpoint,
                         participant,
                     )?,
             ),
         };
-        let state = next(state, original_alarm, trigger, &transition)?;
         let mut prepared = self.prepare(previous, state, transition.effects, key)?;
         prepared.reply = reply;
         prepared.composition = composition;
