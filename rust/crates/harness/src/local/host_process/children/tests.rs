@@ -134,10 +134,11 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
         let completed = loop {
+            let ready = running.process.readiness()?;
             if let Some(completed) = sessions.refresh("idle", &mut running)? {
                 break completed;
             }
-            std::thread::yield_now();
+            futures::executor::block_on(ready);
         };
         assert!(completed["next"].is_null(), "turn {turn} queued nothing");
         assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
