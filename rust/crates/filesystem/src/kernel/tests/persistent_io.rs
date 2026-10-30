@@ -63,8 +63,6 @@ async fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write(
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let cancellation = CancellationToken::new();
@@ -224,8 +222,6 @@ async fn mixed_page_batches_read_only_cold_identities_and_preserve_order()
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let limits = DecodeLimits::default();

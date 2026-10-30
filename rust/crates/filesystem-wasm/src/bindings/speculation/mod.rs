@@ -476,7 +476,5 @@ pub(in crate::bindings) const fn browser_object_cache_options(
     ObjectCacheOptions {
         maximum_entries: options.entries,
         maximum_bytes: options.bytes,
-        maximum_in_flight: options.in_flight,
-        maximum_waiters_per_object: options.waiters_per_object,
     }
 }

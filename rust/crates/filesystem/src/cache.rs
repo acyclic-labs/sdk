@@ -35,10 +35,6 @@ pub struct ObjectCacheOptions {
     pub maximum_entries: u32,
     /// Maximum resident canonical object bytes.
     pub maximum_bytes: u64,
-    /// Maximum distinct in-flight object identities.
-    pub maximum_in_flight: u32,
-    /// Maximum followers retained behind one in-flight read.
-    pub maximum_waiters_per_object: u32,
 }
 
 impl Default for ObjectCacheOptions {
@@ -46,8 +42,6 @@ impl Default for ObjectCacheOptions {
         Self {
             maximum_entries: 4_096,
             maximum_bytes: 256 * 1024 * 1024,
-            maximum_in_flight: 1_024,
-            maximum_waiters_per_object: 1_024,
         }
     }
 }
@@ -62,11 +56,7 @@ pub enum ObjectCacheConfigError {
 
 impl ObjectCacheOptions {
     fn validate(self) -> Result<Self, ObjectCacheConfigError> {
-        if self.maximum_entries == 0
-            || self.maximum_bytes == 0
-            || self.maximum_in_flight == 0
-            || self.maximum_waiters_per_object == 0
-        {
+        if self.maximum_entries == 0 || self.maximum_bytes == 0 {
             return Err(ObjectCacheConfigError::ZeroBound);
         }
         Ok(self)
@@ -106,7 +96,7 @@ mod pool;
 use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 
 enum FlightState {
-    Running(u32),
+    Running,
     Complete(Option<OwnedBytes>),
 }
 
@@ -114,40 +104,16 @@ struct Flight {
     state: Mutex<FlightState>,
     epoch: u64,
     ready: tokio::sync::Notify,
-    maximum_waiters: u32,
     #[cfg(not(target_arch = "wasm32"))]
     _allocation: Option<NativeAllocation>,
 }
 
-enum FlightRead<'a> {
-    Ready(OwnedBytes),
-    Waiting(FlightWaiter<'a>),
-}
-
-/// The notification node lives in its waiting future. This guard returns its
-/// capacity even when cancellation drops the future before its producer settles.
-struct FlightWaiter<'a>(&'a Flight);
-
-impl Drop for FlightWaiter<'_> {
-    fn drop(&mut self) {
-        let mut state = self
-            .0
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let FlightState::Running(waiters) = &mut *state {
-            *waiters -= 1;
-        }
-    }
-}
-
 impl Flight {
-    fn new(maximum_waiters: u32, epoch: u64) -> Self {
+    fn new(epoch: u64) -> Self {
         Self {
             epoch,
-            state: Mutex::new(FlightState::Running(0)),
+            state: Mutex::new(FlightState::Running),
             ready: tokio::sync::Notify::new(),
-            maximum_waiters,
             #[cfg(not(target_arch = "wasm32"))]
             _allocation: None,
         }
@@ -166,40 +132,23 @@ impl Flight {
         self.ready.notify_waiters();
     }
 
-    fn register(&self) -> Result<FlightRead<'_>, ObjectStoreError> {
-        let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
-        match &mut *state {
-            FlightState::Complete(bytes) => bytes
-                .clone()
-                .map(FlightRead::Ready)
-                .ok_or(ObjectStoreError::SharedReadUnavailable),
-            FlightState::Running(waiters) => {
-                if *waiters >= self.maximum_waiters {
-                    return Err(ObjectStoreError::Rejected(
-                        "immutable-object single-flight waiter bound exhausted".to_owned(),
-                    ));
-                }
-                *waiters += 1;
-                Ok(FlightRead::Waiting(FlightWaiter(self)))
-            }
-        }
-    }
-
     async fn read(&self) -> Result<OwnedBytes, ObjectStoreError> {
         // notify_waiters retains its generation for every Notified created
         // before publication, including one that has not yet been polled.
         let ready = self.ready.notified();
-        let _waiter = match self.register()? {
-            FlightRead::Ready(bytes) => return Ok(bytes),
-            FlightRead::Waiting(waiter) => waiter,
-        };
+        {
+            let state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
+            if let FlightState::Complete(bytes) = &*state {
+                return bytes.clone().ok_or(ObjectStoreError::SharedReadUnavailable);
+            }
+        }
         ready.await;
         let state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
         match &*state {
             FlightState::Complete(bytes) => {
                 bytes.clone().ok_or(ObjectStoreError::SharedReadUnavailable)
             }
-            FlightState::Running(_) => Err(ObjectStoreError::Corrupt),
+            FlightState::Running => Err(ObjectStoreError::Corrupt),
         }
     }
 }
@@ -403,13 +352,6 @@ impl<S> CachedObjectStore<S> {
         if let Some(flight) = state.flights.get(&object_id) {
             return Ok(ReadPlan::Follower(Arc::clone(flight)));
         }
-        if state.flights.len()
-            >= usize::try_from(self.shared.pool.options.maximum_in_flight).unwrap_or(usize::MAX)
-        {
-            return Err(ObjectStoreError::Rejected(
-                "immutable-object single-flight identity bound exhausted".to_owned(),
-            ));
-        }
         #[cfg(not(target_arch = "wasm32"))]
         let allocation = work
             .map(|work| {
@@ -421,10 +363,7 @@ impl<S> CachedObjectStore<S> {
                 )
             })
             .transpose()?;
-        let flight = Flight::new(
-            self.shared.pool.options.maximum_waiters_per_object,
-            self.shared.fill_epoch(),
-        );
+        let flight = Flight::new(self.shared.fill_epoch());
         #[cfg(not(target_arch = "wasm32"))]
         let flight = Flight {
             _allocation: allocation,

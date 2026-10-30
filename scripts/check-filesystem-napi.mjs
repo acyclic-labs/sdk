@@ -86,8 +86,6 @@ async function qualify(bindingPath, engineRoot) {
   const fs = await binding.NativeFs.open(engineRoot, {
     maximumEntries: 64,
     maximumBytes: 1024n * 1024n,
-    maximumInFlight: 8,
-    maximumWaitersPerObject: 8,
   });
   const workspace = await fs.createWorkspace("qualification");
   const before = await workspace.sync();

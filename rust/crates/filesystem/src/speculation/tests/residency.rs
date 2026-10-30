@@ -317,8 +317,6 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
         ObjectCacheOptions {
             maximum_entries: 4,
             maximum_bytes: 1024,
-            maximum_in_flight: 1,
-            maximum_waiters_per_object: 1,
         },
     )?;
     let volume_id = VolumeId::from_bytes([3; 16]);

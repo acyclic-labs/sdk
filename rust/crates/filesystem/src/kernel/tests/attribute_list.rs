@@ -171,8 +171,6 @@ async fn cached_attribute_pagination_reuses_shared_internal_and_leaf_pages()
         ObjectCacheOptions {
             maximum_entries: 16,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 4,
-            maximum_waiters_per_object: 4,
         },
     )?;
     let cursor = name("b")?;

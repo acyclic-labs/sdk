@@ -597,8 +597,6 @@ async fn warm_diff_borrows_wide_internal_pages_and_copies_only_changed_leaf_valu
         ObjectCacheOptions {
             maximum_entries: 8,
             maximum_bytes: 1024 * 1024,
-            maximum_in_flight: 2,
-            maximum_waiters_per_object: 2,
         },
     )?;
     let cancellation = CancellationToken::new();
