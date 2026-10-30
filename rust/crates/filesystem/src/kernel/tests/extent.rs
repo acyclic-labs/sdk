@@ -108,8 +108,7 @@ fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std
     assert_eq!(leaf_id.digest, object_digest(&leaf_bytes));
 
     let internal = ExtentPage::Internal(vec![ExtentChild {
-        first_offset: 0,
-        end_offset: 4,
+        first: 0,
         page: leaf_id,
     }]);
     let internal_bytes = encode_extent_page(
@@ -219,14 +218,18 @@ fn every_invalid_extent_page_shape_rejects_before_identity() {
             },
         }]),
         ExtentPage::Internal(Vec::new()),
+        ExtentPage::Internal(vec![
+            ExtentChild {
+                first: 1,
+                page: typed(ObjectKind::ExtentPage),
+            },
+            ExtentChild {
+                first: 1,
+                page: typed(ObjectKind::ExtentPage),
+            },
+        ]),
         ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 1,
-            end_offset: 1,
-            page: typed(ObjectKind::ExtentPage),
-        }]),
-        ExtentPage::Internal(vec![ExtentChild {
-            first_offset: 0,
-            end_offset: 1,
+            first: 0,
             page: typed(ObjectKind::Blob),
         }]),
     ];
@@ -300,4 +303,47 @@ fn original_extent_decode_records_only_the_completed_item_prefix()
     assert_eq!(original.receipt().bytes_copied, 40);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
+}
+
+/// Unknown versions refuse before decoding the strict v1 page layout.
+#[test]
+fn unknown_extent_versions_refuse_before_page_allocation() {
+    use crate::kernel::codec::Encoder;
+    let child = |byte| ObjectId {
+        storage: None,
+        kind: ObjectKind::ExtentPage,
+        digest: Digest::from_bytes([byte; 32]),
+    };
+    let mut internal = Encoder::new(b"ACYFSEXT", 2);
+    internal.u8(2);
+    internal.u32(2);
+    for (first, end, byte) in [(0_u64, 8_u64, 1_u8), (8, 16, 2)] {
+        internal.u64(first);
+        internal.u64(end);
+        internal.object(child(byte));
+    }
+    let mut leaf = Encoder::new(b"ACYFSEXT", 2);
+    leaf.u8(1);
+    leaf.u32(1);
+    leaf.u64(0);
+    leaf.u64(8);
+    leaf.u8(1);
+    for stored in [internal.finish(), leaf.finish()] {
+        let result = decode_extent_page(&stored, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        });
+        assert_eq!(
+            result,
+            Err(crate::kernel::CanonicalDecodeError::UnsupportedVersion {
+                found: 2,
+                expected: 1,
+            })
+        );
+        let mut current = stored.clone();
+        current[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        let reread = decode_extent_page(&current, DecodeLimits::default(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        });
+        assert_ne!(reread.as_ref().err(), result.as_ref().err());
+    }
 }

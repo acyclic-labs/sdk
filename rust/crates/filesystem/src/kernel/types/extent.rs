@@ -27,16 +27,10 @@ pub struct Extent {
     pub kind: ExtentKind,
 }
 
-/// One lower-bound-to-page entry in an extent B+tree.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExtentChild {
-    /// First logical byte represented by the child.
-    pub first_offset: u64,
-    /// Exclusive logical end represented by the child.
-    pub end_offset: u64,
-    /// Authenticated extent page.
-    pub page: ObjectId,
-}
+/// One child of an internal extent page: the first logical byte its subtree
+/// represents, and its page. The subtree ends where the next child begins, or
+/// where its parent ends; the root ends at the file's logical length.
+pub type ExtentChild = Child<u64>;
 
 /// One immutable authenticated extent B+tree page.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +48,26 @@ impl ExtentPage {
     ///
     /// Rejects malformed extent pages before hashing or publication.
     pub fn validate(&self, maximum_items: u32) -> Result<(), ExtentPageError> {
+        self.items().validate(maximum_items)
+    }
+
+    pub(crate) fn items(&self) -> ExtentItems<'_> {
+        match self {
+            Self::Leaf(extents) => ExtentItems::Leaf(extents),
+            Self::Internal(children) => ExtentItems::Internal(children),
+        }
+    }
+}
+
+/// The items of one extent page, borrowed.
+#[derive(Clone, Copy)]
+pub(crate) enum ExtentItems<'a> {
+    Leaf(&'a [Extent]),
+    Internal(&'a [ExtentChild]),
+}
+
+impl ExtentItems<'_> {
+    pub(crate) fn validate(self, maximum_items: u32) -> Result<(), ExtentPageError> {
         let count = match self {
             Self::Leaf(extents) => {
                 let mut previous_end = None;
@@ -92,14 +106,8 @@ impl ExtentPage {
                     let [left, right] = pair else {
                         unreachable!("windows(2) always yields exactly two elements")
                     };
-                    left.end_offset != right.first_offset
+                    left.first >= right.first
                 }) {
-                    return Err(ExtentPageError::NonContiguous);
-                }
-                if children
-                    .iter()
-                    .any(|child| child.first_offset >= child.end_offset)
-                {
                     return Err(ExtentPageError::InvalidChildRange);
                 }
                 if children

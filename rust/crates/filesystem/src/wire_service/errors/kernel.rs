@@ -204,7 +204,7 @@ project!(GenerationExportManifestError, {
 project!(CanonicalDecodeError, {
     E::AllocationFailed | E::ObjectTooLarge { .. } | E::FieldTooLarge { .. } | E::LengthOverflow => Code::ResourceExhausted,
     E::Invariant(CanonicalInvariant::Work(_)) => Code::ResourceExhausted,
-    E::WrongDomain | E::UnsupportedVersion(_) | E::Truncated | E::TrailingBytes
+    E::WrongDomain | E::UnsupportedVersion { .. } | E::Truncated | E::TrailingBytes
     | E::UnknownTag { .. } | E::Invariant(_) => Code::DataLoss,
 });
 project!(ClosureError, {

@@ -23,6 +23,7 @@ mod tree;
 pub(crate) use tree::digest_object;
 pub use tree::{FileKind, TreeEntry, TreePage, TreePageError};
 mod extent;
+pub(crate) use extent::ExtentItems;
 pub use extent::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError};
 
 #[cfg(test)]
