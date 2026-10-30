@@ -111,7 +111,7 @@ pub use transaction::Transaction;
 mod tests;
 
 use reverse_traversal::{
-    NamespaceRecordSearch, NamespaceRecords, reverse_drop, reverse_grow, sorted_changed_file_ids,
+    NamespaceRecordSearch, NamespaceRecords, reverse_drop, sorted_changed_file_ids,
 };
 
 async fn publication_ready(

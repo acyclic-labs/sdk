@@ -197,6 +197,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
         &["dir", "sub", "deep"],
         &["moved"],
         &["moved", "alias"],
+        &["moved", "renamed"],
         &["moved", "sub"],
         &["moved", "sub", "deep"],
         &["moved", "sub", "new"],
@@ -214,6 +215,19 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
     )
     .await?;
     verify(&store, [Some(&linked), Some(&moved)], names).await?;
+    let rebound = changed(
+        &store,
+        &moved,
+        vec![Mutation::Rename {
+            source: path(&["moved", "alias"])?,
+            destination: path(&["moved", "renamed"])?,
+            replace: false,
+        }],
+    )
+    .await?;
+    // The changed direct edge must not hide the other alias whose parent moved.
+    verify(&store, [Some(&linked), Some(&rebound)], names).await?;
+    verify(&store, [Some(&rebound), Some(&linked)], names).await?;
     let content = changed(
         &store,
         &moved,
@@ -267,7 +281,7 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
     verify(&store, [Some(&linked), None], names).await?;
     verify(&store, [Some(&linked), Some(&linked)], names).await?;
 
-    let roots = [Some(&linked), Some(&nested)];
+    let roots = [Some(&linked), Some(&rebound)];
     let cancel = CancellationToken::new();
     let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
     let cursor = Cursor::new(roots, config(), &mut work)?;
@@ -323,5 +337,67 @@ async fn retained_changed_paths_cover_aliases_moves_replacements_and_refused_pag
     ));
     cursor.retire(&mut work)?;
     assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    sparse_alias_change(&store, &fixture).await?;
+    Ok(())
+}
+
+async fn sparse_alias_change(
+    store: &MemoryObjectStore,
+    fixture: &Fixture,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut links = Vec::new();
+    for index in 0..257 {
+        links.push(Mutation::Link {
+            source: path(&["a"])?,
+            destination: path(&[&format!("alias-{index:03}")])?,
+        });
+    }
+    let before = changed(store, &fixture.generation, links).await?;
+    let after = changed(
+        store,
+        &before,
+        vec![Mutation::Rename {
+            source: path(&["alias-128"])?,
+            destination: path(&["renamed"])?,
+            replace: false,
+        }],
+    )
+    .await?;
+    let roots = [Some(&before), Some(&after)];
+    let cancel = CancellationToken::new();
+    let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    let cursor = Cursor::new(roots, config(), &mut work)?;
+    let rows = drain(cursor, store, roots, &mut work, &cancel).await?;
+    assert_eq!(
+        rows,
+        expected(store, roots, &[&["alias-128"], &["renamed"]]).await?
+    );
+    assert_eq!(
+        work.spent().source_path_components,
+        2,
+        "a binding-only change reconstructed unrelated aliases"
+    );
+    assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+
+    // Counterfactual: retain the former all-alias reconstruction on the same
+    // immutable endpoints. Its work must expose every unchanged alias.
+    let mut eager = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
+    for root in roots.into_iter().flatten() {
+        let record = candidate_record(store, root, FileId::from_bytes([2; 16])).await?;
+        let mut paths =
+            crate::kernel::direct_paths::DirectPaths::new(root, record, config(), &mut eager)?;
+        let result = async {
+            while let Some(path) = paths.next(store, &mut eager, &cancel).await? {
+                path.retire(&mut eager)?;
+            }
+            Ok::<_, FsError>(())
+        }
+        .await;
+        let retired = paths.retire(&mut eager);
+        result.and(retired)?;
+    }
+    assert_eq!(eager.spent().source_path_components, 516);
+    assert!(eager.spent().items_examined > work.spent().items_examined);
+    assert_eq!(eager.standalone_parts().unwrap().0.live_bytes(), 0);
     Ok(())
 }

@@ -497,6 +497,32 @@ impl<F: Format> Cursor<F> {
         }
     }
 
+    /// A set has equal keys and values, so a changed edge has exactly one
+    /// endpoint. Move it through the pair frontier without a redundant key copy.
+    pub(crate) async fn next_set_change<S: AsyncObjectStore>(
+        &mut self,
+        store: &S,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(usize, Owned<F::Value>)>, FsError>
+    where
+        F: Format<Key = <F as Format>::Value>,
+    {
+        let side = match self.advance(store, accounting, cancellation).await? {
+            Some((true, false)) => 0,
+            Some((false, true)) => 1,
+            None => return Ok(None),
+            _ => return Err(FsError::InvalidDiff),
+        };
+        let value = if side == 0 {
+            &mut self.before
+        } else {
+            &mut self.after
+        }
+        .take_value(self.limits, accounting)?;
+        Ok(Some((side, value)))
+    }
+
     fn emit(
         &mut self,
         before: bool,

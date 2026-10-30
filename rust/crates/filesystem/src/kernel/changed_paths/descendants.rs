@@ -154,12 +154,23 @@ impl Descendants {
                 self.push(before, config, accounting)?;
             }
             if let Some(after) = after
-                && before.bindings == after.bindings
                 && !record_changed(&before, &after)
+                && (before.bindings == after.bindings
+                    || unchanged_edge(
+                        store,
+                        after,
+                        self.parent.ok_or(FsError::InvalidDiff)?,
+                        &self.entry.as_ref().ok_or(FsError::InvalidDiff)?.value.name,
+                        config,
+                        accounting,
+                        cancellation,
+                    )
+                    .await?)
             {
                 self.records = Some([before, after]);
             } else {
-                // Every changed record is handled by the file-table frontier.
+                // Content changes and changed direct edges are handled by the
+                // file-table frontier. Retained edges still follow this move.
                 self.entry
                     .take()
                     .ok_or(FsError::InvalidDiff)?
@@ -185,4 +196,39 @@ impl Descendants {
         let frames = self.frames.retire(accounting);
         result.and(frames)
     }
+}
+
+/// Test the original direct edge in the authenticated set, without cloning its
+/// name or expanding any unrelated alias into a path.
+async fn unchanged_edge<S: AsyncObjectStore>(
+    store: &S,
+    record: FileRecord,
+    parent: FileId,
+    name: &super::super::LogicalName,
+    config: VolumeConfig,
+    accounting: &mut KernelAccounting<'_>,
+    cancellation: &CancellationToken,
+) -> Result<bool, FsError> {
+    let present = super::super::persistent_point::lookup_projected_with_accounting::<
+        S,
+        BindingFormat,
+        _,
+        _,
+        _,
+    >(
+        store,
+        record.bindings.ok_or(FsError::InvalidDiff)?,
+        |edge| edge.parent.cmp(&parent).then_with(|| edge.name.cmp(name)),
+        |_, accounting| Ok(Owned::new((), accounting.claim_owned(0, 0)?, 0)),
+        DecodeLimits::for_volume(config),
+        accounting,
+        cancellation,
+        None,
+    )
+    .await?;
+    let found = present.is_some();
+    if let Some(present) = present {
+        present.retire(accounting)?;
+    }
+    Ok(found)
 }

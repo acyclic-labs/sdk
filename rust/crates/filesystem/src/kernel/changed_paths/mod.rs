@@ -1,6 +1,6 @@
 //! One retained changed-path producer over two immutable file-table frontiers.
 
-use super::bindings::Binding;
+use super::bindings::{Binding, BindingFormat};
 use super::direct_paths::{DirectPaths, PathState};
 use super::file_table_mutation::FileTableFormat;
 use super::persistent_diff::{Cursor as FileCursor, Values};
@@ -37,6 +37,19 @@ struct Active {
     records: [Option<FileRecord>; 2],
     side: usize,
     paths: Option<DirectPaths>,
+    edges: Option<FileCursor<BindingFormat>>,
+    edge_path: Option<(usize, PathState)>,
+}
+
+impl Active {
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        let paths = self.paths.map_or(Ok(()), |paths| paths.retire(accounting));
+        let edges = self.edges.map_or(Ok(()), |edges| edges.retire(accounting));
+        let path = self
+            .edge_path
+            .map_or(Ok(()), |(_, path)| path.retire(accounting));
+        paths.and(edges).and(path)
+    }
 }
 
 struct Candidate {
@@ -229,6 +242,42 @@ impl<'a> Cursor<'a> {
                 continue;
             }
             if let Some(active) = &mut self.active {
+                if let Some(edges) = &mut active.edges {
+                    if active.edge_path.is_none() {
+                        if let Some((side, edge)) = edges
+                            .next_set_change(store, accounting, cancellation)
+                            .await?
+                        {
+                            let record = active.records[side].ok_or(FsError::InvalidDiff)?;
+                            active.edge_path =
+                                Some((side, PathState::new(record.file_id, edge, accounting)?));
+                        } else {
+                            active
+                                .edges
+                                .take()
+                                .ok_or(FsError::InvalidDiff)?
+                                .retire(accounting)?;
+                            active.side = 2;
+                        }
+                    }
+                    if let Some((side, path)) = &mut active.edge_path {
+                        let root = roots[*side].ok_or(FsError::InvalidDiff)?;
+                        path.advance(
+                            store,
+                            root.root_file_id,
+                            root.file_table,
+                            self.config,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
+                        let (side, path) = active.edge_path.take().ok_or(FsError::InvalidDiff)?;
+                        let path = path.finish(self.config, accounting)?;
+                        let record = active.records[side].ok_or(FsError::InvalidDiff)?;
+                        self.candidate = Some(Candidate { path, record, side });
+                        continue;
+                    }
+                }
                 if active.side < 2 {
                     let side = active.side;
                     if let Some(record) = active.records[side] {
@@ -289,10 +338,24 @@ impl<'a> Cursor<'a> {
                 // path facts; its changed children remain on the same frontier.
                 continue;
             }
+            let edges = if let [Some(before), Some(after)] = records
+                && !record_changed(&before, &after)
+            {
+                Some(FileCursor::new(
+                    before.bindings,
+                    after.bindings,
+                    DecodeLimits::for_volume(self.config),
+                    accounting,
+                )?)
+            } else {
+                None
+            };
             self.active = Some(Active {
                 records,
                 side: 0,
                 paths: None,
+                edges,
+                edge_path: None,
             });
         }
     }
@@ -362,8 +425,7 @@ impl<'a> Cursor<'a> {
             .map_or(Ok(()), |candidate| candidate.path.retire(accounting));
         let active = self
             .active
-            .and_then(|active| active.paths)
-            .map_or(Ok(()), |paths| paths.retire(accounting));
+            .map_or(Ok(()), |active| active.retire(accounting));
         let descendants = self
             .descendants
             .map_or(Ok(()), |walk| walk.retire(accounting));
