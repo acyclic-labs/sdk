@@ -484,6 +484,8 @@ fn prompt(value: &Value) -> Result<SessionAction> {
 /// turn's outcome, and dropped when a cancel clears it from the queue.
 #[tokio::test]
 async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
     let mut fixture = Fixture::for_host("codex").await?;
     let spawn = || SessionAction::Spawn {
         prompt: "first".into(),
@@ -500,9 +502,41 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         prompt: "second".into(),
     };
     let second = prompt(&fixture.session("child", send).await?)?;
-    assert_eq!(
-        fixture.session("child", first.clone()).await?["reply"]["kind"],
-        "pending"
+    let report = acyclic_native_runtime::obs::WaitReport::default();
+    let subscriber = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+    let snapshot = || -> Result<String> {
+        let mut bytes = Vec::new();
+        report.report(&mut bytes).map_err(storage)?;
+        String::from_utf8(bytes).map_err(storage)
+    };
+    let action = || HostAction::Session {
+        parent: fixture.parent.clone(),
+        reference: "child".into(),
+        action: first.clone(),
+        next: false,
+    };
+    let operation = OperationId::new();
+    let reply = tracing::dispatcher::with_default(&subscriber, || {
+        fixture.owner.dispatch(operation, action())
+    });
+    // The real dispatch has the same identity as its eventual bridge reply;
+    // observing it adds no request and does not consume the pending prompt.
+    assert!(snapshot()?.contains(&format!(
+        "waiting: native-workspace-dispatch {operation} since "
+    )));
+    assert_eq!(reply.await?["reply"]["kind"], "pending");
+    assert!(
+        snapshot()?.is_empty(),
+        "a returned pending reply is complete"
+    );
+    let withdrawn = tracing::dispatcher::with_default(&subscriber, || {
+        fixture.owner.dispatch(OperationId::new(), action())
+    });
+    assert!(!snapshot()?.is_empty());
+    drop(withdrawn);
+    assert!(
+        snapshot()?.is_empty(),
+        "dropping dispatch retires its observation"
     );
     let turn = fixture.session("child", SessionAction::Next).await?;
     assert_eq!(turn["prompt"], "first");

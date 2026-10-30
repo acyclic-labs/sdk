@@ -179,7 +179,13 @@ impl HostWorkspaceOwner {
         // Every caller, including read-only observations, crosses the same
         // erased boundary. A caller's future cannot embed the complete agent,
         // filesystem and publication state machines in its own layout.
-        Box::pin(self.dispatch_action(operation, action))
+        // The original dispatch future owns this diagnostic lifetime. The key
+        // is the same opaque identity the file bridge publishes and answers.
+        Box::pin(acyclic_native_runtime::obs::waiting(
+            "native-workspace-dispatch",
+            operation,
+            self.dispatch_action(operation, action),
+        ))
     }
 
     async fn dispatch_action(&self, operation: OperationId, action: HostAction) -> Result<Value> {
