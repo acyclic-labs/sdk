@@ -867,3 +867,16 @@ impl WasmAgents {
             .0)
     }
 }
+
+impl WasmAgentAuthority {
+    pub(super) fn admission(&self) -> std::result::Result<TurnAdmission, JsValue> {
+        let (audience, scope) = self
+            .issuer
+            .caller()
+            .ok_or_else(|| JsValue::from_str("platform admission is required"))?;
+        Ok(TurnAdmission::Admitted {
+            audience: audience.clone(),
+            scope: scope.clone(),
+        })
+    }
+}

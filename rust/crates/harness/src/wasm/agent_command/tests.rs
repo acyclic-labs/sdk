@@ -188,7 +188,7 @@ async fn a_browser_command_past_one_frame_executes_and_answers_as_itself() -> Re
 
 /// A returned array's bytes, read through the one caller-array snapshot.
 fn owned(array: &Uint8Array) -> Result<Vec<u8>, JsValue> {
-    Ok(crate::wasm::bytes::snapshot(array, |_| Ok(()))?.0)
+    Ok(acyclic_stream::javascript_bytes::snapshot(array, |_| Ok(()))?.0)
 }
 
 #[wasm_bindgen_test]

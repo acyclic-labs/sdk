@@ -38,8 +38,10 @@ session = ["tokio/rt", "tokio/macros"]
 postgres = ["dep:tokio-postgres", "tokio/rt", "tokio/macros"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
+# Admitted JavaScript byte ownership without a provider or transport.
+js-bytes = ["dep:wasm-bindgen"]
 wasm-journal = ["dep:wasm-bindgen"]
-wasm = ["serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
+wasm = ["js-bytes", "serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
 loom = { version = "0.7.2", features = ["futures"], optional = true }

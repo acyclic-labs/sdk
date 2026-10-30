@@ -113,7 +113,7 @@ impl McpHttpProvider for BrowserProvider {
                 let bytes: Uint8Array = chunk
                     .dyn_into()
                     .map_err(|_| Error::Invalid("MCP browser body needs Uint8Array".into()))?;
-                let (bytes, ()) = super::super::bytes::snapshot(&bytes, |length| {
+                let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
                     if length > u64::from(body.maximum_bytes).saturating_sub(body.received) {
                         return Err(js_error(Error::Indeterminate(body.operation)));
                     }
@@ -228,7 +228,7 @@ impl WasmMcpHttpTransport {
             .request("POST", Vec::new())
             .map_err(js_error)?
             .maximum_response_bytes;
-        let (body, ()) = super::super::bytes::snapshot(&body, |length| {
+        let (body, ()) = acyclic_stream::javascript_bytes::snapshot(&body, |length| {
             if length > u64::from(allowance) {
                 return Err(js_error(Error::Indeterminate(operation)));
             }

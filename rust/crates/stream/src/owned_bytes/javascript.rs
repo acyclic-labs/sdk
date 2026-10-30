@@ -23,9 +23,14 @@ extern "C" {
     fn copy(view: &Uint8Array, destination: &mut [u8], count: u32) -> Result<(), JsValue>;
 }
 
-// No await or caller callback separates admission from this fixed-length copy.
-// Shared/resizable sources cannot enlarge the destination or expose Rust storage.
-pub(super) fn snapshot<R>(
+/// Reserve the intrinsic byte length, then copy exactly that admitted extent.
+///
+/// The reservation runs before allocation; it must not call untrusted JavaScript.
+/// Captured typed-array intrinsics bypass caller-defined properties and methods.
+/// No await separates admission from the copy, and shared or resizable sources
+/// cannot enlarge the destination or expose Rust storage. Invalid or detached
+/// views, failed reservations and failed allocations return their original error.
+pub fn snapshot<R>(
     view: &Uint8Array,
     reserve: impl FnOnce(u64) -> Result<R, JsValue>,
 ) -> Result<(Vec<u8>, R), JsValue> {

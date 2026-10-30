@@ -68,7 +68,7 @@ impl WasmProjectionResolver {
                 ));
                 return;
             }
-            match super::bytes::snapshot(bytes.unchecked_ref(), |_| Ok(())) {
+            match acyclic_stream::javascript_bytes::snapshot(bytes.unchecked_ref(), |_| Ok(())) {
                 Ok((bytes, ())) => {
                     files.insert(key, bytes);
                 }

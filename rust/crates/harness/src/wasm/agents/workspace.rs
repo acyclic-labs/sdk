@@ -57,14 +57,15 @@ impl WasmMachinesWorkspace {
                 "Machines workspace requires platform admission; recovery: use the server's original admitted authority".into(),
             )))?;
         let provider: js_sys::Uint8Array = field(&source, "provider")?;
-        let (provider, ()) = super::super::bytes::snapshot(&provider, |_| Ok(()))?;
+        let (provider, ()) = acyclic_stream::javascript_bytes::snapshot(&provider, |_| Ok(()))?;
         let provider = crate::wire::ProviderRef::decode(provider.as_slice())
             .map_err(|_| super::js_error(crate::Error::Invalid(
                 "invalid Machines provider reference protobuf; recovery: retain the original canonical ProviderRef".into(),
             )))?;
         let provider_ref = ProviderRef::try_from(provider).map_err(super::js_error)?;
         let observation: js_sys::Uint8Array = field(&source, "observation")?;
-        let (observation, ()) = super::super::bytes::snapshot(&observation, |_| Ok(()))?;
+        let (observation, ()) =
+            acyclic_stream::javascript_bytes::snapshot(&observation, |_| Ok(()))?;
         let observation = wire::MachineState::decode(observation.as_slice())
             .map_err(|_| super::js_error(crate::Error::Invalid(
                 "invalid admitted Machine observation protobuf; recovery: retain the original settled MachineState".into(),

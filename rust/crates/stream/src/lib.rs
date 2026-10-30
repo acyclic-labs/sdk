@@ -235,6 +235,8 @@ include!("lib/tests.rs");
 mod owned_bytes;
 #[cfg(any(test, feature = "test-support"))]
 pub use owned_bytes::hashed_on_this_thread;
+#[cfg(all(feature = "js-bytes", target_arch = "wasm32"))]
+pub use owned_bytes::javascript as javascript_bytes;
 pub use owned_bytes::{
     OwnedBytes, OwnedBytesBacking, SealedBytes, UniqueOwnedBytes, content_digest,
 };
