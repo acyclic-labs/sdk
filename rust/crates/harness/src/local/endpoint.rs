@@ -186,25 +186,29 @@ impl LocalHarness {
             .agents
             .get()
             .ok_or_else(|| Error::Conflict("agents are not hosted".into()))?;
-        let server = Arc::clone(hosted.server());
-        let stream = self
-            .agent_stream
-            .clone()
-            .ok_or_else(|| Error::Unsupported("an embedded harness has no agent stream".into()))?;
-        let bound = server.bound();
-        let observation = bound
-            .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
+        hosted
+            .runtime
+            .admit(async {
+                let server = Arc::clone(hosted.server());
+                let stream = self.agent_stream.clone().ok_or_else(|| {
+                    Error::Unsupported("an embedded harness has no agent stream".into())
+                })?;
+                let bound = server.bound();
+                let observation = bound
+                    .client_credential(server.root(), server.resource(), Arc::clone(&self.clock))
+                    .await
+                    .map_err(storage)?;
+                let changes = bound.changes().map_err(storage)?;
+                let session = Client::in_process_with_products(
+                    stream,
+                    observation.authority,
+                    Some(Arc::new(changes)),
+                    server.clone(),
+                    Arc::new(acyclic_stream::runtime::PlatformExecutor),
+                    Some(hosted.runtime.lifetime()),
+                );
+                Connection::bind(session, observation.credential, Some(Arc::clone(self))).await
+            })
             .await
-            .map_err(storage)?;
-        let changes = bound.changes().map_err(storage)?;
-        let session = Client::in_process_with_products(
-            stream,
-            observation.authority,
-            Some(Arc::new(changes)),
-            server.clone(),
-            Arc::new(acyclic_stream::runtime::PlatformExecutor),
-            Some(hosted.runtime.lifetime()),
-        );
-        Connection::bind(session, observation.credential, Some(Arc::clone(self))).await
     }
 }
