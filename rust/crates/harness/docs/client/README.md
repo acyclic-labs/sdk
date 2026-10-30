@@ -23,6 +23,17 @@ failed path does not remain in the polling rotation. Its final bounded view
 remains available. When no live follow remains, reads return a typed closure
 instead of waiting for a stream that can no longer wake them.
 
+`Reply` correlates a message's identity and accepted inbox sequence with its
+committed result. An ordinary prompt returns its own conversation entry. If
+that turn continues an active goal, it remains pending until the same goal run
+settles; the answered reply carries the original entry as `origin` and the
+terminal self-continuation as `entry`. Both entries retain their immutable file
+references. The terminal reference commits atomically with the conversation
+entry and status event, so replay and a stale checkpoint cannot substitute a
+later goal or expose uncommitted output. Cancellation that abandons the run
+returns `Dropped`; closing its observation returns the existing typed closure
+error. No current GOAL.md or latest-conversation lookup selects the reply.
+
 The public TS client exports actor/session views rather than `FileClient`,
 `TaskVolume` or `ClientViews`. Native `FilesystemFileQuery`,
 `MemoryHarnessStorage::file_query`, `LocalHarness::scratch_files` and
