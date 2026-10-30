@@ -96,7 +96,7 @@ pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
         std::process::Command::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
             .env(EXCLUSIVE_CHILD, test),
-        Duration::from_secs(120),
+        CaptureSchedule::Unbounded,
         8 * 1024 * 1024,
     )?;
     assert!(
