@@ -540,10 +540,12 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
 async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_fs::{
-        CheckoutMode, CreationOperation, EmbeddedCapabilities, Fs, GenerationSelector,
-        IdempotencyKey, Lifecycle, MemoryAuthorityBackend, OperationId, PublicationPermit,
-        TransactionCommit, VolumeConfig, VolumeInitialization, WorkspaceError,
+        CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
+        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
+        VolumeInitialization, WorkspaceError,
     };
+
+    use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 
     acyclic_native_runtime::initialize_native_io_services()?;
     let provider = Arc::new(acyclic_objects::MemoryObjects::memory());
