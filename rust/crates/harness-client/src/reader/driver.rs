@@ -9,14 +9,16 @@
 //! replaced is detected and dropped instead of joined to new history.
 
 use super::{Failure, Fetched, HeadObservation, ListedChild, Op, Outcome, Reader};
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     ChildrenPageRequest, PathHead, ReadRequest, Record, RecordStream, StreamError, StreamPath,
     StreamProvider,
 };
+use acyclic_stream::{StreamProviderExt as _, runtime::ReadySources};
+use futures::Stream;
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -28,6 +30,37 @@ type Opened = (
 );
 type Opening = LocalBoxFuture<'static, Option<Opened>>;
 
+struct FollowSource {
+    path: StreamPath,
+    position: u64,
+    accepted: u64,
+    records: RecordStream,
+}
+
+struct Waiting {
+    from: u64,
+    before: Option<StreamPath>,
+    after: Option<StreamPath>,
+}
+
+impl Stream for FollowSource {
+    type Item = (StreamPath, u64, Result<Record, StreamError>);
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let source = self.get_mut();
+        match source.records.poll_next_unpin(cx) {
+            Poll::Ready(record) => {
+                let record = record.unwrap_or(Err(StreamError::Unavailable));
+                if let Ok(record) = &record {
+                    source.position = record.sequence + 1;
+                    source.accepted = source.accepted.max(source.position);
+                }
+                Poll::Ready(Some((source.path.clone(), source.accepted, record)))
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 /// Executes one reader's ops and follows on one provider.
 pub struct Driver<P: ?Sized> {
     identity: Arc<()>,
@@ -38,7 +71,14 @@ pub struct Driver<P: ?Sized> {
     opening: FuturesUnordered<Opening>,
     /// Opens in flight, each cancelled once its stream or start is unwanted.
     pending: BTreeMap<StreamPath, (u64, AbortHandle)>,
-    follows: BTreeMap<StreamPath, (u64, u64, RecordStream)>,
+    follows: BTreeMap<StreamPath, u64>,
+    waiting: BTreeMap<StreamPath, Waiting>,
+    first_waiting: Option<StreamPath>,
+    last_waiting: Option<StreamPath>,
+    ready: ReadySources<FollowSource>,
+    next_follow: u64,
+    #[cfg(test)]
+    reconciled: usize,
 }
 
 impl<P: StreamProvider + ?Sized> Driver<P> {
@@ -53,6 +93,13 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             opening: FuturesUnordered::new(),
             pending: BTreeMap::new(),
             follows: BTreeMap::new(),
+            waiting: BTreeMap::new(),
+            first_waiting: None,
+            last_waiting: None,
+            ready: ReadySources::new(),
+            next_follow: 0,
+            #[cfg(test)]
+            reconciled: 0,
         }
     }
 
@@ -88,6 +135,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.opening = FuturesUnordered::new();
         self.pending.clear();
         self.follows.clear();
+        self.waiting.clear();
+        self.first_waiting = None;
+        self.last_waiting = None;
+        self.ready = ReadySources::new();
+        self.next_follow = 0;
     }
 
     /// Advance once: start admitted reads, fold completions, reconcile and
@@ -125,17 +177,16 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         if completed && reader.ready(now) && !reader.demand.is_empty() {
             cx.waker().wake_by_ref();
         }
-        self.reconcile(reader, now);
+        let parked = self.reconcile(reader, now);
+        let mut completed_open = false;
         while let Poll::Ready(Some(done)) = self.opening.poll_next_unpin(cx) {
             // Cancelled opens never complete, so this is the current one.
             let Some((stream, from, observed, opened)) = done else {
                 continue;
             };
             self.pending.remove(&stream);
-            if !reader
-                .follows()
-                .any(|(path, wanted)| path == &stream && wanted == from)
-            {
+            completed_open = true;
+            if reader.follows.get(&stream) != Some(&from) {
                 continue;
             }
             match opened {
@@ -144,9 +195,11 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     match reader.observed_head(&stream, head, observed) {
                         HeadObservation::Invalid => {
                             reader.follow_failed(Failure::Refused, now);
+                            self.queue(&stream, reader);
                             continue;
                         }
                         HeadObservation::Superseded => {
+                            self.queue(&stream, reader);
                             cx.waker().wake_by_ref();
                             continue;
                         }
@@ -154,18 +207,53 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     }
                     // A changed origin invalidated this opening and its old
                     // cursor. The next frame opens the newly learned history.
-                    if !reader.follows().any(|(path, _)| path == &stream) {
+                    if !reader.follows.contains_key(&stream) {
                         continue;
                     }
                     reader.follow_opened(&stream, from);
-                    self.follows.insert(stream, (from, accepted, records));
+                    if let Err(error) = self.opened(stream.clone(), from, accepted, records) {
+                        reader.follow_failed(Failure::of(&error), now);
+                        self.queue(&stream, reader);
+                    }
                 }
-                Err(error) => failed(reader, &stream, &error, now),
+                Err(error) => {
+                    failed(reader, &stream, &error, now);
+                    self.queue(&stream, reader);
+                }
             }
         }
         self.drain(reader, now, cx);
+        if parked && completed_open && reader.ready(now) && reader.accepting() {
+            cx.waker().wake_by_ref();
+        }
     }
 
+    fn opened(
+        &mut self,
+        path: StreamPath,
+        position: u64,
+        accepted: u64,
+        records: RecordStream,
+    ) -> Result<(), StreamError> {
+        let id = self.next_follow;
+        self.next_follow = id.checked_add(1).ok_or(StreamError::Capacity)?;
+        self.ready.register(
+            acyclic_stream::wire::SessionChannel {
+                channel_id: id,
+                generation: 0,
+            },
+            FollowSource {
+                path: path.clone(),
+                position,
+                accepted,
+                records,
+            },
+        );
+        if let Some(previous) = self.follows.insert(path, id) {
+            self.ready.remove(previous);
+        }
+        Ok(())
+    }
     fn start(&mut self, op: Op, access: super::Access) {
         let provider = Arc::clone(&self.provider);
         let id = op.id();
@@ -190,29 +278,92 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         }));
     }
 
-    fn reconcile(&mut self, reader: &Reader, now: u64) {
-        let wanted: BTreeMap<StreamPath, u64> = reader
-            .follows()
-            .map(|(path, from)| (path.clone(), from))
-            .collect();
-        // Dropping a follow cancels it on the session; so does aborting an
-        // open, so opens never outnumber the wanted follows.
-        self.follows
-            .retain(|path, (position, _, _)| wanted.get(path).is_some_and(|from| from <= position));
-        self.pending.retain(|path, (from, abort)| {
-            let keep = wanted.get(path) == Some(from);
-            if !keep {
+    fn unqueue(&mut self, path: &StreamPath) -> Option<u64> {
+        let waiting = self.waiting.remove(path)?;
+        if let Some(before) = &waiting.before {
+            if let Some(previous) = self.waiting.get_mut(before) {
+                previous.after = waiting.after.clone();
+            }
+        } else {
+            self.first_waiting = waiting.after.clone();
+        }
+        if let Some(after) = &waiting.after {
+            if let Some(next) = self.waiting.get_mut(after) {
+                next.before = waiting.before;
+            }
+        } else {
+            self.last_waiting = waiting.before;
+        }
+        Some(waiting.from)
+    }
+
+    fn queue(&mut self, path: &StreamPath, reader: &Reader) {
+        let Some(from) = reader.follows.get(path).copied() else {
+            let _ = self.unqueue(path);
+            return;
+        };
+        if self.follows.contains_key(path) || self.pending.contains_key(path) {
+            let _ = self.unqueue(path);
+        } else if let Some(waiting) = self.waiting.get_mut(path) {
+            waiting.from = from;
+        } else {
+            // One removable queue node per retained intent. New requests stay
+            // behind work already waiting for opening credit.
+            if let Some(last) = self.last_waiting.as_ref() {
+                if let Some(previous) = self.waiting.get_mut(last) {
+                    previous.after = Some(path.clone());
+                }
+            } else {
+                self.first_waiting = Some(path.clone());
+            }
+            self.waiting.insert(
+                path.clone(),
+                Waiting {
+                    from,
+                    before: self.last_waiting.replace(path.clone()),
+                    after: None,
+                },
+            );
+        }
+    }
+
+    fn reconcile(&mut self, reader: &mut Reader, now: u64) -> bool {
+        // Cursor delivery does not change subscription intent. Only explicit
+        // selection, lag jumps and invalidation reach this index.
+        while let Some(path) = reader.follow_changes.pop_first() {
+            #[cfg(test)]
+            {
+                self.reconciled += 1;
+            }
+            let from = reader.follows.get(&path).copied();
+            if let Some(id) = self.follows.get(&path).copied()
+                && !from.is_some_and(|from| {
+                    self.ready
+                        .get(id)
+                        .is_some_and(|source| from <= source.position)
+                })
+            {
+                self.follows.remove(&path);
+                self.ready.remove(id);
+            }
+            if let Some((pending_from, _)) = self.pending.get(&path)
+                && from != Some(*pending_from)
+                && let Some((_, abort)) = self.pending.remove(&path)
+            {
                 abort.abort();
             }
-            keep
-        });
-        if !reader.ready(now) {
-            return;
+            self.queue(&path, reader);
         }
-        for (path, from) in wanted {
-            if self.follows.contains_key(&path) || self.pending.contains_key(&path) {
-                continue;
-            }
+        if !reader.ready(now) || !reader.accepting() {
+            return false;
+        }
+        while self.pending.len() < reader.policy.follow_requests {
+            let Some(path) = self.first_waiting.clone() else {
+                break;
+            };
+            let Some(from) = self.unqueue(&path) else {
+                break;
+            };
             let (abort, registration) = AbortHandle::new_pair();
             self.pending.insert(path.clone(), (from, abort));
             let anchor = reader.follow_anchor(&path, from);
@@ -248,39 +399,32 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                 Abortable::new(open, registration).await.ok().flatten()
             }));
         }
+        !self.waiting.is_empty()
     }
 
     fn drain(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
-        let mut ended = Vec::new();
-        loop {
-            let mut progressed = false;
-            for (path, (position, accepted, records)) in &mut self.follows {
-                if !reader.accepting() {
+        while reader.accepting() {
+            let (path, accepted, record) = match self.ready.poll_next(cx) {
+                Poll::Ready(Ok(Some(record))) => record,
+                Poll::Ready(Err(error)) => {
+                    reader.follow_failed(Failure::of(&error), now);
+                    for (path, _) in std::mem::take(&mut self.follows) {
+                        self.queue(&path, reader);
+                    }
+                    self.ready = ReadySources::new();
                     break;
                 }
-                match records.poll_next_unpin(cx) {
-                    Poll::Ready(Some(Ok(record))) => {
-                        *position = record.sequence + 1;
-                        *accepted = (*accepted).max(record.sequence + 1);
-                        reader.deliver(path, fetched(&record), *accepted);
-                        progressed = true;
+                Poll::Ready(Ok(None)) | Poll::Pending => break,
+            };
+            match record {
+                Ok(record) => reader.deliver(&path, fetched(record), accepted),
+                Err(error) => {
+                    failed(reader, &path, &error, now);
+                    if let Some(id) = self.follows.remove(&path) {
+                        self.ready.remove(id);
                     }
-                    Poll::Ready(Some(Err(error))) => {
-                        failed(reader, path, &error, now);
-                        ended.push(path.clone());
-                    }
-                    Poll::Ready(None) => {
-                        failed(reader, path, &StreamError::Unavailable, now);
-                        ended.push(path.clone());
-                    }
-                    Poll::Pending => {}
+                    self.queue(&path, reader);
                 }
-            }
-            for path in ended.drain(..) {
-                self.follows.remove(&path);
-            }
-            if !progressed || !reader.accepting() {
-                break;
             }
         }
     }
@@ -299,10 +443,10 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
 
 /// Preserve the primitive allocation owner; the cache decides whether a
 /// transport slice needs detaching to establish a bounded retained charge.
-pub(super) fn fetched(record: &Record) -> Fetched {
+pub(super) fn fetched(record: Record) -> Fetched {
     Fetched {
         sequence: record.sequence,
-        value: record.value.clone(),
+        value: record.value,
         commit: record.commit_id,
     }
 }
@@ -341,7 +485,7 @@ async fn execute<P: StreamProvider + ?Sized>(provider: &P, op: Op) -> Outcome {
                     .map(|child| ListedChild {
                         path: child.path,
                         origin: child.origin,
-                        tail: child.tail_record.as_ref().map(fetched),
+                        tail: child.tail_record.map(fetched),
                     })
                     .collect(),
             }),
@@ -367,7 +511,7 @@ async fn read<P: StreamProvider + ?Sized>(
     let mut out = Vec::new();
     while let Some(record) = records.next().await {
         let record = record?;
-        out.push(fetched(&record));
+        out.push(fetched(record));
         if out.len() >= limit as usize {
             break;
         }
@@ -379,6 +523,286 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn every_busy_follow_progresses_across_delivery_frames() {
+        use super::super::ReaderPolicy;
+        futures::executor::block_on(async {
+            for (streams, deliveries, frames) in [(2, 1, 4), (513, 256, 3)] {
+                let provider = Arc::new(MemoryStream::default());
+                let mut driver = Driver::new(Arc::clone(&provider));
+                let mut reader = Reader::new(ReaderPolicy {
+                    deliveries,
+                    ..ReaderPolicy::default()
+                })
+                .unwrap();
+                for index in 0..streams {
+                    let path = StreamPath::new(format!("fair/{index:04}")).unwrap();
+                    provider
+                        .append(AppendRequest {
+                            path: path.clone(),
+                            records: vec![b"record".as_slice().into(); 4],
+                            if_tail: Some(0),
+                            idempotency_key: IdempotencyKey::new(path.to_string()).unwrap(),
+                        })
+                        .await
+                        .unwrap();
+                    let records = provider
+                        .follow(acyclic_stream::FollowRequest::new(path.clone(), 0))
+                        .await
+                        .unwrap();
+                    reader.follows.insert(path.clone(), 0);
+                    driver
+                        .opened(path, 0, 4, acyclic_stream::records_only(records))
+                        .unwrap();
+                }
+                let waker = futures::task::noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                for frame in 0..frames {
+                    reader.begin_frame(frame);
+                    driver.drain(&mut reader, frame, &mut cx);
+                    assert!(!reader.accepting());
+                }
+                assert_eq!(driver.open_follows(), streams);
+                let minimum = if streams == 2 { 2 } else { 1 };
+                let progressed = reader
+                    .follows()
+                    .filter(|(_, position)| *position >= minimum)
+                    .count();
+                assert_eq!(progressed, streams);
+                eprintln!(
+                    "follow progress: streams={streams} credit={deliveries} frames={frames} progressed={progressed}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn dormant_follows_are_not_repolled_and_cancel_without_delivery_credit() {
+        use super::super::ReaderPolicy;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counted {
+            records: RecordStream,
+            polls: Arc<AtomicUsize>,
+            dropped: Arc<AtomicUsize>,
+        }
+        impl Stream for Counted {
+            type Item = Result<Record, StreamError>;
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                self.records.poll_next_unpin(cx)
+            }
+        }
+        impl Drop for Counted {
+            fn drop(&mut self) {
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let mut driver = Driver::new(Arc::clone(&provider));
+            let mut reader = Reader::new(ReaderPolicy {
+                deliveries: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            driver.attach(&mut reader, 0);
+            let dropped = Arc::new(AtomicUsize::new(0));
+            let mut counters = Vec::new();
+            for index in 0..513 {
+                let path = StreamPath::new(format!("quiet/{index:04}")).unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"initial".as_slice().into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(path.to_string()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                let records = provider
+                    .follow(acyclic_stream::FollowRequest::new(path.clone(), 1))
+                    .await
+                    .unwrap();
+                let polls = Arc::new(AtomicUsize::new(0));
+                counters.push(polls.clone());
+                reader.follows.insert(path.clone(), 1);
+                driver
+                    .opened(
+                        path,
+                        1,
+                        1,
+                        Box::pin(Counted {
+                            records: acyclic_stream::records_only(records),
+                            polls,
+                            dropped: dropped.clone(),
+                        }),
+                    )
+                    .unwrap();
+            }
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            driver.drain(&mut reader, 0, &mut cx);
+            assert!(
+                counters
+                    .iter()
+                    .all(|polls| polls.swap(0, Ordering::SeqCst) == 1)
+            );
+            let path = StreamPath::new("quiet/0512").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"changed".as_slice().into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::new(b"changed".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(reader.follows.get(&path), Some(&2));
+            assert_eq!(driver.reconciled, 0);
+            assert_eq!(counters[512].load(Ordering::SeqCst), 1);
+            let dormant_polls: usize = counters[..512]
+                .iter()
+                .map(|polls| polls.load(Ordering::SeqCst))
+                .sum();
+            assert_eq!(dormant_polls, 0);
+            eprintln!(
+                "follow source polls: dormant=512 dormant_polls={dormant_polls} changed_polls={}",
+                counters[512].load(Ordering::SeqCst)
+            );
+            assert!(!reader.accepting());
+            reader.set_follows([]);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(dropped.load(Ordering::SeqCst), 513);
+            assert_eq!(driver.open_follows(), 0);
+            assert_eq!(driver.reconciled, 513);
+            assert!(driver.waiting.is_empty());
+        });
+    }
+
+    #[test]
+    fn opening_credit_retains_and_services_every_follow_intent() {
+        use super::super::ReaderPolicy;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Wake, Waker};
+        struct Woken(AtomicBool);
+        impl Wake for Woken {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let mut driver = Driver::new(Arc::clone(&provider));
+            let mut reader = Reader::new(ReaderPolicy {
+                follow_requests: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            driver.attach(&mut reader, 0);
+            let mut paths = Vec::new();
+            for index in 0..5 {
+                let path = StreamPath::new(format!("opening/z{index}")).unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"initial".as_slice().into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(path.to_string()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                reader.observed_head(&path, provider.head(path.clone()).await.unwrap(), None);
+                paths.push(path);
+            }
+            reader.set_follows(paths.clone());
+            assert_eq!(reader.follows().count(), 5);
+            let woken = Arc::new(Woken(AtomicBool::new(true)));
+            let waker = Waker::from(woken.clone());
+            let mut cx = Context::from_waker(&waker);
+            for count in 1..=5 {
+                assert!(woken.0.swap(false, Ordering::SeqCst));
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(driver.follows.len(), count);
+                assert!(driver.pending.is_empty());
+                assert_eq!(driver.reconciled, count + 4);
+                assert!(driver.follows.contains_key(&paths[count - 1]));
+                if count < 5 {
+                    // Each newcomer sorts before every original request. It
+                    // cannot overtake requests already waiting for credit.
+                    let path = StreamPath::new(format!("opening/a{count}")).unwrap();
+                    provider
+                        .append(AppendRequest {
+                            path: path.clone(),
+                            records: vec![b"new".as_slice().into()],
+                            if_tail: Some(0),
+                            idempotency_key: IdempotencyKey::new(path.to_string()).unwrap(),
+                        })
+                        .await
+                        .unwrap();
+                    reader.observed_head(&path, provider.head(path.clone()).await.unwrap(), None);
+                    paths.push(path);
+                    reader.set_follows(paths.clone());
+                }
+            }
+            assert_eq!(driver.waiting.len(), 4);
+            for count in 6..=9 {
+                assert!(woken.0.swap(false, Ordering::SeqCst));
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(driver.follows.len(), count);
+                assert_eq!(driver.reconciled, 9);
+            }
+            assert!(driver.waiting.is_empty());
+            assert!(driver.first_waiting.is_none());
+            assert!(driver.last_waiting.is_none());
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.reconciled, 9);
+            woken.0.store(false, Ordering::SeqCst);
+            provider
+                .append(AppendRequest {
+                    path: paths[8].clone(),
+                    records: vec![b"changed".as_slice().into()],
+                    if_tail: Some(1),
+                    idempotency_key: IdempotencyKey::new(b"changed".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            assert!(woken.0.swap(false, Ordering::SeqCst));
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.reconciled, 9);
+            assert_eq!(reader.follows.get(&paths[8]), Some(&2));
+            eprintln!("follow reconciliation: unchanged=9 changed_intents=0 record_deliveries=1");
+            reader.set_follows([]);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 0);
+            // Cancellation unlinks first, middle and last queued intents even
+            // while exhausted delivery credit prevents new opens.
+            reader.delivered = reader.policy.deliveries;
+            reader.set_follows(paths[..4].iter().cloned());
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.waiting.len(), 4);
+            reader.set_follows([paths[1].clone()]);
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.waiting.len(), 1);
+            assert_eq!(driver.first_waiting.as_ref(), Some(&paths[1]));
+            assert_eq!(driver.last_waiting.as_ref(), Some(&paths[1]));
+            reader.delivered = 0;
+            driver.step(&mut reader, 0, &mut cx);
+            assert_eq!(driver.open_follows(), 1);
+            assert!(driver.follows.contains_key(&paths[1]));
+            assert!(driver.waiting.is_empty());
+            assert!(driver.first_waiting.is_none());
+            assert!(driver.last_waiting.is_none());
+            assert_eq!(reader.issued(), 0);
+            assert_eq!(reader.next_deadline(), None);
+        });
+    }
 
     #[test]
     fn lost_live_follow_reports_failure_and_resumes_without_another_frame() {
@@ -423,15 +847,16 @@ mod tests {
                 // Keep the actual provider subscription, with a channel modeling
                 // its connection owner. Losing that producer ends this live link.
                 let (connection, disconnected) = oneshot::channel::<()>();
-                let (position, accepted, records) = driver.follows.remove(&path).unwrap();
-                driver.follows.insert(
-                    path.clone(),
-                    (
-                        position,
-                        accepted,
-                        Box::pin(records.take_until(disconnected.map(|_| ()))),
-                    ),
-                );
+                let id = driver.follows.remove(&path).unwrap();
+                let source = driver.ready.take(id).unwrap();
+                driver
+                    .opened(
+                        path.clone(),
+                        source.position,
+                        source.accepted,
+                        Box::pin(source.records.take_until(disconnected.map(|_| ()))),
+                    )
+                    .unwrap();
                 driver.step(&mut reader, 1, &mut cx);
                 assert_eq!(reader.next_deadline(), None);
                 woken.0.store(false, Ordering::SeqCst);
@@ -468,7 +893,14 @@ mod tests {
                 assert!(matches!(reader.connectivity(), Connectivity::Online));
                 assert_eq!(reader.next_deadline(), None);
                 if !append_before_reconnect {
-                    assert_eq!(driver.follows.get(&path).unwrap().0, 1);
+                    assert_eq!(
+                        driver
+                            .ready
+                            .get(*driver.follows.get(&path).unwrap())
+                            .unwrap()
+                            .position,
+                        1
+                    );
                     woken.0.store(false, Ordering::SeqCst);
                     append().await.unwrap();
                     assert!(woken.0.load(Ordering::SeqCst));

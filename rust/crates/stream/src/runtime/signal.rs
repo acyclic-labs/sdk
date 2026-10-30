@@ -6,18 +6,18 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-pub(super) struct Signal<T> {
+pub(crate) struct Signal<T> {
     // Lock order: never nested with cursor, admission, or another signal lock.
     // Wakers run only after unlocking; no guard crosses an await.
     state: Mutex<(VecDeque<T>, Option<Waker>)>,
 }
 impl<T> Signal<T> {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new((VecDeque::new(), None)),
         }
     }
-    pub(super) fn send(&self, value: T) -> Result<(), StreamError> {
+    pub(crate) fn send(&self, value: T) -> Result<(), StreamError> {
         let wake = {
             let mut state = self.state.lock().map_err(|_| StreamError::Unavailable)?;
             state.0.push_back(value);
@@ -28,7 +28,7 @@ impl<T> Signal<T> {
         }
         Ok(())
     }
-    pub(super) fn try_next(&self) -> Result<Option<T>, StreamError> {
+    pub(crate) fn try_next(&self) -> Result<Option<T>, StreamError> {
         Ok(self
             .state
             .lock()
@@ -36,7 +36,7 @@ impl<T> Signal<T> {
             .0
             .pop_front())
     }
-    pub(super) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
+    pub(crate) fn poll(&self, cx: &mut Context<'_>) -> Poll<Result<T, StreamError>> {
         let wake = cx.waker().clone();
         let previous = {
             let Ok(mut state) = self.state.lock() else {
@@ -50,7 +50,7 @@ impl<T> Signal<T> {
         drop(previous);
         Poll::Pending
     }
-    pub(super) async fn next(&self) -> Result<T, StreamError> {
+    pub(crate) async fn next(&self) -> Result<T, StreamError> {
         poll_fn(|cx| self.poll(cx)).await
     }
 }
