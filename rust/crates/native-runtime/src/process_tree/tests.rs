@@ -581,22 +581,26 @@ fn capture_check_failure_cleans_up_the_owned_tree() {
 fn owned_streaming_stdout_rejects_empty_reads_and_reaches_eof() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("output", temporary.path());
-    command.env("EXPLICIT_PROCESS_INPUT", "allowed");
+    command
+        .env("EXPLICIT_PROCESS_INPUT", "allowed")
+        .stderr(Stdio::null());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn streaming tree");
     assert_eq!(
         tree.read_stdout(&mut []).expect_err("empty read").kind(),
         std::io::ErrorKind::InvalidInput
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
     let mut bytes = Vec::new();
     loop {
         let mut buffer = [0; 128];
         match tree.read_stdout(&mut buffer).expect("read owned stdout") {
             Some(0) => break,
             Some(read) => bytes.extend_from_slice(buffer.get(..read).expect("valid pipe read")),
-            None => thread::sleep(Duration::from_millis(1)),
+            None => tree
+                .readiness()
+                .expect("arm original stdout or exit")
+                .0
+                .block(),
         }
-        assert!(Instant::now() < deadline, "streaming output deadline");
     }
     tree.terminate(None).expect("clean streaming tree");
     assert!(bytes.ends_with(b"stdout-marker"));
@@ -735,7 +739,10 @@ fn stdin_backpressure_preserves_intent_checks_and_cleanup() {
 fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
     let temporary = tempfile::tempdir().expect("temporary directory");
     let mut command = command("stdin-save", temporary.path());
-    command.stdin(Stdio::piped());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     let mut tree = ProcessTree::spawn(&mut command).expect("spawn prompt reader");
     let input: Vec<u8> = (0..BULK_BYTES)
         .map(|n| u8::try_from(n % 251).unwrap())
@@ -750,12 +757,17 @@ fn queued_stdin_delivers_exact_bytes_and_eof_through_the_capture_pump() {
         io::ErrorKind::AlreadyExists
     );
     while !tree.pump_stdin().expect("nonblocking prompt progress") {
-        thread::yield_now();
+        tree.readiness()
+            .expect("arm original stdin or exit")
+            .0
+            .block();
     }
     tree.require_stdin_complete().expect("prompt delivered");
-    ready(temporary.path(), "stdin-captured", || {
-        tree_exited(&mut tree)
-    });
+    assert!(
+        tree.wait_exit(None)
+            .expect("original publisher exit")
+            .success()
+    );
     assert_eq!(
         fs::read(temporary.path().join("stdin-captured")).unwrap(),
         input
@@ -826,11 +838,19 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
     for required in [true, false] {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let mut command = command("exit-code", temporary.path());
-        command.stdin(Stdio::piped());
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         let mut tree = ProcessTree::spawn(&mut command).expect("spawn early exit");
-        while !tree_exited(&mut tree) {
-            thread::yield_now();
-        }
+        // No output pipes or queued input are armed: this is the original
+        // child's exit event, retaining stdin for the subsequent closed-peer write.
+        tree.readiness().expect("arm original child exit").0.block();
+        assert!(
+            tree.try_wait(None)
+                .expect("observe original exit")
+                .is_some()
+        );
         let input = vec![b'x'; BULK_BYTES];
         tree.queue_stdin(input.clone()).expect("queue prompt");
         if !required {
@@ -841,12 +861,7 @@ fn queued_stdin_rejects_early_closure_that_optional_literal_capture_accepts() {
                     .expect("optional input control"),
             );
         }
-        let result = loop {
-            match tree.pump_stdin() {
-                Ok(false) => thread::yield_now(),
-                result => break result,
-            }
-        };
+        let result = tree.pump_stdin();
         if required {
             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::BrokenPipe);
         } else {
