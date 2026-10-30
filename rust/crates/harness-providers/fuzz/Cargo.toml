@@ -16,6 +16,13 @@ bench = false
 
 [workspace]
 
+[[bin]]
+name = "http_failure"
+path = "fuzz_targets/http_failure.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = "0.4"
 acyclic-harness-providers = { path = "..", features = ["fuzzing"] }

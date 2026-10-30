@@ -7,7 +7,9 @@ use acyclic_harness_core::{
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 
+mod http_failure;
 mod projections;
+pub use http_failure::assert_http_failure_invariants;
 mod tool_arguments;
 mod turn_text;
 pub use projections::{assert_alloy_invariants, assert_image_invariants};
