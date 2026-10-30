@@ -1,61 +1,96 @@
-use super::{retry_nfs_directory_listing, retryable_nfs_directory_error};
-use std::io::{Error, ErrorKind};
-use std::time::{Duration, Instant};
+use super::io::ParallelChild;
+use super::{Failure, parallel_io_child};
+use std::path::Path;
+use std::process::Command;
 
+const CHILD_ROOT: &str = "ACYCLIC_PARALLEL_IO_CHILD_ROOT";
+
+/// An actual process running the same publication and filesystem operations.
 #[test]
-fn retries_only_transient_nfs_directory_errors() {
-    assert!(retryable_nfs_directory_error(&Error::from(
-        ErrorKind::StaleNetworkFileHandle
-    )));
-    assert!(!retryable_nfs_directory_error(&Error::from(
-        ErrorKind::PermissionDenied
-    )));
+fn parallel_io_process() {
+    let Some(root) = std::env::var_os(CHILD_ROOT) else {
+        return;
+    };
+    if std::env::var("ACYCLIC_PARALLEL_IO_EXIT").as_deref() == Ok("before-publication") {
+        return;
+    }
+    let run = || -> Result<(), Failure> {
+        let index = std::env::var("ACYCLIC_PARALLEL_IO_INDEX")?.parse()?;
+        let count = std::env::var("ACYCLIC_PARALLEL_IO_COUNT")?.parse()?;
+        parallel_io_child(Path::new(&root), index, count)
+    };
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
+}
+
+fn child(root: &Path, index: usize, count: usize) -> Result<Command, Failure> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args([
+            "--exact",
+            "parallel_io_tests::parallel_io_process",
+            "--nocapture",
+        ])
+        .env(CHILD_ROOT, root)
+        .env("ACYCLIC_PARALLEL_IO_INDEX", index.to_string())
+        .env("ACYCLIC_PARALLEL_IO_COUNT", count.to_string());
+    Ok(command)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parallel_publication_barrier_uses_original_producers() -> Result<(), Failure> {
+    let root = tempfile::tempdir()?;
+    let mut first = ParallelChild::spawn(&mut child(root.path(), 0, 2)?)?;
+    first.published().await?;
+    // A delivered receipt remains observable without another producer event.
+    first.published().await?;
     assert_eq!(
-        retryable_nfs_directory_error(&Error::from_raw_os_error(5)),
-        cfg!(target_os = "macos")
+        std::fs::read_dir(root.path().join("parallel-clients"))?.count(),
+        1
     );
-    #[cfg(target_os = "macos")]
-    assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(70)));
-    #[cfg(target_os = "linux")]
-    assert!(retryable_nfs_directory_error(&Error::from_raw_os_error(
-        116
-    )));
-}
+    let mut second = ParallelChild::spawn(&mut child(root.path(), 1, 2)?)?;
+    second.published().await?;
+    first.release()?;
+    second.release()?;
+    assert!(first.finish().await?.status.success());
+    assert!(second.finish().await?.status.success());
 
-#[test]
-fn retries_a_transient_listing_then_uses_the_complete_result() {
-    let mut attempts = 0;
-    let entries = retry_nfs_directory_listing(Instant::now() + Duration::from_secs(1), || {
-        attempts += 1;
-        if attempts == 1 {
-            Err(Error::from(ErrorKind::StaleNetworkFileHandle))
-        } else {
-            Ok(vec!["peer-0", "peer-1"])
-        }
-    });
-    assert_eq!(attempts, 2);
-    assert_eq!(entries.ok(), Some(vec!["peer-0", "peer-1"]));
-}
+    // A release before the other producer publishes is a terminal failure,
+    // rather than a visibility retry that could hide a broken barrier.
+    let root = tempfile::tempdir()?;
+    let mut early = ParallelChild::spawn(&mut child(root.path(), 0, 2)?)?;
+    early.published().await?;
+    early.release()?;
+    let failed = early.finish().await?;
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("1 of 2 published peers"));
 
-#[test]
-fn stops_retrying_after_the_deadline() {
-    let mut attempts = 0;
-    let result =
-        retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_millis(1), || {
-            attempts += 1;
-            Err(Error::from(ErrorKind::StaleNetworkFileHandle))
-        });
-    assert_eq!(attempts, 1);
-    assert!(matches!(result, Err(error) if error.kind() == ErrorKind::StaleNetworkFileHandle));
-}
+    // Producer exit settles a pending receipt with the original typed EOF.
+    let root = tempfile::tempdir()?;
+    let mut command = child(root.path(), 0, 1)?;
+    command.env("ACYCLIC_PARALLEL_IO_EXIT", "before-publication");
+    let mut exited = ParallelChild::spawn(&mut command)?;
+    let error = exited
+        .published()
+        .await
+        .expect_err("missing producer receipt");
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .map(std::io::Error::kind),
+        Some(std::io::ErrorKind::UnexpectedEof),
+    );
+    assert!(exited.finish().await?.status.success());
 
-#[test]
-fn fails_immediately_on_an_unrelated_error() {
-    let mut attempts = 0;
-    let result = retry_nfs_directory_listing::<()>(Instant::now() + Duration::from_secs(1), || {
-        attempts += 1;
-        Err(Error::from(ErrorKind::PermissionDenied))
-    });
-    assert_eq!(attempts, 1);
-    assert!(matches!(result, Err(error) if error.kind() == ErrorKind::PermissionDenied));
+    // The original release pipe closes when its owner is lost. The child
+    // reports that EOF without listing or waiting for another parent.
+    let root = tempfile::tempdir()?;
+    let mut orphaned = ParallelChild::spawn(&mut child(root.path(), 0, 1)?)?;
+    orphaned.published().await?;
+    let failed = orphaned.finish().await?;
+    assert!(!failed.status.success());
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("publication release failed"));
+    Ok(())
 }
