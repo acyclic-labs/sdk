@@ -225,3 +225,12 @@ reader and missing explicit format version remain in the shared inventory.
 Replay checks each captured length and SHA-256 before decoding; it never
 regenerates a differing baseline. A target or harness listed here does not
 establish that it has run. The inventory records remaining format coverage.
+
+Immutable filesystem pages also refuse truncated/trailing bytes and stop at
+the original accounting refusal, with no later callback. Controls interrupt
+the first and an input-selected observed step, without iterating all steps.
+Twenty-five additional SDK writer producers cover populated/internal pages,
+all file payloads/kinds, three name encodings and attribute classes, every
+metadata field, two-parent and filtered lineage, and plain/sealed references.
+Each producer requires actual decode/value agreement before capture; those
+outputs and controls await execution.
