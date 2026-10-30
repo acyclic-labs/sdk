@@ -85,6 +85,21 @@ test("immutableObjects materializes the original durable SQLite port without exp
     expect(barriers).toBe(3);
     await expect(objects.read(key, 2n)).rejects.toThrow("size exceeds admission");
     await expect(objects.put([key], [new Uint8Array([3, 2, 1])])).rejects.toThrow("immutable bytes changed");
+    const sealed = new Uint8Array(113); sealed.set(key); sealed[0] |= 0x80;
+    const otherLocator = sealed.slice(); otherLocator[33] = 1;
+    const otherRoot = sealed.slice(); otherRoot[65] = 1;
+    const otherOrigin = sealed.slice(); otherOrigin[81] = 1;
+    const keys = [sealed, otherLocator, otherRoot, otherOrigin];
+    const values = keys.map((_, index) => new Uint8Array([index + 4]));
+    await objects.put(keys, values);
+    const reopened = new SqliteObjects(storage, "selected");
+    expect(await reopened.read(key, 3n)).toEqual(value);
+    for (let index = 0; index < keys.length; index++) {
+      expect(await reopened.length(keys[index]!)).toBe(1);
+      expect(await reopened.read(keys[index]!, 1n)).toEqual(values[index]!);
+    }
+    expect(await new SqliteObjects(storage, "other").length(sealed)).toBeNull();
+    await expect(reopened.put([sealed], [new Uint8Array([99])])).rejects.toThrow("immutable bytes changed");
   } finally { database.close(); }
 });
 
