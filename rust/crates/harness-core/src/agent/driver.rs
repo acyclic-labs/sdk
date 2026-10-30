@@ -189,6 +189,7 @@ pub struct ConversationEntry {
     #[serde(default, skip_serializing_if = "TurnOutcome::is_completed")]
     pub outcome: TurnOutcome,
     /// The original goal run whose continuation this entry commits or settles.
+    #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<OperationId>,
 }
