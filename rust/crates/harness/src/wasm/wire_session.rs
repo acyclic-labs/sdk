@@ -87,9 +87,9 @@ fn path(value: JsString) -> Result<StreamPath, JsValue> {
     StreamPath::new(value).map_err(stream_error)
 }
 
-fn paths(input: &Array, maximum: usize) -> Result<Vec<StreamPath>, JsValue> {
+fn paths(input: &Array, maximum: Option<usize>) -> Result<Vec<StreamPath>, JsValue> {
     let length = input.length();
-    if length as usize > maximum {
+    if maximum.is_some_and(|maximum| length as usize > maximum) {
         return Err(error("CLIENT_DEMAND_CAPACITY"));
     }
     (0..length)
@@ -114,7 +114,7 @@ impl Drop for ReadGuard {
     }
 }
 
-/// Bounded logical interests over the caller's existing canonical Streams pool.
+/// Logical interests over the caller's existing canonical Streams pool.
 /// No JavaScript queue, reconnect loop, cursor or per-agent transport is added.
 #[wasm_bindgen]
 pub struct WasmWireSession {
@@ -127,7 +127,11 @@ pub struct WasmWireSession {
 impl WasmWireSession {
     /// Share the platform's existing pool; refuse providers with no session I/O.
     #[wasm_bindgen(constructor)]
-    pub fn new(stream: &WasmStream, selected: usize, expanded: usize) -> Result<Self, JsValue> {
+    pub fn new(
+        stream: &WasmStream,
+        selected: Option<usize>,
+        expanded: Option<usize>,
+    ) -> Result<Self, JsValue> {
         let policy = DemandPolicy::new(selected, expanded)
             .map_err(|cause| session_error(WireSessionError::Demand(cause)))?;
         let client = stream
@@ -238,7 +242,11 @@ impl WasmWireSession {
             if readers.contains_key(&key) {
                 return Err(error("CLIENT_READ_BUSY"));
             }
-            if readers.len() >= self.policy.selected_capacity() {
+            if self
+                .policy
+                .selected_capacity()
+                .is_some_and(|limit| readers.len() >= limit)
+            {
                 return Err(error("CLIENT_READ_CAPACITY"));
             }
             readers.insert(

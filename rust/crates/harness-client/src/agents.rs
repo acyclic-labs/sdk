@@ -3,10 +3,13 @@
 //! Both native and browser callers supply the platform's existing authenticated
 //! Streams pool. This adapter owns no transport task, queue or recovery loop.
 
-use crate::{DemandError, DemandPolicy, StreamView, WireSession, WireSessionError};
+use crate::{DemandPolicy, StreamView, WireSession, WireSessionError};
 use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
 use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
-use std::task::{Context, Poll};
+use std::{
+    collections::BTreeSet,
+    task::{Context, Poll},
+};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "agents_tests.rs"]
@@ -90,7 +93,7 @@ pub struct AgentSelection {
     pub status_from: u64,
 }
 
-/// One shared fold for the focused agent and bounded visible agents. Each
+/// One shared fold for the focused agent and explicit visible agents. Each
 /// selected agent costs two logical follows on the caller's existing pool.
 pub struct AgentClient {
     session: WireSession,
@@ -140,15 +143,8 @@ impl AgentClient {
         Ok(selected)
     }
 
-    /// Combined focused/visible budget. Each agent owns a conversation and a
-    /// status follow, charged to the same finite WireSession stream budget.
-    pub fn selected_capacity() -> usize {
-        DemandPolicy::default().selected_capacity() / 2
-    }
-
     /// Replace view demand, preserving overlapping folds and releasing removed
-    /// agents before new follows open. Input consumption is bounded even for
-    /// duplicate or infinite iterators. Refusal leaves the old view intact.
+    /// agents before new follows open. Refusal leaves the old view intact.
     pub fn set_view(
         &mut self,
         focused: AgentSelection,
@@ -167,10 +163,7 @@ impl AgentClient {
         resources: impl IntoIterator<Item = wire::SessionSubscription>,
     ) -> Result<(), AgentClientError> {
         let mut requested = Vec::new();
-        for (index, subscription) in resources.into_iter().enumerate() {
-            if index == DemandPolicy::default().selected_capacity() {
-                return Err(WireSessionError::Demand(DemandError::SelectedCapacity).into());
-            }
+        for subscription in resources {
             if subscription.credential != self.credential {
                 return Err(WireSessionError::InvalidSubscription.into());
             }
@@ -186,14 +179,9 @@ impl AgentClient {
         resources: Option<Vec<wire::SessionSubscription>>,
     ) -> Result<(), AgentClientError> {
         let mut selections = Vec::new();
-        for (index, selection) in std::iter::once(focused.clone()).chain(visible).enumerate() {
-            if index == Self::selected_capacity() {
-                return Err(WireSessionError::Demand(DemandError::SelectedCapacity).into());
-            }
-            if selections
-                .iter()
-                .any(|previous: &AgentSelection| previous.agent == selection.agent)
-            {
+        let mut selected = BTreeSet::new();
+        for selection in std::iter::once(focused.clone()).chain(visible) {
+            if !selected.insert(selection.agent.clone()) {
                 continue;
             }
             selections.push(selection);
@@ -375,8 +363,7 @@ impl AgentClient {
         Ok(released)
     }
 
-    /// Fairly poll only the bounded selected streams. There is no population scan
-    /// and no per-agent queue, task or unbounded status cache.
+    /// Fairly poll selected streams.
     pub fn poll_next(
         &mut self,
         context: &mut Context<'_>,

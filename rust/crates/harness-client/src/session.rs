@@ -162,7 +162,11 @@ impl WireSession {
             demand.expanded().cloned(),
         )
         .map_err(WireSessionError::Demand)?;
-        if demand.full().count() + self.resource_views.len() > self.policy.selected_capacity() {
+        if self
+            .policy
+            .selected_capacity()
+            .is_some_and(|limit| demand.full().count() + self.resource_views.len() > limit)
+        {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         if demand == self.demand {
@@ -186,7 +190,7 @@ impl WireSession {
         self.views.get(stream).map(|retained| &retained.view)
     }
 
-    /// Replace a complete bounded set of stream subscriptions atomically.
+    /// Replace a complete set of stream subscriptions atomically.
     /// Existing selected views keep their fold and cursor, including terminal
     /// views. New cursors apply only to newly selected streams. Validation finishes before any old
     /// interest is released, and removals precede new pool admission.
@@ -207,7 +211,7 @@ impl WireSession {
     ) -> Result<(), WireSessionError> {
         let mut requested = BTreeMap::new();
         for (index, subscription) in resources.into_iter().enumerate() {
-            if index == self.policy.selected_capacity() {
+            if self.policy.selected_capacity() == Some(index) {
                 return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
             }
             let (resource, _) = validate_resource_subscription(&subscription)?;
@@ -232,7 +236,7 @@ impl WireSession {
     ) -> Result<(), WireSessionError> {
         let mut requested = BTreeMap::new();
         for (index, (path, subscription)) in subscriptions.into_iter().enumerate() {
-            if index == self.policy.selected_capacity() {
+            if self.policy.selected_capacity() == Some(index) {
                 return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
             }
             validate_subscription(&path, &subscription)?;
@@ -252,7 +256,11 @@ impl WireSession {
         let resource_count = resources
             .as_ref()
             .map_or(self.resource_views.len(), BTreeMap::len);
-        if requested.len() + resource_count > self.policy.selected_capacity() {
+        if self
+            .policy
+            .selected_capacity()
+            .is_some_and(|limit| requested.len() + resource_count > limit)
+        {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
         let demand = ViewDemand::new(
@@ -536,7 +544,10 @@ impl WireSession {
         // otherwise repeatedly opening different failed resources grows memory
         // even though the number of live subscriptions stays bounded.
         if !replacing_view
-            && self.views.len() + self.resource_views.len() >= self.policy.selected_capacity()
+            && self
+                .policy
+                .selected_capacity()
+                .is_some_and(|limit| self.views.len() + self.resource_views.len() >= limit)
         {
             return Err(WireSessionError::Demand(DemandError::SelectedCapacity));
         }
@@ -559,7 +570,7 @@ impl WireSession {
         Ok(())
     }
 
-    /// Live and opening interests across all products on this bounded owner.
+    /// Live and opening interests across all products on this owner.
     #[must_use]
     pub fn followed_interests(&self) -> usize {
         self.follows.len() + self.resources.len()
@@ -574,7 +585,7 @@ impl WireSession {
         self.views.bytes() + self.resource_views.bytes() + self.backings.bytes()
     }
 
-    /// All retained folds, including terminal resources, share one finite cap.
+    /// Number of retained folds, including terminal resources.
     #[must_use]
     pub fn retained_views(&self) -> usize {
         self.views.len() + self.resource_views.len()

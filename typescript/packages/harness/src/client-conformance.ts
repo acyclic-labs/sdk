@@ -92,16 +92,15 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     if (retained.nextSequence !== before.nextSequence || retained.revision !== before.revision || retained.recordCount !== 1n) {
       throw new Error("CLIENT_CONFORMANCE retain_selection: unchanged demand reset the fold or cursor");
     }
-    // The production interest policy admits eight selected agents. Nine inputs
-    // must be refused atomically, including when their identities overlap.
-    const overCapacity = Array<string>(9).fill(fixture.agent);
+    // Repeated selections beyond former defaults retain one exact follow.
+    const repeated = Array<string>(257).fill(fixture.agent);
     const composition = client.viewRevision();
-    refused("atomic_capacity_refusal", "selected_capacity", () => client.setView(overCapacity,
-      new BigUint64Array(9).fill(fixture.conversation_from), new BigUint64Array(9).fill(fixture.status_from)));
+    client.setView(repeated, new BigUint64Array(257).fill(fixture.conversation_from),
+      new BigUint64Array(257).fill(fixture.status_from));
     const unchanged = client.agentWindow(fixture.agent);
     if (unchanged.nextSequence !== before.nextSequence || client.viewRevision() !== composition
       || exactJson(client.selectedAgents()) !== exactJson([fixture.agent])) {
-      throw new Error("CLIENT_CONFORMANCE atomic_capacity_refusal: refusal changed admitted demand");
+      throw new Error("CLIENT_CONFORMANCE retain_repeated_selection: repeated selection changed admitted demand");
     }
     // This is the same fixed test identity used by the native suite, not a
     // frontend agent-address constructor. Rust admits each selected path.
@@ -116,7 +115,7 @@ export async function verifyClientObservation(stream: WasmStream, credential: nu
     if (reselected.nextSequence !== before.nextSequence || reselected.recordCount !== 0n) {
       throw new Error("CLIENT_CONFORMANCE reselection_cursor: evicted history retained or cursor reset");
     }
-    return {passed: ["exact_conversation", "exact_status", "retain_selection", "atomic_capacity_refusal",
+    return {passed: ["exact_conversation", "exact_status", "retain_selection", "retain_repeated_selection",
       "unknown_authority", "reselection_cursor"]};
   } finally { client.close(); client.free(); }
 }

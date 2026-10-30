@@ -139,6 +139,7 @@ fn fill(view: &mut StreamView) {
 fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let tree = Tree::new(64);
     let (mut session, scheduler) = client();
+    session.policy = DemandPolicy::new(Some(16), Some(8)).unwrap();
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
     let old_path = session.views.keys().next().unwrap().clone();
@@ -179,7 +180,7 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
 
 #[test]
 fn agent_viewport_releases_output_panes_on_scroll_out() {
-    let tree = Tree::new(64);
+    let tree = Tree::new(513);
     let (session, scheduler) = client();
     let selection = |index: usize| crate::AgentSelection {
         agent: tree.children[index].clone(),
@@ -189,6 +190,15 @@ fn agent_viewport_releases_output_panes_on_scroll_out() {
     let mut client =
         crate::AgentClient::new(session.client().clone(), tree.children[0].clone(), 0, 0, 0)
             .unwrap();
+    client
+        .set_viewport(
+            selection(0),
+            (1..257).map(selection),
+            (0..257).map(|index| follow(format!("fs:/volume/selected{index}/output"))),
+        )
+        .unwrap();
+    assert_eq!(client.residency(), (771, 771, 0));
+    assert!(client.selected_agents().eq(tree.children[..257].iter()));
     client
         .set_viewport(selection(0), (1..4).map(selection), tree.visible(0).1)
         .unwrap();
