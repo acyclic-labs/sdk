@@ -76,6 +76,7 @@ pub(super) fn capture<'a>(
     crate::conversation::BoundedContentFuture::new(None, || async move {
         let mut initial = cursor.initial.take();
         let optional_before_images = physical.import_source
+            && baseline
             && (matches!(initial, Some(WatchBatch::Changes { .. }))
                 || initial.is_none() && cursor.baseline_pending && !cursor.before_images_complete);
         if let Some(WatchBatch::RescanRequired { reason, .. }) = initial {

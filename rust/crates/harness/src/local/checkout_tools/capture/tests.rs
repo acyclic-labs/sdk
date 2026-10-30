@@ -619,10 +619,32 @@ async fn unreadable_before_images_remain_optional_until_continuity_is_lost() -> 
                 .value
                 .is_none()
         );
-        slot.as_mut().unwrap().initial = Some(WatchBatch::RescanRequired {
+        // An incremental capture which discovers lost continuity must not
+        // inherit the earlier optional display-import treatment.
+        slot.as_mut()
+            .unwrap()
+            .watcher
+            .fence(Duration::ZERO)
+            .map_err(storage)?;
+        assert!(
+            tools
+                .capture(
+                    (&tools.workspace, tools.workspace.view()),
+                    &mut slot,
+                    OperationId::new(),
+                    1,
+                    PublicationPermit::Unrestricted,
+                )?
+                .await
+                .is_err()
+        );
+        assert!(slot.is_none());
+        let mut cursor = Cursor::initial(&tools.workspace, &tools.capture_policy)?;
+        cursor.initial = Some(WatchBatch::RescanRequired {
             epoch: 1,
             reason: WatchInvalidationReason::QueueOverflow,
         });
+        slot = Some(cursor);
         // The same unreadable source cannot recover lost continuity or a
         // discarded watcher. Neither failure may publish a baseline receipt.
         assert!(run(&tools, &mut slot).await.is_err());
