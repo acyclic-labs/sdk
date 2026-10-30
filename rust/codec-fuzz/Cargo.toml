@@ -17,7 +17,7 @@ acyclic-fs-wire = { path = "../crates/filesystem-wire" }
 acyclic-harness-core = { path = "../crates/harness-core", default-features = false, features = ["test-support"] }
 acyclic-inference = { path = "../crates/inference", default-features = false }
 acyclic-machines = { path = "../crates/machines", default-features = false, features = ["test-support"] }
-acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
+acyclic-objects = { path = "../crates/objects", default-features = false, features = ["binary", "json", "test-support"] }
 acyclic-protobuf-json = { path = "../crates/protobuf-json" }
 acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support", "local", "session"] }
 libfuzzer-sys = "0.4"

@@ -141,6 +141,7 @@ dependencies = [
  "rustix",
  "security-framework 3.7.0",
  "serde",
+ "sha2 0.11.1",
  "subtle",
  "tokio",
  "tokio-util",
@@ -165,11 +166,13 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "js-sys",
  "pin-project-lite",
  "prost",
  "thiserror",
  "tokio",
  "tracing",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

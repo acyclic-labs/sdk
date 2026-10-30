@@ -27,8 +27,15 @@ The generated table links all thirty-six Actors message types to the actual
 semantic conversions, including their nested validation and post-admission
 checks. Its only public naming alias is wire `Error` to semantic `ServiceError`.
 Both protobuf syntax targets additionally call public semantic conversions for
-18 Stream message types, the Objects availability cursor and nine Inference
-message types. Accepted Stream projections use
+18 Stream message types, 20 Objects message types and nine Inference
+message types. Objects requests reach all ten unary dispatches on fresh real
+MemoryObjects accounts. Its nine unary response types reach the public binary
+client and the shared request/response verifier; admission and normalized
+results must agree. Range, byte maximum and page cursor contexts are exercised.
+Every response settles with one transport invocation, producer loss preserves
+its typed failure, and durable flush adds no invocation. Eleven actual client
+operations produce 22 request/response payloads awaiting capture, for 44 inputs
+across the two protobuf syntaxes. Accepted Stream projections use
 their actual reverse codec and preserve the complete semantic value, including
 record origins under explicit, matching and foreign follow contexts. Accepted
 Inference views must refuse a changed caller-selected identity. The one

@@ -2,6 +2,7 @@
 use prost::Message;
 use std::fmt::Debug;
 mod actors;
+mod objects;
 
 pub(super) fn project<W, S, E>(
     bytes: &[u8],
@@ -148,6 +149,7 @@ fn pending_run() -> acyclic_inference::wire::RunView {
 }
 
 pub(super) fn check(name: &str, bytes: &[u8]) {
+    objects::check(name, bytes);
     use acyclic_stream::{wire as w, wire_codec as c};
     macro_rules! projection {
         ($wire:ident, $decode:expr, $encode:expr) => {
@@ -357,5 +359,6 @@ pub(super) fn seeds(
         ));
     }
     seeds.extend(actors::seeds()?);
+    seeds.extend(objects::seeds()?);
     Ok(seeds)
 }
