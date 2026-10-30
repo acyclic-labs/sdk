@@ -21,7 +21,11 @@ pub(super) fn prepare_key(bytes: &[u8; 32]) -> SigningKey {
 }
 
 impl RuntimeSigner {
-    pub(super) fn new(id: &str, seed: [u8; 32]) -> Self {
+    pub(super) fn new(
+        id: &str,
+        seed: [u8; 32],
+        clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
+    ) -> Self {
         let seed = zeroize::Zeroizing::new(seed);
         let metadata = prepare_key(&blake3::derive_key(
             "acyclic.harness.metadata.v1",
@@ -34,6 +38,7 @@ impl RuntimeSigner {
             metadata_key: metadata.verifying_key().to_bytes(),
             workload: Default::default(),
             changes: Arc::new(NativeTrustChanges(revisions)),
+            clock,
         });
         Self {
             metadata,
@@ -52,6 +57,15 @@ pub(super) struct PublicAuthority {
     // Admission decisions are never retained.
     pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
     pub(super) changes: Arc<dyn acyclic_auth::trust::ChangeSource>,
+    pub(super) clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
+}
+
+impl PublicAuthority {
+    pub(super) fn now(&self) -> u64 {
+        self.clock
+            .as_ref()
+            .map_or_else(workload::now, |clock| clock.now_unix_millis() / 1000)
+    }
 }
 
 struct NativeTrustChanges(tokio::sync::watch::Receiver<u64>);

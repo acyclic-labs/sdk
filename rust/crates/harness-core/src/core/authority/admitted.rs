@@ -243,7 +243,7 @@ impl AdmittedAuthority {
             &verifier,
             &verifier.audience,
             &caller,
-            workload::now(),
+            verifier.public.now(),
             &mut None,
         )?;
         if matches!(custody, Custody::Platform(_)) && !authenticated.is_sealed() {
@@ -288,7 +288,7 @@ impl AdmittedAuthority {
             &self.caller.verifier,
             &self.caller.verifier.audience,
             scope,
-            workload::now(),
+            self.caller.verifier.public.now(),
             &mut None,
         )?;
         let mut encoded = capability.encode_sealed().map_err(workload::unauthorized)?;
@@ -346,7 +346,7 @@ impl AdmittedAuthority {
             &self.caller.verifier,
             &self.caller.verifier.audience,
             parent,
-            workload::now(),
+            self.caller.verifier.public.now(),
             &mut None,
         )?;
         if matches!(self.custody, Custody::Platform(_)) && !capability.is_sealed() {
@@ -435,7 +435,7 @@ impl AdmittedAuthority {
                     &self.caller.verifier,
                     &self.caller.verifier.audience,
                     &issued,
-                    workload::now(),
+                    self.caller.verifier.public.now(),
                     &mut None,
                 )?;
                 if !capability.is_sealed()

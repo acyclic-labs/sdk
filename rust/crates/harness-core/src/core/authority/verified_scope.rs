@@ -24,7 +24,7 @@ impl AuthorityVerifier {
         scope: &Scope,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<VerifiedScope> {
-        let capability = workload::verify(self, &self.audience, scope, workload::now(), work)?;
+        let capability = workload::verify(self, &self.audience, scope, self.public.now(), work)?;
         let mut quota = CodecQuota::new(work, 0)?;
         let evidence = compact_evidence(&capability, &mut quota)?;
         let scope = scope.copy(quota.work())?;
@@ -92,7 +92,7 @@ impl VerifiedScope {
     }
 
     pub(crate) fn recheck(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        self.check_at(workload::now(), work)
+        self.check_at(self.verifier.public.now(), work)
     }
 
     fn check_at(&self, timestamp: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
@@ -144,6 +144,7 @@ impl AuthorityVerifier {
                 metadata_key: checkpoint_key,
                 workload: Default::default(),
                 changes,
+                clock: None,
             }),
             admission: runtime_signing::AdmissionPort::closed(),
         })
@@ -231,7 +232,7 @@ impl AuthorityVerifier {
         scope: &Scope,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<u64> {
-        workload::verify(self, audience, scope, workload::now(), work)
+        workload::verify(self, audience, scope, self.public.now(), work)
             .map(|capability| capability.effective().expires_at_unix_seconds())
     }
 
