@@ -868,7 +868,10 @@ fn same_path_restores_are_serialized_by_a_process_crash_safe_lock()
     let parent = held_parent(&held_root, relative, &mut work)?;
     let first = acquire_restore_lock(&parent, relative, true, &mut work)?;
 
-    assert!(acquire_restore_lock(&parent, relative, false, &mut work).is_err());
+    assert!(matches!(
+        acquire_restore_lock(&parent, relative, false, &mut work),
+        Err(MaterializeError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock
+    ));
     drop(first);
     // Non-blocking: dropping unlocks explicitly, so a child another test
     // forks cannot keep the lock while it shares the open file until exec.
