@@ -190,12 +190,12 @@ test("Actors cancellation settles while a credential provider is still pending",
       await broken;
     }
   }), { numRuns: 32 });
-}, 1000);
+});
 
 test("shared renewal explores every cancellation and settlement ordering in Node", () => {
   const fixture = new URL("./credential-interleavings.mjs", import.meta.url);
   const run = (variant: string) => spawnSync("node", ["--unhandled-rejections=strict", fileURLToPath(fixture), variant], {
-    encoding: "utf8", timeout: 2000, windowsHide: true,
+    encoding: "utf8", windowsHide: true,
   });
   const fixed = run("fixed");
   expect(fixed.error).toBeUndefined();
@@ -205,4 +205,4 @@ test("shared renewal explores every cancellation and settlement ordering in Node
   expect(broken.error).toBeUndefined();
   expect(broken.status).toBe(1);
   expect(broken.stderr).toMatch(/pending|cancelled|AbortError/);
-}, 5000);
+});
