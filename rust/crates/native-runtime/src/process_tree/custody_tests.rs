@@ -61,6 +61,22 @@ fn program(root: &Path) -> Command {
     }
 }
 
+/// A live tree whose original stdin owner controls EOF; no timer or probe runs.
+fn gated_command() -> Command {
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([
+            "--exact",
+            "process_tree::capture_events_tests::event_capture_child",
+            "--nocapture",
+        ])
+        .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
 /// The owner: spawns the program, publishes its PID, and lives until killed.
 #[test]
 fn custody_owner_helper() {
@@ -138,8 +154,6 @@ pub(super) struct Watch {
     fd: std::os::fd::OwnedFd,
     #[cfg(windows)]
     handle: windows_sys::Win32::Foundation::HANDLE,
-    #[cfg(unix)]
-    pid: u32,
 }
 
 impl Watch {
@@ -161,7 +175,7 @@ impl Watch {
         }
         // SAFETY: the descriptor pidfd_open just returned.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        Some(Self { fd, pid })
+        Some(Self { fd })
     }
 
     #[cfg(windows)]
@@ -218,27 +232,54 @@ impl Watch {
         assert_eq!(polled, 1, "poll: {}", std::io::Error::last_os_error());
     }
 
-    /// Whether the process exits within `bound`, which only detects a
-    /// process that never exits.
+    /// Blocks on the retained process handle's terminal event.
     #[cfg(windows)]
-    fn exits_within(&self, bound: Duration) -> bool {
+    fn wait(&self) {
         use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
-        use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        let bound = u32::try_from(bound.as_millis()).expect("bound");
-        // SAFETY: an owned process handle.
-        unsafe { WaitForSingleObject(self.handle, bound) == WAIT_OBJECT_0 }
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+        // SAFETY: the original process handle remains owned by this watch.
+        let status = unsafe { WaitForSingleObject(self.handle, INFINITE) };
+        assert_eq!(
+            status,
+            WAIT_OBJECT_0,
+            "process wait: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     fn kill(&self) {
         #[cfg(unix)]
-        // SAFETY: the published, still-watched process.
-        unsafe {
-            libc::kill(libc::pid_t::try_from(self.pid).expect("pid"), libc::SIGKILL);
+        {
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: the retained pidfd names the original process even after
+            // exit/reaping; no numeric PID can be reused by an unrelated child.
+            let killed = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    self.fd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0_u32,
+                )
+            };
+            if killed != 0 {
+                let error = std::io::Error::last_os_error();
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(libc::ESRCH),
+                    "pidfd kill: {error}"
+                );
+            }
         }
         #[cfg(windows)]
-        // SAFETY: an owned handle with terminate access.
-        unsafe {
-            windows_sys::Win32::System::Threading::TerminateProcess(self.handle, 1);
+        {
+            // SAFETY: the retained original handle has terminate access.
+            let killed =
+                unsafe { windows_sys::Win32::System::Threading::TerminateProcess(self.handle, 1) };
+            if killed == 0 {
+                let error = std::io::Error::last_os_error();
+                assert!(self.exited(), "terminate watched process: {error}");
+            }
         }
     }
 }
@@ -416,19 +457,12 @@ fn a_killed_custodians_tree_dies_with_its_owner() {
     let watch = Watch::new(published(root.path(), &mut owner)).expect("running program");
     let custodian = Watch::new(custodian_of(&processes)).expect("the custodian is running");
     custodian.kill();
-    assert!(
-        custodian.exits_within(Duration::from_secs(30)),
-        "killed custodian"
-    );
+    custodian.wait();
     let survived = !watch.exited();
     owner.kill().expect("kill owner");
     owner.wait().expect("reap owner");
-    let exited = watch.exits_within(Duration::from_secs(30));
-    if !exited {
-        watch.kill();
-    }
+    watch.wait();
     assert!(survived, "the custodian's death killed a live owner's tree");
-    assert!(exited, "the tree outlived its owner and its custodian");
     ProcessCustody::open(&processes)
         .expect("reopen custody")
         .fence_stale()
@@ -444,12 +478,7 @@ fn trees_of_two_custody_directories_in_one_process_never_share_a_job() {
     let root = tempfile::tempdir().expect("root");
     let spawn = |directory: &str| {
         let custody = ProcessCustody::acquire(&root.path().join(directory)).expect("custody");
-        let mut command = Command::new("ping");
-        command
-            .args(["-n", "30", "127.0.0.1"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        let mut command = gated_command();
         let tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
         (custody, tree)
     };
@@ -494,7 +523,7 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
-        let status = tree.wait(Duration::from_secs(30)).expect("wait");
+        let status = tree.wait_exit(None).expect("wait");
         let descendant = Watch::new(
             fs::read_to_string(&pid)
                 .expect("pid")
@@ -530,11 +559,7 @@ fn an_idle_custody_holds_no_descriptor() -> std::io::Result<()> {
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes)?;
     assert_eq!(descriptors_naming(&processes)?, 0);
-    let mut command = crate::shell_command("sleep 30", Some("sh"))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let mut command = gated_command();
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     // Negative control: the count sees the descriptor a running tree holds.
     assert_eq!(descriptors_naming(&processes)?, 1);
@@ -559,7 +584,7 @@ fn a_replaced_custody_directory_refuses_to_record() -> std::io::Result<()> {
         .stderr(Stdio::null());
     // Control: the fenced directory records the tree.
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
-    tree.wait(Duration::from_secs(30))?;
+    tree.wait_exit(None)?;
     tree.terminate(None)?;
     fs::rename(&processes, root.path().join("fenced"))?;
     fs::create_dir(&processes)?;
@@ -593,18 +618,7 @@ fn a_second_owner_in_one_process_shares_the_live_custody() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let first = ProcessCustody::acquire(&processes).expect("first owner");
-    #[cfg(unix)]
-    let mut command = crate::shell_command("sleep 30", Some("sh")).expect("resolve fixture shell");
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("ping");
-        command.args(["-n", "30", "127.0.0.1"]);
-        command
-    };
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    let mut command = gated_command();
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &first).expect("spawn");
     let watch = Watch::new(tree_pid(&tree)).expect("running tree");
     let second = ProcessCustody::acquire(&processes).expect("second owner");
