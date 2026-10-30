@@ -122,7 +122,7 @@ fn original_buffer(original: (bool, usize, usize), stderr: bool, bytes: &[u8]) -
 #[tokio::test]
 async fn native_stream_moves_original_buffers_and_delivers_exit_after_pipes() -> io::Result<()> {
     for mode in ["exit", "wrapper"] {
-        let (mut output, mut input, pid, addresses, _) = start(mode, Duration::from_secs(5))?;
+        let (mut output, mut input, pid, addresses, _) = start(mode, CaptureSchedule::Unbounded)?;
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut released = false;
@@ -165,9 +165,27 @@ async fn native_stream_moves_original_buffers_and_delivers_exit_after_pipes() ->
 }
 
 #[tokio::test]
+async fn unbounded_capture_finishes_when_its_original_input_producer_disappears() -> io::Result<()>
+{
+    let (mut output, input, _, _, _) = start("exit", CaptureSchedule::Unbounded)?;
+    drop(input);
+    while output.recv().await.is_some() {}
+    let result = output.finish().await?.result.map_err(io::Error::other)?;
+    assert!(!result.status.success());
+    assert_ne!(
+        result.status.code(),
+        Some(7),
+        "the child never received its release byte"
+    );
+    // The successful release in the original-buffer control above uses the
+    // same child and capture owner; EOF must release that owner's wait too.
+    Ok(())
+}
+
+#[tokio::test]
 async fn receiver_loss_retires_quiet_and_backpressured_children() -> io::Result<()> {
     for mode in ["exit", "credit"] {
-        let (mut output, _input, _, _, _) = start(mode, Duration::from_secs(5))?;
+        let (mut output, _input, _, _, _) = start(mode, CaptureSchedule::Unbounded)?;
         assert!(output.recv().await.is_some());
         // Withhold all further output credit, then close it. Completion
         // requires physical containment cleanup, not the child's input EOF.
@@ -192,7 +210,7 @@ async fn owner_stop_and_deadline_retire_without_reader_credit() -> io::Result<()
                 schedule
             }
             "relative" => CaptureSchedule::new(Duration::from_millis(100)),
-            _ => CaptureSchedule::new(Duration::from_secs(5)),
+            _ => CaptureSchedule::Unbounded,
         };
         let (mut output, _input, _, addresses, wake) = start("credit", schedule)?;
         // An elapsed original deadline allows no pipe read. Restarting the
