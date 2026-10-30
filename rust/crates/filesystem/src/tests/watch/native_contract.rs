@@ -1,8 +1,5 @@
 //! One fence contract for precise notifications and conservative root hints.
 use super::*;
-use std::time::Duration;
-
-const FENCE: Duration = Duration::from_secs(5);
 
 struct Fixture {
     // Retire the producer before removing its watched directory.
@@ -67,7 +64,7 @@ fn fixture(held: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
     // Drain the startup interval before admitting the baseline for our write.
     // This is one fence, not a retry of the operation under test.
     baseline(&mut watch)?;
-    watch.fence(FENCE)?;
+    watch.fence()?;
     baseline(&mut watch)?;
     Ok(Fixture {
         directory,
@@ -130,7 +127,7 @@ fn written_fixture(held: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
         VolumeLimits::default(),
     )?;
     std::fs::write(&file, b"content")?;
-    fixture.watch.fence(FENCE)?;
+    fixture.watch.fence()?;
     let batch = poll(&mut fixture.watch)?;
     assert_notice(&batch, &expected, &fixture.excluded);
     if let WatchBatch::RescanRequired { epoch, reason } = batch {
@@ -160,7 +157,7 @@ pub(super) fn completed_write(held: bool) -> Result<(), Box<dyn std::error::Erro
 pub(super) fn cookie_is_hidden(held: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = written_fixture(held)?;
     for _ in 0..20 {
-        fixture.watch.fence(FENCE)?;
+        fixture.watch.fence()?;
         assert!(matches!(poll(&mut fixture.watch)?,
             WatchBatch::Changes { changes, .. } if changes.is_empty()));
     }
