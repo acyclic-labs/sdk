@@ -1,6 +1,6 @@
-import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
+import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmSessionAuthority, WasmStream,
   type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority, type WasmFileRefWire,
-  type WasmSessionAuthority, type AgentCommand,
+  type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export { serveActorFetch, serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
 /** Instantiate the harness module once from the platform-delivered bytes or module. */
@@ -21,12 +21,31 @@ interface Identity {
   stage: "claiming" | "creating" | "ready";
 }
 
+/** Public verification material for session credentials, projected by the
+ * invocation's authenticated owner. Plain data: it carries no credential,
+ * signing key or grant, and the host builds its verifier in its own module. */
+export interface SessionTrust {
+  /** v1: UTF-8 JSON of `acyclic_auth::trust::Snapshot`, the same value
+   * `WasmAuthorityAdmission.trust` carries. Unknown fields are refused. */
+  readonly trust: Uint8Array;
+  /** Canonical recipient resource every session credential must name. */
+  readonly audience: string;
+  /** Presenting account every session credential must name, or null. */
+  readonly holder: string | null;
+  /** The SAME owner's publications: resolve with its complete current trust
+   * once it differs from `current`. Rejection is producer loss and closes the
+   * host. Omit only when this trust is fixed for the invocation's life. */
+  changed?(current: Uint8Array, signal: AbortSignal): Promise<Uint8Array>;
+}
+
 /** Verified by the owning platform before it opens the host, never by a guest. */
 export interface EventHostAccess {
-  authority: WasmSessionAuthority;
+  trust: SessionTrust;
   credential: Uint8Array;
   policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
 }
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** One canonical session cursor. Pulls carry credit in the shared Rust engine;
  * closing aborts the corresponding input pull, calls and follows. */
@@ -38,6 +57,8 @@ export interface HostedSession {
 /** Shared one-actor host with event-owned delivery and durable recovery. */
 export class EventAgentHost {
   private readonly host: WasmAgentServer;
+  private readonly authority: WasmSessionAuthority;
+  private readonly closed = new AbortController();
   private serial: Promise<unknown> = Promise.resolve();
   private commands: Promise<unknown> = Promise.resolve();
   private readonly events = { generation: 0 };
@@ -46,23 +67,43 @@ export class EventAgentHost {
     private readonly name: string, options: WasmBrowserAgentOptions,
     owner: WasmAgentAuthority, registry: WasmAgentRegistry, private readonly access: EventHostAccess) {
 
-    const stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
-    const objects = {
-      length: (key: Uint8Array) => ledger.objectLength(key),
-      read: (key: Uint8Array, maximum: bigint) => ledger.objectRead(key, maximum),
-      put: (keys: Uint8Array[], values: Uint8Array[]) => ledger.objectPut(keys, values),
-    };
-    const providers = WasmAgentProviders.injected(stream, objects, true, options);
+    // The verifier lives in this module, so a host outside it supplies only public bytes.
+    const { trust } = access;
+    const authority = new WasmSessionAuthority(utf8.decode(trust.trust), trust.audience, trust.holder ?? undefined);
+    // One owner for every failed-open path: nothing below may leak the verifier.
+    let stream: WasmStream | undefined, providers: WasmAgentProviders | undefined;
     try {
+      stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
+      const objects = {
+        length: (key: Uint8Array) => ledger.objectLength(key),
+        read: (key: Uint8Array, maximum: bigint) => ledger.objectRead(key, maximum),
+        put: (keys: Uint8Array[], values: Uint8Array[]) => ledger.objectPut(keys, values),
+      };
+      providers = WasmAgentProviders.injected(stream, objects, true, options);
       const guest = AgentGuest.open(providers, options, owner, registry);
       const events = this.events;
-      this.host = WasmAgentServer.open(providers, options, owner, registry, access.authority, {
+      this.host = WasmAgentServer.open(providers, options, owner, registry, authority, {
         manifest: guest.manifest(),
         onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
         policy: (principal: Uint8Array, command: AgentCommand, signal: AbortSignal) => access.policy(principal, command, signal),
         admitted: (signal: AbortSignal) => recoverable(storage, events, signal),
       });
-    } finally { providers.free(); stream.free(); }
+    } catch (error) { authority.free(); throw error; } finally { providers?.free(); stream?.free(); }
+    this.authority = authority;
+    if (trust.changed) this.follow(trust.changed.bind(trust), trust.trust);
+  }
+
+  /** Apply each owner publication to every open session; a lost or
+   * non-monotonic publication fences the host instead of keeping stale trust. */
+  private follow(changed: NonNullable<SessionTrust["changed"]>, current: Uint8Array): void {
+    const { signal } = this.closed;
+    let next: Promise<Uint8Array>;
+    try { next = changed(current, signal); } catch { this.close(); return; }
+    next.then(published => {
+      if (signal.aborted) return;
+      this.authority.update(utf8.decode(published));
+      this.follow(changed, published);
+    }).catch(() => { if (!signal.aborted) this.close(); });
   }
 
   private identity(): Identity | undefined {
@@ -180,7 +221,12 @@ export class EventAgentHost {
   }
 
   /** End pending sessions and commands when this platform owner is disposed. */
-  close(): void { this.host.close(); }
+  close(): void {
+    if (this.closed.signal.aborted) return;
+    this.closed.abort();
+    this.host.close();
+    this.authority.free();
+  }
 
   create(intent: string, brief?: string): Promise<string> {
     const path = this.host.validateCreate(intent, brief);
