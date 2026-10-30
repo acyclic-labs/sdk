@@ -1,6 +1,7 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
 pub mod filesystem_pages;
+mod mcp;
 
 /// Replay one named target through the same entry point used by libFuzzer.
 pub fn exercise(target: &str, bytes: &[u8]) -> Result<(), String> {
@@ -28,6 +29,7 @@ pub fn harness_codecs(bytes: &[u8]) {
     acyclic_harness_core::agent::codec_fuzz::check(bytes);
     acyclic_harness_core::mcp::http::codec_fuzz::check(bytes);
     acyclic_harness_core::mcp::stdio::codec_fuzz::check(bytes);
+    mcp::check(bytes);
 }
 
 pub struct Decoder {

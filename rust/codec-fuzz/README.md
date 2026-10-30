@@ -16,7 +16,7 @@ target here does not register a scheduled check.
 | `filesystem_codecs` | Authority and durable records, plain/sealed distributed state records, workspace context records, JSON join/control projections, funded private core-state JSON/checksum recovery and the portable Windows USN checkpoint codec. |
 | `filesystem_pages` | All seven immutable node formats, volume creation, generation publication, retention/deletion, export manifests and publication evidence. Immutable nodes use the production default decode limits. |
 | `machine_journal` | Retained Machine observations and operation envelopes through the shared journal decoder, with version admission before the JSON payload. |
-| `harness_codecs` | Agent inbox, status, close and conversation records, retained turn effects, compact checkpoints, and the actual MCP JSON/SSE and stdio exchange decoders with chunk invariance and typed EOF. |
+| `harness_codecs` | Agent inbox, status, close and conversation records, retained turn effects, compact checkpoints, and the actual MCP JSON/SSE and stdio exchange decoders with chunk invariance and typed EOF. MCP service parameters/results cover resources, prompts and tools; callback admission checks canonical request identity, pinned policy and protocol refusal. |
 
 The protobuf oracle compares encoded fixed points, rather than Rust equality:
 valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
@@ -47,6 +47,29 @@ the typed binary output through the same descriptors. The signed token uses only
 it contains no account credential. These are SDK output captures, not hosted
 service traffic. Regenerate the complete protobuf corpus when schemas change,
 because the decoder indices can change.
+
+`corpus/EXTERNAL.tsv` separately records exact output from the published
+`@modelcontextprotocol/server-filesystem@2.1.0` server. Its complete stdio
+initialization/discovery transcript exercises the finite exchange; its unchanged
+`tools/list` response also exercises the JSON response decoder. These bytes were
+captured from the server process. They are not an HTTP or SSE transport capture.
+The request transcript and capture metadata, including all installed package
+versions and integrity values, live in `captures/`.
+
+To recapture with Node.js 24 or later, install the published package in a
+temporary directory and pass its package directory to the capture tool:
+
+```sh
+npm install --prefix /tmp/mcp-capture --ignore-scripts --no-audit --no-fund --save-exact @modelcontextprotocol/server-filesystem@2.1.0
+node capture-mcp.mjs /tmp/mcp-capture/node_modules/@modelcontextprotocol/server-filesystem
+cargo run --example replay
+```
+
+The tool only initializes and lists tools, using an empty temporary directory;
+it performs no remote tool call. It waits on stdout and process EOF without
+polling. Early EOF or a failed producer refuses the capture. Review any changed
+external bytes against the installed versions before updating their `external/`
+rows in the shared golden file. SDK encoder capture preserves these rows.
 
 Capture also writes `corpus/resource-identity-v1.json` by applying the actual
 resource encoder to the shared cross-language vector inputs. Copy that output

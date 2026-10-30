@@ -30,3 +30,9 @@ the saved seed with both its provenance and this baseline. After reviewing an
 intentional format change, `cargo run --example capture -- --accept-goldens`
 captures new baseline rows through the production encoders. Ordinary capture
 and replay never update the golden file.
+
+The `external/` rows retain real MCP server stdout. Their paths refer to
+`rust/codec-fuzz/corpus/EXTERNAL.tsv`, with request transcripts and installed
+package provenance under `rust/codec-fuzz/captures/`. The shared replay example
+checks their hashes, golden bytes and actual decoder oracles alongside SDK
+outputs. SDK encoder capture preserves these external baselines.
