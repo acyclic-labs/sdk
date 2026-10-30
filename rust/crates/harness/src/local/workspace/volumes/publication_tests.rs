@@ -384,7 +384,9 @@ async fn failed_scope_entry_retires_the_projections_it_entered() -> Result<()> {
         ran.store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(((), claims))
     }));
-    assert!(futures::poll!(&mut scope).is_pending());
+    // Observe the actual held slot, independently of the executor's unrelated
+    // cooperative scheduling budget for this test task.
+    assert!(futures::poll!(tokio::task::unconstrained(scope.as_mut())).is_pending());
     assert_eq!(
         *scratch.users.lock().unwrap(),
         1,
