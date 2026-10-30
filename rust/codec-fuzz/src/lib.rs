@@ -2,6 +2,14 @@
 use prost::Message;
 pub mod filesystem_pages;
 mod mcp;
+mod semantic;
+
+/// Real service-writer outputs to capture under both protobuf syntax targets.
+pub fn semantic_seeds(
+    streams: &[(String, Vec<u8>)],
+) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, acyclic_stream::StreamError> {
+    semantic::seeds(streams)
+}
 
 /// External captures must reach their recorded successful service or callback
 /// admission; chunk-equivalent refusal alone cannot qualify a positive seed.
@@ -119,15 +127,7 @@ where
     S::Error: std::fmt::Debug,
 {
     check::<W>(bytes);
-    if let Ok(wire) = W::decode(bytes)
-        && let Ok(value) = S::try_from(wire)
-    {
-        let encoded = W::from(value.clone()).encode_to_vec();
-        assert_eq!(
-            S::try_from(W::decode(encoded.as_slice()).unwrap()).unwrap(),
-            value
-        );
-    }
+    semantic::project(bytes, S::try_from, W::from);
 }
 
 fn seed<T: Message + Default>() -> Vec<u8> {
@@ -160,6 +160,8 @@ pub fn protobuf_json(bytes: &[u8]) {
     let descriptor = descriptor(&DECODERS[index]);
     if let Ok(value) = acyclic_protobuf_json::decode(descriptor.clone(), payload, usize::MAX) {
         let binary = value.encode_to_vec();
+        (DECODERS[index].check)(&binary);
+        semantic::check(DECODERS[index].name, &binary);
         let canonical = acyclic_protobuf_json::encode(descriptor.clone(), &binary).unwrap();
         let mut written = Vec::new();
         acyclic_protobuf_json::encode_to_writer(descriptor.clone(), &binary, &mut written).unwrap();
@@ -193,6 +195,7 @@ pub fn protobuf(bytes: &[u8]) {
     };
     let index = (u64::from_le_bytes(*selector) % DECODERS.len() as u64) as usize;
     (DECODERS[index].check)(payload);
+    semantic::check(DECODERS[index].name, payload);
 }
 
 fn framed(

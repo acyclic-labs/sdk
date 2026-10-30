@@ -14,14 +14,14 @@ in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 | Boundary | Canonical implementation | Version admission | Fuzz entry | Golden / proof work remaining |
 | --- | --- | --- | --- | --- |
 | Auth RPC messages | `auth::contract` | `acyclic.auth.v1` route | `protobuf`, including semantic conversion for every Auth message | Compile generated semantic table; capture and compare payload goldens |
-| Actors RPC messages | `actors::wire` | `acyclic.actors.v1` route | `protobuf` | Payload goldens |
+| Actors RPC messages | `actors::wire`, `actors::contract` | `acyclic.actors.v1` route | Both protobuf syntaxes also reach actual deployment, update, delete and subscription admission | Payload goldens; compile and execute semantic hooks; remaining boundary validators |
 | Filesystem RPC messages | `filesystem-wire::wire` | `acyclic.filesystem.v2` route and service contract version | `protobuf` | Payload goldens |
-| Inference RPC messages | `inference::wire` | `inference.customer.v1` route | `protobuf` | Payload goldens |
+| Inference RPC messages | `inference::{wire,validate_customer_wire}` | `inference.customer.v1` route | Both protobuf syntaxes reach nine public contract message types, canonical acceptance and foreign caller-identity refusal | Payload goldens; compile/execute hooks; related request/specification admission remains |
 | Machines RPC messages | `machines::wire` | `acyclic.machines.v1` route | `protobuf` | Payload goldens |
-| Objects RPC messages | `objects::wire` | `acyclic.objects.v1` route | `protobuf` | Payload goldens |
-| Stream RPC messages | `stream::wire` | `acyclic.stream.v1` route | `protobuf` | Payload goldens |
+| Objects RPC messages | `objects::wire`, `objects::AvailabilityCursor` | `acyclic.objects.v1` route | Both protobuf syntaxes reach actual availability-cursor conversion and semantic round trip | Payload goldens; compile/execute hooks; private request/response conversion hooks remain |
+| Stream RPC messages | `stream::{wire,wire_codec}` | `acyclic.stream.v1` route | Both protobuf syntaxes reach 18 public semantic conversions, actual reverse codecs where exposed, record origin contexts and packed read batches | Four additional actual Stream writer producers across both syntaxes (eight inputs) await capture, shared goldens and execution. Private response/request conversions remain |
 | Harness RPC and protocol identity messages | `harness-core::wire` | `acyclic.harness.v2`, `acyclic.protocol.v1`, exact negotiated descriptor identity | `protobuf`, `protobuf_json`; existing `harness-fuzz/protocol_identity` semantic oracle | 84 additional descriptor messages inventoried; typed table compilation and encoder capture pending |
-| Protobuf JSON projections | `protobuf-json`, service JSON codecs | Same versioned routes | `protobuf_json` | Capture and refusals |
+| Protobuf JSON projections | `protobuf-json`, service JSON codecs | Same versioned routes | `protobuf_json` reaches the same typed and semantic table as binary inputs, including every Auth conversion | Capture and refusals; execute newly joined semantic admission |
 | Session admission | `stream::session`, client handshake | Hello/Welcome version 2; initial interest shares Hello | `session_protocol`, shared with existing session target | Central admission/refusal golden; execute |
 | Session delimited/gRPC frames | `stream::wire_codec::session::FrameDecoder` | Admitted session owns version | `session_frames` | Kani prefix/EOF/progress harnesses; execute and capture |
 | Stream commands | `stream::journal` | `ACYCLIC-STREAM-COMMAND-V1` | `stream_persistence` | Capture and version refusals |

@@ -73,7 +73,38 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
-    for (name, bytes) in futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())? {
+    let streams = futures::executor::block_on(acyclic_stream::codec_fuzz::seeds())?;
+    for (message, variant, payload) in acyclic_codec_fuzz::semantic_seeds(&streams)? {
+        let (index, decoder) = DECODERS
+            .iter()
+            .enumerate()
+            .find(|(_, decoder)| decoder.name == message)
+            .ok_or("semantic seed has no generated message decoder")?;
+        let name = format!("{message}-{variant}");
+        let selector = u64::try_from(index)?.to_le_bytes();
+        let mut binary = selector.to_vec();
+        binary.extend_from_slice(&payload);
+        save(
+            "protobuf",
+            &name,
+            &binary,
+            "Stream production record/batch writers from codec_fuzz::seeds (first 8 bytes select type)",
+            &mut manifest,
+        )?;
+        let mut json = selector.to_vec();
+        json.extend_from_slice(
+            &acyclic_protobuf_json::encode(acyclic_codec_fuzz::descriptor(decoder), &payload)
+                .map_err(|error| format!("semantic JSON seed {name}: {error:?}"))?,
+        );
+        save(
+            "protobuf_json",
+            &name,
+            &json,
+            "acyclic_protobuf_json::encode from Stream production record/batch output (first 8 bytes select type)",
+            &mut manifest,
+        )?;
+    }
+    for (name, bytes) in streams {
         save(
             "stream_persistence",
             &name,
