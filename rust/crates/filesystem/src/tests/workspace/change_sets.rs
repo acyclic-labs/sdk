@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod producer;
+
+#[cfg(not(target_arch = "wasm32"))]
 async fn raw_changed_paths<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     changes: &ChangeSet<A, O>,
     maximum_entries: u32,
@@ -172,7 +175,16 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     )?;
     workspace.write_text("/lib/deep/file", "later head").await?;
     let mut rows = Vec::new();
-    while let Some(row) = value!(reader.next().await)? {
+    while let Some(preview) = value!(reader.peek().await)? {
+        let path_backing = preview.path.components().as_ptr();
+        let work = reader.work();
+        let live = original.live_allocation_bytes();
+        let preview = value!(reader.peek().await)?.ok_or("pending row disappeared")?;
+        assert_eq!(preview.path.components().as_ptr(), path_backing);
+        assert_eq!(reader.work(), work, "pending row repeated source work");
+        assert_eq!(original.live_allocation_bytes(), live);
+        let row = value!(reader.next().await)?.ok_or("pending row was not consumed")?;
+        assert_eq!(row.value().path.components().as_ptr(), path_backing);
         rows.push(row);
     }
     assert_eq!(rows.len(), 6);
@@ -206,6 +218,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     let stopped = CancellationToken::new();
     let mut reader = value!(before.changed_paths_to(&after, &original, &stopped).await)?;
     let first = value!(reader.next().await)?.ok_or("missing first changed path")?;
+    assert!(value!(reader.peek().await)?.is_some());
     let spent = reader.work();
     stopped.cancel();
     let failure = match reader.next().await {
@@ -254,6 +267,7 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
             ..
         })
     ));
+    producer::withdrawal_and_producer_loss_retire_original_pins().await?;
     println!("SMALL_DIRECTORY_MOVE_WORK {expanded:?} {full_scan:?}");
     Ok(())
 }

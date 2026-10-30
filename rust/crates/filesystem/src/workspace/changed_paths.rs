@@ -28,18 +28,22 @@ pub struct ChangedPaths<A: 'static, O: 'static> {
 }
 
 struct State<A: 'static, O: 'static> {
+    pending: Option<ChangedPathEntry>,
     // Frontier backing retires before the generation pins it reads.
     cursor: Option<Cursor<'static>>,
     checkouts: [Option<Owned<Checkout<A, O>>>; 2],
     failed: bool,
+    complete: bool,
 }
 
 impl<A, O> Default for State<A, O> {
     fn default() -> Self {
         Self {
+            pending: None,
             cursor: None,
             checkouts: [None, None],
             failed: false,
+            complete: false,
         }
     }
 }
@@ -122,38 +126,31 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
         &mut self,
     ) -> crate::MeasuredResult<OperationReceipt<Option<ChangedPathEntry>>, WorkspaceError> {
         let (state, mut accounting) = self.owner.borrow();
-        let result = async {
-            if state.failed {
-                return Err(FsError::InvalidDiff.into());
-            }
-            state.failed = true;
-            let roots = state
-                .checkouts
-                .each_ref()
-                .map(|checkout| checkout.as_ref().map(|checkout| checkout.value.root()));
-            let source = &state.checkouts[0]
-                .as_ref()
-                .ok_or(FsError::InvalidDiff)?
-                .value;
-            let cancellation = accounting.cancellation();
-            let row = state
-                .cursor
-                .as_mut()
-                .ok_or(FsError::InvalidDiff)?
-                .next(source.objects(), roots, &mut accounting, cancellation)
-                .await?;
-            let row = row
-                .map(|row| {
-                    Retained::from_owned(row, &mut accounting).map(|row| ChangedPathEntry { row })
-                })
-                .transpose()?;
-            state.failed = false;
-            Ok::<_, WorkspaceError>(row)
-        }
-        .await;
+        let result = state.prepare_next(&mut accounting).await;
         let work = accounting.spent();
         result
-            .map(|value| OperationReceipt { value, work })
+            .map(|()| OperationReceipt {
+                value: state.pending.take(),
+                work,
+            })
+            .map_err(|error| OperationFailure::new(error, work))
+    }
+
+    /// Borrows the next exact row while retaining its original allocation and
+    /// traversal position. An output encoder can check its actual byte credit
+    /// before consuming the row with `next`. Repeated borrows do no additional
+    /// source work or copying; original cancellation is checked on every call.
+    pub async fn peek(
+        &mut self,
+    ) -> crate::MeasuredResult<OperationReceipt<Option<&ChangedPath>>, WorkspaceError> {
+        let (state, mut accounting) = self.owner.borrow();
+        let result = state.prepare_next(&mut accounting).await;
+        let work = accounting.spent();
+        result
+            .map(|()| OperationReceipt {
+                value: state.pending.as_ref().map(ChangedPathEntry::value),
+                work,
+            })
             .map_err(|error| OperationFailure::new(error, work))
     }
 
@@ -161,5 +158,44 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangedPat
     /// calls that ended in cancellation or a typed refusal.
     pub fn work(&mut self) -> WorkCounters {
         self.owner.borrow().1.spent()
+    }
+}
+
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> State<A, O> {
+    async fn prepare_next(
+        &mut self,
+        accounting: &mut crate::kernel::KernelAccounting<'_>,
+    ) -> Result<(), WorkspaceError> {
+        if self.failed {
+            return Err(FsError::InvalidDiff.into());
+        }
+        self.failed = true;
+        if self.pending.is_none() && !self.complete {
+            let roots = self
+                .checkouts
+                .each_ref()
+                .map(|checkout| checkout.as_ref().map(|checkout| checkout.value.root()));
+            let source = &self.checkouts[0]
+                .as_ref()
+                .ok_or(FsError::InvalidDiff)?
+                .value;
+            let cancellation = accounting.cancellation();
+            let row = self
+                .cursor
+                .as_mut()
+                .ok_or(FsError::InvalidDiff)?
+                .next(source.objects(), roots, accounting, cancellation)
+                .await?;
+            self.pending = row
+                .map(|row| {
+                    Retained::from_owned(row, accounting).map(|row| ChangedPathEntry { row })
+                })
+                .transpose()?;
+            self.complete = self.pending.is_none();
+        } else {
+            accounting.check()?;
+        }
+        self.failed = false;
+        Ok(())
     }
 }
