@@ -85,11 +85,12 @@ fn verified(value: &wire::Verified) -> Result<Verified, Error> {
     })
 }
 
-#[cfg(objects_server)]
-fn wire_verified(value: &Verified) -> wire::Verified {
-    wire::Verified {
-        digest: Some(value.digest.into()),
-        length: value.length,
+impl From<&Verified> for wire::Verified {
+    fn from(value: &Verified) -> Self {
+        Self {
+            digest: Some(value.digest.into()),
+            length: value.length,
+        }
     }
 }
 
@@ -112,8 +113,8 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     use wire::put_response::Outcome;
     wire::PutResponse {
         outcome: Some(match value {
-            Put::Created { verified } => Outcome::Created(wire_verified(verified)),
-            Put::AlreadyExists { verified } => Outcome::AlreadyExists(wire_verified(verified)),
+            Put::Created { verified } => Outcome::Created(verified.into()),
+            Put::AlreadyExists { verified } => Outcome::AlreadyExists(verified.into()),
             Put::Unknown => Outcome::Unknown(true),
         }),
     }

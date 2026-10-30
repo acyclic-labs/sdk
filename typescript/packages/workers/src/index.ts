@@ -4,3 +4,4 @@ export * from "./generated/manifest.js";
 
 export * from "./service.js";
 export * from "./bindings.js";
+export * from "./entry.js";

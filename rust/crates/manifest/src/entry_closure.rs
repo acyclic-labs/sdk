@@ -58,6 +58,17 @@ pub struct PreparedEntry {
 }
 
 impl PreparedEntry {
+    /// Decode and admit a selected JSON entry once, before publication starts.
+    pub fn from_json(
+        input: &[u8],
+        environment: &str,
+        entry: &str,
+        artifact: OwnedBytes,
+        files: Vec<(String, OwnedBytes)>,
+    ) -> Result<Self, ManifestError> {
+        Self::new(crate::decode(input)?, environment, entry, artifact, files)
+    }
+
     /// Admit one selected entry and all its modules before any publication.
     /// Selection consumes configuration, and payload ownership is retained
     /// unchanged through SHA-256 verification and canonical content sealing.

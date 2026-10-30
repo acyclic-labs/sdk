@@ -45,7 +45,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {
     return objectsRequest(input, async (bytes, controller) => {
-      await ensureObjectsWasm(controller.signal);
+      const ready = ensureObjectsWasm(controller.signal);
+      if (ready !== undefined) await ready;
       return observed(this.observer, "objects", route,
         sizes => this.send(route, bytes, controller, sizes));
     });

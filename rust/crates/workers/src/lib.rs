@@ -7,7 +7,7 @@ pub use acyclic_auth::addressing;
 pub mod deployment;
 
 /// Selected immutable entry publication and lazy loading over the original Objects provider.
-pub mod entry;
+pub use acyclic_manifest::entry;
 
 /// Rust-owned deployment manifest, validation and language generation.
 pub use acyclic_manifest as manifest;

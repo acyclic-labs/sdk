@@ -4,8 +4,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 mod cron;
+pub mod entry;
 mod entry_closure;
 mod generation;
+#[cfg(target_arch = "wasm32")]
+mod javascript;
 mod selection;
 mod validation;
 pub mod wire;
@@ -408,6 +411,12 @@ pub struct WorkerPatternRoute {
 
 /// Version discrimination precedes strict v1 decoding; all inputs are size bounded.
 pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
+    let manifest = decode(input)?;
+    validate(&manifest)?;
+    Ok(manifest)
+}
+
+fn decode(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
     if input.len() > MAX_JSON_BYTES {
         return Err(ManifestError::invalid("$", "json-size"));
     }
@@ -424,48 +433,5 @@ pub fn parse(input: &[u8]) -> Result<DeploymentManifest, ManifestError> {
     }
     validation::bound_json(&value)?;
     let manifest = serde_json::from_slice(input).map_err(ManifestError::json)?;
-    validate(&manifest)?;
     Ok(manifest)
-}
-
-/// Node/browser artifact admission: the entry bytes and every supplied file are
-/// checked against the parsed manifest's declared entry and assets.
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen(js_name = verifyArtifact)]
-pub fn verify_artifact_json(
-    input: &str,
-    environment: &str,
-    entry: &str,
-    artifact: &js_sys::Uint8Array,
-    paths: Vec<String>,
-    files: Vec<js_sys::Uint8Array>,
-) -> Result<(), wasm_bindgen::JsValue> {
-    let manifest = parse(input.as_bytes())
-        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))?;
-    // Every supplied file is checked: unpaired paths or files are refused, not dropped.
-    if paths.len() != files.len() {
-        return Err(wasm_bindgen::JsValue::from_str(
-            &ManifestError::invalid("assets", "undeclared-asset").to_string(),
-        ));
-    }
-    let (artifact, ()) = acyclic_stream::javascript_bytes::snapshot(artifact, |_| Ok(()))?;
-    let files: Vec<(String, Vec<u8>)> = paths
-        .into_iter()
-        .zip(files)
-        .map(|(path, file)| {
-            let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&file, |_| Ok(()))?;
-            Ok((path, bytes))
-        })
-        .collect::<Result<_, wasm_bindgen::JsValue>>()?;
-    verify_artifact(&manifest, environment, entry, &artifact, &files)
-        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
-}
-
-/// Node/browser admission export; executes the same parser and validator as Rust.
-#[cfg(target_arch = "wasm32")]
-#[wasm_bindgen::prelude::wasm_bindgen(js_name = validate)]
-pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
-    parse(input.as_bytes())
-        .map(|_| ())
-        .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
