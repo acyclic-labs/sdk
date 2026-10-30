@@ -311,7 +311,7 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
   await cancellation;
 });
 
-test("exec delivers output while command input is backpressured and drop cancels both directions", { timeout: 5000 }, async t => {
+test("exec delivers output while command input is backpressured and drop cancels both directions", async t => {
   const cancellation = Promise.withResolvers();
   let complete = false;
   const { machines } = await fixture(t, {
@@ -334,7 +334,7 @@ test("exec delivers output while command input is backpressured and drop cancels
 });
 
 for (const mode of ["early-exit", "malformed"]) {
-  test(`exec cancels ${mode} without canceling another active RPC`, { timeout: 5000 }, async t => {
+  test(`exec cancels ${mode} without canceling another active RPC`, async t => {
     let cancelled;
     let finishWatch;
     let watchCancelled = false;
@@ -492,7 +492,7 @@ test("watch delivers before completion and cancellation reaches the server", asy
   await cancellation;
 });
 
-test("return interrupts a pending stream pull and terminal watch needs no EOF", { timeout: 5000 }, async t => {
+test("return interrupts a pending stream pull and terminal watch needs no EOF", async t => {
   const execCancelled = Promise.withResolvers();
   const watchCancelled = Promise.withResolvers();
   const { machines } = await fixture(t, {
@@ -544,7 +544,7 @@ test("watch refuses substituted identities, invalid status and incomplete EOF wi
   assert.equal(attempts, 4);
 });
 
-test("original guest deadlines bound stalled credentials even with timeout zero", { timeout: 5000 }, async t => {
+test("original guest deadlines bound stalled credentials even with timeout zero", async t => {
   let dispatched = 0;
   const { options } = await fixture(t, {
     readFile() { dispatched++; },

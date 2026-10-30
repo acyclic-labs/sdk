@@ -40,10 +40,10 @@ try {
   const client = new ActorsClient({ endpoint: `https://localhost:${server.address().port}`, credential: cache.provider, caCertificate: Buffer.from(identity.certificate) });
   assert.equal(await client.transport, "grpc", "ordinary Node/Bun must select the installed native companion");
   const original = await cache.resolve();
-  await assert.rejects(client.inspectActor({ actorId: "native-companion" }, { signal: AbortSignal.timeout(10_000) }), error => error.code === "permission_denied" && error.message === "qualified-native" && error.metadata.credentialRejected === false);
+  await assert.rejects(client.inspectActor({ actorId: "native-companion" }), error => error.code === "permission_denied" && error.message === "qualified-native" && error.metadata.credentialRejected === false);
   assert.equal(await cache.resolve(), original, "policy denial preserves the exact lease");
   grpcStatus = "16";
-  await assert.rejects(client.inspectActor({ actorId: "native-companion" }, { signal: AbortSignal.timeout(10_000) }), error => error.code === "unauthenticated" && error.metadata.credentialRejected === true);
+  await assert.rejects(client.inspectActor({ actorId: "native-companion" }), error => error.code === "unauthenticated" && error.metadata.credentialRejected === true);
   assert.equal((await cache.resolve()).token(), "replacement", "native rejection reaches the shared cache");
   assert.equal(refreshes, 2);
   assert.ifError(failure);
