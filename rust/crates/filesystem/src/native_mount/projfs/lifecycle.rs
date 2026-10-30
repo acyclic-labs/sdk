@@ -31,12 +31,16 @@ impl Projector {
             };
             lifecycle.custody = owner.retirement_ownership();
             drop(lifecycle);
-            while owner
-                .runtime
-                .as_ref()
-                .is_some_and(|runtime| lock_recover(&runtime.active_work).upgrade().is_some())
-            {
-                std::thread::sleep(HELD_RETRY);
+            // Retirement starts once the last callback's activation leaves;
+            // that leave signals `active_work_idle`.
+            if let Some(runtime) = owner.runtime.as_ref() {
+                let mut active = lock_recover(&runtime.active_work);
+                while active.upgrade().is_some() {
+                    active = runtime
+                        .active_work_idle
+                        .wait(active)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
             }
             let result = owner.stop_physical().and_then(|()| {
                 let credit = owner

@@ -138,6 +138,7 @@ pub(super) fn callback_runtime(
         source,
         work: Mutex::new(work.clone()),
         active_work: Mutex::new(Default::default()),
+        active_work_idle: crate::sync::Condvar::new(),
         original_work: Mutex::new(None),
         callback_guard: None,
         root: root.to_path_buf(),

@@ -172,6 +172,7 @@ impl ProjFsSession {
             source,
             work: Mutex::new(work.clone()),
             active_work: Mutex::new(Default::default()),
+        active_work_idle: crate::sync::Condvar::new(),
             original_work: Mutex::new(original_work),
             callback_guard,
             root,
