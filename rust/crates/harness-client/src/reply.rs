@@ -586,7 +586,7 @@ mod tests {
             conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
             resources::ProviderRef,
         };
-        let agent = AgentPath::root(&AgentId::from_bytes([1; 16]));
+        let agent = AgentPath::root(&acyclic_harness_core::agent::AgentId::from_bytes([1; 16]));
         let run = OperationId::from_bytes([2; 16]);
         let file = FileRef::new(
             VolumeRef::new(
