@@ -61,23 +61,24 @@ The API documentation is available on
 [`docs.rs`](https://docs.rs/acyclic-native-runtime).
 
 `ProcessTree` retains the direct child and OS containment through collection
-and cleanup. `wait(timeout)` bounds exit observation; cleanup uses that same
-path before reaping. `wait_with_output(timeout, max_bytes)` closes stdin, polls both
-pipes without reader threads, and cleans up on exit, overflow, or timeout.
-The output bound covers retained payload across both streams, with an 8 KiB
-scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
-Existing temporary-file capture consumers retain their separate file-size
-polling policy, which is not a hard disk-usage limit.
+and cleanup. `wait_exit(None)` observes the original process exit without a
+deadline; `wait(timeout)` uses an explicit caller-selected deadline.
+`wait_with_output(schedule, max_bytes)` closes stdin, reads both pipes through
+the shared native readiness service, and cleans up on exit, overflow or a
+selected deadline. `CaptureSchedule::Unbounded` registers no timer. The output
+bound covers retained payload across both streams, with an 8 KiB scratch buffer;
+allocator bookkeeping and OS pipe buffers are outside it.
 
-Process ownership stays in `process_tree.rs` inside this existing crate. File
-backends remain separate modules. `process_output(command, timeout, max_bytes)`
-provides bounded short-command capture; `process_status(command, timeout)`
-preserves configured streams. Streaming hosts take pipes from `ProcessTree`
-and enforce their protocol bounds. `terminate_after(grace)` requests Unix
-SIGTERM before mandatory cleanup; an exited leader never excuses surviving
-descendants. Async callers use the existing `run_blocking_io` pool, whose
-admitted operations retain ownership when observers are dropped. Its queue and
-OS scheduling are outside the command's exit/capture observation window.
+Process ownership stays in this existing crate. File backends remain separate
+modules. `process_output(command, schedule, max_bytes)` captures through the
+same owner; `process_status(command, timeout)` preserves configured streams.
+Streaming hosts take pipes from `ProcessTree` and enforce their protocol bounds.
+`terminate_after(grace)` requests Unix SIGTERM, then forces termination if the
+caller-selected grace expires. Forced termination waits on the original process
+exit with no additional deadline. An exited leader never excuses surviving
+descendants. Async callers use the existing `run_blocking_io` pool, whose admitted
+operations retain ownership when observers are dropped. Its queue and OS
+scheduling are outside a selected exit/capture observation deadline.
 
 SDK Rust runtime, tests and qualification callers use these primitives,
 including mount recovery, Codex streaming, compiler/tool checks and parallel

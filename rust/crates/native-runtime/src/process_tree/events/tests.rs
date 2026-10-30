@@ -55,15 +55,10 @@ fn an_exit_fires_for_a_child_that_exits_and_one_that_already_has() -> io::Result
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null()),
     )?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    tree.arm_exit(deadline)?.block();
-    assert!(Instant::now() < deadline, "the exit woke the wait");
-    // The child is now unreaped and exited: a new wait still fires.
-    tree.arm_exit(deadline)?.block();
-    assert!(
-        Instant::now() < deadline,
-        "an exited child wakes a new wait"
-    );
+    tree.readiness()?.0.block();
+    assert!(tree.try_wait(None)?.is_some());
+    // The child is now unreaped and exited: the same source still fires.
+    tree.readiness()?.0.block();
     assert!(tree.try_wait(None)?.is_some());
     Ok(())
 }
