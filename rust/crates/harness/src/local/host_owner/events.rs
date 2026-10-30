@@ -10,6 +10,9 @@ impl HostWorkspaceOwner {
         event: &str,
         input: Value,
     ) -> Result<Value> {
+        if event == "PermissionRequest" {
+            return Ok(self.permission(host, &input));
+        }
         if !matches!(
             event,
             "SessionStart" | "Stop" | "SessionEnd" | "NativeSession"
@@ -86,6 +89,43 @@ impl HostWorkspaceOwner {
         )
     }
 
+    /// A host's permission prompt for one of the harness's own coordination
+    /// tools, answered by the configured approval chain in order: a rules
+    /// stage allows, denies or escalates; exhausting the chain refuses. A
+    /// human, model or parent stage leaves the prompt to the host, whose own
+    /// approval then applies. Host tools never reach the chain: their
+    /// prompts stay the host's. No agent, file or request beyond the hook.
+    pub(super) fn permission(&self, host: &str, input: &Value) -> Value {
+        use crate::approvals::{ApprovalRule, Approver, RuleVerdict};
+        let Some(tool) = input
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .and_then(|name| coordination_tool(host, name))
+        else {
+            return json!({});
+        };
+        let arguments = input.get("tool_input").unwrap_or(&Value::Null);
+        let mut verdict = RuleVerdict::Deny;
+        for approver in &self.local.preset.approval_policy.approvers {
+            let Approver::Rules {
+                rules, fallback, ..
+            } = approver
+            else {
+                return json!({});
+            };
+            verdict = ApprovalRule::evaluate(rules, *fallback, tool, arguments);
+            if verdict != RuleVerdict::Ask {
+                break;
+            }
+        }
+        let decision = if verdict == RuleVerdict::Allow {
+            json!({"behavior": "allow"})
+        } else {
+            json!({"behavior": "deny", "message": format!("the harness approval policy refuses {tool}")})
+        };
+        json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": decision}})
+    }
+
     pub(super) async fn locate(&self, cwd: &Path) -> Result<Value> {
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
         // A native session enters only after its view has been attached. Cwd
@@ -115,4 +155,18 @@ impl HostWorkspaceOwner {
         first.verify().await?;
         self.location(agent)
     }
+}
+
+/// The coordination tool `name` invokes, under the server name each host's
+/// plugin manifest gives it; any other tool is the host's own.
+fn coordination_tool<'a>(host: &str, name: &'a str) -> Option<&'a str> {
+    let servers: &[&str] = match host {
+        "codex" => &["mcp__acyclic-sessions__", "mcp__acyclic_sessions__"],
+        "claude-code" => &["mcp__plugin_acyclic_acyclic-sessions__"],
+        _ => &[],
+    };
+    servers
+        .iter()
+        .find_map(|server| name.strip_prefix(server))
+        .filter(|tool| crate::local::host_process::children::TOOLS.contains(tool))
 }

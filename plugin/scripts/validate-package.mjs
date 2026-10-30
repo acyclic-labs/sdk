@@ -98,9 +98,14 @@ if (assets[join(plugin, ".codex-plugin", "plugin.json")].mcpServers !== "./.mcp.
 const hookHandlers = Object.values(assets[join(plugin, "hooks", "hooks.json")].hooks ?? {})
   .flat()
   .flatMap(group => group.hooks ?? []);
-if (hookHandlers.length !== 3 || hookHandlers.some(hook => hook.type !== "command")
-  || JSON.stringify(Object.keys(assets[join(plugin, "hooks", "hooks.json")].hooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd"])) {
-  fail("Codex hooks must capture only native session boundaries");
+// The one permission hook reaches the harness only for its own coordination
+// tools; every other Codex prompt stays the host's.
+const codexHooks = assets[join(plugin, "hooks", "hooks.json")].hooks;
+if (hookHandlers.length !== 4 || hookHandlers.some(hook => hook.type !== "command")
+  || JSON.stringify(Object.keys(codexHooks)) !== JSON.stringify(["SessionStart", "Stop", "SessionEnd", "PermissionRequest"])
+  || Object.entries(codexHooks).some(([event, groups]) => groups.some(group =>
+    group.matcher !== (event === "PermissionRequest" ? "^mcp__acyclic[-_]sessions__" : undefined)))) {
+  fail("Codex hooks must capture only native session boundaries and coordination-tool permission prompts");
 }
 
 // The `acyclic-plugin` command must link to an interpreter-less placeholder that the

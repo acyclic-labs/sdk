@@ -1,5 +1,5 @@
 {
-  "description": "Native session boundaries; tools and native subagents retain host behavior.",
+  "description": "Native session boundaries, and harness approval for its own coordination tools; native tools and subagents retain host behavior.",
   "hooks": {
     "SessionStart": [
       {
@@ -33,6 +33,19 @@
             "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex SessionEnd",
             "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex SessionEnd",
             "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "^mcp__acyclic[-_]sessions__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${PLUGIN_ROOT}/bin/acyclic\" __hook codex PermissionRequest",
+            "commandWindows": "& \"$env:PLUGIN_ROOT\\bin\\acyclic.exe\" __hook codex PermissionRequest",
+            "timeout": 120
           }
         ]
       }

@@ -34,6 +34,8 @@ pub struct Args {
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.
+    /// With `--host-workspace` it answers only native permission prompts for
+    /// coordination tools, and defaults to leaving them to the host.
     #[arg(long)]
     pub approval_policy: Option<PathBuf>,
     #[arg(short = 'p', long = "prompt", conflicts_with = "input_format")]

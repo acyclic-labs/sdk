@@ -57,6 +57,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
                     package.to_str().ok_or("non-Unicode plugin path")?,
                 ])?;
                 codex(&["plugin", "add", "acyclic@acyclic", "--json"])?;
+                trust_codex_hooks()?;
             } else {
                 codex(&["plugin", "remove", "acyclic@acyclic", "--json"])?;
             }
@@ -158,6 +159,93 @@ fn codex(args: &[&str]) -> Result<()> {
     let status = host_command("codex")?.args(args).status()?;
     if !status.success() {
         return Err(format!("Codex plugin manager failed: {status}").into());
+    }
+    Ok(())
+}
+
+/// Installing is the user's consent to the package's hooks. Codex runs a
+/// plugin hook only once its hash is trusted, so record that trust for
+/// exactly the acyclic@acyclic hooks Codex lists, through Codex's own
+/// app-server and config writer, as its interactive hook review would.
+fn trust_codex_hooks() -> Result<()> {
+    use std::process::Stdio;
+    let recovery =
+        "recovery: run codex interactively and trust the acyclic@acyclic hooks in its hook review";
+    let mut server = host_command("codex")?
+        .arg("app-server")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("step=start Codex app-server: {error}; {recovery}"))?;
+    let (Some(mut input), Some(output)) = (server.stdin.take(), server.stdout.take()) else {
+        return Err(format!("step=open Codex app-server pipes; {recovery}").into());
+    };
+    let mut output = io::BufReader::new(output);
+    // Owns both pipes: dropping it closes stdin, which ends the server.
+    let mut call = move |id: u64, method: &str, params: Value| -> Result<Value> {
+        use io::{BufRead as _, Write as _};
+        writeln!(
+            input,
+            "{}",
+            json!({"id": id, "method": method, "params": params})
+        )?;
+        if method == "initialize" {
+            writeln!(input, "{}", json!({"method": "initialized"}))?;
+        }
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if output.read_line(&mut line)? == 0 {
+                return Err(format!(
+                    "step=Codex {method}: app-server exited before answering; {recovery}"
+                )
+                .into());
+            }
+            let message: Value = serde_json::from_str(&line)?;
+            if message.get("id") != Some(&json!(id)) {
+                continue;
+            }
+            if let Some(error) = message.get("error") {
+                return Err(format!("step=Codex {method}: {error}; {recovery}").into());
+            }
+            return Ok(message.get("result").cloned().unwrap_or(Value::Null));
+        }
+    };
+    call(
+        1,
+        "initialize",
+        json!({"clientInfo": {"name": "acyclic", "title": null, "version": env!("CARGO_PKG_VERSION")}, "capabilities": null}),
+    )?;
+    let listed = call(2, "hooks/list", json!({}))?;
+    let trust = listed
+        .get("data")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .filter(|hook| {
+            hook.get("pluginId") == Some(&json!("acyclic@acyclic"))
+                && hook.get("trustStatus") != Some(&json!("trusted"))
+        })
+        .map(|hook| -> Result<(String, Value)> {
+            Ok((
+                hook.get("key").and_then(Value::as_str).ok_or("Codex hook lacks key")?.to_owned(),
+                json!({"trusted_hash": hook.get("currentHash").and_then(Value::as_str).ok_or("Codex hook lacks hash")?}),
+            ))
+        })
+        .collect::<Result<serde_json::Map<_, _>>>()?;
+    if !trust.is_empty() {
+        call(
+            3,
+            "config/batchWrite",
+            json!({"edits": [{"keyPath": "hooks.state", "value": trust, "mergeStrategy": "upsert"}]}),
+        )?;
+    }
+    drop(call);
+    let status = server.wait()?;
+    if !status.success() {
+        return Err(format!("step=stop Codex app-server: {status}; {recovery}").into());
     }
     Ok(())
 }

@@ -7,14 +7,14 @@ import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 
 // Subscribe before the snapshot. Both native model and command acceptance use
 // this one readiness barrier and the caller's existing process/tree custody.
-export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,capture=()=>{}}) {
+export async function startWorkspaceOwner({scope,binary,workspace,state,env,root,args=[],capture=()=>{}}) {
  const descriptor=join(workspace,'.acyclic-sdk/host-files/owner.json');
  let ready,failed;
  const notified=new Promise((yes,no)=>{ready=yes;failed=no;});
  const watcher=watch(workspace,{recursive:true});
  watcher.on('change',()=>{if(existsSync(descriptor))ready();});watcher.on('error',failed);
  try {
-  const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state],
+  const owner=scope.startOwned(binary,['--workspace',workspace,'--host-workspace','--host-state-directory',state,...args],
    {cwd:workspace,env,scopeMountRoot:root,...(process.platform!=='win32'?{scopeReportSignal:'SIGTERM'}:{})});
   owner.closed.then(record=>{capture(record);failed(new Error('workspace owner exited before descriptor'));},failed);
   if(existsSync(descriptor))ready();
