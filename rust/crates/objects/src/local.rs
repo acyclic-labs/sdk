@@ -1,27 +1,29 @@
-//! Durable local-directory medium: one immutable file per key.
+//! Durable local medium: one append-only record log per root.
 //!
-//! A key becomes visible only by hard-linking a complete temporary file into
-//! place, so create-if-absent is atomic on every supported filesystem; until
-//! flushed, a crash can lose it or leave it short or damaged. One process
-//! owns the root, so one in-process lock makes compare-and-replace and
-//! compare-and-remove atomic; only create competes with them, and it never
-//! replaces an existing key.
+//! Every write appends one checksummed frame, a put or a removal, to `log`,
+//! so a frame is whole or absent after any crash. An in-memory index, rebuilt
+//! by one replay at open, maps each key to its value in the log. One process
+//! owns the root, and one lock orders every write, so compare-and-replace and
+//! compare-and-remove are atomic; create never replaces an existing key.
 //!
-//! A write only publishes its name; [`Medium::flush`] makes named keys
-//! durable in one batch, where a commit needs them. One owning process makes
-//! the set of unflushed writes exact: it flushes them all on close, once its
-//! last accepted write is done, and a root opened after an unclean close is
-//! flushed whole before any write and reported [`Medium::recovered`] until
-//! settled: a close before then leaves the root marked unclean.
+//! A write is visible at once, and [`Medium::flush`] makes every write so far
+//! durable with one data flush of the log. The owner flushes on close, once
+//! its last accepted write is done; a root opened after an unclean close cuts
+//! a torn tail, flushes what survived and reports [`Medium::recovered`] until
+//! settled, so the store repairs a closure the crash left partial.
+//!
+//! When the log holds more dead bytes than live ones, its live frames are
+//! rewritten to a fresh log that replaces it atomically, so space is
+//! reclaimed in amortised constant work per dead byte.
 use crate::{Medium, MediumError, Store};
-use acyclic_native_runtime::spawn_persistence;
+use acyclic_native_runtime::{LogFrame, spawn_persistence};
 use acyclic_stream::OwnedBytes;
-use std::collections::{BTreeSet, HashMap};
-use std::io::{Read as _, Seek as _, Write as _};
+use std::collections::BTreeMap;
+use std::io::Write as _;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 /// How file contents are made durable before they become observable.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -49,6 +51,10 @@ pub enum LocalOpenError {
     /// The root holds something other than a v1 store.
     #[error("local Objects root is not a v1 store")]
     Corrupt,
+    /// The root holds the earlier one-file-per-key layout, which this version
+    /// does not open; it has no migration.
+    #[error("local Objects root holds the earlier one-file-per-key layout")]
+    UnsupportedLayout,
     /// Another process owns the root.
     #[error("local Objects root is already owned")]
     AlreadyOwned,
@@ -60,16 +66,32 @@ pub enum LocalOpenError {
     Io(#[from] std::io::Error),
 }
 
-const FORMAT: &[u8] = b"acyclic-objects-local-v1\n";
+const FORMAT: &[u8] = b"acyclic-objects-log-v1\n";
+/// The one-file-per-key layout's format marker.
+const FILE_PER_KEY_FORMAT: &[u8] = b"acyclic-objects-local-v1\n";
 /// Present while an owner may hold unflushed writes.
 const OPEN: &str = "OPEN";
+const LOG: &str = "log";
+/// A compaction's replacement log, until it is renamed over [`LOG`].
+const NEXT: &str = "log.next";
+/// Dead bytes below this are never compacted: a chunk of work, not a bound.
+const COMPACTION_CHUNK: u64 = 1 << 20;
 
-/// The durable local-directory medium.
+/// The log's frame: an operation, the key and, for a put, the value.
+const LOG_FRAME: LogFrame = LogFrame {
+    domain: b"acyclic-objects-log-frame-v1\0",
+    wide: true,
+    minimum_body: 1 + 4,
+    maximum_body: u64::MAX - 64,
+};
+const PUT: u8 = 1;
+const REMOVE: u8 = 2;
+/// Operation and key length, before the key.
+const BODY_HEADER: u64 = 1 + 4;
+
+/// The durable local medium.
 pub struct LocalMedium {
-    root: PathBuf,
-    durability: LocalDurability,
-    conditional: Arc<Mutex<()>>,
-    unflushed: Arc<Unflushed>,
+    shared: Arc<Shared>,
 }
 
 /// One durable local account over a [`LocalMedium`].
@@ -99,22 +121,13 @@ fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'stati
     key: usize,
     work: F,
 ) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
-    #[cfg(test)]
-    SUBMITTED.set(SUBMITTED.get() + 1);
     let submitted = spawn_persistence(
         "objects",
         operation,
-        &format_args!("{:p}/{key:x}", Arc::as_ptr(&medium.unflushed)),
+        &format_args!("{:p}/{key:x}", Arc::as_ptr(&medium.shared)),
         work,
     );
     async move { submitted.await? }
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Work this thread has submitted, so a test sees how much of a flush is
-    /// in flight at once.
-    pub(crate) static SUBMITTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -124,202 +137,283 @@ fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     }
 }
 
-/// The shared native content flush; a barrier outside Apple refuses.
-fn sync(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native(durability), None)
+/// Where a live key's value lies in the log.
+#[derive(Clone, Copy, Debug)]
+struct Slot {
+    /// The frame's first byte.
+    frame: u64,
+    /// The frame's bytes.
+    bytes: u64,
+    /// The value's first byte.
+    value: u64,
+    /// The value's bytes.
+    length: u64,
 }
 
-/// The flush of one member of a batch. Apple orders each member with a
-/// barrier and pays for one full flush per batch, in [`finish_batch`];
-/// elsewhere each member flushes its data.
-fn sync_member(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    // Windows flushes a file only through a handle that may write it.
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .write(cfg!(windows))
-        .open(path)
-    {
-        Ok(file) => file,
-        // A removal is durable once its directory is.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    sync_contents(&file, durability)
+/// The log and its index, under the one lock that orders every write.
+struct Log {
+    file: Arc<std::fs::File>,
+    /// Where the next frame goes.
+    end: u64,
+    index: BTreeMap<String, Slot>,
+    /// Frame bytes of live puts; the rest of the log is dead.
+    live: u64,
+    /// Writes appended so far, compared against [`Shared::synced`].
+    written: u64,
 }
 
-/// Orders `file`'s bytes before any later metadata change of it.
-fn sync_contents(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
-    if cfg!(target_vendor = "apple") {
-        acyclic_native_runtime::sync_file(file, acyclic_native_runtime::Durability::Barrier, None)
-    } else {
-        acyclic_native_runtime::sync_data(file, native(durability))
-    }
-}
-
-fn sync_member_directory(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    if cfg!(target_vendor = "apple") {
-        acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Barrier)
-    } else {
-        sync_directory(path, durability)
-    }
-}
-
-/// Apple's one full flush, covering every barrier before it.
-fn finish_batch(root: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    if cfg!(target_vendor = "apple") && durability == LocalDurability::FullFlush {
-        sync_directory(root, durability)?;
-    }
-    Ok(())
-}
-
-/// Flushes every file and directory below `directory`, for a root whose
-/// last owner may have closed without flushing.
-fn flush_tree(directory: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    let entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            flush_tree(&entry.path(), durability)?;
-        } else {
-            sync_member(&entry.path(), durability)?;
-        }
-    }
-    sync_member_directory(directory, durability)
-}
-
-/// Makes everything below `root` durable: one filesystem flush where the
-/// platform has one, else each file and directory.
-fn recover(root: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    match acyclic_native_runtime::sync_filesystem(root) {
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-            flush_tree(&root.join("keys"), durability)?;
-            finish_batch(root, durability)
-        }
-        synced => synced,
-    }
-}
-
-/// The shared native namespace flush. Every platform flushes the directory
-/// itself (Windows through a backup-semantics handle), so a successful
-/// FullFlush never rests on a skipped directory.
-fn sync_directory(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_parent(path, native(durability))
-}
-
-/// Paths written since they were last flushed: files, removals and created
-/// directories. Each is tracked before it becomes visible, so a flush of
-/// anything below it finds it, and again after, so a flush whose snapshot
-/// preceded the change forgets none of it; each tracking carries a fresh
-/// sequence, and a flush forgets only the sequences it snapshot.
-///
-/// It also holds the root's ownership. The medium and every accepted write
-/// hold it, so the root closes, everything flushed, the marker removed and
-/// the lock released, only once the last of them lets go.
-struct Unflushed {
-    paths: Mutex<(u64, HashMap<PathBuf, u64>)>,
+/// What every accepted write holds: the root closes, everything flushed, the
+/// marker removed and the lock released, only once the last lets go.
+struct Shared {
     root: PathBuf,
     durability: LocalDurability,
+    log: Mutex<Log>,
+    /// Writes made durable so far.
+    synced: AtomicU64,
     /// Whether the root opened unclean and its repair has not settled.
     recovered: AtomicBool,
+    #[cfg(test)]
+    counts: Counts,
     _lock: std::fs::File,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
 
-impl Drop for Unflushed {
+/// Files created and flushes issued, so a test counts a workload's cost.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Counts {
+    pub(crate) created: std::sync::atomic::AtomicUsize,
+    pub(crate) flushed: std::sync::atomic::AtomicUsize,
+}
+
+impl Drop for Shared {
     /// A clean close of a settled root leaves nothing unflushed, so the next
     /// open trusts it; an unsettled one stays marked unclean.
     fn drop(&mut self) {
-        let unflushed = self.drain();
         let settled = !*self.recovered.get_mut();
-        let flushed = flush_batch(&self.root, &unflushed, self.durability).and_then(|()| {
+        let closed = self.sync().and_then(|()| {
             if !settled {
                 return Ok(());
             }
             std::fs::remove_file(self.root.join(OPEN))?;
-            sync_directory(&self.root, self.durability)
+            self.sync_directory()
         });
         // A failed close leaves the marker, and the next open recovers.
-        drop(flushed);
+        drop(closed);
     }
 }
 
-impl Unflushed {
-    /// Applies `change` to `path`, tracked on both sides of it.
-    fn changed<T>(
-        &self,
-        path: &Path,
-        change: impl FnOnce() -> std::io::Result<T>,
-    ) -> std::io::Result<T> {
-        self.track(path);
-        let changed = change();
-        self.track(path);
-        changed
+impl Shared {
+    fn log(&self) -> MutexGuard<'_, Log> {
+        self.log.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn track(&self, path: &Path) {
-        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        paths.0 += 1;
-        let sequence = paths.0;
-        paths.1.insert(path.to_path_buf(), sequence);
-    }
-
-    /// The directories a flush of `paths` syncs: each path's own, and the
-    /// parent of each unflushed directory above it, with the writes covered.
-    fn plan(&self, keys: &Path, paths: &[PathBuf]) -> (BTreeSet<PathBuf>, Vec<(PathBuf, u64)>) {
-        let tracked = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut directories = BTreeSet::new();
-        let mut covered = Vec::new();
-        for path in paths {
-            if let Some(&sequence) = tracked.1.get(path) {
-                covered.push((path.clone(), sequence));
-            }
-            let mut below = path.as_path();
-            while let Some(directory) = below.parent() {
-                if !directories.insert(directory.to_path_buf()) || directory == keys {
-                    break;
-                }
-                match tracked.1.get(directory) {
-                    Some(&sequence) => covered.push((directory.to_path_buf(), sequence)),
-                    None => break,
-                }
-                below = directory;
-            }
-        }
-        (directories, covered)
-    }
-
-    fn forget(&self, covered: Vec<(PathBuf, u64)>) {
-        let mut tracked = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
-        for (path, sequence) in covered {
-            if tracked.1.get(&path) == Some(&sequence) {
-                tracked.1.remove(&path);
-            }
+    fn sync_file(&self, file: &std::fs::File) -> std::io::Result<()> {
+        #[cfg(test)]
+        self.counts.flushed.fetch_add(1, Ordering::Relaxed);
+        if cfg!(target_vendor = "apple") {
+            acyclic_native_runtime::sync_file(file, native(self.durability), None)
+        } else {
+            acyclic_native_runtime::sync_data(file, native(self.durability))
         }
     }
 
-    fn drain(&mut self) -> Vec<PathBuf> {
-        let tracked = self.paths.get_mut().unwrap_or_else(PoisonError::into_inner);
-        tracked.1.drain().map(|(path, _)| path).collect()
+    fn sync_directory(&self) -> std::io::Result<()> {
+        #[cfg(test)]
+        self.counts.flushed.fetch_add(1, Ordering::Relaxed);
+        acyclic_native_runtime::sync_parent(&self.root, native(self.durability))
+    }
+
+    fn created(&self) {
+        #[cfg(test)]
+        self.counts.created.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Makes every write appended before it durable with one data flush; a
+    /// flush with nothing new is free.
+    fn sync(&self) -> std::io::Result<()> {
+        let (file, written) = {
+            let log = self.log();
+            (Arc::clone(&log.file), log.written)
+        };
+        if self.synced.load(Ordering::Acquire) >= written {
+            return Ok(());
+        }
+        self.sync_file(&file)?;
+        self.synced.fetch_max(written, Ordering::AcqRel);
+        Ok(())
+    }
+
+    /// Appends one frame, returning where it lies.
+    fn append(&self, log: &mut Log, frame: &[u8]) -> std::io::Result<u64> {
+        let start = log.end;
+        acyclic_native_runtime::persistence_syscall(|| {
+            acyclic_native_runtime::write_all_at(&log.file, start, frame, None)
+        })?;
+        log.end += frame.len() as u64;
+        log.written += 1;
+        Ok(start)
+    }
+
+    fn put(&self, log: &mut Log, key: &str, value: &[u8]) -> std::io::Result<()> {
+        let frame = encode(PUT, key, value)?;
+        let start = self.append(log, &frame)?;
+        let slot = Slot {
+            frame: start,
+            bytes: frame.len() as u64,
+            value: start + value_offset(key),
+            length: value.len() as u64,
+        };
+        log.live += slot.bytes;
+        if let Some(old) = log.index.insert(key.to_owned(), slot) {
+            log.live -= old.bytes;
+            self.compact_if_due(log)?;
+        }
+        Ok(())
+    }
+
+    fn remove(&self, log: &mut Log, key: &str) -> std::io::Result<bool> {
+        if !log.index.contains_key(key) {
+            return Ok(false);
+        }
+        self.append(log, &encode(REMOVE, key, &[])?)?;
+        if let Some(old) = log.index.remove(key) {
+            log.live -= old.bytes;
+        }
+        self.compact_if_due(log)?;
+        Ok(true)
+    }
+
+    fn compact_if_due(&self, log: &mut Log) -> std::io::Result<()> {
+        let dead = log.end - log.live;
+        if dead < COMPACTION_CHUNK || dead <= log.live {
+            return Ok(());
+        }
+        self.compact(log)
+    }
+
+    /// Rewrites the live frames to a fresh log and renames it over the old
+    /// one: a crash leaves either whole, and every write is durable after.
+    fn compact(&self, log: &mut Log) -> std::io::Result<()> {
+        let next = self.root.join(NEXT);
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&next)?;
+        self.created();
+        let mut end = 0;
+        let mut index = BTreeMap::new();
+        let mut frame = Vec::new();
+        for (key, slot) in &log.index {
+            frame.resize(
+                usize::try_from(slot.bytes).map_err(std::io::Error::other)?,
+                0,
+            );
+            read_exact_at(&log.file, slot.frame, &mut frame)?;
+            acyclic_native_runtime::write_all_at(&file, end, &frame, None)?;
+            let moved = Slot {
+                frame: end,
+                value: end + (slot.value - slot.frame),
+                ..*slot
+            };
+            index.insert(key.clone(), moved);
+            end += slot.bytes;
+        }
+        self.sync_file(&file)?;
+        acyclic_native_runtime::durable_rename(
+            &next,
+            &self.root.join(LOG),
+            acyclic_native_runtime::RenameMode::Replace,
+            None,
+        )?;
+        #[cfg(test)]
+        self.counts.flushed.fetch_add(1, Ordering::Relaxed);
+        log.file = Arc::new(file);
+        log.end = end;
+        log.index = index;
+        self.synced.fetch_max(log.written, Ordering::AcqRel);
+        Ok(())
     }
 }
 
-/// Creates `directory` and its missing ancestors, tracking each new one so
-/// the flush of a name below it also makes its entry durable.
-fn create_directories(directory: &Path, unflushed: &Unflushed) -> std::io::Result<()> {
-    if directory.is_dir() {
-        return Ok(());
+/// The offset of a put's value within its frame.
+fn value_offset(key: &str) -> u64 {
+    LOG_FRAME.prefix_bytes() as u64 + BODY_HEADER + key.len() as u64
+}
+
+fn encode(operation: u8, key: &str, value: &[u8]) -> std::io::Result<Vec<u8>> {
+    let length = u32::try_from(key.len()).map_err(|_| std::io::ErrorKind::InvalidInput)?;
+    let mut frame = Vec::new();
+    LOG_FRAME.encode(
+        &[&[operation], &length.to_le_bytes(), key.as_bytes(), value],
+        &mut frame,
+    )?;
+    Ok(frame)
+}
+
+/// One replayed frame: its operation, key and value range within the body.
+fn decode(body: &[u8]) -> Option<(u8, &str, Range<usize>)> {
+    let (&operation, rest) = body.split_first()?;
+    let length = usize::try_from(u32::from_le_bytes(*rest.first_chunk::<4>()?)).ok()?;
+    let key = std::str::from_utf8(rest.get(4..4 + length)?).ok()?;
+    let value = 1 + 4 + length..body.len();
+    match operation {
+        PUT => Some((operation, key, value)),
+        REMOVE if value.is_empty() => Some((operation, key, value)),
+        _ => None,
     }
-    let parent = directory.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    create_directories(parent, unflushed)?;
-    match unflushed.changed(directory, || std::fs::create_dir(directory)) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(error),
+}
+
+fn read_exact_at(file: &std::fs::File, offset: u64, mut out: &mut [u8]) -> std::io::Result<()> {
+    let mut offset = offset;
+    while !out.is_empty() {
+        let read = acyclic_native_runtime::read_at(file, offset, out)?;
+        if read == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        out = &mut out[read..];
+        offset += read as u64;
     }
+    Ok(())
+}
+
+/// Replays `file`, `length` bytes long, into its index: the end of its last
+/// whole frame, the index and its live bytes. The first invalid frame ends
+/// the replay; `None` if it is not at the end.
+fn replay(
+    file: &std::fs::File,
+    length: u64,
+) -> std::io::Result<(u64, BTreeMap<String, Slot>, u64, bool)> {
+    let mut reader = std::io::BufReader::new(file);
+    let (mut end, mut index, mut live) = (0, BTreeMap::new(), 0);
+    while end < length {
+        let Some(body) = LOG_FRAME.read(&mut reader, length - end)? else {
+            return Ok((end, index, live, false));
+        };
+        let Some((operation, key, value)) = decode(&body) else {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        };
+        let bytes = LOG_FRAME.frame_bytes(body.len() as u64);
+        let previous = if operation == PUT {
+            let slot = Slot {
+                frame: end,
+                bytes,
+                value: end + LOG_FRAME.prefix_bytes() as u64 + value.start as u64,
+                length: value.len() as u64,
+            };
+            live += bytes;
+            index.insert(key.to_owned(), slot)
+        } else {
+            index.remove(key)
+        };
+        if let Some(previous) = previous {
+            live -= previous.bytes;
+        }
+        end += bytes;
+    }
+    Ok((end, index, live, true))
 }
 
 impl LocalMedium {
@@ -334,164 +428,142 @@ impl LocalMedium {
         }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
-        let (root, lock, recovered) = spawn_persistence("objects", "open", &"root", move || {
-            // Every key lives below `keys`, created here and made durable
-            // with the root below, so no flush need reach above it.
-            std::fs::create_dir_all(root.join("tmp"))?;
-            std::fs::create_dir_all(root.join("keys"))?;
-            let format = root.join("FORMAT");
-            match std::fs::read(&format) {
-                Ok(bytes) if bytes == FORMAT => {}
-                Ok(_) => return Err(LocalOpenError::Corrupt),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let mut file = std::fs::File::create(&format)?;
-                    file.write_all(FORMAT)?;
-                    sync(&file, durability)?;
-                    sync_directory(&root, durability)?;
-                }
-                Err(error) => return Err(error.into()),
-            }
-            let lock = std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(root.join("LOCK"))?;
-            match lock.try_lock() {
-                Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    return Err(LocalOpenError::AlreadyOwned);
-                }
-                Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
-            }
-            // Crash-left temporaries never became visible.
-            for entry in std::fs::read_dir(root.join("tmp"))? {
-                std::fs::remove_file(entry?.path())?;
-            }
-            let marker = root.join(OPEN);
-            let recovered = marker.exists();
-            if recovered {
-                // The last owner may have left writes unflushed.
-                recover(&root, durability)?;
-            } else {
-                sync(&std::fs::File::create(&marker)?, durability)?;
-            }
-            sync_directory(&root, durability)?;
-            Ok((root, lock, recovered))
+        let shared = spawn_persistence("objects", "open", &"root", move || {
+            open_root(root, durability, anchor)
         })
         .await
         .map_err(|_| LocalOpenError::Unavailable)??;
         Ok(Self {
-            durability,
-            conditional: Default::default(),
-            unflushed: Arc::new(Unflushed {
-                paths: Mutex::default(),
-                root: root.clone(),
-                durability,
-                recovered: AtomicBool::new(recovered),
-                _lock: lock,
-                _anchor: anchor,
-            }),
-            root,
+            shared: Arc::new(shared),
         })
     }
 
-    fn path(&self, key: &str) -> PathBuf {
-        let mut path = self.root.join("keys");
-        path.extend(key.split('/'));
-        path
+    /// The files created and flushes issued since open.
+    #[cfg(test)]
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        (
+            self.shared.counts.created.load(Ordering::Relaxed),
+            self.shared.counts.flushed.load(Ordering::Relaxed),
+        )
     }
 }
 
-/// Flushes every unflushed path and its directory as one batch.
-fn flush_batch(root: &Path, paths: &[PathBuf], durability: LocalDurability) -> std::io::Result<()> {
-    let directories: BTreeSet<&Path> = paths.iter().filter_map(|path| path.parent()).collect();
-    for path in paths.iter().filter(|path| !path.is_dir()) {
-        sync_member(path, durability)?;
+fn open_root(
+    root: PathBuf,
+    durability: LocalDurability,
+    anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+) -> Result<Shared, LocalOpenError> {
+    let directory = |path: &Path| {
+        acyclic_native_runtime::sync_parent(path, native(durability)).map_err(LocalOpenError::Io)
+    };
+    let file = |file: &std::fs::File| {
+        acyclic_native_runtime::sync_file(file, native(durability), None)
+            .map_err(LocalOpenError::Io)
+    };
+    std::fs::create_dir_all(&root)?;
+    let format = root.join("FORMAT");
+    match std::fs::read(&format) {
+        Ok(bytes) if bytes == FORMAT => {}
+        Ok(bytes) if bytes == FILE_PER_KEY_FORMAT => return Err(LocalOpenError::UnsupportedLayout),
+        Ok(_) => return Err(LocalOpenError::Corrupt),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut created = std::fs::File::create(&format)?;
+            created.write_all(FORMAT)?;
+            file(&created)?;
+            directory(&root)?;
+        }
+        Err(error) => return Err(error.into()),
     }
-    for directory in directories {
-        sync_member_directory(directory, durability)?;
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(root.join("LOCK"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Err(LocalOpenError::AlreadyOwned),
+        Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
     }
-    finish_batch(root, durability)
+    // A compaction that never renamed its log left only garbage.
+    match std::fs::remove_file(root.join(NEXT)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    let marker = root.join(OPEN);
+    let recovered = marker.exists();
+    let log = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root.join(LOG))?;
+    let length = log.metadata()?.len();
+    let (end, index, live, whole) = replay(&log, length).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            LocalOpenError::Corrupt
+        } else {
+            LocalOpenError::Io(error)
+        }
+    })?;
+    if !whole {
+        // Only an owner that never closed can have torn the log.
+        if !recovered {
+            return Err(LocalOpenError::Corrupt);
+        }
+        let tail = usize::try_from(length - end).map_err(std::io::Error::other)?;
+        match acyclic_native_runtime::recover_log_tail(
+            &log,
+            end,
+            tail,
+            native(durability),
+            |bytes| LOG_FRAME.is_valid(bytes),
+        )? {
+            acyclic_native_runtime::LogTail::Torn => {}
+            acyclic_native_runtime::LogTail::Corrupt => return Err(LocalOpenError::Corrupt),
+        }
+    }
+    if recovered {
+        // The last owner may have left writes unflushed: everything that
+        // survived is made durable before anything observes it.
+        file(&log)?;
+    } else {
+        file(&std::fs::File::create(&marker)?)?;
+    }
+    directory(&root)?;
+    Ok(Shared {
+        root,
+        durability,
+        log: Mutex::new(Log {
+            file: Arc::new(log),
+            end,
+            index,
+            live,
+            written: 0,
+        }),
+        synced: AtomicU64::new(0),
+        recovered: AtomicBool::new(recovered),
+        #[cfg(test)]
+        counts: Counts::default(),
+        _lock: lock,
+        _anchor: anchor,
+    })
 }
 
 fn failed(error: std::io::Error) -> MediumError {
     MediumError::Failed(error)
 }
 
-fn walk(
-    directory: &Path,
-    key: &str,
-    after: Option<&str>,
-    limit: usize,
-    out: &mut Vec<(String, u64)>,
-) -> std::io::Result<()> {
-    let mut entries = match std::fs::read_dir(directory) {
-        Ok(entries) => entries
-            .map(|entry| entry.map(|entry| entry.file_name()))
-            .collect::<std::io::Result<Vec<_>>>()?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
-    };
-    entries.sort();
-    for name in entries {
-        if out.len() >= limit {
-            return Ok(());
-        }
-        let Some(name) = name.to_str() else {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        };
-        let child = format!("{key}{name}");
-        let path = directory.join(name);
-        let metadata = std::fs::metadata(&path)?;
-        if metadata.is_dir() {
-            let prefix = format!("{child}/");
-            // Every key below sorts before `after` unless `after` lies inside.
-            if after.is_some_and(|after| prefix.as_str() < after && !after.starts_with(&prefix)) {
-                continue;
-            }
-            walk(&path, &prefix, after, limit, out)?;
-        } else if after.is_none_or(|after| child.as_str() > after) {
-            out.push((child, metadata.len()));
-        }
-    }
-    Ok(())
-}
-
-/// Whether `path` currently holds exactly `expected`.
-fn holds(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
-    match std::fs::read(path) {
-        Ok(current) => Ok(current == expected),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
 #[async_trait::async_trait]
 impl Medium for LocalMedium {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        let target = self.path(key);
-        let mut name = [0u8; 16];
-        getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
-        let temporary = self.root.join("tmp").join(hex::encode(name));
-        let unflushed = self.unflushed.clone();
+        let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
         blocking(self, "create", key.as_ptr() as usize, move || {
-            if target.exists() {
+            let mut log = shared.log();
+            if log.index.contains_key(&key) {
                 return Ok(false);
             }
-            let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-            create_directories(parent, &unflushed)?;
-            let mut file = std::fs::File::create_new(&temporary)?;
-            acyclic_native_runtime::persistence_syscall(|| file.write_all(&bytes))?;
-            drop(file);
-            let published = unflushed.changed(&target, || {
-                acyclic_native_runtime::publish_new(&temporary, &target, None)
-            });
-            let _ = std::fs::remove_file(&temporary);
-            match published {
-                Ok(()) => Ok(true),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-                Err(error) => Err(error),
-            }
+            shared.put(&mut log, &key, &bytes)?;
+            Ok(true)
         })
         .await
         .map_err(failed)
@@ -502,25 +574,26 @@ impl Medium for LocalMedium {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
-        let path = self.path(key);
+        let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
         blocking(self, "read", key.as_ptr() as usize, move || {
-            let mut file = match std::fs::File::open(&path) {
-                Ok(file) => file,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(error),
+            let (file, slot) = {
+                let log = shared.log();
+                let Some(&slot) = log.index.get(&key) else {
+                    return Ok(None);
+                };
+                (Arc::clone(&log.file), slot)
             };
-            let length = file.metadata()?.len();
-            let range = range.unwrap_or(0..length);
-            if range.start > range.end || range.end > length {
+            let range = range.unwrap_or(0..slot.length);
+            if range.start > range.end || range.end > slot.length {
                 return Err(std::io::ErrorKind::InvalidInput.into());
             }
             let count = usize::try_from(range.end - range.start)
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
             let mut bytes = vec![0; count];
-            if range.start != 0 {
-                file.seek(std::io::SeekFrom::Start(range.start))?;
-            }
-            acyclic_native_runtime::persistence_syscall(|| file.read_exact(&mut bytes))?;
+            // A log a compaction replaced stays readable through its handle.
+            acyclic_native_runtime::persistence_syscall(|| {
+                read_exact_at(&file, slot.value + range.start, &mut bytes)
+            })?;
             Ok(Some(OwnedBytes::from(bytes)))
         })
         .await
@@ -528,18 +601,10 @@ impl Medium for LocalMedium {
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
-        let path = self.path(key);
-        let unflushed = self.unflushed.clone();
-        blocking(
-            self,
-            "remove",
-            key.as_ptr() as usize,
-            move || match unflushed.changed(&path, || std::fs::remove_file(&path)) {
-                Ok(()) => Ok(true),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(error) => Err(error),
-            },
-        )
+        let (shared, key) = (Arc::clone(&self.shared), key.to_owned());
+        blocking(self, "remove", key.as_ptr() as usize, move || {
+            shared.remove(&mut shared.log(), &key)
+        })
         .await
         .map_err(failed)
     }
@@ -550,28 +615,13 @@ impl Medium for LocalMedium {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<bool, MediumError> {
-        let (target, expected) = (self.path(key), expected.to_vec());
-        let mut name = [0u8; 16];
-        getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
-        let temporary = self.root.join("tmp").join(hex::encode(name));
-        let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
-        let durability = self.durability;
+        let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
         blocking(self, "replace", key.as_ptr() as usize, move || {
-            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
-            if !holds(&target, &expected)? {
+            let mut log = shared.log();
+            if !holds(&log, &key, &expected)? {
                 return Ok(false);
             }
-            let mut file = std::fs::File::create_new(&temporary)?;
-            acyclic_native_runtime::persistence_syscall(|| file.write_all(&bytes))?;
-            // The bytes land before the rename can: a crash keeps the old
-            // value or the new one, never a torn rewrite of a committed key.
-            sync_contents(&file, durability)?;
-            drop(file);
-            if let Err(error) = unflushed.changed(&target, || std::fs::rename(&temporary, &target))
-            {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(error);
-            }
+            shared.put(&mut log, &key, &bytes)?;
             Ok(true)
         })
         .await
@@ -579,67 +629,24 @@ impl Medium for LocalMedium {
     }
 
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let (path, expected) = (self.path(key), expected.to_vec());
-        let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
+        let (shared, key, expected) = (Arc::clone(&self.shared), key.to_owned(), expected.to_vec());
         blocking(self, "remove-if", key.as_ptr() as usize, move || {
-            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
-            if !holds(&path, &expected)? {
+            let mut log = shared.log();
+            if !holds(&log, &key, &expected)? {
                 return Ok(false);
             }
-            unflushed.changed(&path, || std::fs::remove_file(&path))?;
-            Ok(true)
+            shared.remove(&mut log, &key)
         })
         .await
         .map_err(failed)
     }
 
-    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
-        let paths: Vec<PathBuf> = keys.iter().map(|key| self.path(key)).collect();
-        let durability = self.durability;
-        // What this flush covers is snapshot first: a change finishing during
-        // it is tracked again, and stays unflushed. Every member and each
-        // distinct directory are submitted together, so the device retires
-        // them as one batch, and the flush acknowledges only once all have;
-        // Apple's one full flush follows every barrier. A directory durable
-        // before its entry's data leaves a short or damaged key, which a
-        // crash may leave of any unflushed write and the store repairs.
-        let (directories, covered) = self.unflushed.plan(&self.root.join("keys"), &paths);
-        let syncs: Vec<_> = paths
-            .into_iter()
-            .zip(keys)
-            .map(|(path, key)| (path, "flush-content", key.as_ptr() as usize, false))
-            .chain(directories.into_iter().map(|directory| {
-                let key = directory.as_os_str().as_encoded_bytes().as_ptr() as usize;
-                (directory, "flush-directory", key, true)
-            }))
-            .map(|(path, operation, key, directory)| {
-                blocking(self, operation, key, move || {
-                    if directory {
-                        sync_member_directory(&path, durability)
-                    } else {
-                        sync_member(&path, durability)
-                    }
-                })
-            })
-            .collect();
-        // Every sync is awaited, so none outlives a failed flush.
-        let mut failure = None;
-        for sync in syncs {
-            if let Err(error) = sync.await {
-                failure.get_or_insert(error);
-            }
-        }
-        if let Some(error) = failure {
-            return Err(failed(error));
-        }
-        let root = self.root.clone();
-        blocking(self, "flush-batch", 0, move || {
-            finish_batch(&root, durability)
-        })
-        .await
-        .map_err(failed)?;
-        self.unflushed.forget(covered);
-        Ok(())
+    /// One data flush covers every write so far, whichever keys are named.
+    async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
+        let shared = Arc::clone(&self.shared);
+        blocking(self, "flush", 0, move || shared.sync())
+            .await
+            .map_err(failed)
     }
 
     fn volatile(&self) -> bool {
@@ -647,11 +654,11 @@ impl Medium for LocalMedium {
     }
 
     fn recovered(&self) -> bool {
-        self.unflushed.recovered.load(Ordering::Acquire)
+        self.shared.recovered.load(Ordering::Acquire)
     }
 
     fn settle(&self) {
-        self.unflushed.recovered.store(false, Ordering::Release);
+        self.shared.recovered.store(false, Ordering::Release);
     }
 
     async fn list(
@@ -663,25 +670,39 @@ impl Medium for LocalMedium {
         if !prefix.is_empty() && !prefix.ends_with('/') {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
-        let directory = self.path(prefix.trim_end_matches('/'));
-        let key = prefix;
-        let prefix = prefix.to_owned();
-        let after = after.map(str::to_owned);
-        blocking(self, "list", key.as_ptr() as usize, move || {
-            let mut out = Vec::new();
-            walk(&directory, &prefix, after.as_deref(), limit, &mut out)?;
-            Ok(out)
-        })
-        .await
-        .map_err(failed)
+        let log = self.shared.log();
+        let start = match after {
+            Some(after) if after >= prefix => std::ops::Bound::Excluded(after),
+            _ => std::ops::Bound::Included(prefix),
+        };
+        Ok(log
+            .index
+            .range::<str, _>((start, std::ops::Bound::Unbounded))
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .take(limit)
+            .map(|(key, slot)| (key.clone(), slot.length))
+            .collect())
     }
+}
+
+/// Whether `key` currently holds exactly `expected`.
+fn holds(log: &Log, key: &str, expected: &[u8]) -> std::io::Result<bool> {
+    let Some(slot) = log.index.get(key) else {
+        return Ok(false);
+    };
+    if slot.length != expected.len() as u64 {
+        return Ok(false);
+    }
+    let mut current = vec![0; expected.len()];
+    read_exact_at(&log.file, slot.value, &mut current)?;
+    Ok(current == expected)
 }
 
 impl std::fmt::Debug for LocalMedium {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("LocalMedium")
-            .field("root", &self.root)
+            .field("root", &self.shared.root)
             .finish_non_exhaustive()
     }
 }
@@ -691,95 +712,180 @@ mod isolation_tests {
     use super::*;
     use futures::FutureExt as _;
 
-    #[tokio::test]
-    async fn a_change_finishing_during_a_flush_stays_unflushed() {
-        let root = tempfile::tempdir().unwrap();
-        let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
-            .await
-            .unwrap();
-        let (keys, path) = (medium.root.join("keys"), medium.path("k/key"));
-        let tracked = |unflushed: &Unflushed| {
-            let paths = unflushed.paths.lock().unwrap();
-            paths.1.contains_key(&path)
-        };
-        // A flush snapshots while the change is in flight.
-        let mut covered = None;
-        medium
-            .unflushed
-            .changed(&path, || {
-                covered = Some(medium.unflushed.plan(&keys, std::slice::from_ref(&path)).1);
-                Ok(())
-            })
-            .unwrap();
-        medium.unflushed.forget(covered.unwrap());
-        assert!(tracked(&medium.unflushed));
-        // Control: a change tracked only before it lands is forgotten.
-        medium
-            .unflushed
-            .forget(medium.unflushed.plan(&keys, std::slice::from_ref(&path)).1);
-        medium.unflushed.track(&path);
-        let (_, covered) = medium.unflushed.plan(&keys, std::slice::from_ref(&path));
-        medium.unflushed.forget(covered);
-        assert!(!tracked(&medium.unflushed));
+    fn bytes(value: &[u8]) -> OwnedBytes {
+        OwnedBytes::from(value.to_vec())
+    }
+
+    async fn contents(medium: &LocalMedium) -> BTreeMap<String, Vec<u8>> {
+        let mut out = BTreeMap::new();
+        for (key, _) in medium.list("", None, usize::MAX).await.unwrap() {
+            let value = medium.read(&key, None).await.unwrap().unwrap();
+            out.insert(key, value.as_ref().to_vec());
+        }
+        out
     }
 
     #[tokio::test]
-    async fn a_flush_submits_every_file_and_directory_sync_at_once() {
+    async fn a_write_creates_no_file_and_a_flush_syncs_the_log_once() {
         let root = tempfile::tempdir().unwrap();
         let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
             .await
             .unwrap();
-        let keys = ["a/x", "a/y", "b/z"].map(str::to_owned);
-        for key in &keys {
+        for key in 0..64 {
+            let key = format!("k/{key}");
+            assert!(medium.create(&key, bytes(b"value")).await.unwrap());
+            assert!(
+                medium
+                    .replace(&key, b"value", bytes(b"next"))
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(medium.remove("k/0").await.unwrap());
+        // Every write is visible at once, and none created a file or synced.
+        assert_eq!(
+            medium.read("k/1", None).await.unwrap().unwrap().as_ref(),
+            b"next"
+        );
+        assert_eq!(medium.counts(), (0, 0));
+        // One flush makes all of them durable; with nothing new, one is free.
+        medium.flush(&["k/1".to_owned()]).await.unwrap();
+        assert_eq!(medium.counts(), (0, 1));
+        medium.flush(&[]).await.unwrap();
+        assert_eq!(medium.counts(), (0, 1));
+    }
+
+    /// A crash keeps every whole frame and cuts the torn one, at every byte.
+    #[tokio::test]
+    async fn a_crash_keeps_exactly_the_whole_frames_at_every_cut() {
+        let root = tempfile::tempdir().unwrap();
+        let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        let log = root.path().join(LOG);
+        // The log's length after each write, and what the store held then.
+        let mut states = vec![(0, BTreeMap::new())];
+        assert!(medium.create("a/x", bytes(b"one")).await.unwrap());
+        states.push((
+            std::fs::metadata(&log).unwrap().len(),
+            contents(&medium).await,
+        ));
+        assert!(medium.create("b/y", bytes(b"two")).await.unwrap());
+        states.push((
+            std::fs::metadata(&log).unwrap().len(),
+            contents(&medium).await,
+        ));
+        assert!(
             medium
-                .create(key, OwnedBytes::from(vec![1; 8]))
+                .replace("a/x", b"one", bytes(b"three"))
+                .await
+                .unwrap()
+        );
+        states.push((
+            std::fs::metadata(&log).unwrap().len(),
+            contents(&medium).await,
+        ));
+        assert!(medium.remove_if("b/y", b"two").await.unwrap());
+        states.push((
+            std::fs::metadata(&log).unwrap().len(),
+            contents(&medium).await,
+        ));
+        let written = std::fs::read(&log).unwrap();
+        assert_eq!(written.len() as u64, states.last().unwrap().0);
+        for cut in 0..=written.len() {
+            let copy = tempfile::tempdir().unwrap();
+            std::fs::write(copy.path().join("FORMAT"), FORMAT).unwrap();
+            // The owner never closed.
+            std::fs::write(copy.path().join(OPEN), b"").unwrap();
+            std::fs::write(copy.path().join(LOG), &written[..cut]).unwrap();
+            let reopened = LocalMedium::open(copy.path(), LocalObjectsLimits::default(), None)
                 .await
                 .unwrap();
-        }
-        let paths: Vec<_> = keys.iter().map(|key| medium.path(key)).collect();
-        let (directories, _) = medium.unflushed.plan(&medium.root.join("keys"), &paths);
-        // Two keys share a directory, which syncs once.
-        assert!(directories.len() < paths.len() * 2, "{directories:?}");
-        let durability = medium.durability;
-        // How many syncs a flush has in flight before its first completes;
-        // the current-thread runtime runs no completion within one poll.
-        async fn in_flight(flush: impl Future<Output = Result<(), MediumError>>) -> usize {
-            let mut flush = std::pin::pin!(flush);
-            let before = SUBMITTED.get();
-            assert!(futures::poll!(&mut flush).is_pending());
-            let submitted = SUBMITTED.get() - before;
-            flush.await.unwrap();
-            submitted
-        }
-        assert_eq!(
-            in_flight(medium.flush(&keys)).await,
-            paths.len() + directories.len()
-        );
-        // Negative control: directories after their files, serially.
-        let serial = async {
-            let files: Vec<_> = paths
+            assert!(reopened.recovered());
+            let (end, expected) = states
                 .iter()
-                .cloned()
-                .map(|path| {
-                    blocking(&medium, "flush-content", 0, move || {
-                        sync_member(&path, durability)
-                    })
-                })
-                .collect();
-            for file in files {
-                file.await.map_err(failed)?;
-            }
-            for directory in &directories {
-                let directory = directory.clone();
-                blocking(&medium, "flush-directory", 0, move || {
-                    sync_member_directory(&directory, durability)
-                })
-                .await
-                .map_err(failed)?;
-            }
-            Ok(())
+                .rev()
+                .find(|(end, _)| *end <= cut as u64)
+                .unwrap();
+            assert_eq!(contents(&reopened).await, *expected, "cut at {cut}");
+            assert_eq!(
+                std::fs::metadata(copy.path().join(LOG)).unwrap().len(),
+                *end
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn damage_is_a_torn_tail_only_at_the_end() {
+        let root = tempfile::tempdir().unwrap();
+        let open =
+            async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
+        let medium = open().await.unwrap();
+        assert!(medium.create("a/x", bytes(b"first")).await.unwrap());
+        let first = std::fs::metadata(root.path().join(LOG)).unwrap().len() as usize;
+        assert!(medium.create("a/y", bytes(b"second")).await.unwrap());
+        drop(medium);
+        let written = std::fs::read(root.path().join(LOG)).unwrap();
+        let damaged = |at: usize| {
+            let mut damaged = written.clone();
+            damaged[at] ^= 1;
+            std::fs::write(root.path().join(LOG), damaged).unwrap();
         };
-        assert_eq!(in_flight(serial).await, paths.len());
+        // A clean close leaves no torn frame, so damage at the end is corrupt.
+        damaged(written.len() - 1);
+        assert!(matches!(open().await, Err(LocalOpenError::Corrupt)));
+        // After an unclean close the last frame may be torn: it is cut.
+        std::fs::write(root.path().join(OPEN), b"").unwrap();
+        let reopened = open().await.unwrap();
+        assert_eq!(
+            contents(&reopened).await.into_keys().collect::<Vec<_>>(),
+            ["a/x"]
+        );
+        drop(reopened);
+        // A damaged frame followed by a whole one is never a torn append.
+        std::fs::write(root.path().join(OPEN), b"").unwrap();
+        damaged(first - 1);
+        assert!(matches!(open().await, Err(LocalOpenError::Corrupt)));
+    }
+
+    #[tokio::test]
+    async fn a_root_of_the_file_per_key_layout_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("FORMAT"), FILE_PER_KEY_FORMAT).unwrap();
+        assert!(matches!(
+            LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await,
+            Err(LocalOpenError::UnsupportedLayout)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dead_bytes_are_reclaimed_into_one_fresh_log() {
+        let root = tempfile::tempdir().unwrap();
+        let open =
+            async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
+        let medium = open().await.unwrap();
+        let value = |round: u8| vec![round; 1 << 16];
+        assert!(medium.create("k/key", bytes(&value(0))).await.unwrap());
+        assert!(medium.create("k/kept", bytes(b"kept")).await.unwrap());
+        let rounds = 20;
+        for round in 1..=rounds {
+            assert!(
+                medium
+                    .replace("k/key", &value(round - 1), bytes(&value(round)))
+                    .await
+                    .unwrap()
+            );
+        }
+        // One compaction replaced the log: it holds the live frames and what
+        // followed, never every dead one.
+        assert_eq!(medium.counts().0, 1);
+        let length = std::fs::metadata(root.path().join(LOG)).unwrap().len();
+        assert!(length < 2 * COMPACTION_CHUNK, "{length}");
+        let expected = contents(&medium).await;
+        assert_eq!(expected["k/key"], value(rounds));
+        assert_eq!(expected["k/kept"], b"kept");
+        drop(medium);
+        assert_eq!(contents(&open().await.unwrap()).await, expected);
     }
 
     #[test]

@@ -2111,7 +2111,7 @@ async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeM
     not(target_arch = "wasm32")
 ))]
 #[tokio::test]
-async fn a_local_put_syncs_nothing_and_its_commit_syncs_its_closure_once()
+async fn a_local_put_syncs_nothing_and_its_commit_syncs_the_log_once()
 -> Result<(), Box<dyn std::error::Error>> {
     acyclic_native_runtime::initialize_native_io_services()?;
     let root = tempfile::tempdir()?;
@@ -2139,7 +2139,9 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_its_closure_once()
     let (retained, again) = syncs(blobs.retain(&root_id, vec![parent])).await;
     retained?;
     eprintln!("syncs of a commit of a durable closure: {again:?}");
-    assert!(again.values().sum::<usize>() < commit.values().sum::<usize>());
+    // The whole commit is one flush of the log, never one per member.
+    assert_eq!(commit.values().sum::<usize>(), 1);
+    assert!(again.values().sum::<usize>() <= 1);
     Ok(())
 }
 

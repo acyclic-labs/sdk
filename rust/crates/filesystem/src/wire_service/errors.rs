@@ -436,7 +436,7 @@ fn local_objects_code(error: &acyclic_objects::local::LocalOpenError) -> Code {
     match error {
         E::Invalid => Code::InvalidArgument,
         E::Corrupt => Code::DataLoss,
-        E::AlreadyOwned => Code::FailedPrecondition,
+        E::UnsupportedLayout | E::AlreadyOwned => Code::FailedPrecondition,
         E::Unavailable => Code::Unavailable,
         E::Io(error) => io_code(error),
     }
