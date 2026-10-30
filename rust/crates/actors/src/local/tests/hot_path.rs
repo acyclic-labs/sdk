@@ -261,21 +261,31 @@ async fn resident_work() -> TestResult {
         let store = Store::new(provider.clone(), state_root()?);
         let address = actor("resident")?;
         place(&store, &address).await?;
-        let mut initial = store.bind_state(store.load(&address).await?, 1)?;
-        initial.transaction(|state| {
+        let mut binding = store.bind_state(store.load(&address).await?, 1)?;
+        binding.transaction(|state| {
             for index in 0..population {
                 state.put(format!("key-{index:06}"), Bytes::from_static(b"untouched"));
             }
             Ok(())
         })?;
-        initial.flush(key("resident/seed")?).await?;
-        let snapshot = initial.finish()?;
-        // Negative control executes the old full-state clone on the same cut.
+        // This oracle measures resident transactions, including pending work.
+        // Publication and recovery are checked separately on persisted state;
+        // a large resident map is not evidence that one state record fits.
+        // Negative control copies all metadata as the former transaction did.
         let cloned = acyclic_test_support::measure(|| {
-            std::hint::black_box(snapshot.state.clone());
+            binding
+                .transaction(|state| {
+                    std::hint::black_box(
+                        state
+                            .entries()
+                            .map(|(key, value)| (key.to_owned(), value.clone()))
+                            .collect::<std::collections::BTreeMap<_, _>>(),
+                    );
+                    Ok(())
+                })
+                .unwrap();
         });
         assert!(cloned.count_total >= u64::try_from(population)?);
-        let mut binding = store.bind_state(snapshot, 1)?;
         let before = provider.requests();
         let reads = acyclic_test_support::measure(|| {
             for _ in 0..128 {
@@ -291,7 +301,6 @@ async fn resident_work() -> TestResult {
             }
         });
         assert_eq!(reads.count_total, 0, "reads must borrow the resident cut");
-        binding.flush(key("resident/read")?).await?;
         assert_eq!(provider.requests().since(before).data(), 0);
         assert_eq!(provider.requests().since(before).control(), 0);
 
@@ -315,11 +324,13 @@ async fn resident_work() -> TestResult {
             );
         }
         rollback(&mut binding, staged_tail)?;
-        binding.flush(key("resident/commit")?).await?;
-        let snapshot = binding.finish()?;
-        let state = snapshot.state().ok_or("missing state")?;
-        assert_eq!(state.alarm().generation(), 0);
-        assert_eq!(state.journal_tail(), staged_tail);
+        binding.transaction(|state| {
+            assert_eq!(state.journal_tail(), staged_tail);
+            assert_eq!(state.entries().len(), population);
+            Ok(())
+        })?;
+        assert_eq!(provider.requests().since(before).data(), 0);
+        assert_eq!(provider.requests().since(before).control(), 0);
         println!(
             "metadata={population} read_allocations={} clone_allocations={}",
             reads.count_total, cloned.count_total
