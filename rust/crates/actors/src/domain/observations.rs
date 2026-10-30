@@ -100,6 +100,9 @@ pub struct ActorObservation {
     #[ts(type = "bigint")]
     #[wire(tag = 8)]
     configuration_revision: u64,
+    #[wire(tag = 9, message)]
+    #[ts(optional)]
+    entry_source: Option<EntrySource>,
 
     #[wire(tag = 90, string)]
     #[ts(optional)]
@@ -113,6 +116,11 @@ pub struct ActorObservation {
 }
 
 impl ActorObservation {
+    /// Original accepted configuration selection, including after restore.
+    pub fn entry_source(&self) -> Option<&EntrySource> {
+        self.entry_source.as_ref()
+    }
+
     /// Server-owned observation stream locator; callers never derive it from identity.
     pub fn observation_stream_path(&self) -> Option<&str> {
         self.observation_stream_path.as_deref()
@@ -199,8 +207,16 @@ pub struct DeploymentObservation {
     #[wire(tag = 5, bytes)]
     #[ts(type = r#"import("../../readonly.js").ReadonlyBytes"#)]
     pub(super) account_id: Vec<u8>,
+    #[wire(tag = 6, message)]
+    #[ts(optional)]
+    entry_source: Option<EntrySource>,
 }
 impl DeploymentObservation {
+    /// Accepted immutable selection, preserved by idempotent reconciliation.
+    pub fn entry_source(&self) -> Option<&EntrySource> {
+        self.entry_source.as_ref()
+    }
+
     /// Stable namespace or worker deployment name.
     pub fn name(&self) -> &ActorNamespace {
         &self.name

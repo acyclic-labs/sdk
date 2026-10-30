@@ -12,6 +12,7 @@ description = "Bounded deployment manifest admission shared by Cloud and SDK too
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
+acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }

@@ -2,6 +2,7 @@
     family = "actors",
     messages(
         BindingProto,
+        EntrySourceProto,
         SecretSelectionProto,
         FetchBindingProto,
         EgressRuleProto,

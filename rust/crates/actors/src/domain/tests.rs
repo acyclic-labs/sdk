@@ -157,6 +157,7 @@ fn invoke_rejects_only_the_existing_actor_id_presence_violation() {
 #[test]
 fn response_enum_unknown_values_are_not_normalized() {
     let observation = wire::ActorObservation {
+        entry_source: None,
         observation_stream_path: None,
         namespace: None,
         account_id: Vec::new(),
@@ -186,6 +187,7 @@ fn response_enum_unknown_values_are_not_normalized() {
 #[test]
 fn response_digest_keeps_the_nonzero_admission_rule() {
     let observation = wire::ActorObservation {
+        entry_source: None,
         observation_stream_path: None,
         namespace: None,
         account_id: Vec::new(),
@@ -280,6 +282,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         resource: "bucket/a".into(),
     };
     let create = wire::DeploymentRequest {
+        entry_source: None,
         secrets: Vec::new(),
         fetch: None,
         worker_limits: None,
@@ -343,6 +346,7 @@ fn wire_ingress_rechecks_request_admission_predicates() {
     );
 
     let update = wire::UpdateNamespaceRequest {
+        entry_source: None,
         secrets: Vec::new(),
         fetch: None,
         account_id: Vec::new(),

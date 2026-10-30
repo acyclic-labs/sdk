@@ -202,6 +202,7 @@ fn observation(
     cursors: Option<CursorValues>,
 ) -> crate::wire::ActorObservation {
     crate::wire::ActorObservation {
+        entry_source: None,
         observation_stream_path: None,
         namespace: None,
         account_id: Vec::new(),
@@ -263,6 +264,7 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
 
     for present in [false, true] {
         let deployment = crate::wire::DeploymentObservation {
+            entry_source: None,
             name: "ClassOne".into(),
             code_sha256: vec![1; 32],
             revision,
@@ -291,6 +293,7 @@ fn actor_observation_and_response_numeric_projection_is_lossless() {
 fn update_expected_configuration_revision_is_lossless() {
     let revision: u64 = kani::any();
     let value = super::UpdateNamespaceRequest::try_from(crate::wire::UpdateNamespaceRequest {
+        entry_source: None,
         secrets: Vec::new(),
         fetch: None,
         account_id: Vec::new(),

@@ -49,5 +49,18 @@ Code and declared modules load lazily through that same provider and verify the
 original manifest digest and size. Each requested module uses one Objects read;
 unknown module names fail before I/O. The original Objects results, revisions
 and byte custody remain intact. No builder directory is needed. Objects identity
-does not convey account authority. This attachment API does not yet lower an
-attachment reference into accepted Actors deployment configuration.
+does not convey account authority.
+
+`publish_deployment(root, prepared, idempotency_key)` lowers the same admitted
+selection and returns its canonical Actors request only after the closure is
+retained. The request's `entrySource` contains the exact Objects digest, byte
+length, environment and entry. It is separate from the original account and
+resource authority. Invalid configuration or intent fails before publication.
+
+Actors deployment/update requests and deployment/actor observations carry this
+same selection. A service must persist it with the accepted configuration and
+return it unchanged when reconciling an intent or restoring an actor.
+`load_deployment` and `load_actor` consume those original observations through
+the existing Objects loader, verify the selected entry and accepted code digest,
+and then load requested modules lazily. A missing or mismatched selection fails
+closed. These contracts do not install a deployment service or execution host.

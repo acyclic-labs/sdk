@@ -35,9 +35,17 @@ pub struct DeploymentRequest {
     #[wire(tag = 13, message)]
     #[ts(optional)]
     fetch: Option<FetchBinding>,
+    #[wire(tag = 14, message)]
+    #[ts(optional)]
+    entry_source: Option<EntrySource>,
 }
 
 impl DeploymentRequest {
+    /// Exact immutable selection admitted with this configuration, when supplied.
+    pub fn entry_source(&self) -> Option<&EntrySource> {
+        self.entry_source.as_ref()
+    }
+
     /// Builds and validates a namespace deployment through the canonical admission path.
     pub fn new(
         name: ActorNamespace,
@@ -48,6 +56,7 @@ impl DeploymentRequest {
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
         let wire = wire::DeploymentRequest {
+            entry_source: None,
             worker_limits: None,
             name: name.as_str().to_owned(),
             account_id: Vec::new(),
@@ -75,6 +84,7 @@ impl DeploymentRequest {
         crate::addressing::validate_dns_label(name.as_str().as_bytes())
             .map_err(|_| DomainError::Contract(crate::ContractError::InvalidArgument))?;
         Self::try_from(wire::DeploymentRequest {
+            entry_source: None,
             code_sha256: code_sha256.as_bytes().to_vec(),
             bindings: bindings.into_iter().map(Into::into).collect(),
             secrets: Vec::new(),
@@ -204,9 +214,17 @@ pub struct UpdateNamespaceRequest {
     #[wire(tag = 8, message)]
     #[ts(optional)]
     fetch: Option<FetchBinding>,
+    #[wire(tag = 9, message)]
+    #[ts(optional)]
+    entry_source: Option<EntrySource>,
 }
 
 impl UpdateNamespaceRequest {
+    /// Exact replacement selection; absence explicitly removes the attachment.
+    pub fn entry_source(&self) -> Option<&EntrySource> {
+        self.entry_source.as_ref()
+    }
+
     /// Builds and validates an update request through the canonical admission path.
     pub fn new(
         namespace_id: ActorNamespace,
@@ -217,6 +235,7 @@ impl UpdateNamespaceRequest {
         idempotency_key: String,
     ) -> Result<Self, DomainError> {
         let wire = wire::UpdateNamespaceRequest {
+            entry_source: None,
             account_id: Vec::new(),
             namespace_id: namespace_id.as_str().to_owned(),
             code_sha256: code_sha256.as_bytes().to_vec(),

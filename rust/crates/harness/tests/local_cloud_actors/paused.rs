@@ -264,6 +264,7 @@ fn paused_oracle_rejects_active_and_changed_failure_boundaries() -> TestResult {
     let request = configuration();
     let expected = paused();
     let valid = wire::ActorObservation {
+        entry_source: None,
         namespace: Some(NS.into()),
         account_id: Vec::new(),
         actor_id: ID.into(),
@@ -312,6 +313,7 @@ proptest::proptest! {
         // Activate, first Configure, Pause, second Configure, Resume, retry, retained follow.
         for expected in [active(), active(), paused(), paused(), active(), active(), active()] {
             let valid = wire::ActorObservation {
+                entry_source: None,
             namespace: Some(NS.into()), account_id: Vec::new(),
                 actor_id: ID.into(),
                 code_sha256: request.code_sha256.clone(),

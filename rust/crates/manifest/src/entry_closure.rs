@@ -53,7 +53,7 @@ fn selected(manifest: &DeploymentManifest) -> Result<(&Environment, &Entry), Man
 /// Payloads move without copying; each seal computes its content digest once.
 #[derive(Debug)]
 pub struct PreparedEntry {
-    closure: SealedBytes,
+    record: ClosureV1,
     payloads: Vec<SealedBytes>,
 }
 
@@ -100,17 +100,64 @@ impl PreparedEntry {
             artifact,
             assets,
         };
-        let closure = serde_json::to_vec(&record).map_err(ManifestError::json)?;
-        Ok(Self {
-            closure: SealedBytes::new(closure.into()),
-            payloads,
+        Ok(Self { record, payloads })
+    }
+
+    /// Lower the original selection with the identity of its exact sealed
+    /// descriptor. Admission completes before any publication, without a
+    /// descriptor read, second encoding or second manifest validation.
+    pub fn into_deployment(
+        self,
+        idempotency_key: &str,
+    ) -> Result<PreparedDeployment, ManifestError> {
+        let (environment, entry) = selected(&self.record.manifest)?;
+        let closure = seal(&self.record)?;
+        let source = acyclic_actors::domain::EntrySource::new(
+            acyclic_objects::Digest::sealed(&closure),
+            closure.bytes().len() as u64,
+            environment.name.clone(),
+            entry.name.clone(),
+        )
+        .map_err(|_| invalid("source-admission"))?;
+        let request =
+            crate::validation::lower_admitted(environment, entry, idempotency_key, Some(source))?;
+        Ok(PreparedDeployment {
+            request,
+            closure,
+            payloads: self.payloads,
         })
     }
 
     /// Move the descriptor and payload seals to the original Objects provider.
+    pub fn into_parts(self) -> Result<(SealedBytes, Vec<SealedBytes>), ManifestError> {
+        Ok((seal(&self.record)?, self.payloads))
+    }
+}
+
+fn seal(record: &ClosureV1) -> Result<SealedBytes, ManifestError> {
+    let bytes = serde_json::to_vec(record).map_err(ManifestError::json)?;
+    Ok(SealedBytes::new(bytes.into()))
+}
+
+/// One admitted deployment request and the exact immutable bytes it selects.
+#[derive(Debug)]
+pub struct PreparedDeployment {
+    request: acyclic_actors::domain::DeploymentRequest,
+    closure: SealedBytes,
+    payloads: Vec<SealedBytes>,
+}
+
+impl PreparedDeployment {
+    /// Move the canonical request and seals to the original publication path.
     #[must_use]
-    pub fn into_parts(self) -> (SealedBytes, Vec<SealedBytes>) {
-        (self.closure, self.payloads)
+    pub fn into_parts(
+        self,
+    ) -> (
+        acyclic_actors::domain::DeploymentRequest,
+        SealedBytes,
+        Vec<SealedBytes>,
+    ) {
+        (self.request, self.closure, self.payloads)
     }
 }
 
@@ -123,6 +170,24 @@ pub struct EntryClosure {
 }
 
 impl EntryClosure {
+    /// Verify that restored configuration still names this exact code artifact.
+    /// This compares admitted metadata and reads no payload bytes.
+    pub fn verify_code(
+        &self,
+        code: &acyclic_actors::domain::CodeSha256,
+    ) -> Result<(), ManifestError> {
+        let mut expected = [0; 32];
+        hex::decode_to_slice(
+            &selected(&self.record.manifest)?.1.artifact_sha256,
+            &mut expected,
+        )
+        .map_err(|_| invalid("artifact-digest"))?;
+        if &expected != code.as_bytes() {
+            return Err(invalid("artifact-digest"));
+        }
+        Ok(())
+    }
+
     /// Largest canonical v1 encoding permitted by the existing manifest
     /// contract, plus its fixed-width Objects references. This introduces no
     /// additional restriction on admitted manifests or payload byte lengths.

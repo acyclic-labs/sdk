@@ -65,14 +65,24 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
         )
 }
 
+fn valid_entry_source(source: Option<&wire::EntrySource>, name: &str) -> bool {
+    source.is_none_or(|source| {
+        source.entry == name
+            && source.digest.len() == 32
+            && source.length > 0
+            && domain::EntrySource::validate_selection(&source.environment, &source.entry).is_ok()
+    })
+}
+
 /// Validates an explicit namespace or named script deployment before admission.
 pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), ContractError> {
     if (!request.account_id.is_empty()
         && crate::addressing::AccountId::new(&request.account_id).is_err())
-        || crate::addressing::NamespaceId::for_deployment(request.name.as_bytes()).is_err()
+        || crate::addressing::NamespaceId::validate_deployment(request.name.as_bytes()).is_err()
         || !matches!(request.jurisdiction.as_str(), "" | "eu" | "us" | "fedramp")
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
+        || !valid_entry_source(request.entry_source.as_ref(), &request.name)
         || !match (&request.limits, &request.worker_limits) {
             (Some(limits), None) => {
                 limits.handler_timeout_millis > 0
@@ -128,9 +138,11 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
 pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), ContractError> {
     if (!request.account_id.is_empty()
         && crate::addressing::AccountId::new(&request.account_id).is_err())
-        || crate::addressing::NamespaceId::for_deployment(request.namespace_id.as_bytes()).is_err()
+        || crate::addressing::NamespaceId::validate_deployment(request.namespace_id.as_bytes())
+            .is_err()
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
+        || !valid_entry_source(request.entry_source.as_ref(), &request.namespace_id)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -275,10 +287,10 @@ pub use generated::{
     AddSubscriptionResponseProto, BindingProto, CheckpointActorRequestProto,
     CheckpointActorResponseProto, DeleteAllRequestProto, DeleteAllResponseProto,
     DeleteWorkerRequestProto, DeleteWorkerResponseProto, DeploymentObservationProto,
-    DeploymentRequestProto, DeploymentResponseProto, EgressRuleProto, ErrorCode, FetchBindingProto,
-    HeaderProto, InspectActorRequestProto, InspectActorResponseProto, InvocationOrderProto,
-    InvokeActorRequestProto, InvokeActorResponseProto, InvokeWorkerRequestProto,
-    RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
+    DeploymentRequestProto, DeploymentResponseProto, EgressRuleProto, EntrySourceProto, ErrorCode,
+    FetchBindingProto, HeaderProto, InspectActorRequestProto, InspectActorResponseProto,
+    InvocationOrderProto, InvokeActorRequestProto, InvokeActorResponseProto,
+    InvokeWorkerRequestProto, RemoveSubscriptionRequestProto, RemoveSubscriptionResponseProto,
     ResumeSubscriptionRequestProto, ResumeSubscriptionResponseProto, SecretSelectionProto,
     ServiceErrorProto, SubscriptionObservationProto, SubscriptionSpecProto, SubscriptionStartProto,
     SubscriptionState, UpdateNamespaceRequestProto, UpdateNamespaceResponseProto,

@@ -177,6 +177,7 @@ async fn append_events(
 
 fn create() -> wire::DeploymentRequest {
     wire::DeploymentRequest {
+        entry_source: None,
         name: NAMESPACE.into(),
         account_id: Vec::new(),
         jurisdiction: String::new(),
@@ -303,6 +304,7 @@ async fn invoke_response(
 #[test]
 fn actor_observation_rejects_other_identities_and_revisions() -> TestResult {
     let valid = wire::ActorObservation {
+        entry_source: None,
         namespace: Some(NAMESPACE.into()),
         account_id: Vec::new(),
         actor_id: ACTOR.into(),
@@ -332,6 +334,7 @@ proptest::proptest! {
         let mut expected = vec![subscription(cursor), subscription(cursor)];
         expected[1].subscription_id = "other".into();
         let valid = wire::ActorObservation {
+            entry_source: None,
             namespace: Some(NAMESPACE.into()), account_id: Vec::new(),
             subscriptions: expected.clone(),
             ..Default::default()
@@ -738,6 +741,7 @@ async fn migrate_namespace(
     )
     .await?;
     let update = wire::UpdateNamespaceRequest {
+        entry_source: None,
         secrets: Vec::new(),
         fetch: None,
         account_id: Vec::new(),

@@ -11,7 +11,7 @@ mod validation;
 pub mod wire;
 pub use acyclic_actors::domain::{ActorLimits, Binding, SubscriptionSpec};
 pub use acyclic_auth::contract::{Limits, ResourceGrant, ResourcePattern};
-pub use entry_closure::{EntryClosure, EntryObject, PreparedEntry};
+pub use entry_closure::{EntryClosure, EntryObject, PreparedDeployment, PreparedEntry};
 pub use generation::{environment_typescript, json_schema, typescript};
 pub use selection::select_entry;
 pub use validation::{

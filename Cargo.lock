@@ -23,6 +23,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
+ "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
@@ -836,6 +837,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-actors",
  "acyclic-auth",
+ "acyclic-objects",
  "acyclic-stream",
  "bytes",
  "futures",
