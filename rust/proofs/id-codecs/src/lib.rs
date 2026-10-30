@@ -1,5 +1,41 @@
 //! Bounded proofs call the owning types' actual codecs, including seal custody.
 #[cfg(kani)]
+mod journal_prefix {
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds() {
+        use acyclic_native_runtime::LogFrame;
+        let wide: bool = kani::any();
+        let format = LogFrame {
+            domain: b"prefix-proof\0",
+            wide,
+            minimum_body: kani::any(),
+            maximum_body: kani::any(),
+        };
+        let body: u64 = kani::any();
+        let admitted = (format.minimum_body..=format.maximum_body).contains(&body)
+            && (wide || u32::try_from(body).is_ok());
+        let encoded = format.prefix(body);
+        assert_eq!(encoded.is_some(), admitted);
+        if let Some((prefix, width)) = encoded {
+            assert_eq!(width, if wide { 8 } else { 4 });
+            assert_eq!(format.body_length(&prefix[..width]), Some(body));
+            let cut: usize = kani::any();
+            kani::assume(cut < width);
+            assert_eq!(format.body_length(&prefix[..cut]), None);
+        }
+        let bytes: [u8; 8] = kani::any();
+        if let Some(length) = format.body_length(&bytes) {
+            let (canonical, width) = format
+                .prefix(length)
+                .expect("an admitted prefix length is representable in the same width");
+            assert_eq!(&canonical[..width], &bytes[..width]);
+            assert!(length >= format.minimum_body && length <= format.maximum_body);
+        }
+    }
+}
+
+#[cfg(kani)]
 mod version {
     #[kani::proof]
     #[kani::unwind(64)]
