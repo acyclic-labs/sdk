@@ -46,6 +46,106 @@ fn inference<W: Message + Default>(bytes: &[u8], kind: &str, identity: impl FnOn
     }
 }
 
+fn watch_view(bytes: &[u8]) {
+    use acyclic_inference::{watch_run_start_state_wire, watch_run_start_wire, wire};
+    let Ok(view) = wire::RunView::decode(bytes) else {
+        return;
+    };
+    for cursor in [
+        0,
+        view.last_sequence,
+        view.last_sequence.saturating_add(1),
+        u64::MAX,
+    ] {
+        let cursor = cursor.to_string();
+        let state = watch_run_start_state_wire(bytes, &view.run_id, &cursor);
+        assert_eq!(
+            state.map(|state| state.is_terminal()),
+            watch_run_start_wire(bytes, &view.run_id, &cursor),
+        );
+        if let Ok(state) = state {
+            assert_eq!(state.finish().is_ok(), state.is_terminal());
+        }
+    }
+    for cursor in ["-1", "18446744073709551616"] {
+        assert!(watch_run_start_state_wire(bytes, &view.run_id, cursor).is_err());
+    }
+}
+
+fn watch_event(bytes: &[u8]) {
+    use acyclic_inference::{watch_run_start_state_wire, wire};
+    let Ok(event) = wire::RunEvent::decode(bytes) else {
+        return;
+    };
+    let view = pending_run();
+    let original = watch_run_start_state_wire(
+        &view.encode_to_vec(),
+        &view.run_id,
+        &event.sequence.to_string(),
+    )
+    .expect("the production writer supplies a valid pending view");
+    assert!(
+        original.finish().is_err(),
+        "producer loss is a typed refusal"
+    );
+    let mut state = original;
+    let outcome = state.advance_wire(bytes);
+    if bytes.len() <= acyclic_inference::MAXIMUM_MESSAGE_BYTES {
+        let mut canonical = original;
+        assert_eq!(canonical.advance_wire(&event.encode_to_vec()), outcome);
+        assert_eq!(canonical, state);
+    }
+    if outcome.is_ok() {
+        assert_ne!(state, original);
+        assert_eq!(state.finish().is_ok(), state.is_terminal());
+        let admitted = state;
+        assert!(
+            state.advance_wire(bytes).is_err(),
+            "duplicate events refuse"
+        );
+        assert_eq!(state, admitted);
+        if !state.is_terminal()
+            && let Some(next) = event
+                .sequence
+                .checked_add(1)
+                .filter(|next| *next < u64::MAX)
+        {
+            let terminal = wire::RunEvent {
+                sequence: next,
+                event: Some(wire::run_event::Event::Terminal(
+                    wire::RunTerminal::Completed.into(),
+                )),
+            }
+            .encode_to_vec();
+            assert_eq!(state.advance_wire(&terminal), Ok(()));
+            assert_eq!(state.finish(), Ok(()));
+            let completed = state;
+            assert!(state.advance_wire(&terminal).is_err());
+            assert_eq!(state, completed);
+        }
+    } else {
+        assert_eq!(state, original, "refused events never advance the cursor");
+    }
+    let mut foreign = event.clone();
+    foreign.sequence = foreign.sequence.wrapping_add(1);
+    state = original;
+    assert!(state.advance_wire(&foreign.encode_to_vec()).is_err());
+    assert_eq!(state, original);
+    foreign = event;
+    foreign.event = Some(wire::run_event::Event::Terminal(-1));
+    assert!(state.advance_wire(&foreign.encode_to_vec()).is_err());
+    assert_eq!(state, original);
+}
+
+fn pending_run() -> acyclic_inference::wire::RunView {
+    acyclic_inference::wire::RunView {
+        run_id: vec![2; 16],
+        input: vec![3; 32],
+        model: "model".into(),
+        ..Default::default()
+    }
+}
+
 pub(super) fn check(name: &str, bytes: &[u8]) {
     use acyclic_stream::{wire as w, wire_codec as c};
     macro_rules! projection {
@@ -193,6 +293,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         "inference.customer.v1.RunView" => {
             inference::<acyclic_inference::wire::RunView>(bytes, "run_view", |wire| &wire.run_id);
+            watch_view(bytes);
         }
         "inference.customer.v1.EvaluationSpec" => {
             inference::<acyclic_inference::wire::EvaluationSpec>(bytes, "evaluation_spec", |_| &[]);
@@ -206,6 +307,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
         }
         "inference.customer.v1.RunEvent" => {
             inference::<acyclic_inference::wire::RunEvent>(bytes, "run_event", |_| &[]);
+            watch_event(bytes);
         }
         _ => {}
     }
@@ -237,6 +339,41 @@ pub(super) fn seeds(
             ));
         }
         seeds.push((message, "semantic", bytes.clone()));
+    }
+    seeds.push((
+        "inference.customer.v1.RunView",
+        "watch-pending",
+        pending_run().encode_to_vec(),
+    ));
+    use acyclic_inference::wire as i;
+    for (name, sequence, event) in [
+        (
+            "watch-progress",
+            0,
+            i::run_event::Event::Progress(i::RunProgress {
+                kind: "queued".into(),
+            }),
+        ),
+        (
+            "watch-terminal",
+            1,
+            i::run_event::Event::Terminal(i::RunTerminal::Completed.into()),
+        ),
+        (
+            "watch-overflow",
+            u64::MAX,
+            i::run_event::Event::Terminal(i::RunTerminal::Completed.into()),
+        ),
+    ] {
+        seeds.push((
+            "inference.customer.v1.RunEvent",
+            name,
+            i::RunEvent {
+                sequence,
+                event: Some(event),
+            }
+            .encode_to_vec(),
+        ));
     }
     Ok(seeds)
 }

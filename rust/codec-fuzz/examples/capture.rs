@@ -88,7 +88,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "protobuf",
             &name,
             &binary,
-            "Stream production record/batch writers from codec_fuzz::seeds (first 8 bytes select type)",
+            "SDK Stream wire_codec/Inference prost writers from semantic_seeds (first 8 bytes select type)",
             &mut manifest,
         )?;
         let mut json = selector.to_vec();
@@ -100,7 +100,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "protobuf_json",
             &name,
             &json,
-            "acyclic_protobuf_json::encode from Stream production record/batch output (first 8 bytes select type)",
+            "acyclic_protobuf_json::encode from SDK semantic_seeds writer output (first 8 bytes select type)",
             &mut manifest,
         )?;
     }
