@@ -1,5 +1,7 @@
 use super::*;
-use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
+use crate::{
+    BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream,
+};
 use std::sync::Mutex;
 
 #[derive(Default)]

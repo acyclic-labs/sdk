@@ -1,6 +1,6 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
 use crate::StreamProviderExt as _;
-use crate::{BoxProviderFuture, CommitOutcome, CommitRequest, StreamError, StreamProvider};
+use crate::{CommitOutcome, CommitRequest, StreamError, StreamProvider};
 use futures::{FutureExt as _, channel::oneshot, future::Shared};
 use std::{
     future::Future,
@@ -22,7 +22,7 @@ mod tests;
 #[must_use = "retain the handle or its request identity to recover an ambiguous outcome"]
 pub struct Pending {
     request: Arc<CommitRequest>,
-    outcome: Shared<BoxProviderFuture<'static, Result<CommitOutcome, StreamError>>>,
+    outcome: Shared<oneshot::Receiver<Result<CommitOutcome, StreamError>>>,
 }
 
 impl Pending {
@@ -40,11 +40,9 @@ impl Pending {
             let outcome = provider.commit((*owned).clone()).await;
             let _ = send.send(outcome);
         }));
-        let outcome: BoxProviderFuture<'static, _> =
-            Box::pin(async move { receive.await.unwrap_or(Err(StreamError::Unavailable)) });
         Self {
             request,
-            outcome: outcome.shared(),
+            outcome: receive.shared(),
         }
     }
 
@@ -57,13 +55,18 @@ impl Pending {
     /// Waits without consuming this handle. Cancelling the wait leaves both
     /// the owned submission and its eventual result available to other waiters.
     pub async fn wait(&self) -> Result<CommitOutcome, StreamError> {
-        self.outcome.clone().await
+        self.outcome
+            .clone()
+            .await
+            .unwrap_or(Err(StreamError::Unavailable))
     }
 }
 
 impl Future for Pending {
     type Output = Result<CommitOutcome, StreamError>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.get_mut().outcome).poll(cx)
+        Pin::new(&mut self.get_mut().outcome)
+            .poll(cx)
+            .map(|result| result.unwrap_or(Err(StreamError::Unavailable)))
     }
 }
