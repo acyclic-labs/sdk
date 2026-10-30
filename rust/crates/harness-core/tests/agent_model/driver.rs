@@ -546,7 +546,7 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
 
 #[tokio::test]
 async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_blocks_it() -> Result {
-    use acyclic_stream::{CommitOutcome, MemoryStream, StreamProvider};
+    use acyclic_stream::{CommitOutcome, MemoryStream, StreamProviderExt as _};
     let provider = MemoryStream::default();
     let missing_completion = MemoryStream::default();
     let wrong_completion = MemoryStream::default();
