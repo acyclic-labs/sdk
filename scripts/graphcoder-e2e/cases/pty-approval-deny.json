@@ -22,7 +22,9 @@
         ]
       },
       {
-        "when": {},
+        "when": {
+          "tool_result": "tool execution failed: interaction declined"
+        },
         "text": [
           "DENIAL_E2E_DONE"
         ]
@@ -75,10 +77,10 @@
       ]
     },
     "tool_errors": [
-      "E2E approval policy"
+      "tool execution failed: interaction declined"
     ],
     "tool_contains": [
-      "E2E approval policy"
+      "tool execution failed: interaction declined"
     ]
   },
   "settings": {

@@ -360,7 +360,7 @@ pub enum ExecutionEvent {
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ToolFailureKind {
-    /// Executor rejected the already admitted call.
+    /// Admission or execution failed without an uncertain effect.
     ExecutorRejected,
     /// Executor result did not satisfy its pinned output contract.
     InvalidOutput,
@@ -372,8 +372,6 @@ pub enum ToolFailureKind {
     Unavailable,
     /// The arguments violated the tool's pinned input schema; recorded without a start.
     InvalidInput,
-    /// The bound policy denied the call.
-    Refused,
     /// The executing process ended before the outcome was recorded, and the
     /// executor cannot reconcile it. The effect may have run, partly or fully.
     Interrupted,
@@ -384,13 +382,12 @@ impl ToolFailureKind {
     #[must_use]
     pub const fn message(self) -> &'static str {
         match self {
-            Self::ExecutorRejected => "tool executor rejected the admitted call",
+            Self::ExecutorRejected => "tool execution failed",
             Self::InvalidOutput => "tool output violated its pinned schema",
             Self::ProjectionRejected => "tool result projection was rejected",
             Self::PublicationRejected => "tool result artifact could not be published",
             Self::Unavailable => "tool is not available",
             Self::InvalidInput => "tool arguments violated the input schema",
-            Self::Refused => "tool policy refused the call",
             Self::Interrupted => {
                 "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
             }
@@ -400,7 +397,7 @@ impl ToolFailureKind {
     /// Whether the call is settled before any dispatch, so no start precedes the failure.
     #[must_use]
     pub const fn precedes_dispatch(self) -> bool {
-        matches!(self, Self::Unavailable | Self::InvalidInput | Self::Refused)
+        matches!(self, Self::Unavailable | Self::InvalidInput)
     }
 }
 
@@ -452,7 +449,7 @@ pub struct TurnOutput {
     pub steps: u32,
 }
 
-/// Execution progress with its settled value or original approval outcome.
+/// Execution progress with its settled value or pending approval operation.
 pub enum ExecutionProgress<T> {
     /// Preparation failed before any provider attempt could start.
     PreDispatchFailed(PreDispatchFailure),
@@ -460,8 +457,6 @@ pub enum ExecutionProgress<T> {
     Ready(T),
     /// The original approval operation is pending.
     Pending(OperationId),
-    /// The original approval operation was rejected.
-    Rejected(crate::InteractionRejection),
     /// A recorded tool failure ended the turn.
     Failed(ToolFailureKind),
 }
@@ -472,7 +467,6 @@ impl ExecutionProgress<TurnOutput> {
             Self::PreDispatchFailed(failure) => Err(failure.into_error()),
             Self::Ready(output) => Ok(output),
             Self::Pending(operation) => Err(Error::Indeterminate(operation)),
-            Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
             Self::Failed(reason) => Err(Error::Invalid(reason.message().into())),
         }
     }

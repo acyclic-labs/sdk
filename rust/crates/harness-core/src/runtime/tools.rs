@@ -11,10 +11,9 @@ pub enum ToolPolicyDecision {
         /// Explanation retained with the denied decision.
         reason: String,
     },
-    /// An addressable approval must resolve for this exact action. Declining,
-    /// cancelling, expiring or denying the approval terminates an unstarted
-    /// turn with that rejection; it is not a recoverable tool result. A
-    /// rejection after dispatch remains indeterminate and never replays the effect.
+    /// An addressable approval must resolve for this exact action. A refusal
+    /// returns its reason through the ordinary tool-failure result. A changed
+    /// approval after dispatch remains indeterminate and never replays the effect.
     RequireApproval {
         /// Ref-free text used to create the approval request.
         prompt: String,

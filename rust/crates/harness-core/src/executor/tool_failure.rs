@@ -120,6 +120,9 @@ pub(crate) struct ToolFailureText<'a>(pub ToolFailureKind, pub &'a ToolFailureCa
 impl fmt::Display for ToolFailureText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(reason, cause) = self;
+        if *reason == ToolFailureKind::ExecutorRejected {
+            return write!(formatter, "tool execution failed: {}", cause.message);
+        }
         // A refusal's cause is already its complete text.
         if reason.precedes_dispatch() {
             return formatter.write_str(&cause.message);
@@ -253,7 +256,7 @@ mod tests {
     use proptest::prelude::*;
 
     /// Every failure kind; `entry` fails to compile when a kind is added without coverage.
-    const KINDS: [ToolFailureKind; 8] = [
+    const KINDS: [ToolFailureKind; 7] = [
         ToolFailureKind::ExecutorRejected,
         ToolFailureKind::InvalidOutput,
         ToolFailureKind::ProjectionRejected,
@@ -261,16 +264,13 @@ mod tests {
         ToolFailureKind::Interrupted,
         ToolFailureKind::Unavailable,
         ToolFailureKind::InvalidInput,
-        ToolFailureKind::Refused,
     ];
 
     /// The production constructor each entry point uses for its kind.
     fn entry(kind: ToolFailureKind, name: &str, error: &Error) -> Result<ToolFailureCause> {
         match kind {
             // Unknown tool, schema-invalid arguments, policy denial: refused before dispatch.
-            ToolFailureKind::Unavailable
-            | ToolFailureKind::InvalidInput
-            | ToolFailureKind::Refused => {
+            ToolFailureKind::Unavailable | ToolFailureKind::InvalidInput => {
                 ToolFailureCause::refusal(name, kind, error, None, &mut None)
             }
             // Executor error, output contract, projection and publication after a start.
@@ -309,7 +309,6 @@ mod tests {
             variant in any::<u8>(),
             text in r"(\PC|[\n\t\x1b ]){0,400}",
             name in "[a-z_.@0-9]{1,300}",
-            approval_prompt in prop::option::of(r"(\PC|[\n\t\x1b ]){0,400}"),
         ) {
             let kind = KINDS[kind];
             let cause = entry(kind, &name, &error(variant, text)).unwrap();
@@ -320,12 +319,6 @@ mod tests {
             // The rendered text is exactly what the result admission contract accepts.
             let result = crate::model::ToolResultContent::Error { message: rendered };
             prop_assert!(result.validate_limits(crate::conversation::Limits::default(), &mut None).is_ok());
-            if let Some(prompt) = approval_prompt {
-                let denial = Error::InteractionRejected(crate::InteractionRejection::Denied);
-                let cause = ToolFailureCause::refusal(&name, ToolFailureKind::Refused, &denial, Some(&prompt), &mut None).unwrap();
-                prop_assert_eq!(cause.class, ToolErrorClass::Denied);
-                prop_assert!(cause.is_canonical(), "{cause:?}");
-            }
         }
     }
 
@@ -414,7 +407,7 @@ mod tests {
         assert_eq!(
             ToolFailureText(ToolFailureKind::ExecutorRejected, &cause)
                 .to_string()
-                .split_once(" (not_found): ")
+                .split_once(": ")
                 .map(|(head, _)| head),
             Some(ToolFailureKind::ExecutorRejected.message())
         );

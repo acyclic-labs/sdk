@@ -129,7 +129,10 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         let text = super::tools_1::tool_error_text(&model.requests()[1].messages, "call-1");
         assert_eq!(text.is_some(), deny);
         if let Some(text) = text {
-            assert!(text.contains("(unauthorized)") && text.contains("echo is forbidden here"));
+            assert_eq!(
+                text,
+                "tool execution failed: unauthorized: echo is forbidden here"
+            );
         }
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
         assert_eq!(executor.execute(input, &journal).await?, output);

@@ -26,7 +26,7 @@ proptest! {
             for started in [false, true] {
                 for empty in [false, true] {
                     for reason in [ToolFailureKind::Unavailable, ToolFailureKind::InvalidInput,
-                        ToolFailureKind::Refused, ToolFailureKind::ExecutorRejected,
+                        ToolFailureKind::ExecutorRejected,
                         ToolFailureKind::InvalidOutput, ToolFailureKind::ProjectionRejected,
                         ToolFailureKind::PublicationRejected] {
                         let call_id = if empty { "" } else { &call };
@@ -42,7 +42,7 @@ proptest! {
                             },
                         };
                         prop_assert_eq!(state.require_next(&failure, None).is_ok(),
-                            initialized && !empty && (reason.precedes_dispatch() != started),
+                            initialized && !empty && (reason == ToolFailureKind::ExecutorRejected || reason.precedes_dispatch() != started),
                             "{:?}, initialized={}, started={}, empty={}", reason, initialized, started, empty);
                     }
                 }

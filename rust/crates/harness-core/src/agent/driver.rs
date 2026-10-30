@@ -652,7 +652,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         drops: None,
                     });
                 }
-                ExecutionProgress::Rejected(reason) => failed(&format!("approval {reason}")),
                 ExecutionProgress::Failed(kind) => failed(kind.message()),
                 ExecutionProgress::PreDispatchFailed(failure) => failed(failure.message()),
             };

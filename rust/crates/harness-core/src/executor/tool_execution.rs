@@ -4,15 +4,14 @@ use crate::wire::ErrorCode::{Conflict, Invalid};
 
 mod dispatch;
 
-/// A recoverable model tool call refusal, recorded without dispatch as its model-visible
-/// result. Approval rejections use the interaction's terminal disposition instead.
+/// A model tool call failure recorded without dispatch as its model-visible result.
 enum ToolCallRejection {
     /// The composition binds no granted tool by this name.
     Unavailable,
     /// The arguments violate the tool's pinned input schema.
     InvalidInput(Error),
     /// The bound policy denied the call; the model can adapt.
-    Refused(Error),
+    Failed(Error),
 }
 
 impl ToolCallRejection {
@@ -27,17 +26,17 @@ impl ToolCallRejection {
                 ),
             ),
             Self::InvalidInput(violation) => (ToolFailureKind::InvalidInput, violation),
-            Self::Refused(denial) => (ToolFailureKind::Refused, denial),
+            Self::Failed(error) => (ToolFailureKind::ExecutorRejected, error),
         }
     }
 }
 
 /// Why the bound policy stopped a call before dispatch.
 pub(in crate::executor) enum PolicyStop {
-    /// Approval is pending or was rejected; the turn's progress reports it.
+    /// Approval is pending; the turn's progress reports its operation.
     Progress(ExecutionProgress<()>),
     /// The policy denied the call; the model receives the denial as the call's result.
-    Refused(Error),
+    Failed(Error),
 }
 
 /// A recorded tool failure's model-visible content, received instead of a result.
@@ -156,7 +155,7 @@ impl StockExecution<'_> {
                     operation_id,
                     step,
                     &invocation,
-                    ToolCallRejection::Refused(Error::Unauthorized(reason)),
+                    ToolCallRejection::Failed(Error::Unauthorized(reason)),
                 )
                 .await?;
             self.append_hook_context(_hook_context, pre_hook)?;
@@ -204,21 +203,35 @@ impl StockExecution<'_> {
                         .hook_approval(journal, operation_id, &invocation, tool, prompt, started)
                         .await?
                 {
-                    return Ok(stop);
+                    match stop {
+                        PolicyStop::Progress(progress) => return Ok(progress),
+                        PolicyStop::Failed(error) => {
+                            let content = self
+                                .settle_tool_refusal(
+                                    journal,
+                                    operation_id,
+                                    step,
+                                    &invocation,
+                                    ToolCallRejection::Failed(error),
+                                )
+                                .await?;
+                            return self.push_tool_result(&invocation, content, prior_messages);
+                        }
+                    }
                 }
                 match self
                     .require_tool_policy(journal, operation_id, &invocation, tool, started)
                     .await?
                 {
                     Some(PolicyStop::Progress(progress)) => return Ok(progress),
-                    Some(PolicyStop::Refused(denial)) => {
+                    Some(PolicyStop::Failed(denial)) => {
                         let content = self
                             .settle_tool_refusal(
                                 journal,
                                 operation_id,
                                 step,
                                 &invocation,
-                                ToolCallRejection::Refused(denial),
+                                ToolCallRejection::Failed(denial),
                             )
                             .await?;
                         return self.push_tool_result(&invocation, content, prior_messages);
@@ -308,7 +321,11 @@ impl StockExecution<'_> {
             }
         }
         let cause = with_history_io(self.io, |work| {
-            ToolFailureCause::refusal(&invocation.name, reason, &error, None, work)
+            if reason.precedes_dispatch() {
+                ToolFailureCause::refusal(&invocation.name, reason, &error, None, work)
+            } else {
+                ToolFailureCause::of(&error, work)
+            }
         })?;
         self.settle_tool_cause(
             journal,
@@ -382,7 +399,7 @@ impl StockExecution<'_> {
             return if started {
                 Err(denial)
             } else {
-                Ok(Some(PolicyStop::Refused(denial)))
+                Ok(Some(PolicyStop::Failed(denial)))
             };
         };
         let identity_matches = || -> Result<bool> {
@@ -412,7 +429,7 @@ impl StockExecution<'_> {
             // A denial before dispatch is the call's result; the pinned policy
             // re-derives it on replay. After a recorded start it is a conflict.
             ToolPolicyDecision::Deny { reason } if !started => {
-                return Ok(Some(PolicyStop::Refused(Error::Unauthorized(reason))));
+                return Ok(Some(PolicyStop::Failed(Error::Unauthorized(reason))));
             }
             ToolPolicyDecision::Deny { reason } => {
                 return Err(Error::Unauthorized(reason));
@@ -446,7 +463,7 @@ impl StockExecution<'_> {
                     )
                     .await?
                 {
-                    return Ok(Some(PolicyStop::Progress(progress)));
+                    return Ok(Some(progress));
                 }
             }
         }

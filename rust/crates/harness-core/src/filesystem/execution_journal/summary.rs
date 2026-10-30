@@ -105,12 +105,15 @@ impl ExecutionSummary {
             } => {
                 let key = *blake3::hash(call_id.as_bytes()).as_bytes();
                 tool_key = Some(key);
-                // A refusal settles a call with no start; any other failure follows one.
+                // Admission and execution share the same ordinary failure. A failed
+                // admission has no dispatch to retire; a failed execution has one.
                 let recorded = self.tools.get(&(*step, key), io)?;
                 self.tail > 0
                     && !call_id.is_empty()
                     && cause.is_canonical()
-                    && if reason.precedes_dispatch() {
+                    && if *reason == crate::executor::ToolFailureKind::ExecutorRejected {
+                        recorded.is_none() || recorded == Some(&false)
+                    } else if reason.precedes_dispatch() {
                         recorded.is_none()
                     } else {
                         recorded == Some(&false)
@@ -326,7 +329,23 @@ impl ExecutionSummary {
                                 )
                             })?;
                     }
-                    ExecutionEvent::ToolFailed { reason, .. } if reason.precedes_dispatch() => {}
+                    ExecutionEvent::ToolFailed { .. }
+                        if self
+                            .tools
+                            .get(
+                                &(
+                                    *step,
+                                    tool_key.ok_or_else(|| {
+                                        canonical_boundary(
+                                            io,
+                                            crate::wire::ErrorCode::Storage,
+                                            "tool observation has no authenticated identity",
+                                        )
+                                    })?,
+                                ),
+                                io,
+                            )?
+                            .is_none() => {}
                     _ => {
                         self.pending_dispatches =
                             self.pending_dispatches.checked_sub(1).ok_or_else(|| {
@@ -475,7 +494,6 @@ impl PreparationRecord for Observation {
                 "publication_rejected",
                 "unavailable",
                 "invalid_input",
-                "refused",
                 "interrupted",
             ];
             let mut bytes = 0;

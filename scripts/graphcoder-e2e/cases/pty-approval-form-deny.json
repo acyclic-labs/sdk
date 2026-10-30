@@ -20,6 +20,14 @@
             }
           }
         ]
+      },
+      {
+        "when": {
+          "tool_result": "tool execution failed: interaction declined"
+        },
+        "text": [
+          "DENIAL_E2E_DONE"
+        ]
       }
     ]
   },
@@ -66,19 +74,17 @@
         {
           "when": {
             "contains": [
-              "declined",
+              "DENIAL_E2E_DONE",
               "○"
-            ],
-            "task_failure": "approval declined"
+            ]
           },
           "send": "\u0004"
         }
-      ],
-      "exit": 1
+      ]
     }
   ],
   "assert": {
-    "requests": 1,
+    "requests": 2,
     "files": {},
     "jsonl": {
       "hooks.jsonl": [
@@ -89,6 +95,12 @@
     },
     "absent_files": [
       "approved.txt"
+    ],
+    "tool_errors": [
+      "tool execution failed: interaction declined"
+    ],
+    "tool_contains": [
+      "tool execution failed: interaction declined"
     ]
   },
   "settings": {

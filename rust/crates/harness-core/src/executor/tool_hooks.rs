@@ -112,7 +112,7 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         prompt: String,
         started: bool,
-    ) -> Result<Option<ExecutionProgress<()>>> {
+    ) -> Result<Option<tool_execution::PolicyStop>> {
         let hooks =
             self.stock.hooks.as_ref().ok_or_else(|| {
                 Error::Invalid("hook approval has no pinned configuration".into())

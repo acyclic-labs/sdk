@@ -2,7 +2,7 @@
 
 use super::{Result, adopted, id, intent};
 use acyclic_harness_core::{
-    Error as CoreError, InteractionRejection, OperationId,
+    Error as CoreError, OperationId,
     agent::*,
     conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     executor::{
@@ -434,36 +434,6 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
     assert_eq!(other.state.phase, first.state.phase);
     // The checkpoint holds the starting input, so a resume re-derives the same operation.
     assert_eq!(other.state.turn, first.state.turn);
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_refused_approval_fails_the_agent() -> Result {
-    let path = AgentPath::root(&id(1));
-    let state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
-    let (_, driver) = driver(vec![ExecutionProgress::Rejected(
-        InteractionRejection::Declined,
-    )]);
-    let failed = step(
-        &driver,
-        &path,
-        Some(state),
-        1,
-        Wake::Inbox {
-            sequence: 1,
-            record: request("m1")?.0,
-        },
-        acyclic_actors::guest::CancellationToken::new(),
-    )
-    .await?;
-    assert_eq!(
-        failed.state.phase,
-        Phase::Done {
-            outcome: AgentOutcome::Failed {
-                message: "approval declined".into()
-            }
-        }
-    );
     Ok(())
 }
 
