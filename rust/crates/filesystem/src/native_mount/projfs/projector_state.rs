@@ -137,9 +137,9 @@ pub(super) struct Projector {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
     Stopped,
+    /// Nothing to do, or only held entries remain: their holder's handle
+    /// close or capture drain ([`Projector::retry`]) makes the view ready.
     Idle,
-    /// Only held entries remain: retry after [`HELD_RETRY`].
-    Delayed,
     Ready,
 }
 
@@ -171,18 +171,29 @@ pub(super) struct ProjectorState {
     pub(super) processed: Option<ViewStamp>,
     pub(super) failure: Option<String>,
     pub(super) stopping: bool,
+    /// Release events so far: handle closes and capture drains, each of
+    /// which may free a held entry.
+    pub(super) releases: u64,
 }
 
 impl ProjectorState {
+    /// Records an entry left held by an attempt that began at release
+    /// `since`. A release since then may already have freed it, so it is
+    /// retried now; otherwise the next release retries it. Returns whether
+    /// the projector must be woken.
+    pub(super) fn held(&mut self, since: u64) -> bool {
+        let missed = self.releases != since;
+        self.retry |= missed;
+        missed
+    }
+
     pub(super) fn readiness(&self) -> Readiness {
         if self.stopping {
             Readiness::Stopped
         } else if self.processed < self.notified || self.retry || !self.stale.is_empty() {
             Readiness::Ready
-        } else if self.pending.is_empty() {
-            Readiness::Idle
         } else {
-            Readiness::Delayed
+            Readiness::Idle
         }
     }
 

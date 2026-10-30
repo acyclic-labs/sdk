@@ -138,6 +138,14 @@ impl ProjFsSession {
             return Err(NativeMountError::ControlPending);
         }
         let projector = self.request_retirement()?;
+        // Cancelling the caller's wait signals `lifecycle_changed`: the
+        // registered future lives for the whole wait, and polling it once
+        // installs the waker before the condition is first checked.
+        let waker = std::task::Waker::from(Arc::new(LifecycleWake(Arc::clone(&projector))));
+        let mut cancelled = std::pin::pin!(work.wait().map(crate::CancellationToken::cancelled));
+        if let Some(future) = cancelled.as_mut().as_pin_mut() {
+            let _ = std::future::Future::poll(future, &mut std::task::Context::from_waker(&waker));
+        }
         let mut lifecycle = lock_recover(&projector.lifecycle);
         loop {
             if lifecycle.complete {
@@ -149,10 +157,24 @@ impl ProjFsSession {
             work.check_wait()?;
             lifecycle = projector
                 .lifecycle_changed
-                .wait_timeout(lifecycle, HELD_RETRY)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
+                .wait(lifecycle)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+    }
+}
+
+/// Signals a projector's lifecycle condition. Taking the lock first orders
+/// the signal after any waiter's last check.
+struct LifecycleWake(Arc<Projector>);
+
+impl std::task::Wake for LifecycleWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        drop(lock_recover(&self.0.lifecycle));
+        self.0.lifecycle_changed.notify_all();
     }
 }
 

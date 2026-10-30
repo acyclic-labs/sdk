@@ -47,7 +47,15 @@ impl Projector {
         path: MountPath,
     ) -> Result<(), String> {
         let _tree = lock_recover(&self.tree);
-        self.materialize_locked(projection, vec![path])
+        let result = self.materialize_locked(projection, vec![path]);
+        // Entries this listing superseded outside a pass are attempted by
+        // the next pass, not on a timer.
+        let mut state = lock_recover(&self.state);
+        if !state.pending.is_empty() {
+            state.retry = true;
+            self.wake();
+        }
+        result
     }
 
     pub(super) fn materialize_locked(
@@ -205,6 +213,7 @@ impl Projector {
         match previous {
             Some(true) => self.remove_tree(projection, &child),
             Some(false) => {
+                let since = lock_recover(&self.state).releases;
                 let (owned, released) = self.release_recorded(projection, &child);
                 if released? == Release::Busy {
                     let mut state = lock_recover(&self.state);
@@ -215,6 +224,9 @@ impl Projector {
                     });
                     state.relist.insert(child.clone());
                     state.pending.entry(child).or_insert(pending);
+                    if state.held(since) {
+                        self.wake();
+                    }
                     return Ok(None);
                 }
             }
@@ -263,6 +275,7 @@ impl Projector {
                 .collect::<Vec<_>>()
         };
         removed.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().len()));
+        let since = lock_recover(&self.state).releases;
         let mut held = false;
         for (path, materialized) in removed {
             for (name, is_directory) in materialized.names {
@@ -278,6 +291,9 @@ impl Projector {
                             basis: None,
                         });
                         state.pending.entry(child).or_insert(written);
+                        if state.held(since) {
+                            self.wake();
+                        }
                     }
                 }
             }
@@ -431,25 +447,15 @@ impl Projector {
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     continue;
                 }
-                Readiness::Delayed => {
-                    let (next, waited) = self
-                        .changed
-                        .wait_timeout(state, HELD_RETRY)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    state = next;
-                    if !waited.timed_out() {
-                        continue;
-                    }
-                }
             }
             let ran;
             (state, ran) = self.pass(runtime, context, state);
             if !ran {
+                // The failure is recorded; the next notification runs again.
                 state = self
                     .changed
-                    .wait_timeout(state, HELD_RETRY)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         }
     }
@@ -469,8 +475,9 @@ impl Projector {
         let (state, ran) = self.pass(runtime, context, state);
         match state.readiness() {
             Readiness::Stopped => Readiness::Stopped,
-            // A pass that could not start retries after the held interval.
-            _ if !ran => Readiness::Delayed,
+            // A pass that could not start recorded its failure; the next
+            // notification schedules the view again.
+            _ if !ran => Readiness::Idle,
             readiness => readiness,
         }
     }
@@ -564,7 +571,11 @@ impl Projector {
         attempted.sort_by_key(|path| std::cmp::Reverse(path.components().len()));
         for path in attempted {
             let outcome = self.paths.with(&path, || {
-                let Some(written) = lock_recover(&self.state).pending.get(&path).copied() else {
+                let (since, written) = {
+                    let state = lock_recover(&self.state);
+                    (state.releases, state.pending.get(&path).copied())
+                };
+                let Some(written) = written else {
                     return Ok(());
                 };
                 let mut current = written;
@@ -579,7 +590,11 @@ impl Projector {
                         state.record_attempt(&path, &written, None);
                         Ok(())
                     }
-                    Ok(Placed::Retry) => Ok(()),
+                    Ok(Placed::Retry) => {
+                        // Inside a pass: a set retry runs the next pass.
+                        state.held(since);
+                        Ok(())
+                    }
                     Err(error) => {
                         state.record_attempt(&path, &written, None);
                         Err(error)
@@ -619,8 +634,10 @@ impl Projector {
         }
     }
 
+    /// A release event: a handle closed or deferred captures drained.
     pub(super) fn retry(&self) {
         let mut state = lock_recover(&self.state);
+        state.releases = state.releases.wrapping_add(1);
         if !state.pending.is_empty() {
             state.retry = true;
             self.wake();

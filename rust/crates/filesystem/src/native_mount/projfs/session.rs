@@ -689,7 +689,7 @@ impl ProjFsSession {
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let source = runtime.source.as_ref();
-        flush_callback_gate(
+        let flushed = flush_callback_gate(
             &runtime.callbacks,
             &runtime.post_operation_failure,
             |paths| {
@@ -740,7 +740,10 @@ impl ProjFsSession {
                     work,
                 )
             },
-        )
+        );
+        // Drained captures release entries held behind them.
+        runtime.projector.retry();
+        flushed
     }
 
     pub(in crate::native_mount) fn invalidate(
