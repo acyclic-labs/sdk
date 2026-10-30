@@ -256,7 +256,7 @@ impl PreparationIo {
             value,
             bounds,
             Some(crate::wire::ErrorCode::Invalid),
-            &mut |charge| self.codec_charge(charge, false),
+            &mut |charge| self.codec_charge(charge, true),
         );
         let value = finish_encoding(diagnostics, result)?;
         held.into_retained()?;
