@@ -22,7 +22,14 @@ use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     BoxProviderFuture, CommitRequest, IdempotencyKey, LocalStream, LocalStreamLimits, MemoryLimits,
 };
-use std::{path::Path, sync::Arc, time::Instant};
+use std::{
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
+};
 
 pub(super) type Objects = LogicalObjectStore<Counted<LocalObjects>>;
 pub(super) type Streams = Counted<LocalStream>;
@@ -31,7 +38,7 @@ pub(super) type Binding = Bound<Streams, Objects>;
 
 /// Creation-only executors refuse accidental execution rather than making up a
 /// model completion. Population roots remain dormant throughout measurement.
-struct CreationOnly;
+struct CreationOnly(Arc<AtomicU64>);
 impl TurnExecutors for CreationOnly {
     fn executor<'a>(
         &'a self,
@@ -40,6 +47,7 @@ impl TurnExecutors for CreationOnly {
         _: &'a ModelContent,
         _: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
+        self.0.fetch_add(1, Ordering::Relaxed);
         Box::pin(async {
             Err(acyclic_harness_core::Error::Unsupported(
                 "creation-only benchmark fixture".into(),
@@ -116,6 +124,7 @@ impl Fixture {
             "1".into(),
             &mut None,
         )?;
+        let model_calls = Arc::new(AtomicU64::new(0));
         let bound = Bound::local_root(
             AuthorityRoot::new(
                 "benchmark",
@@ -131,7 +140,7 @@ impl Fixture {
                 within: ActorReference::new(b"benchmark", b"agents", b"owner")?,
             },
             Turns {
-                executors: Arc::new(CreationOnly),
+                executors: Arc::new(CreationOnly(model_calls.clone())),
                 limits: TurnLimits {
                     maximum_bytes: 1 << 20,
                     max_steps: 1,
@@ -155,8 +164,26 @@ impl Fixture {
         for first in (0..agents).step_by(256) {
             fixture.chunk(first, (agents - first).min(256)).await?;
         }
+        let runtime = fixture.bound.agents().runtime();
+        // Registration queues initial replay. Prove that the idle oracle
+        // refuses this real unsettled population before consuming that work.
+        if require_idle(agents, runtime.counts()).is_ok() {
+            return Err("idle safety oracle accepted initial queued replay".into());
+        }
         emit(
-            serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "active": 1}),
+            serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real population before initial replay settles", "agents": agents, "result": "rejected"}),
+        )?;
+        // The runtime consumes its real ready events and commits adoption.
+        // Empty briefs request no model turn; no readiness retry is needed.
+        if let Some((actor, error)) = Box::pin(runtime.drain()).await.into_iter().next() {
+            return Err(format!("initial agent replay {actor:?} failed: {error}").into());
+        }
+        require_idle(agents, runtime.counts())?;
+        if model_calls.load(Ordering::Relaxed) != 0 {
+            return Err("dormant population requested model execution".into());
+        }
+        emit(
+            serde_json::json!({"schema": 1, "kind": "setup", "agents": agents, "elapsed_seconds": start.elapsed().as_secs_f64(), "dormant": agents, "ready": runtime.counts().1, "model_calls": 0, "active": 1}),
         )?;
         Ok(fixture)
     }
@@ -238,4 +265,14 @@ impl Fixture {
         }
         Ok(())
     }
+}
+
+fn require_idle(agents: usize, observed: (usize, usize)) -> Result {
+    if observed != (agents, 0) {
+        return Err(format!(
+            "idle population differs: expected=({agents}, 0), observed={observed:?}"
+        )
+        .into());
+    }
+    Ok(())
 }
