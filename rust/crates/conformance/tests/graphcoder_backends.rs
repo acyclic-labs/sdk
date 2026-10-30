@@ -10,15 +10,19 @@
 //! Build the binary first, with fixture signing custody:
 //! `cargo build -p graphcoder --features acyclic-native-runtime/test-support`.
 //! `GRAPHCODER` names it elsewhere than the shared target directory.
+use acyclic_native_runtime::{
+    CaptureHandler, CaptureSchedule, ProcessCaptureStream, ProcessInput, ProcessOutput,
+    ProcessTree, TaskSpawner,
+};
 use axum::{Json, Router, routing::post};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
-    io::{BufRead as _, BufReader, Write as _},
+    io::{self, Write as _},
     path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    sync::{Arc, Mutex, mpsc},
-    time::{Duration, Instant},
+    process::{ChildStdin, Command, ExitStatus, Stdio},
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 const SCENARIO: &str = "conformance scenario";
@@ -27,10 +31,6 @@ const CHILD: &str = "conformance child";
 const CHILD_REPLY: &str = "child reply";
 const FOLLOWUP: &str = "conformance follow-up";
 const WRITTEN: &str = "conformance write";
-const DEADLINE: Duration = Duration::from_secs(60);
-/// How long an exited binary's output may still be arriving: a helper it
-/// started may hold its pipes open.
-const DRAIN: Duration = Duration::from_millis(500);
 /// How long the follow-up waits for the child before answering anyway.
 const CHILD_WAIT: Duration = Duration::from_secs(10);
 
@@ -302,134 +302,213 @@ impl Home {
     }
 }
 
-/// A running binary whose output arrives as it is written: stdout by line,
-/// stderr as written, since `graphcoder` prompts there without a newline.
+/// The shared native pump retains both pipes and the original process tree.
+struct OutputHandler;
+
+impl CaptureHandler for OutputHandler {
+    fn check(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn observe(&mut self, _chunk: ProcessOutput<'_>) -> io::Result<ProcessInput> {
+        Ok(ProcessInput::default())
+    }
+}
+
+/// An interactive binary, with one credit-driven output stream and no readers
+/// or timers of its own. Native exit closes descendant-held pipes before EOF.
 struct Running {
-    child: Child,
-    stdout: mpsc::Receiver<String>,
-    stderr: mpsc::Receiver<String>,
-    /// Stderr received so far.
-    seen: String,
-}
-
-fn lines(source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(source).lines() {
-            let Ok(line) = line else { return };
-            if sender.send(line).is_err() {
-                return;
-            }
-        }
-    });
-    receiver
-}
-
-fn chunks(mut source: impl std::io::Read + Send + 'static) -> mpsc::Receiver<String> {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buffer = [0; 4096];
-        while let Ok(read @ 1..) = source.read(&mut buffer) {
-            let chunk = String::from_utf8_lossy(&buffer[..read]).into_owned();
-            if sender.send(chunk).is_err() {
-                return;
-            }
-        }
-    });
-    receiver
+    output: Option<ProcessCaptureStream<OutputHandler>>,
+    stdin: Option<ChildStdin>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    line_start: usize,
+    status: Option<ExitStatus>,
 }
 
 impl Running {
     fn start(mut command: Command) -> Self {
-        let mut child = command.spawn().unwrap();
-        let stdout = lines(child.stdout.take().unwrap());
-        let stderr = chunks(child.stderr.take().unwrap());
+        let mut child = ProcessTree::spawn(&mut command).unwrap();
+        let stdin = child.take_stdin();
+        let output = child.stream_capture(
+            &TaskSpawner::current(),
+            CaptureSchedule::Unbounded,
+            usize::MAX,
+            None,
+            OutputHandler,
+        );
         Self {
-            child,
-            stdout,
-            stderr,
-            seen: String::new(),
+            output: Some(output),
+            stdin,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            line_start: 0,
+            status: None,
         }
     }
 
-    /// The first stdout line.
-    fn line(&mut self) -> String {
-        match self.stdout.recv_timeout(DEADLINE) {
-            Ok(line) => line,
-            Err(error) => {
-                std::thread::sleep(Duration::from_millis(50));
-                self.seen.extend(self.stderr.try_iter());
-                panic!("the binary printed no line ({error}): {}", self.seen)
+    /// One actual output delivery, or original physical completion. Task loss
+    /// and pipe failure retain their typed native error instead of an EOF guess.
+    async fn receive(&mut self) -> io::Result<bool> {
+        let Some(output) = self.output.as_mut() else {
+            return Ok(false);
+        };
+        if let Some(chunk) = output.recv().await {
+            self.stdout.extend(chunk.stdout);
+            self.stderr.extend(chunk.stderr);
+            return Ok(true);
+        }
+        let completed = self.output.take().unwrap().finish().await?;
+        self.status = Some(completed.result.map_err(io::Error::other)?.status);
+        Ok(false)
+    }
+
+    fn closed(&self, expected: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "binary exited {:?} before {expected}: {}",
+                self.status,
+                String::from_utf8_lossy(&self.stderr)
+            ),
+        )
+    }
+
+    /// The next stdout line, examining each newly delivered byte once.
+    async fn line(&mut self) -> io::Result<String> {
+        let mut scanned = self.line_start;
+        loop {
+            if let Some(offset) = self.stdout[scanned..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+            {
+                let end = scanned + offset;
+                let line = self.stdout[self.line_start..end]
+                    .strip_suffix(b"\r")
+                    .unwrap_or(&self.stdout[self.line_start..end]);
+                let line = String::from_utf8(line.to_vec()).map_err(io::Error::other)?;
+                self.line_start = end + 1;
+                return Ok(line);
+            }
+            scanned = self.stdout.len();
+            if !self.receive().await? {
+                if self.line_start == self.stdout.len() {
+                    return Err(self.closed("a stdout line"));
+                }
+                let line = String::from_utf8(self.stdout[self.line_start..].to_vec())
+                    .map_err(io::Error::other)?;
+                self.line_start = self.stdout.len();
+                return Ok(line);
             }
         }
     }
 
-    /// Waits until stderr shows `needle`.
-    fn wait_for(&mut self, needle: &str) {
-        let deadline = Instant::now() + DEADLINE;
-        while !self.seen.contains(needle) {
-            assert!(
-                Instant::now() < deadline,
-                "no {needle:?} on stderr: {}",
-                self.seen
-            );
-            if let Ok(chunk) = self.stderr.recv_timeout(Duration::from_millis(100)) {
-                self.seen += &chunk;
+    /// Waits on original deliveries; closed output is a terminal error.
+    async fn wait_for(&mut self, needle: &str) -> io::Result<()> {
+        if needle.is_empty() {
+            return Ok(());
+        }
+        let mut scanned = 0;
+        loop {
+            if self.stderr[scanned..]
+                .windows(needle.len())
+                .any(|bytes| bytes == needle.as_bytes())
+            {
+                return Ok(());
+            }
+            scanned = self.stderr.len().saturating_sub(needle.len() - 1);
+            if !self.receive().await? {
+                return Err(self.closed(needle));
             }
         }
     }
 
     fn answer(&mut self, input: &str) {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        stdin.write_all(input.as_bytes()).unwrap();
-        stdin.flush().unwrap();
+        self.stdin
+            .as_mut()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
     }
 
-    /// Its stdout and stderr once it exits successfully.
-    fn finish(mut self) -> (String, String) {
-        let deadline = Instant::now() + DEADLINE;
-        let status = loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() > deadline {
-                self.seen.extend(self.stderr.try_iter());
-                panic!("the binary did not exit: {}", self.seen);
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        // The readers drain the closed pipes, then hang up.
-        let stdout: Vec<_> = std::iter::from_fn(|| self.stdout.recv_timeout(DRAIN).ok()).collect();
-        self.seen
-            .extend(std::iter::from_fn(|| self.stderr.recv_timeout(DRAIN).ok()));
-        assert!(
-            status.success(),
-            "exit {status:?}\n{stdout:?}\n{}",
-            self.seen
-        );
-        (stdout.join("\n"), std::mem::take(&mut self.seen))
+    /// Original exit and pipe EOF settle before either output is inspected.
+    async fn finish(mut self) -> (String, String) {
+        drop(self.stdin.take());
+        while self.receive().await.unwrap() {}
+        let stdout = String::from_utf8(self.stdout[self.line_start..].to_vec()).unwrap();
+        let stderr = String::from_utf8(self.stderr).unwrap();
+        let status = self.status.unwrap();
+        assert!(status.success(), "exit {status:?}\n{stdout}\n{stderr}");
+        (stdout, stderr)
     }
 
-    /// Stops the binary now; dropping it does the same.
-    fn kill(self) {
-        drop(self);
+    /// Closing output credit wakes even a quiet or backpressured child. Join
+    /// the same native cleanup owner before starting the replacement client.
+    async fn kill(mut self) {
+        drop(self.stdin.take());
+        if let Some(output) = self.output.take() {
+            let completed = output.finish().await.unwrap();
+            if let Err(failure) = completed.result {
+                assert!(failure.cleanup_completed, "{failure:?}");
+            }
+        }
     }
 }
 
-/// A failed assertion leaves no binary running.
-impl Drop for Running {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+/// The real child used by the stream control below. Its input byte is the
+/// producer's settle event between the two parts of a UTF-8 stderr character.
+#[test]
+fn interactive_output_child() -> io::Result<()> {
+    if std::env::var_os("ACYCLIC_CONFORMANCE_OUTPUT_CHILD").is_none() {
+        return Ok(());
     }
+    std::io::stderr().write_all(&[0xe2])?;
+    std::io::stderr().flush()?;
+    writeln!(std::io::stdout(), "child-ready")?;
+    std::io::stdout().flush()?;
+    std::io::Read::read_exact(&mut std::io::stdin(), &mut [0])?;
+    std::io::stderr().write_all(&[0x98, 0x83])?;
+    writeln!(std::io::stderr(), " stderr delivered")?;
+    writeln!(std::io::stdout(), "final output")?;
+    std::process::exit(0);
+}
+
+#[tokio::test]
+async fn interactive_capture_preserves_bytes_and_reports_original_eof() -> io::Result<()> {
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .args(["--exact", "interactive_output_child", "--nocapture"])
+        .env("ACYCLIC_CONFORMANCE_OUTPUT_CHILD", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = Running::start(command);
+    // Consume the test executable's own banner, then the original child's
+    // readiness line. Closing that child before the line is a typed EOF.
+    while !child.line().await?.ends_with("child-ready") {}
+    while child.stderr.is_empty() {
+        assert!(child.receive().await?);
+    }
+    assert_eq!(child.stderr, [0xe2]);
+    child.answer("!");
+    child.wait_for("☃ stderr delivered").await?;
+    let missing = child
+        .wait_for("never written by the child")
+        .await
+        .unwrap_err();
+    assert_eq!(missing.kind(), io::ErrorKind::UnexpectedEof);
+    let (stdout, stderr) = child.finish().await;
+    assert!(stdout.contains("final output"));
+    assert_eq!(stderr, "☃ stderr delivered\n");
+    Ok(())
 }
 
 /// The endpoint `graphcoder serve` prints once it serves, announced by the
 /// harness server itself: the one entry point a managed host serves through,
 /// with nothing of the binary's own between them.
-fn served(server: &mut Running) -> Value {
-    let endpoint: Value =
-        serde_json::from_str(&server.line()).expect("the server prints its endpoint as JSON");
+async fn served(server: &mut Running) -> Value {
+    let endpoint: Value = serde_json::from_str(&server.line().await.unwrap())
+        .expect("the server prints its endpoint as JSON");
     assert_eq!(endpoint["server"], acyclic_harness::server::IDENTITY);
     endpoint
 }
@@ -444,7 +523,7 @@ enum Backend {
 /// The scenario through `backend`: the prompt's turn is interrupted while
 /// its shell call awaits approval, and a fresh run of the same operation
 /// approves it and prints the answer.
-fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) -> String {
+async fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) -> String {
     let run = |prompt: &str, operation: &str| {
         let mut args = vec!["-p", prompt, "--operation", operation];
         Running::start(match backend {
@@ -460,15 +539,15 @@ fn scenario(home: &Home, model: &Model, policy: &Path, backend: &Backend) -> Str
     // Reconnect mid-turn: the first client leaves while the approval is
     // pending; the second sees the same pending turn and settles it.
     let mut first = run(SCENARIO, "conformance");
-    first.wait_for("approve request");
-    first.kill();
+    first.wait_for("approve request").await.unwrap();
+    first.kill().await;
     let mut second = run(SCENARIO, "conformance");
     second.answer("y\n");
-    let (answer, stderr) = second.finish();
+    let (answer, stderr) = second.finish().await;
     assert!(stderr.contains("approve request"), "{stderr}");
     // The spawned child runs once its parent's turn settled; the follow-up
     // answers after it did.
-    let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish();
+    let (followup, _) = run(FOLLOWUP, "conformance-follow-up").finish().await;
     format!("{}\n{}", answer.trim(), followup.trim())
 }
 
@@ -534,8 +613,8 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         let model = model(directory.path()).await;
         let home = Home::new(directory.path(), "probe");
         let mut server = Running::start(home.command(&model, None, &["serve", "127.0.0.1:0"]));
-        let endpoint = served(&mut server);
-        server.kill();
+        let endpoint = served(&mut server).await;
+        server.kill().await;
         endpoint["principal"].as_str().unwrap().to_owned()
     };
     let policy = directory.path().join("policy.json");
@@ -571,7 +650,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
                 Some(&policy),
                 &["serve", "127.0.0.1:0"],
             ));
-            let endpoint = served(&mut server);
+            let endpoint = served(&mut server).await;
             assert_eq!(endpoint["principal"], principal.as_str());
             let backend = Backend::Endpoint {
                 url: endpoint["endpoint"].as_str().unwrap().to_owned(),
@@ -579,7 +658,7 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             };
             (backend, Some(server))
         };
-        let answer = tokio::task::block_in_place(|| scenario(&home, &model, &policy, &backend));
+        let answer = scenario(&home, &model, &policy, &backend).await;
         let backend_url = match &backend {
             Backend::Endpoint { url, .. } => url.clone(),
             Backend::Local => String::new(),
@@ -587,8 +666,11 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
         if let Some(mut server) = server {
             // The injected seams admitted the tree and every client.
             if name == "seams" {
-                server.wait_for("seams: verified the caller");
-                server.wait_for("seams: verified a session credential");
+                server.wait_for("seams: verified the caller").await.unwrap();
+                server
+                    .wait_for("seams: verified a session credential")
+                    .await
+                    .unwrap();
                 // A credential in a gateway's own format, a dotted JWS, is
                 // carried opaque to the verifier, not refused by the client.
                 let url = backend_url.as_str();
@@ -602,10 +684,13 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
                     "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJzZWFtcyJ9.c2lnbmF0dXJl",
                 );
                 let opaque = Running::start(command);
-                server.wait_for("seams: verified an opaque credential");
-                opaque.kill();
+                server
+                    .wait_for("seams: verified an opaque credential")
+                    .await
+                    .unwrap();
+                opaque.kill().await;
             }
-            server.kill();
+            server.kill().await;
         }
         let steps = model.steps.lock().unwrap().clone();
         let outputs = model.outputs.lock().unwrap().clone();
