@@ -5,15 +5,37 @@ use crate::demand::DemandError;
 use crate::native_host::HostRoot;
 use crate::native_host::NativeHostWork;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<HostChange>>);
+struct Recorded {
+    state: Mutex<RecordedState>,
+    changed: Condvar,
+}
 
-impl HostChangeSink for Recorded {
+#[derive(Default)]
+struct RecordedState {
+    changes: Vec<HostChange>,
+    closed: bool,
+}
+
+/// Only the actual watch owns this producer; observers cannot keep it alive.
+struct Recording(Arc<Recorded>);
+
+impl Drop for Recording {
+    fn drop(&mut self) {
+        self.0.close();
+    }
+}
+
+impl HostChangeSink for Recording {
+    fn delivery_lost(&self) {
+        self.0.close();
+    }
+
     fn logical_owned_bytes(&self) -> u64 {
         0
     }
@@ -24,10 +46,7 @@ impl HostChangeSink for Recorded {
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), DemandError> {
         work.check()?;
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(changes);
+        self.0.record(changes);
         Ok(())
     }
 
@@ -37,10 +56,7 @@ impl HostChangeSink for Recorded {
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
         work.check()?;
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend_from_slice(changes);
+        self.0.record(changes);
         Ok(())
     }
 
@@ -51,7 +67,7 @@ impl HostChangeSink for Recorded {
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), DemandError> {
         work.check()?;
-        self.record_wide(changes);
+        self.0.record_wide(changes);
         Ok(())
     }
 
@@ -62,18 +78,62 @@ impl HostChangeSink for Recorded {
         work: &mut crate::NativeMaterializationWork,
     ) -> Result<(), DemandError> {
         work.check()?;
-        self.record_wide(changes);
+        self.0.record_wide(changes);
         Ok(())
     }
 }
 
 impl Recorded {
+    fn sink(self: &Arc<Self>) -> Arc<dyn HostChangeSink> {
+        Arc::new(Recording(Arc::clone(self)))
+    }
+
+    fn record(&self, changes: &[HostChange]) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .changes
+            .extend_from_slice(changes);
+        self.changed.notify_all();
+    }
+
+    fn close(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .closed = true;
+        self.changed.notify_all();
+    }
+
+    fn wait_until(
+        &self,
+        reported: impl Fn(&[HostChange]) -> bool,
+    ) -> std::io::Result<Vec<HostChange>> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if reported(&state.changes) {
+                return Ok(std::mem::take(&mut state.changes));
+            }
+            if state.closed {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "native change producer closed before delivering the expected changes",
+                ));
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
     #[cfg(windows)]
     fn record_wide(&self, changes: &[super::HostChangeWide<'_>]) {
         use std::os::windows::ffi::OsStringExt as _;
-        self.0
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .changes
             .extend(changes.iter().map(|change| match change {
                 super::HostChangeWide::Path { action, path } => {
                     let path = PathBuf::from(std::ffi::OsString::from_wide(path));
@@ -87,10 +147,17 @@ impl Recorded {
                 super::HostChangeWide::Everything => HostChange::Everything,
                 super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
             }));
+        self.changed.notify_all();
     }
 
     fn take(&self) -> Vec<HostChange> {
-        std::mem::take(&mut *self.0.lock().unwrap_or_else(PoisonError::into_inner))
+        std::mem::take(
+            &mut self
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .changes,
+        )
     }
 
     fn reported(changes: &[HostChange], path: &Path) -> bool {
@@ -120,20 +187,14 @@ impl Recorded {
     }
 }
 
-/// Everything reported until `reported` holds of it, or ten seconds pass. A
+/// Fence the producer, then wait for its delivered batch or terminal event.
 fn reports_until(
     watch: &NativeSourceWatch,
     recorded: &Recorded,
     reported: impl Fn(&[HostChange]) -> bool,
 ) -> std::io::Result<Vec<HostChange>> {
     watch.fence()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut changes = recorded.take();
-    while !reported(&changes) && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        changes.extend(recorded.take());
-    }
-    Ok(changes)
+    recorded.wait_until(reported)
 }
 
 fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
@@ -141,7 +202,7 @@ fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std:
     let watch = NativeSourceWatch::start(
         &HostRoot::open(root, &mut crate::native_host::ordinary_work())
             .map_err(crate::native_host::ordinary_error)?,
-        recorded.clone(),
+        recorded.sink(),
         &mut crate::native_host::ordinary_work(),
     )?;
     Ok((watch, recorded))
@@ -199,6 +260,12 @@ fn changes_beneath_the_root_are_reported_by_name() -> TestResult {
         "nothing was lost: {changes:?}"
     );
     assert!(watch.is_exact());
+    drop(watch);
+    assert_eq!(
+        recorded.wait_until(|_| false).unwrap_err().kind(),
+        std::io::ErrorKind::BrokenPipe,
+        "dropping the real producer releases a waiting observer",
+    );
     Ok(())
 }
 
@@ -425,7 +492,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
     let mut work = crate::NativeMaterializationWork::clone(&original);
-    let watch = NativeSourceWatch::start(&host, recorded.clone(), &mut work)?;
+    let watch = NativeSourceWatch::start(&host, recorded.sink(), &mut work)?;
     let started = scope.receipt();
     assert!(started.backend_read_operations > before.backend_read_operations);
     assert!(started.allocation_operations > before.allocation_operations);
@@ -467,14 +534,8 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
         b"real notification",
     )?;
     watch.fence_with_work(&mut work)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    let mut changes = recorded.take();
-    while !Recorded::reported(&changes, Path::new("after-precancel"))
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        changes.extend(recorded.take());
-    }
+    let changes =
+        recorded.wait_until(|changes| Recorded::reported(changes, Path::new("after-precancel")))?;
     assert!(
         Recorded::reported(&changes, Path::new("after-precancel")),
         "{changes:?}"
@@ -550,7 +611,7 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start(
         &host,
-        Arc::new(Recorded::default()),
+        Arc::new(Recorded::default()).sink(),
         &mut crate::NativeMaterializationWork::clone(&original),
     )?;
     let observer = crate::CancellationToken::new();
@@ -620,7 +681,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
     assert!(matches!(
         NativeSourceWatch::start(
             &host,
-            Arc::new(Recorded::default()),
+            Arc::new(Recorded::default()).sink(),
             &mut crate::NativeMaterializationWork::clone(&scope),
         ),
         Err(DemandError::Cancelled)
@@ -639,7 +700,7 @@ fn cleanup_wait_original_start_precancel_and_finite_io_denial_are_prebirth() -> 
     assert!(
         NativeSourceWatch::start(
             &host,
-            Arc::new(Recorded::default()),
+            Arc::new(Recorded::default()).sink(),
             &mut crate::NativeMaterializationWork::clone(&scope),
         )
         .is_err()
