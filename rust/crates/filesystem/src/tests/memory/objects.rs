@@ -158,7 +158,27 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
             maximum: 0,
         })
     ));
-    let store = MemoryObjectStore::new(4)?;
+    let store = MemoryObjectStore::new(Some(4))?;
+    let unlimited = MemoryObjectStore::new(None)?;
+    let oversized = OwnedBytes::from_static(b"oversized");
+    let oversized_id = ObjectId {
+        storage: None,
+        kind: crate::storage::ObjectKind::BlobChunk,
+        digest: object_digest(&oversized),
+    };
+    for store in [&unlimited, &MemoryObjectStore::default()] {
+        provider_receipt!(
+            store,
+            put(oversized_id, oversized.clone()),
+            WorkBudget::UNBOUNDED
+        )?;
+        assert_eq!(
+            provider_receipt!(store, read(oversized_id, 9), WorkBudget::UNBOUNDED)?
+                .value
+                .bytes,
+            oversized
+        );
+    }
     let object_id = ObjectId {
         storage: None,
         kind: crate::storage::ObjectKind::BlobChunk,

@@ -107,7 +107,7 @@ fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
     };
     let receipt_store = store
         .clone()
-        .with_object_limit(maximum)
+        .with_object_limit(Some(maximum))
         .unwrap_or_else(fail);
     let receipt = operation(if cold { &receipt_store } else { &store });
     assert!(receipt.value.is_some());
@@ -134,7 +134,7 @@ fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
                 .with_inputs(|| {
                     store
                         .clone()
-                        .with_object_limit(maximum)
+                        .with_object_limit(Some(maximum))
                         .unwrap_or_else(fail)
                 })
                 .bench_refs(|store| std::hint::black_box(operation(store)));
