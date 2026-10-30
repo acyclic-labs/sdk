@@ -30,8 +30,13 @@ The generated table links all thirty-six Actors message types to the actual
 semantic conversions, including their nested validation and post-admission
 checks. Its only public naming alias is wire `Error` to semantic `ServiceError`.
 Both protobuf syntax targets additionally call public semantic conversions for
-18 Stream message types, 20 Objects message types and nine Inference
-message types. Objects requests reach all ten unary dispatches on fresh real
+18 Stream message types, 20 Objects message types, nine Inference message types
+and seven Harness value message types. Harness provider, volume, file,
+attachment and conversation projections check their actual reverse codecs and
+missing-required-field refusal. Twenty admitted writer producers cover all
+three volume owners, both attachment representations, all nine conversation
+kinds and populated extension maps (40 pending binary/JSON inputs).
+Objects requests reach all ten unary dispatches on fresh real
 MemoryObjects accounts. Its nine unary response types reach the public binary
 client and the shared request/response verifier; admission and normalized
 results must agree. Range, byte maximum and page cursor contexts are exercised.
