@@ -123,10 +123,7 @@ pub struct AgentState {
 
 /// The identity a brief's read grant names: the digest of its exact reference.
 fn brief_identity(file: &FileRef) -> crate::Result<[u8; 32]> {
-    file.identity_digest(
-        crate::store::default_projection_read_limits().maximum_bytes,
-        &mut None,
-    )
+    file.identity_digest(None, &mut None)
 }
 
 impl AgentState {
