@@ -34,7 +34,11 @@ write, flush and directory measurement distinguishes publication from an
 in-place barrier. Setup composes actual agent actors, inbox subtrees and volumes
 in bounded batches at populations of 1, 1,000 and 100,000; it is excluded from timing.
 The workload explicitly admits this population rather than using the provider's
-default capacity ceilings. Population roots execute no model turns.
+default capacity ceilings. The shared runtime settles each root's initial
+replay before sampling, and setup checks the exact registration count and an
+empty ready queue. The idle oracle must first reject the actual queued
+population. Population roots execute no model turns; setup refuses any request
+for model execution.
 
 JSON lines retain executable identity, raw observations in acquisition order,
 nearest-rank p50/p99, floor coefficients, and ratios to the sum of calibrated
