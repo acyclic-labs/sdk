@@ -125,12 +125,16 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     assert_eq!(dependencies[0].registry_checksum, checksum);
     assert!(dependencies[0].yanked);
     assert!(dependencies[0].publisher_vcs.is_none());
-    assert!(imported_files
-        .keys()
-        .any(|p| p.ends_with("/Cargo.toml.orig")));
-    assert!(imported_files
-        .keys()
-        .any(|p| p.ends_with("/descriptor.bin")));
+    assert!(
+        imported_files
+            .keys()
+            .any(|p| p.ends_with("/Cargo.toml.orig"))
+    );
+    assert!(
+        imported_files
+            .keys()
+            .any(|p| p.ends_with("/descriptor.bin"))
+    );
     let original_manifest = "[package]\nname='historical-fixture'\nversion='0.1.0'\nedition='2021'\n[workspace]\n[features]\ndefault=[]\nold-feature=['dep-alias/native']\n[dependencies]\ndep-alias={package='docs-retained-dependency',version='=0.1.0',default-features=false,optional=true}\n[[example]]\nname='old-example'\nrequired-features=['old-feature']\n";
     fs::write(root.join("Cargo.toml"), original_manifest).unwrap();
     fs::write(
@@ -141,7 +145,9 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     let original_lock = b"broken original published lock\n";
     fs::write(root.join("Cargo.lock"), original_lock).unwrap();
     let config = producer_config_bytes(directory, &dependencies).unwrap();
-    assert!(config.contains("historical-fixture-0.1.0/dependencies/docs-retained-dependency-0.1.0"));
+    assert!(
+        config.contains("historical-fixture-0.1.0/dependencies/docs-retained-dependency-0.1.0")
+    );
     let config_path = producer_dir.join("config.toml");
     fs::write(&config_path, &config).unwrap();
     let context = sdk_docs::rustdoc_profiles::CargoExecutionContext {
@@ -180,10 +186,12 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
     let default_metadata: Metadata =
         serde_json::from_slice(&command_output(&mut default_metadata).unwrap()).unwrap();
     assert_eq!(default_metadata.resolve.as_ref().unwrap().nodes.len(), 1);
-    assert!(default_metadata
-        .packages
-        .iter()
-        .all(|package| package.name.as_ref() != "docs-retained-dependency"));
+    assert!(
+        default_metadata
+            .packages
+            .iter()
+            .all(|package| package.name.as_ref() != "docs-retained-dependency")
+    );
     verify_producer_metadata(
         &root,
         directory,
@@ -271,22 +279,26 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         &sdk_docs::rustdoc_profiles::RustdocTarget::Library,
     )
     .unwrap();
-    assert!(fs::read_to_string(root.join("target/receipt.json"))
-        .unwrap()
-        .contains("ArchiveMarker"));
+    assert!(
+        fs::read_to_string(root.join("target/receipt.json"))
+            .unwrap()
+            .contains("ArchiveMarker")
+    );
     let mut invalid_alias = profile.clone();
     invalid_alias.features = BTreeSet::from(["missing-alias/native".into()]);
-    assert!(sdk_docs::rustdoc_profiles::execute_profile(
-        root.join("Cargo.toml"),
-        &metadata,
-        &invalid_alias,
-        &BTreeSet::from([host.clone()]),
-        root.join("target"),
-        root.join("target/invalid.json"),
-        context,
-        &sdk_docs::rustdoc_profiles::RustdocTarget::Library
-    )
-    .is_err());
+    assert!(
+        sdk_docs::rustdoc_profiles::execute_profile(
+            root.join("Cargo.toml"),
+            &metadata,
+            &invalid_alias,
+            &BTreeSet::from([host.clone()]),
+            root.join("target"),
+            root.join("target/invalid.json"),
+            context,
+            &sdk_docs::rustdoc_profiles::RustdocTarget::Library
+        )
+        .is_err()
+    );
     let relocated = Fixture::new();
     let relocated_root = relocated.path().canonicalize().unwrap();
     for path in files.keys() {
@@ -489,15 +501,17 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         .arg(root.join("Cargo.toml"));
     context.configure(&mut generate).unwrap();
     command_output(&mut generate).unwrap();
-    assert!(verify_producer_metadata(
-        &root,
-        directory,
-        &root.join("Cargo.toml"),
-        &cargo,
-        &config_path,
-        &unused_records
-    )
-    .is_err());
+    assert!(
+        verify_producer_metadata(
+            &root,
+            directory,
+            &root.join("Cargo.toml"),
+            &cargo,
+            &config_path,
+            &unused_records
+        )
+        .is_err()
+    );
     // Replay must independently reject a coherently resealed unused patch record.
     let mut resealed = producer.clone();
     resealed.dependency_archives = unused_records.clone();
@@ -530,9 +544,11 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         panic!("producer fixture")
     };
     *producer = resealed;
-    assert!(imported_metadata(&replay_root, &replay_identity, &cargo)
-        .unwrap_err()
-        .contains("Cargo did not select captured dependency root"));
+    assert!(
+        imported_metadata(&replay_root, &replay_identity, &cargo)
+            .unwrap_err()
+            .contains("Cargo did not select captured dependency root")
+    );
     let foreign = Fixture::new();
     fs::write(
         foreign.path().join("Cargo.toml"),
@@ -557,14 +573,16 @@ fn actual_cargo_archived_dependency_resolution_preserves_originals_and_relocates
         .arg(root.join("Cargo.toml"));
     context.configure(&mut generate).unwrap();
     command_output(&mut generate).unwrap();
-    assert!(verify_producer_metadata(
-        &root,
-        directory,
-        &root.join("Cargo.toml"),
-        &cargo,
-        &config_path,
-        &dependencies
-    )
-    .unwrap_err()
-    .contains("uncaptured path source"));
+    assert!(
+        verify_producer_metadata(
+            &root,
+            directory,
+            &root.join("Cargo.toml"),
+            &cargo,
+            &config_path,
+            &dependencies
+        )
+        .unwrap_err()
+        .contains("uncaptured path source")
+    );
 }

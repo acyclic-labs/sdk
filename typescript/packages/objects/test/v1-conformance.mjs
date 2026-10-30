@@ -284,8 +284,17 @@ test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () =>
   const endpoint = "https://objects.example";
   const hanging = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
   await assert.rejects(new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 20, fetch: hanging }).usage(), fail(wire.ErrorCode.DEADLINE_ELAPSED));
-  // Negative control: a reply inside a long caller deadline is served.
-  const late = async () => { await new Promise(resolve => setTimeout(resolve, 50)); return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))(); };
-  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x7fff_ffff, fetch: late }).usage()).blobs, 2n);
-  for (const timeoutMs of [0, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
+  // Negative control: a caller release, rather than elapsed time, completes the reply.
+  let release;
+  let started;
+  const entered = new Promise(resolve => { started = resolve; });
+  const late = async () => {
+    await new Promise(resolve => { release = resolve; started(); });
+    return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))();
+  };
+  const response = new HttpObjectsV1({ endpoint, token: "fixture", fetch: late }).usage();
+  await entered;
+  release();
+  assert.equal((await response).blobs, 2n);
+  for (const timeoutMs of [-1, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
 });

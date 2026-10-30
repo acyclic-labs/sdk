@@ -125,9 +125,11 @@ fn a_dropped_lock_is_free_while_a_spawned_process_shares_its_description() -> io
     }
     let share = |file: &File| -> io::Result<Sharing> {
         Ok(Sharing(
-            std::process::Command::new("sleep")
-                .arg("60")
+            std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact", "file_lock::tests::lock_holder_helper"])
+                .env(HOLDER_MODE, "share")
                 .stdin(file.try_clone()?)
+                .stdout(std::process::Stdio::null())
                 .spawn()?,
         ))
     };
@@ -169,6 +171,11 @@ fn lock_holder_helper() -> io::Result<()> {
     let Ok(mode) = std::env::var(HOLDER_MODE) else {
         return Ok(());
     };
+    if mode == "share" {
+        loop {
+            std::thread::park();
+        }
+    }
     let path = std::path::PathBuf::from(std::env::var_os(HOLDER_PATH).expect("holder path"));
     let file = open(&path)?;
     if mode == "held" {
@@ -176,7 +183,7 @@ fn lock_holder_helper() -> io::Result<()> {
     } else {
         drop(FileLock::try_acquire(file, FileLockMode::Exclusive)?);
     }
-    std::fs::write(path.with_extension("ready"), b"ready")?;
+    acyclic_test_support::readiness::signal(&mut std::io::stdout().lock(), "LOCK_READY")?;
     loop {
         std::thread::park();
     }
@@ -194,13 +201,14 @@ fn holder(mode: &str, path: &Path) -> io::Result<std::process::Child> {
         .env(HOLDER_MODE, mode)
         .env(HOLDER_PATH, path)
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()?;
-    while !path.with_extension("ready").exists() {
-        assert!(child.try_wait()?.is_none(), "the holder exited early");
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    let output = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("holder stdout missing"))?;
+    acyclic_test_support::readiness::wait(&mut io::BufReader::new(output), "LOCK_READY")?;
     Ok(child)
 }
 
@@ -232,5 +240,41 @@ fn a_lock_held_until_exit_is_freed_only_by_the_exit() -> io::Result<()> {
         "a lock held until exit was released early"
     );
     assert!(is_free(&path)?, "the holder's exit did not free its lock");
+    Ok(())
+}
+
+#[test]
+fn a_conflicting_lock_wait_completes_on_release_or_owner_drop() -> io::Result<()> {
+    for explicit in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("lock");
+        let owner = FileLock::acquire(open(&path)?, FileLockMode::Exclusive)?;
+        let waiter = FileLock::new(open(&path)?);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let (completed, completion) = std::sync::mpsc::channel();
+        let waiting = std::thread::spawn(move || -> io::Result<()> {
+            // Real contention is the negative control for the wait's safety.
+            assert_eq!(
+                waiter.try_lock(FileLockMode::Exclusive).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+            entered.send(()).map_err(io::Error::other)?;
+            waiter.lock(FileLockMode::Exclusive)?;
+            completed.send(()).map_err(io::Error::other)
+        });
+        observed.recv().map_err(io::Error::other)?;
+        assert_eq!(
+            completion.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        if explicit {
+            owner.unlock()?;
+        }
+        drop(owner);
+        completion.recv().map_err(io::Error::other)?;
+        waiting
+            .join()
+            .map_err(|_| io::Error::other("lock waiter panicked"))??;
+    }
     Ok(())
 }

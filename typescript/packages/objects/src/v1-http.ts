@@ -11,8 +11,7 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
-  /** Unary/opening timeout in milliseconds; defaults to 30 s. Availability has
-   * no idle timeout. Its caller can supply an absolute deadline signal. */
+  /** Optional caller deadline in milliseconds; omitted or zero is unbounded. */
   readonly timeoutMs?: number;
 }
 const STATUS: Readonly<Record<number, wire.ErrorCode>> = {
@@ -28,7 +27,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly maximumResponse: number;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
   constructor(options: ObjectsV1HttpOptions) {
     super();
     const endpoint = new URL(options.endpoint);
@@ -40,9 +39,9 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.observer = resolveObserver(options.observer);
-    this.timeoutMs = options.timeoutMs ?? 30000;
+    this.timeoutMs = options.timeoutMs;
     // setTimeout carries at most a signed 32-bit millisecond delay.
-    if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
+    if (this.timeoutMs !== undefined && (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 0 || this.timeoutMs > 0x7fff_ffff)) throw new RangeError("timeoutMs must be a non-negative int32");
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {
     if (route === "blobs/availability") {

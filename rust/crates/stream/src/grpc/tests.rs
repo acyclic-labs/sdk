@@ -348,7 +348,7 @@ async fn assert_unary_retry(error: Status, retry: bool) -> TestResult {
     let mut attempts = Vec::new();
     let mut first = Some(error);
     let result = client
-        .unary(ATTEMPT_TIMEOUT, body.clone(), |_, request| {
+        .unary(body.clone(), |_, request| {
             attempts.push(request.into_inner());
             let result = first.take().map_or_else(|| Ok(Response::new(())), Err);
             Box::pin(async move { result })
@@ -377,9 +377,10 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
         .err()
         .ok_or("closed connection succeeded")?;
     assert_unary_retry(Status::from_error(Box::new(error)), true).await?;
-    assert_unary_retry(Status::unknown("peer outcome unknown"), true).await?;
+    assert_unary_retry(Status::unknown("peer outcome unknown"), false).await?;
     assert_unary_retry(Status::unavailable("restarting"), true).await?;
     assert_unary_retry(Status::cancelled("application cancellation"), false).await?;
+    assert_unary_retry(Status::deadline_exceeded("caller deadline"), false).await?;
     assert_unary_retry(Status::permission_denied("denied"), false).await?;
 
     for kind in [
@@ -403,21 +404,33 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
     Ok(())
 }
 
-#[tokio::test(start_paused = true)]
-async fn persistent_unknown_expires_at_the_operation_deadline() -> TestResult {
+#[tokio::test]
+async fn caller_cancellation_drops_an_in_flight_request() -> TestResult {
+    use futures::FutureExt as _;
     let client = unconnected()?;
-    let started = tokio::time::Instant::now();
-    let result: Result<(), StreamError> = client
-        .unary(ATTEMPT_TIMEOUT, (), |_, _| {
-            Box::pin(async {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                Err(Status::unknown("outcome unavailable"))
-            })
+    let (dropped, mut completed) = tokio::sync::oneshot::channel::<()>();
+    let mut dropped = Some(dropped);
+    let call = client.unary((), |_, _| {
+        let dropped = dropped.take().expect("one physical request");
+        Box::pin(async move {
+            let _dropped = dropped;
+            futures::future::pending::<Result<Response<()>, Status>>().await
         })
-        .await
-        .and_then(|response| decode_response(response, Ok));
-    assert_eq!(result, Err(StreamError::Unavailable));
-    assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
+    });
+    let mut call = Box::pin(call);
+    assert!(call.as_mut().now_or_never().is_none());
+    assert!(
+        matches!(
+            completed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "request must remain live before cancellation"
+    );
+    drop(call);
+    assert!(
+        completed.await.is_err(),
+        "cancellation must drop the request"
+    );
     Ok(())
 }
 
@@ -433,7 +446,7 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
         let client = unconnected()?;
         let mut first = true;
         let response = client
-            .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+            .unary((), |_, _| {
                 let result = if std::mem::take(&mut first) {
                     Err(Status::unavailable("retry"))
                 } else {
@@ -568,7 +581,7 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
             let client = unconnected()?;
             let mut first = true;
             let response = client
-                .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                .unary((), |_, _| {
                     let result = if std::mem::take(&mut first) {
                         Err(Status::unavailable("retry"))
                     } else {

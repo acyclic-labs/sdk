@@ -306,7 +306,7 @@ async fn sequences(
     mut records: RecordStream,
 ) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
     let mut sequences = Vec::new();
-    while let Some(record) = tokio::time::timeout(Duration::from_secs(1), records.next()).await? {
+    while let Some(record) = records.next().await {
         sequences.push(record?.sequence);
     }
     Ok(sequences)
@@ -388,7 +388,7 @@ async fn bounded_follow_at_or_past_its_end_closes_without_data() -> TestResult {
                 )
                 .await?,
         );
-        let end = tokio::time::timeout(Duration::from_secs(1), data.next()).await?;
+        let end = data.next().await;
         assert!(end.is_none(), "{from}..{until} delivered data");
     }
     assert_eq!(
@@ -615,11 +615,9 @@ async fn interrupted_read(moved: bool) -> TestResult {
     assert_eq!(next(&mut records).await?.sequence, 1);
     // Two credited records remain buffered. The fifth cannot be sent yet,
     // so this interruption necessarily precedes the finite read's completion.
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        fixture.until(|counts| counts.sent.load(Ordering::Relaxed) == 4),
-    )
-    .await?;
+    fixture
+        .until(|counts| counts.sent.load(Ordering::Relaxed) == 4)
+        .await?;
     append(&provider, "events", 5).await?;
     if moved {
         fixture.controls.send(Ok(frame(
@@ -638,7 +636,7 @@ async fn interrupted_read(moved: bool) -> TestResult {
         fixture.reset()?;
     }
     let mut refused = false;
-    while let Some(record) = tokio::time::timeout(Duration::from_secs(1), records.next()).await? {
+    while let Some(record) = records.next().await {
         match record {
             Ok(record) => assert!(record.sequence < 5, "read crossed its original snapshot"),
             Err(error) => {

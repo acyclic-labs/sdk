@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
-use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Status};
@@ -306,6 +305,16 @@ impl StreamProvider for TcpDropProbe {
     }
 }
 
+async fn await_tcp_event(
+    event: &tokio::sync::Notify,
+    server: &mut tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        () = event.notified() => Ok(()),
+        result = server => Err(format!("TCP producer ended before its lifecycle event: {result:?}").into()),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the real TCP lifecycle test keeps connection, follow, close, and server-drop assertions together"
@@ -359,7 +368,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
                 .ok()
                 .map(|(socket, _)| (Ok::<_, std::io::Error>(socket), listener))
         });
-        let server = tokio::spawn(async move {
+        let mut server = tokio::spawn(async move {
             Server::builder()
                 .tls_config(
                     ServerTlsConfig::new()
@@ -411,21 +420,17 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             let follow = Arc::clone(&follow);
             async move { follow.next_result().await }
         });
-        tokio::time::timeout(Duration::from_secs(1), started.notified()).await?;
+        await_tcp_event(&started, &mut server).await?;
 
         follow.close().await;
-        let closed = tokio::time::timeout(Duration::from_secs(1), pending)
-            .await??
-            .map_err(|_| "pending next_result rejected")?;
+        let closed = pending.await?.map_err(|_| "pending next_result rejected")?;
         assert!(closed.value.is_none());
         assert!(closed.error.is_none());
         let closed_again = follow.next_result().await?;
         assert!(closed_again.value.is_none());
         assert!(closed_again.error.is_none());
 
-        tokio::time::timeout(Duration::from_secs(1), dropped.notified())
-            .await
-            .map_err(|_| "server follow stream was not dropped after close")?;
+        await_tcp_event(&dropped, &mut server).await?;
 
         drop(follow);
         drop(client);

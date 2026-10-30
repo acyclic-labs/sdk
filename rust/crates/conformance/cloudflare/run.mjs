@@ -25,30 +25,29 @@ async function start() {
   runtime.once("error", error => { launchError = String(error); });
   exited = new Promise(resolve => runtime.once("close", (code, signal) => resolve({ code, signal, launchError })));
   const control = createInterface(runtime.stdio[3]);
-  let timer;
   try {
     await Promise.race([
       new Promise((resolve, reject) => {
-        timer = setTimeout(() => reject(new Error("workerd startup exceeded 10 seconds")), 10_000);
         control.on("line", line => {
           try {
             const message = JSON.parse(line);
             if (message.event === "listen" && message.socket === "http" && message.port === 15420) resolve();
           } catch (error) { reject(error); }
         });
+        control.once("close", () => reject(new Error("workerd startup control closed before listen")));
+        control.once("error", reject);
       }),
       exited.then(result => { throw new Error(`workerd startup exited: ${JSON.stringify(result)}`); }),
     ]);
-  } finally { clearTimeout(timer); control.close(); }
+  } finally { control.close(); }
 }
 
 async function stop() {
   if (!runtime) return;
   const stopped = runtime;
   runtime = undefined;
-  if (stopped.exitCode === null && stopped.signalCode === null) stopped.kill("SIGTERM");
-  const timer = setTimeout(() => stopped.kill("SIGKILL"), 5000);
-  try { await exited; } finally { clearTimeout(timer); }
+  if (stopped.exitCode === null && stopped.signalCode === null) stopped.kill("SIGKILL");
+  await exited;
 }
 
 async function main() {

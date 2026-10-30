@@ -69,24 +69,13 @@ impl ForkControl {
                                 libc::_exit(124);
                             }
                             let mut byte = 1_u8;
-                            loop {
-                                let count = libc::write(ready_fd, (&raw const byte).cast(), 1);
-                                if count == 1 {
-                                    break;
-                                }
-                                if count >= 0 || *libc::__errno_location() != libc::EINTR {
-                                    libc::_exit(125);
-                                }
+                            if libc::write(ready_fd, (&raw const byte).cast(), 1) != 1 {
+                                libc::_exit(125);
                             }
-                            loop {
-                                let count = libc::read(release_fd, (&raw mut byte).cast(), 1);
-                                if count == 1 && byte == 1 {
-                                    return Ok(());
-                                }
-                                if count >= 0 || *libc::__errno_location() != libc::EINTR {
-                                    libc::_exit(126);
-                                }
+                            if libc::read(release_fd, (&raw mut byte).cast(), 1) != 1 || byte != 1 {
+                                libc::_exit(126);
                             }
+                            Ok(())
                         });
                     }
                     // Command::spawn waits for exec; it must not run on the
@@ -101,47 +90,16 @@ impl ForkControl {
         Ok(control)
     }
 
-    #[allow(unsafe_code, reason = "bounded poll over one owned fixture pipe")]
     fn await_child(&mut self) -> io::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "pre_exec barrier"));
-            }
-            let mut descriptor = libc::pollfd {
-                fd: self.ready.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: the owned reader remains valid for this one-pollfd call.
-            let ready = unsafe {
-                libc::poll(
-                    &mut descriptor,
-                    1,
-                    remaining.as_millis().max(1) as libc::c_int,
-                )
-            };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
-            }
-            if ready == 0 {
-                continue;
-            }
-            let mut byte = [0];
-            self.ready.read_exact(&mut byte)?;
-            return if byte == [1] {
-                Ok(())
-            } else {
-                Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "pre_exec signal",
-                ))
-            };
+        let mut byte = [0];
+        self.ready.read_exact(&mut byte)?;
+        if byte == [1] {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "pre_exec signal",
+            ))
         }
     }
 
@@ -255,24 +213,23 @@ fn record_release_control(unwind: bool) {
     let mut control = None;
     let mut live_conflict = false;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        with_lock_with_retry(
-            &mut paths,
-            |_| {
-                control = Some(ForkControl::start()?);
-                live_conflict = matches!(
-                    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false),
-                    Err(LocalCoreStateStoreError::LockTimeout(_))
-                );
-                assert!(
-                    !unwind,
-                    "fixture action unwinds while holding its record lock"
-                );
-                Ok(())
-            },
-            |_| false,
-        )
+        with_lock(&mut paths, |_| {
+            control = Some(ForkControl::start()?);
+            live_conflict = matches!(
+                FileLock::try_acquire(File::open(&probe.lock)?, FileLockMode::Exclusive),
+                Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error)
+            );
+            assert!(
+                !unwind,
+                "fixture action unwinds while holding its record lock"
+            );
+            Ok(())
+        })
     }));
-    let released_error = with_lock_with_retry(&mut probe, |_| Ok(()), |_| false).err();
+    // A nonblocking probe makes inherited-lock regressions fail at the release
+    // boundary instead of waiting for the child that this thread must release.
+    let released_error =
+        FileLock::try_acquire(File::open(&probe.lock).unwrap(), FileLockMode::Exclusive).err();
     let status = control
         .as_mut()
         .expect("record action reached pre_exec")
@@ -291,8 +248,7 @@ fn record_release_control(unwind: bool) {
         live_conflict,
         "a live record action must exclude another writer"
     );
-    with_lock_with_retry(&mut probe, |_| Ok(()), |_| false)
-        .expect("exec closed the inherited record descriptor");
+    with_lock(&mut probe, |_| Ok(())).expect("exec closed the inherited record descriptor");
     assert!(
         released_error.is_none(),
         "record action end (unwind={unwind}) must release before child exec: {released_error:?}"

@@ -22,10 +22,6 @@ fn timeout() -> io::Error {
     )
 }
 
-pub(super) fn wait(id: libc::id_t, deadline: Instant) -> io::Result<ExitStatus> {
-    wait_metered(id, deadline, None)
-}
-
 pub(super) fn wait_metered(
     id: libc::id_t,
     deadline: Instant,
@@ -232,7 +228,12 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
 #[cfg(target_vendor = "apple")]
 fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::Result<ExitStatus> {
     use std::os::unix::process::ExitStatusExt;
-    match member_event(watch, id, deadline, libc::NOTE_EXIT | libc::NOTE_EXITSTATUS)? {
+    match member_event(
+        watch,
+        id,
+        Some(deadline),
+        libc::NOTE_EXIT | libc::NOTE_EXITSTATUS,
+    )? {
         Some(event) => Ok(ExitStatus::from_raw(
             event.data.try_into().map_err(io::Error::other)?,
         )),
@@ -241,30 +242,32 @@ fn wait_ready(watch: &ExitWatch<'_>, id: libc::id_t, deadline: Instant) -> io::R
 }
 
 #[cfg(target_vendor = "apple")]
-pub(super) fn wait_member(
-    watch: &ExitWatch<'_>,
-    id: libc::id_t,
-    deadline: Instant,
-) -> io::Result<bool> {
-    Ok(member_event(watch, id, deadline, libc::NOTE_EXIT)?.is_some())
+pub(super) fn wait_member(watch: &ExitWatch<'_>, id: libc::id_t) -> io::Result<()> {
+    member_event(watch, id, None, libc::NOTE_EXIT)?
+        .map(|_| ())
+        .ok_or_else(|| io::Error::other("member exit wait returned without an event"))
 }
 
 #[cfg(target_vendor = "apple")]
 fn member_event(
     watch: &ExitWatch<'_>,
     id: libc::id_t,
-    deadline: Instant,
+    deadline: Option<Instant>,
     flags: u32,
 ) -> io::Result<Option<libc::kevent>> {
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
+        let remaining = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        if remaining.is_some_and(|remaining| remaining.is_zero()) {
             return Ok(None);
         }
-        let remaining = libc::timespec {
-            tv_sec: remaining.as_secs().try_into().map_err(io::Error::other)?,
-            tv_nsec: remaining.subsec_nanos().into(),
-        };
+        let remaining = remaining
+            .map(|remaining| {
+                Ok::<_, io::Error>(libc::timespec {
+                    tv_sec: remaining.as_secs().try_into().map_err(io::Error::other)?,
+                    tv_nsec: remaining.subsec_nanos().into(),
+                })
+            })
+            .transpose()?;
         // SAFETY: all integer and pointer fields accept zero as output storage.
         let mut event: libc::kevent = unsafe { std::mem::zeroed() };
         // SAFETY: the owned queue, writable event and relative timeout live through this call.
@@ -277,7 +280,9 @@ fn member_event(
                     0,
                     &raw mut event,
                     1,
-                    &raw const remaining,
+                    remaining
+                        .as_ref()
+                        .map_or(std::ptr::null(), std::ptr::from_ref),
                 )
             };
             if count < 0 {

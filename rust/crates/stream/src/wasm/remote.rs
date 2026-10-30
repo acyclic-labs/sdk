@@ -32,19 +32,10 @@ impl Remote {
         })
     }
     fn service(&self) -> Service {
-        self.service_with_options(
-            tonic_web_wasm_client::options::FetchOptions::new()
-                .timeout(std::time::Duration::from_secs(1)),
-        )
-    }
-    fn service_with_options(
-        &self,
-        options: tonic_web_wasm_client::options::FetchOptions,
-    ) -> Service {
         use tonic_web_wasm_client::options::Redirect;
         Service::new(tonic_web_wasm_client::Client::new_with_options(
             self.endpoint.url.clone(),
-            options
+            tonic_web_wasm_client::options::FetchOptions::new()
                 .response_limits(self.response_limits)
                 .redirect(Redirect::Error),
         ))

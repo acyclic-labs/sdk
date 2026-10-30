@@ -40,8 +40,8 @@ pub(crate) async fn admit<T>(
 #[cfg(feature = "grpc")]
 pub(crate) fn deadline(
     context: Option<&Context>,
-    fallback: Duration,
-) -> Result<tokio::time::Instant, Error> {
+    fallback: Option<Duration>,
+) -> Result<Option<tokio::time::Instant>, Error> {
     let remaining = match context {
         Some(context) => {
             let now = SystemTime::now()
@@ -52,12 +52,16 @@ pub(crate) fn deadline(
                 .filter(|remaining| !remaining.is_zero())
                 .ok_or(acyclic_auth::operation::Stopped::Deadline)?
         }
-        None => fallback,
+        None => match fallback {
+            Some(fallback) => fallback,
+            None => return Ok(None),
+        },
     };
     if remaining > MAX_DEADLINE {
         return Err(crate::wire::ErrorCode::InvalidArgument.into());
     }
     tokio::time::Instant::now()
         .checked_add(remaining)
+        .map(Some)
         .ok_or_else(|| crate::wire::ErrorCode::InvalidArgument.into())
 }

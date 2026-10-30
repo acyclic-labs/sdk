@@ -219,11 +219,7 @@ async fn file_stream_receipts_progress_before_input_eof_and_drop_releases_input(
 
 async fn stop(shutdown: tokio::sync::oneshot::Sender<()>, task: ServerTask) {
     shutdown.send(()).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), task)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+    task.await.unwrap().unwrap();
 }
 
 fn command(timeout_ms: u64) -> ExecCommand {
@@ -481,9 +477,7 @@ async fn exec_expiry_wakes_a_silent_stream_and_closes_only_that_rpc() {
         output.next().await.unwrap().unwrap_err(),
         ProviderError::CommandIndeterminate(machine.id())
     );
-    tokio::time::timeout(Duration::from_secs(1), sender.closed())
-        .await
-        .unwrap();
+    sender.closed().await;
     assert!(output.next().await.is_none());
     assert!(matches!(
         machine.exec(command(300_000).with_expiry(1)).await,
@@ -555,9 +549,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
         capture_exec(output, 1).await,
         Err(ProviderError::Rejected(_))
     ));
-    tokio::time::timeout(Duration::from_secs(1), sender.closed())
-        .await
-        .unwrap();
+    sender.closed().await;
     assert_eq!(io.commands.lock().unwrap().len(), 1);
     stop(shutdown, task).await;
 }
@@ -565,7 +557,7 @@ async fn combined_capture_allowance_refuses_without_draining_or_redispatch() {
 #[tokio::test]
 async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
     let (machine, io, shutdown, task) = fixture().await;
-    let mut output = machine.exec(command(1)).await.unwrap();
+    let mut output = machine.exec(command(60_000)).await.unwrap();
     let sender = io.sender();
     sender
         .send(Ok(frame(
@@ -593,7 +585,8 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         output.next().await.unwrap().unwrap(),
         ExecOutput::ExitCode(-1)
     );
-    tokio::time::sleep(Duration::from_millis(1010)).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_millis(60_001)).await;
     assert!(output.next().await.is_none());
     {
         let commands = io.commands.lock().unwrap();
@@ -601,7 +594,7 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         let command = commands.first().unwrap();
         assert_eq!(command.start.machine, Some(encode_machine(machine.id())));
         assert_eq!(command.argv, ["printf", "hello"]);
-        assert_eq!(command.start.timeout_ms, 1);
+        assert_eq!(command.start.timeout_ms, 60_000);
         assert_eq!(command.start.protocol, Some(protocol()));
     }
     drop(output);
@@ -616,9 +609,7 @@ async fn exec_drop_and_bad_frame_release_only_their_rpc() {
     let stopped = machine.exec(command(60_000)).await.unwrap();
     let stopped_sender = io.sender();
     drop(stopped);
-    tokio::time::timeout(Duration::from_secs(1), stopped_sender.closed())
-        .await
-        .unwrap();
+    stopped_sender.closed().await;
     for invalid in [
         wire::ExecOutput {
             machine: None,
@@ -679,16 +670,12 @@ async fn exec_drop_and_bad_frame_release_only_their_rpc() {
             rejected.next().await.unwrap(),
             Err(ProviderError::Rejected(_))
         ));
-        tokio::time::timeout(Duration::from_secs(1), sender.closed())
-            .await
-            .unwrap();
+        sender.closed().await;
         assert!(rejected.next().await.is_none());
         assert!(!active_sender.is_closed());
     }
     drop(active);
-    tokio::time::timeout(Duration::from_secs(1), active_sender.closed())
-        .await
-        .unwrap();
+    active_sender.closed().await;
     stop(shutdown, task).await;
 }
 
@@ -724,9 +711,7 @@ async fn exec_terminal_event_completes_without_waiting_for_eof_and_lost_outcomes
         ),
         Err(ProviderError::Rejected(_))
     ));
-    tokio::time::timeout(Duration::from_secs(1), sender.closed())
-        .await
-        .unwrap();
+    sender.closed().await;
     for error in [None, Some(Code::Unavailable), Some(Code::DeadlineExceeded)] {
         let mut output = machine.exec(command(60_000)).await.unwrap();
         let sender = io.sender();

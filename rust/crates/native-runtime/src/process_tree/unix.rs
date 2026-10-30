@@ -25,9 +25,7 @@ pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()
         .ok_or_else(|| io::ErrorKind::WouldBlock.into())
 }
 
-/// A failed Darwin process registration names an owned child already exiting.
-/// Wait for its terminal status without reaping or subscribing to a lost edge.
-#[cfg(any(target_vendor = "apple", test))]
+/// Wait for an owned child's terminal status while retaining PID custody.
 pub(super) fn await_exiting_id(
     id: libc::id_t,
     meter: Option<&dyn crate::NativeReadMeter>,
@@ -43,69 +41,58 @@ fn exit_status_id(
 ) -> io::Result<Option<ExitStatus>> {
     #[cfg(test)]
     super::exit_wait::observed();
-    loop {
-        // SAFETY: initialized OS output storage and the exclusively owned
-        // child's ID. WNOWAIT retains the leader until group termination,
-        // preventing its PID/PGID from being reused for an unrelated group.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let (waited, recorded) =
-            super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
-                // SAFETY: `info` is writable storage owned by this frame and
-                // `id` names the exclusively owned child.
-                if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            })?;
-        match waited {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                recorded?;
-                continue;
+    // SAFETY: initialized OS output storage and the exclusively owned
+    // child's ID. WNOWAIT retains the leader until group termination,
+    // preventing its PID/PGID from being reused for an unrelated group.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let (waited, recorded) =
+        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: `info` is writable storage owned by this frame and
+            // `id` names the exclusively owned child.
+            if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
             }
-            Err(error) => return Err(error),
-            Ok(()) => recorded?,
-        }
-        // SAFETY: WEXITED waitid initialized the child-status union.
-        if unsafe { info.si_pid() } == 0 {
-            return Ok(None);
-        }
-        // SAFETY: the same WEXITED observation initialized the status field.
-        let status = unsafe { info.si_status() };
-        let raw = match info.si_code {
-            libc::CLD_EXITED => status << 8,
-            libc::CLD_KILLED => status,
-            libc::CLD_DUMPED => status | 0x80,
-            _ => return Err(io::ErrorKind::Other.into()),
-        };
-        return Ok(Some(ExitStatus::from_raw(raw)));
+        })?;
+    match waited {
+        Err(error) => return Err(error),
+        Ok(()) => recorded?,
     }
+    // SAFETY: WEXITED waitid initialized the child-status union.
+    if unsafe { info.si_pid() } == 0 {
+        return Ok(None);
+    }
+    // SAFETY: the same WEXITED observation initialized the status field.
+    let status = unsafe { info.si_status() };
+    let raw = match info.si_code {
+        libc::CLD_EXITED => status << 8,
+        libc::CLD_KILLED => status,
+        libc::CLD_DUMPED => status | 0x80,
+        _ => return Err(io::ErrorKind::Other.into()),
+    };
+    Ok(Some(ExitStatus::from_raw(raw)))
 }
 
 pub(super) fn reap_exit_id(
     pid: libc::pid_t,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<(Option<ExitStatus>, io::Result<()>)> {
-    loop {
-        let mut status = 0;
-        let (result, recorded) =
-            super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
-                // SAFETY: exclusively owned child ID and writable status.
-                let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
-                if waited < 0 {
-                    Err(io::Error::last_os_error())
-                } else {
-                    Ok(waited)
-                }
-            })?;
-        match result {
-            Ok(0) => return Ok((None, recorded)),
-            Ok(_) => return Ok((Some(ExitStatus::from_raw(status)), recorded)),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
-                recorded?;
+    let mut status = 0;
+    let (result, recorded) =
+        super::pipe_operation_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: exclusively owned child ID and writable status.
+            let waited = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
+            if waited < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(waited)
             }
-            Err(error) => return Err(error),
-        }
+        })?;
+    match result {
+        Ok(0) => Ok((None, recorded)),
+        Ok(_) => Ok((Some(ExitStatus::from_raw(status)), recorded)),
+        Err(error) => Err(error),
     }
 }
 
@@ -487,54 +474,46 @@ impl SpawnObjects {
         events: super::events::Events,
     ) -> io::Result<()> {
         let mut pid = 0;
-        loop {
-            let (result, recorded) = super::pipe_operation_attempt(
-                Some(meter),
-                crate::NativeOperationKind::Write,
-                || {
-                    let environment = environment.unwrap_or_else(inherited_environment);
-                    // SAFETY: both spawn objects are initialized; the program,
-                    // the null-terminated argument vector and the environment
-                    // stay live and unmodified through this synchronous call.
-                    let status = unsafe {
-                        libc::posix_spawn(
-                            &raw mut pid,
-                            program.as_ptr(),
-                            self.actions.as_ptr(),
-                            self.attributes.as_ptr(),
-                            arguments.as_ptr(),
-                            environment,
-                        )
-                    };
-                    if status == 0 {
-                        *custody = Some(super::ProcessTree {
-                            child: None,
-                            native_child: Some(pid),
-                            guard: Guard {
-                                process_group: pid,
-                                active: true,
-                            },
-                            output_taken: false,
-                            cleanup_on_drop: false,
-                            spawn_resources: SpawnResources::default(),
-                            prepared_spawn: None,
-                            custody: None,
-                            #[cfg(target_os = "linux")]
-                            exit_fd: None,
-                            writer: Writer,
-                            queued_stdin: None,
-                            _events: events,
-                        });
-                    }
-                    spawn_status(status)
-                },
-            )?;
-            recorded?;
-            match result {
-                Err(error) if error.kind() == io::ErrorKind::Interrupted && custody.is_none() => {}
-                result => return result,
-            }
-        }
+        let (result, recorded) =
+            super::pipe_operation_attempt(Some(meter), crate::NativeOperationKind::Write, || {
+                let environment = environment.unwrap_or_else(inherited_environment);
+                // SAFETY: both spawn objects are initialized; the program,
+                // the null-terminated argument vector and the environment
+                // stay live and unmodified through this synchronous call.
+                let status = unsafe {
+                    libc::posix_spawn(
+                        &raw mut pid,
+                        program.as_ptr(),
+                        self.actions.as_ptr(),
+                        self.attributes.as_ptr(),
+                        arguments.as_ptr(),
+                        environment,
+                    )
+                };
+                if status == 0 {
+                    *custody = Some(super::ProcessTree {
+                        child: None,
+                        native_child: Some(pid),
+                        guard: Guard {
+                            process_group: pid,
+                            active: true,
+                        },
+                        output_taken: false,
+                        cleanup_on_drop: false,
+                        spawn_resources: SpawnResources::default(),
+                        prepared_spawn: None,
+                        custody: None,
+                        #[cfg(target_os = "linux")]
+                        exit_fd: None,
+                        writer: Writer,
+                        queued_stdin: None,
+                        _events: events,
+                    });
+                }
+                spawn_status(status)
+            })?;
+        recorded?;
+        result
     }
 }
 

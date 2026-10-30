@@ -99,7 +99,7 @@ impl Transport for Endpoint {
                 &format!("acyclic.bearer.{token}").into(),
             );
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)
-                .map_err(|_| StreamError::Unavailable)?;
+                .map_err(|_| StreamError::InvalidArgument)?;
             socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
             let (sender, receiver) = mpsc::channel(crate::MAX_ITEMS);
             let incoming = Rc::new(RefCell::new(Incoming {
