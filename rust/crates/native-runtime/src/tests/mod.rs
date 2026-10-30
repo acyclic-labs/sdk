@@ -5,7 +5,7 @@ use std::io::{Seek as _, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Poll, Wake};
 use std::thread::Thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 mod admission;
 mod claim;
@@ -20,15 +20,6 @@ mod source;
 mod spare;
 use source::SourceFixture;
 mod write_validation;
-
-/// Waits for a state another thread publishes. No wall-clock bound: under
-/// load a bounded wait fails a correct run, and a lost update hangs the run
-/// where the gate's job limit reports it.
-fn wait_until(ready: impl Fn() -> bool) {
-    while !ready() {
-        std::thread::yield_now();
-    }
-}
 
 struct ThreadWake(Thread);
 
@@ -62,7 +53,7 @@ fn submit<T>(task: &mut NativeCompletion<T>) {
     }
 }
 
-/// Drives `future` on this thread, sleeping until its waker unparks it.
+/// Drives `future` on this thread, parking until its producer waker unparks it.
 pub(crate) fn complete<T>(future: impl Future<Output = io::Result<T>>) -> io::Result<T> {
     let waker = completion_waker();
     let mut future = std::pin::pin!(future);
@@ -203,9 +194,42 @@ pub(super) struct ReadBudgetMeter {
     panic_after_read: bool,
     /// Runs when a write moved nothing because its pipe was full.
     pub(super) blocked_write: Option<Box<dyn Fn() + Send + Sync>>,
+    // Last: the shared ownership primitive observes the final meter cleanup.
+    _retirement: Option<OwnershipAnchor>,
 }
 
 impl ReadBudgetMeter {
+    /// After the original operation ends, await its final allocation release.
+    /// The release callback and this registration share one mutex, including
+    /// the already-retired case, so neither ordering loses the terminal event.
+    fn wait_for_memory_retirement(&self) -> io::Result<()> {
+        let receiver = {
+            let mut retired = self
+                .memory_retired
+                .lock()
+                .map_err(|_| io::Error::other("allocation retirement registration poisoned"))?;
+            if self.memory.load(Ordering::Acquire) == 0 {
+                return Ok(());
+            }
+            if retired.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "allocation retirement already observed",
+                ));
+            }
+            let (sender, receiver) = mpsc::channel();
+            *retired = Some(sender);
+            receiver
+        };
+        receiver.recv().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "allocation release producer lost",
+            )
+        })?;
+        assert_eq!(self.memory.load(Ordering::Acquire), 0);
+        Ok(())
+    }
     #[cfg(windows)]
     pub(super) fn shared(operation_limit: u64, byte_limit: u64) -> Arc<Self> {
         Arc::new_cyclic(|owner| Self {
