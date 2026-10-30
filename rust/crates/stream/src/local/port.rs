@@ -62,12 +62,10 @@ impl CommandJournal for LocalPort {
         let entries = if from == head {
             Vec::new()
         } else {
-            // The key is formatted at submission; ending the statement here
-            // keeps its non-Send arguments out of the awaited future.
             let read = spawn_blocking(
                 "streams",
                 "read-page",
-                &format_args!("{:p}/{from}", Arc::as_ptr(&journal)),
+                PersistenceKey::new(Arc::as_ptr(&journal) as usize, from),
                 move || {
                     let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
                     if journal.bytes != head {

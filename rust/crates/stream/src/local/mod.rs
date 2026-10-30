@@ -14,11 +14,11 @@ use std::sync::{Arc, PoisonError};
 #[cfg(test)]
 use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
-use acyclic_native_runtime::OwnershipAnchor;
 #[cfg(not(loom))]
 use acyclic_native_runtime::spawn_persistence as spawn_blocking;
 #[cfg(all(not(loom), feature = "test-support"))]
 use acyclic_native_runtime::testing::spawn;
+use acyclic_native_runtime::{OwnershipAnchor, PersistenceKey};
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(loom)]
