@@ -249,6 +249,20 @@ test("stream trailers reject only their exact lease; denial and cancellation pre
 });
 
 test("stream custody refuses changed records and completion and retires its iterator", async () => {
+  for (const paused of [false, true]) {
+    let revision = "first";
+    let pulls = 0;
+    const cache = new CredentialCache(async () => new CredentialSnapshot("synthetic", revision, 100),
+      () => ({ nowUnixSeconds: 1, revision }));
+    const lease = await resolveCredential(cache.provider);
+    async function* records() { pulls++; yield 1; pulls++; yield 2; }
+    const stream = credentialStream(records(), lease, () => false)[Symbol.asyncIterator]();
+    if (paused) expect((await stream.next()).value).toBe(1);
+    revision = "second";
+    await expect(stream.next()).rejects.toThrow("source changed or expired");
+    // Refusal must precede the source's first pull or next side effect.
+    expect(pulls).toBe(paused ? 1 : 0);
+  }
   for (const completion of [false, true]) {
     let revision = "first";
     let retired = false;
