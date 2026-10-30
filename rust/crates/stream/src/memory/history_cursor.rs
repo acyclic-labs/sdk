@@ -91,11 +91,8 @@ impl HistoryCursor {
             .position()
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let pinned = PinnedHistory {
-            root: path.history.clone(),
-            tail: path.tail,
-        };
-        let previous = crate::pages::PageSource::next_page(&pinned, from, 1).await?;
+        let mut pinned = PinnedHistory::new(path.history.clone(), path.tail);
+        let previous = crate::pages::PageSource::next_page(&mut pinned, from, 1).await?;
         if previous
             .and_then(|window| window.records.records.get(window.start).cloned())
             .is_none_or(|record| record.sequence != from || record.commit_id != anchor)
@@ -106,13 +103,7 @@ impl HistoryCursor {
     }
     pub(crate) fn at(next: u64) -> Self {
         Self {
-            records: Self::pinned(
-                PinnedHistory {
-                    root: None,
-                    tail: next,
-                },
-                next,
-            ),
+            records: Self::pinned(PinnedHistory::new(None, next), next),
             awaiting_creation: false,
             registration: None,
         }
@@ -122,13 +113,7 @@ impl HistoryCursor {
             .expect("the stream replay page is nonzero")
     }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
-        let mut records = Self::pinned(
-            PinnedHistory {
-                root: path.history.clone(),
-                tail,
-            },
-            next,
-        );
+        let mut records = Self::pinned(PinnedHistory::new(path.history.clone(), tail), next);
         if let Some(page) = path.prefix_window(next, tail) {
             records.seed_page(page);
         }
@@ -151,13 +136,12 @@ impl HistoryCursor {
         let appended = matches!((&history.root, root.map(AsRef::as_ref)),
             (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
         let keep_page = appended && tail >= history.tail;
-        self.records.repin(
-            PinnedHistory {
-                root: root.cloned(),
-                tail,
-            },
-            keep_page,
-        );
+        let pinned = if keep_page {
+            self.records.source_mut().appended(root.cloned(), tail)
+        } else {
+            PinnedHistory::new(root.cloned(), tail)
+        };
+        self.records.repin(pinned, keep_page);
     }
     async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
         self.records.next().await
@@ -184,10 +168,7 @@ impl FiniteRead {
             |key| key.before.min(path.tail),
         );
         Self {
-            history: PinnedHistory {
-                root: path.history.clone(),
-                tail,
-            },
+            history: PinnedHistory::new(path.history.clone(), tail),
             window: request
                 .key
                 .is_none()

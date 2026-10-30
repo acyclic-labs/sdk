@@ -13,9 +13,10 @@ pub trait PageSource: ProviderPlatform {
     type Page: Iterator<Item = Record> + ProviderTask;
 
     /// Reads one page without changing the pinned history or caller position.
-    /// Cancelling this future must leave the source reusable at `after`.
+    /// The source may keep where the page ended, so the next one resumes
+    /// there. Cancelling this future must leave the source reusable at `after`.
     fn next_page(
-        &self,
+        &mut self,
         after: u64,
         budget: u32,
     ) -> impl Future<Output = Result<Option<Self::Page>, StreamError>> + ProviderTask;
@@ -48,6 +49,10 @@ impl<S: PageSource> PinnedCursor<S> {
     /// The immutable source currently owned by this cursor.
     pub fn source(&self) -> &S {
         &self.source
+    }
+
+    pub(crate) fn source_mut(&mut self) -> &mut S {
+        &mut self.source
     }
 
     /// The next unread sequence, advanced only when a record is consumed.
