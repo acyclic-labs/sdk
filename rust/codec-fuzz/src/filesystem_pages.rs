@@ -1,5 +1,42 @@
 //! Immutable filesystem decoders use their production admission and encoders.
 use acyclic_fs::{FsError, kernel::*};
+mod populated;
+
+#[derive(Debug)]
+enum DecodeFailure {
+    Canonical,
+    Original,
+}
+
+impl From<CanonicalDecodeError> for DecodeFailure {
+    fn from(_: CanonicalDecodeError) -> Self {
+        Self::Canonical
+    }
+}
+
+macro_rules! interrupt {
+    ($decode:ident, $bytes:expr, $limits:expr, $steps:expr) => {{
+        assert!($steps > 0, "admitted decoding accounts for its work");
+        for before in [0, $bytes.len() % $steps] {
+            let mut calls = 0;
+            let result = $decode::<DecodeFailure>($bytes, $limits, &mut |_| {
+                let current = calls;
+                calls += 1;
+                if current == before {
+                    Err(DecodeFailure::Original)
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(matches!(result, Err(DecodeFailure::Original)));
+            assert_eq!(
+                calls,
+                before + 1,
+                "the original refusal ends decoding immediately"
+            );
+        }
+    }};
+}
 
 fn allocation_error(_: std::collections::TryReserveError) -> FsError {
     CanonicalDecodeError::AllocationFailed.into()
@@ -31,7 +68,11 @@ pub fn check(bytes: &[u8]) {
     let limits = DecodeLimits::default();
     macro_rules! page {
         ($decode:ident, $encode:ident) => {
-            if let Ok(value) = $decode::<FsError>(bytes, limits, &mut |_| Ok(())) {
+            let mut steps = 0;
+            if let Ok(value) = $decode::<FsError>(bytes, limits, &mut |_| {
+                steps += 1;
+                Ok(())
+            }) {
                 let encoded = $encode(
                     &value,
                     limits.maximum_page_items,
@@ -40,6 +81,13 @@ pub fn check(bytes: &[u8]) {
                 )
                 .unwrap();
                 assert_eq!(encoded, bytes);
+                interrupt!($decode, bytes, limits, steps);
+                assert!(
+                    $decode::<FsError>(&bytes[..bytes.len() - 1], limits, &mut |_| Ok(())).is_err()
+                );
+                let mut trailing = bytes.to_vec();
+                trailing.push(0);
+                assert!($decode::<FsError>(&trailing, limits, &mut |_| Ok(())).is_err());
                 refuses_other_versions(
                     |input| $decode::<FsError>(input, limits, &mut |_| Ok(())).map(|_| ()),
                     bytes,
@@ -52,7 +100,12 @@ pub fn check(bytes: &[u8]) {
     page!(decode_extent_page, encode_extent_page);
     page!(decode_attribute_page, encode_attribute_page);
     page!(decode_blob_page, encode_blob_page);
-    if let Ok(value) = decode_file_metadata::<FsError>(bytes, limits, &mut |_| Ok(())) {
+    let mut steps = 0;
+    if let Ok(value) = decode_file_metadata::<FsError>(bytes, limits, &mut |_| {
+        steps += 1;
+        Ok(())
+    }) {
+        interrupt!(decode_file_metadata, bytes, limits, steps);
         assert_eq!(
             encode_file_metadata(value, |_| Ok(()), allocation_error).unwrap(),
             bytes
@@ -62,7 +115,12 @@ pub fn check(bytes: &[u8]) {
             bytes,
         );
     }
-    if let Ok(value) = decode_generation_root::<FsError>(bytes, limits, &mut |_| Ok(())) {
+    let mut steps = 0;
+    if let Ok(value) = decode_generation_root::<FsError>(bytes, limits, &mut |_| {
+        steps += 1;
+        Ok(())
+    }) {
+        interrupt!(decode_generation_root, bytes, limits, steps);
         assert_eq!(
             encode_generation_root(&value, |_| Ok(()), allocation_error).unwrap(),
             bytes
@@ -221,5 +279,6 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             })?,
         ));
     }
+    seeds.extend(populated::seeds()?);
     Ok(seeds)
 }
