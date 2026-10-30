@@ -15,8 +15,8 @@ plugin({ name: "native-filter-boundary", setup(build) {
       assert(source.includes(filter)); source = source.replace(filter, "filter: undefined");
     }
     if (fault === "consecutive") {
-      const check = "checkedRecord(decoded, decoded.sequence)";
-      assert(source.includes(check)); source = source.replace(check, "checkedRecord(decoded, next)");
+      const check = "checkedRecord(decoded, decoded.sequence, path)";
+      assert(source.includes(check)); source = source.replace(check, "checkedRecord(decoded, next, path)");
     }
     return { contents: source, loader: "ts" };
   });

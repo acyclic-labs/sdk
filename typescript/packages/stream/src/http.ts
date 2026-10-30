@@ -107,7 +107,7 @@ export class HttpStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
     const atLeast = this.#sessions.revisionFloor();
     const input = wireRequest({ kind: "read", path, from, limit, atLeast, ...(key === undefined ? {} : { key }) });
-    const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal);
+    const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal, path);
     // The page's own served revision must prove the minimum sent, and then
     // floors later reads: a lagging replica cannot serve older data.
     this.#sessions.served(atLeast, applied);
@@ -138,10 +138,10 @@ export class HttpStreamProvider implements StreamProvider {
     this.#sessions.served(atLeast, applied);
     return tail;
   }
-  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
-    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes));
+  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, followed?: string): Promise<HttpResponseFor<Route>> {
+    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes, followed));
   }
-  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
+  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes, followed?: string): Promise<HttpResponseFor<Route>> {
     const payload = typeof body === "string" ? body : JSON.stringify(body);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
     const lease = await resolveCredential(this.#credential, signal);
@@ -159,7 +159,7 @@ export class HttpStreamProvider implements StreamProvider {
     try { await ensureStreamWasm(); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     let decoded: HttpResponseFor<Route>;
-    try { decoded = decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    try { decoded = decodeHttpResponseFor(route, text, followed); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     lease.check();
     return decoded;
   }

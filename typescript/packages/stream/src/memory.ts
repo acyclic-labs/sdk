@@ -1,10 +1,10 @@
-import { checkedReadSequence } from "./record.js";
+import { checkedReadSequence, checkedRecord } from "./record.js";
 import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  ReadResponseSchema, TailResponseSchema, FollowRequestSchema, type Record as WireRecord,
+  ReadResponseSchema, TailResponseSchema, FollowRequestSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { validateAppend } from "./client.js";
 import { checkedChild } from "./child.js";
@@ -16,7 +16,7 @@ import type {
   IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
   StreamProvider, ChildrenPage, ChildrenPageRequest, StreamFailureCode,
 } from "./types.js";
-import { StreamError, commitId, idempotencyKey } from "./types.js";
+import { StreamError, idempotencyKey } from "./types.js";
 
 /** Shared projection over the canonical Rust provider ABI. */
 class RustStreamProvider implements StreamProvider {
@@ -47,10 +47,11 @@ class RustStreamProvider implements StreamProvider {
     }
   }
 
-  async #read(request: Uint8Array): Promise<readonly EncodedRecord[]> {
+  async #read(request: Uint8Array, path: string): Promise<readonly EncodedRecord[]> {
     try {
       const values = await (await this.#inner).read(request);
-      return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value)).map(record));
+      return values.flatMap(value => readResponseRecords(fromBinary(ReadResponseSchema, value))
+        .map(record => checkedRecord(record, record.sequence, path)));
     } catch (error) { throw streamError(error, "read"); }
   }
 
@@ -94,7 +95,7 @@ class RustStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
     const request = wireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
     let next = from;
-    for (const value of await this.#read(request)) { next = checkedReadSequence(value, next, key) + 1n; yield value; }
+    for (const value of await this.#read(request, path)) { next = checkedReadSequence(value, next, key) + 1n; yield value; }
   }
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
@@ -116,7 +117,7 @@ class RustStreamProvider implements StreamProvider {
         try { bytes = await handle.next(); }
         catch (error) { throw streamError(error, "follow"); }
         if (bytes === null || signal?.aborted) return;
-        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield record(decoded);
+        for (const decoded of readResponseRecords(fromBinary(ReadResponseSchema, bytes))) yield checkedRecord(decoded, decoded.sequence, path);
       }
     } finally {
       signal?.removeEventListener("abort", close);
@@ -157,10 +158,6 @@ class RustStreamProvider implements StreamProvider {
 
 }
 
-
-function record(value: WireRecord): EncodedRecord {
-  return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros, origin: value.origin, keys: value.keys, attributes: value.attributes };
-}
 
 /** Durable account-local provider using strict IndexedDB publication and Rust recovery. */
 export class BrowserStreamProvider extends RustStreamProvider {

@@ -60,11 +60,17 @@ pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), Js
 }
 
 /// Validate and project one hosted HTTP JSON success response into the public
+/// representation. Reads supply the original followed path for origin elision;
+/// context-free projections require explicitly spelled origins.
 #[wasm_bindgen(js_name = decodeHttpResponse, unchecked_return_type = "unknown")]
-pub fn decode_http_response(route: &str, response_json: &str) -> Result<JsValue, JsValue> {
+pub fn decode_http_response(
+    route: &str,
+    response_json: &str,
+    followed: Option<String>,
+) -> Result<JsValue, JsValue> {
     let value: Value = serde_json::from_str(response_json)
         .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
-    http::decode(route, &value).map_err(JsValue::from_str)
+    http::decode(route, &value, followed.as_deref()).map_err(JsValue::from_str)
 }
 
 /// Decode one unary memory-provider response from canonical protobuf bytes

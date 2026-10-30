@@ -1086,7 +1086,7 @@ describe("website Stream contract", () => {
       sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId, committedAtMicros: maximum.toString(), keys: [], attributes: [],
     }, {
       sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId, committedAtMicros: "1000", keys: [], attributes: [],
-    }] })) as { readonly records: { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[] };
+    }] }), "events") as { readonly records: { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[] };
     expect(record[0]?.sequence).toBe(maximum);
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));

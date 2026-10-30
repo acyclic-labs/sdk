@@ -188,7 +188,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       const atLeast = this.#sessions.revisionFloor();
       const input = wireRequest({ ...request, atLeast });
-      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast, request.key);
+      yield* this.#frames("read", path, this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast, request.key);
     } finally { controller.abort(); }
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
@@ -203,7 +203,7 @@ export class GrpcStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "follow", path, from: authored.from });
     yield* this.#sessions.follow(path, authored);
   }
-  async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
+  async *#frames(operation: string, path: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
     remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[], key?: import("./types.js").ReadKeySeek): AsyncIterable<EncodedRecord> {
     // The first frame carries the read's applied revision; it must prove the minimum sent.
     let minimum = atLeast;
@@ -215,7 +215,7 @@ export class GrpcStreamProvider implements StreamProvider {
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map(value => {
-          const record = checkedRecord(value, checkedReadSequence(value, next, key));
+          const record = checkedRecord(value, checkedReadSequence(value, next, key), path);
           next = record.sequence + 1n;
           return record;
         });

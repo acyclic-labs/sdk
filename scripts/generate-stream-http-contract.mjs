@@ -53,9 +53,10 @@ export type HttpResponseFor<Route extends HttpRoute> =
 export function decodeHttpResponseFor<Route extends HttpRoute>(
   route: Route,
   responseJson: string,
+  followed?: string,
 ): HttpResponseFor<Route>;
-export function decodeHttpResponseFor(route: string, responseJson: string): unknown {
-  return decodeHttpResponseWasm(route, responseJson);
+export function decodeHttpResponseFor(route: string, responseJson: string, followed?: string): unknown {
+  return decodeHttpResponseWasm(route, responseJson, followed);
 }
 `;
   return { "typescript/packages/stream/src/http-contract.ts": source };

@@ -5,6 +5,7 @@ import { projectMemoryResponse, WasmSession, type WasmFollow, type WasmApplicati
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { checkedRecord } from "./record.js";
 import { StreamError, commitId, type EncodedRecord, type FollowOptions, type Revision } from "./types.js";
 
 export interface SessionTransport {
@@ -81,7 +82,7 @@ export class StreamSessions {
     for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
       const record = data.item.value;
-      yield { sequence: record.sequence, value: record.value, keys: record.keys, attributes: record.attributes, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros, origin: record.origin };
+      yield checkedRecord(record, record.sequence, path);
     }
   }
 

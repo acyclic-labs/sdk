@@ -204,7 +204,7 @@ export class NativeStreamProvider implements StreamProvider {
         catch (error) { throw invalidResponse("read", error); }
         for (const decoded of readResponseRecords(response)) {
           if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-          const record = checkedRecord(decoded, checkedReadSequence(decoded, next, request.key));
+          const record = checkedRecord(decoded, checkedReadSequence(decoded, next, request.key), path);
           next = record.sequence + 1n;
           yield record;
         }
@@ -267,7 +267,7 @@ export class NativeStreamProvider implements StreamProvider {
         catch (error) { throw invalidResponse("follow", error); }
         for (const decoded of readResponseRecords(response)) {
           if (decoded.sequence < next) throw new StreamError("invalid_response", "follow record cursor regressed");
-          const record = checkedRecord(decoded, decoded.sequence);
+          const record = checkedRecord(decoded, decoded.sequence, path);
           next = record.sequence + 1n;
           yield record;
         }
