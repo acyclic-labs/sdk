@@ -9,6 +9,15 @@ pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()>
     syscall_once(descriptor, libc::F_FULLFSYNC)
 }
 
+pub(crate) fn order_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+    match syscall_once(descriptor, libc::F_BARRIERFSYNC) {
+        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
+            sync_descriptor_once(descriptor)
+        }
+        result => result,
+    }
+}
+
 pub(crate) fn sync_once(
     file: &File,
     durability: Durability,

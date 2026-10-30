@@ -496,3 +496,207 @@ async fn local_facade_waits_per_root_without_serializing_independent_roots()
     drop(reopened);
     Ok(())
 }
+
+/// Counts one local commit of `files` new files: the ordering barriers and
+/// the full device drains its durable trace issues.
+#[cfg(all(feature = "local", any(unix, windows)))]
+async fn local_commit_flushes(files: u8) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let (schedule, mut events) = acyclic_native_runtime::testing::Schedule::new();
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = events.recv().await {
+            boundary.release();
+        }
+    });
+    let counted = schedule
+        .scope(async {
+            let cancellation = CancellationToken::new();
+            let mut durable = config();
+            durable.lifecycle = Lifecycle::Durable;
+            let fs = Fs::local(LocalOptions::new(directory.path())).await?;
+            let volume = fs
+                .create_volume_with_id(
+                    VolumeId::from_bytes([51; 16]),
+                    durable,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            let mut checkout = volume
+                .checkout(
+                    GenerationSelector::Head,
+                    writable_pinned(),
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                )
+                .await?
+                .value;
+            for file in 0..files {
+                checkout
+                    .create(
+                        crate::AuthoredMutation::CreateFile {
+                            path: path(&format!("f{file}.txt"))?,
+                            bytes: bytes::Bytes::from(vec![file; 4096]).into(),
+                            metadata: crate::kernel::FileMetadata::default(),
+                        },
+                        WorkBudget::UNBOUNDED,
+                        &cancellation,
+                    )
+                    .await?;
+            }
+            let before = schedule.durable_writes().len();
+            checkout
+                .commit(
+                    OperationId::from_bytes([51; 16]),
+                    None,
+                    None,
+                    None,
+                    crate::PublicationPermit::Unrestricted,
+                    WorkBudget::UNBOUNDED,
+                    &cancellation,
+                    allow::<FsError>,
+                )
+                .await?;
+            let trace = schedule.durable_writes();
+            let commit = &trace[before..];
+            let barrier = |call: &acyclic_native_runtime::testing::DurableWrite| {
+                call.operation.ends_with("_barrier")
+            };
+            let drain = |call: &acyclic_native_runtime::testing::DurableWrite| {
+                matches!(
+                    call.operation,
+                    "file:sync" | "file:sync_data" | "file:sync_all" | "file:sync_parent"
+                )
+            };
+            let counted = (
+                commit.iter().filter(|call| barrier(call)).count(),
+                commit.iter().filter(|call| drain(call)).count(),
+            );
+            assert!(
+                commit.iter().rposition(barrier) < commit.iter().rposition(drain),
+                "the acknowledging drain must follow every ordering barrier: {commit:?}"
+            );
+            drop(checkout);
+            drop(volume);
+            drop(fs);
+            Ok::<_, Box<dyn std::error::Error>>(counted)
+        })
+        .await?;
+    schedule.drained().await;
+    driver.abort();
+    let _ = driver.await;
+    Ok(counted)
+}
+
+/// A commit's objects are only ordered ahead of its Stream frame, and the
+/// frame's flush is the commit's one device drain, at any commit size.
+#[cfg(all(feature = "local", any(unix, windows)))]
+#[tokio::test]
+async fn a_local_commit_drains_the_device_once_at_any_size()
+-> Result<(), Box<dyn std::error::Error>> {
+    let small = local_commit_flushes(1).await?;
+    let large = local_commit_flushes(64).await?;
+    eprintln!("LOCAL_COMMIT_FLUSHES files=1 {small:?} files=64 {large:?}");
+    assert!(
+        small.0 >= 1,
+        "the commit's objects were not flushed: {small:?}"
+    );
+    assert!(
+        small.1 >= 1,
+        "the commit was acknowledged without a drain: {small:?}"
+    );
+    assert_eq!(small, large, "flushes per commit grew with its size");
+    Ok(())
+}
+
+/// One step of a commit against a volatile device cache, per device.
+#[derive(Clone, Copy, PartialEq)]
+enum Step {
+    /// Write number `.0` to device `.1`.
+    Write(usize, usize),
+    /// Order the device's earlier writes ahead of its later ones.
+    Barrier(usize),
+    /// Make the device's earlier writes durable.
+    Drain(usize),
+    /// Tell the caller the commit is durable.
+    Acknowledge,
+}
+
+/// Every crash state of `steps`: whether the acknowledgement was given, and
+/// which writes survive. A crash keeps every write its device drained, and
+/// otherwise any set of that device's writes that respects its barriers; a
+/// barrier or drain on one device orders nothing on another.
+fn crash_states(steps: &[Step]) -> Vec<(bool, Vec<bool>)> {
+    let writes = steps
+        .iter()
+        .filter(|step| matches!(step, Step::Write(..)))
+        .count();
+    let mut states = Vec::new();
+    for crash in 0..=steps.len() {
+        let issued = &steps[..crash];
+        let acknowledged = issued.contains(&Step::Acknowledge);
+        // Per write: its number, device, ordering epoch and whether drained.
+        let mut epoch = [0_usize; 2];
+        let mut placed: Vec<(usize, usize, usize, bool)> = Vec::new();
+        for step in issued {
+            match *step {
+                Step::Write(id, device) => placed.push((id, device, epoch[device], false)),
+                Step::Barrier(device) => epoch[device] += 1,
+                Step::Drain(device) => {
+                    epoch[device] += 1;
+                    for write in &mut placed {
+                        write.3 |= write.1 == device;
+                    }
+                }
+                Step::Acknowledge => {}
+            }
+        }
+        for mask in 0_u32..(1 << placed.len()) {
+            let kept = |index: usize| placed[index].3 || mask & (1 << index) != 0;
+            let ordered = (0..placed.len()).all(|later| {
+                !kept(later)
+                    || (0..placed.len()).all(|earlier| {
+                        placed[earlier].1 != placed[later].1
+                            || placed[earlier].2 >= placed[later].2
+                            || kept(earlier)
+                    })
+            });
+            if ordered {
+                let mut survived = vec![false; writes];
+                for (index, write) in placed.iter().enumerate() {
+                    survived[write.0] |= kept(index);
+                }
+                states.push((acknowledged, survived));
+            }
+        }
+    }
+    states
+}
+
+/// The local commit protocol: the objects (write 0) on `objects_device`
+/// take `objects_flush`, then the frame (write 1) is written and drained on
+/// device 0, then the commit is acknowledged. A surviving frame must find
+/// its objects, and an acknowledged commit must survive whole.
+fn commit_is_crash_consistent(objects_flush: Option<Step>, objects_device: usize) -> bool {
+    let mut steps = vec![Step::Write(0, objects_device)];
+    steps.extend(objects_flush);
+    steps.extend([Step::Write(1, 0), Step::Drain(0), Step::Acknowledge]);
+    crash_states(&steps)
+        .into_iter()
+        .all(|(acknowledged, survived)| {
+            (!survived[1] || survived[0]) && (!acknowledged || (survived[0] && survived[1]))
+        })
+}
+
+#[test]
+fn an_ordering_barrier_suffices_for_objects_only_on_the_frame_device() {
+    // The composition's choice: a barrier on the frame's device.
+    assert!(commit_is_crash_consistent(Some(Step::Barrier(0)), 0));
+    // On another device only that device's own drain keeps the contract.
+    assert!(commit_is_crash_consistent(Some(Step::Drain(1)), 1));
+    // Negative controls: without a flush a frame can outlive its objects, and
+    // a barrier on another device neither orders the frame nor is drained by it.
+    assert!(!commit_is_crash_consistent(None, 0));
+    assert!(!commit_is_crash_consistent(Some(Step::Barrier(1)), 1));
+}

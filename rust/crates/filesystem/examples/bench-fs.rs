@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use acyclic_fs::model::{CheckoutMode, GenerationSelector};
 use acyclic_fs::{
-    CancellationToken, CaptureOptions, Fs, IdempotencyKey, LocalObjectsDurability, LocalOptions,
-    LocalStreamDurability, WorkBudget, capture_baseline, capture_root_identity,
+    CancellationToken, CaptureOptions, Fs, IdempotencyKey, LocalOptions, LocalStreamDurability,
+    WorkBudget, capture_baseline, capture_root_identity,
 };
 use bytes::Bytes;
 use futures::future::LocalBoxFuture;
@@ -55,7 +55,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut options = LocalOptions::new(root.path());
         if barrier {
             options.stream.durability = LocalStreamDurability::Barrier;
-            options.objects.durability = LocalObjectsDurability::Barrier;
         }
         options
     };

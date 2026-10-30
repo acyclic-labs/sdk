@@ -5,6 +5,8 @@ pub enum LocalDurability {
     #[default]
     FullFlush,
     /// Every publication is ordered behind earlier writes without waiting for the device
+    /// cache (`F_BARRIERFSYNC` on Apple); platforms with no weaker ordering primitive
+    /// issue the full flush.
     Barrier,
 }
 

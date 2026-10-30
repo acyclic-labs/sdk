@@ -25,7 +25,6 @@ use acyclic_fs::{
     CaptureOptions, MaterializeOptions, capture_baseline, capture_root_identity,
     materialize_checkout,
 };
-use acyclic_objects::local::LocalDurability as ObjectsDurability;
 use acyclic_stream::LocalDurability as StreamDurability;
 
 pub(super) fn is_command(command: &str) -> bool {
@@ -87,15 +86,12 @@ fn local_options(root: impl Into<PathBuf>) -> Result<LocalOptions, Failure> {
     match std::env::var("QUAL_DURABILITY").as_deref() {
         Err(std::env::VarError::NotPresent) if cfg!(target_vendor = "apple") => {
             options.stream.durability = StreamDurability::Barrier;
-            options.objects.durability = ObjectsDurability::Barrier;
         }
         Err(std::env::VarError::NotPresent) | Ok("full-flush") => {
             options.stream.durability = StreamDurability::FullFlush;
-            options.objects.durability = ObjectsDurability::FullFlush;
         }
         Ok("barrier") => {
             options.stream.durability = StreamDurability::Barrier;
-            options.objects.durability = ObjectsDurability::Barrier;
         }
         _ => return Err("QUAL_DURABILITY must be barrier or full-flush".into()),
     }
