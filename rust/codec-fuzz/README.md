@@ -30,6 +30,10 @@ their actual reverse codec and preserve the complete semantic value, including
 record origins under explicit, matching and foreign follow contexts. Accepted
 Inference views must refuse a changed caller-selected identity. The one
 round-trip helper also serves Auth; no service codec is reimplemented here.
+Run views also reach both public watch-start projections. Run events exercise
+the actual watch state: admission advances it atomically, refused gaps,
+duplicates, invalid terminal values and overflow preserve it, producer closure
+requires terminal evidence, and a valid terminal settles without a wait.
 Private service admission and validators requiring related request/specification
 facts remain separate inventory work. These source hooks have not been compiled
 or executed with the current changes.
@@ -64,6 +68,10 @@ record/batch writer outputs, including an origin-elided projection. Each is
 captured under both protobuf syntaxes (eight inputs); capture and shared-golden
 admission for these additions are pending. The capture process executes the
 real Stream producer once and reuses its outputs.
+
+Four Inference writer producers add a pending Run view and progress, terminal
+and exhausted-cursor events. Both syntax targets reach the watch controls;
+these eight additional inputs also await capture and shared golden admission.
 
 `corpus/EXTERNAL.tsv` separately records exact output from published
 `@modelcontextprotocol/server-filesystem@2.1.0` and
