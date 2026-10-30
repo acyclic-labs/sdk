@@ -23,6 +23,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
@@ -113,6 +114,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-contract-derive",
  "acyclic-differential",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-test-support",
  "arc-swap",
@@ -249,6 +251,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-observability",
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
@@ -398,6 +401,7 @@ dependencies = [
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
+ "acyclic-observability",
  "futures",
  "http-body",
  "pin-project-lite",
@@ -544,6 +548,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-test-support",
@@ -743,6 +748,7 @@ name = "acyclic-inference"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "proptest",
@@ -781,6 +787,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
@@ -880,6 +887,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
+ "acyclic-observability",
  "acyclic-test-support",
  "blake3",
  "bytes",
@@ -916,6 +924,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
@@ -961,6 +970,19 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
+]
+
+[[package]]
+name = "acyclic-observability"
+version = "0.2.0"
+dependencies = [
+ "acyclic-test-support",
+ "futures",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -1045,6 +1067,7 @@ dependencies = [
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
  "acyclic-native-runtime",
+ "acyclic-observability",
  "acyclic-proto-build",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",

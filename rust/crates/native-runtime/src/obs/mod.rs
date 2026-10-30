@@ -7,6 +7,7 @@ mod scoped;
 pub use scoped::Scoped;
 mod wait_report;
 mod waiting;
+pub use acyclic_observability::{Metrics, Operations, Query, QueryError, Snapshot};
 pub(crate) use tracing::field::Empty;
 pub use wait_report::WaitReport;
 pub use waiting::{Waiting, waiting, waiting_sync};
@@ -114,10 +115,8 @@ impl OperationSpan {
     }
     /// Records a path-free result on the operation, including when filtered.
     pub fn record_error(&self, error: Option<&io::Error>) {
-        self.span
-            .record("outcome", if error.is_some() { "err" } else { "ok" });
-        if let Some(error) = error {
-            self.span.record("error.kind", kind(error));
+        if !self.span.is_disabled() {
+            acyclic_observability::record_outcome(&self.span, error.map(kind));
         }
     }
     /// Records completion and returns the unchanged result.

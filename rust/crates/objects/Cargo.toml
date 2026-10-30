@@ -36,6 +36,7 @@ local = ["dep:libc", "tokio/rt"]
 s3 = ["dep:object_store", "dep:reqwest-s3", "dep:quick-xml", "dep:rustls", "tokio/rt", "tokio/macros"]
 
 [dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }

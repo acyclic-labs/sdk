@@ -73,11 +73,7 @@ pub(crate) fn traced<'a, T: 'a>(
         let context = span.clone();
         Box::pin(context.scope(async move {
             let result = future.await;
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
+            acyclic_observability::finish(&span, result, crate::Error::kind)
         }))
     }
     #[cfg(target_arch = "wasm32")]
@@ -102,13 +98,11 @@ pub(crate) fn traced_future<'a, T: 'a>(
         let context = span.clone();
         // Poll the underlying future in place. A forwarding async block retains
         // its initial future and await state, duplicating large journal frames.
-        context.scope(future.map(move |result| {
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = &result {
-                span.record("error.kind", error.kind());
-            }
-            result
-        }))
+        context.scope(
+            future.map(move |result| {
+                acyclic_observability::finish(&span, result, crate::Error::kind)
+            }),
+        )
     }
     #[cfg(target_arch = "wasm32")]
     {

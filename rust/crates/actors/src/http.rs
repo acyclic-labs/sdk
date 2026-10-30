@@ -335,13 +335,7 @@ impl Client {
         };
         let result = self.stage(operation).await;
         let span = tracing::Span::current();
-        match &result {
-            Ok(_) => span.record("outcome", "ok"),
-            Err(error) => span
-                .record("outcome", "err")
-                .record("error.kind", error.kind()),
-        };
-        result
+        acyclic_observability::finish(&span, result, Error::kind)
     }
 
     operations! {

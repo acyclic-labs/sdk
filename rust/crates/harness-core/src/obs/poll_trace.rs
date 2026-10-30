@@ -60,10 +60,10 @@ where
         };
         let result = span.in_scope(|| future.as_mut().poll(cx));
         if let std::task::Poll::Ready(result) = &result {
-            span.record("outcome", if result.is_ok() { "ok" } else { "err" });
-            if let Err(error) = result {
-                span.record("error.kind", error.kind());
-            }
+            acyclic_observability::record_outcome(
+                span,
+                result.as_ref().err().map(crate::Error::kind),
+            );
         }
         result
     }

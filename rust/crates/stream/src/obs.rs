@@ -18,16 +18,10 @@ impl ErrorKind for crate::StreamError {
 /// Records `outcome` and, on failure, `error.kind` on the owned operation span.
 #[cfg(any(feature = "http", feature = "local"))]
 pub(crate) fn finish<T, E: ErrorKind>(span: &Span, result: Result<T, E>) -> Result<T, E> {
-    match &result {
-        Ok(_) => {
-            span.record("outcome", "ok");
-        }
-        Err(error) => failed(span, error.kind()),
-    }
-    result
+    acyclic_observability::finish(span, result, E::kind)
 }
 
 /// Records a failure of `kind` on the owned operation span.
 pub(crate) fn failed(span: &Span, kind: &'static str) {
-    span.record("outcome", "err").record("error.kind", kind);
+    acyclic_observability::record_outcome(span, Some(kind));
 }

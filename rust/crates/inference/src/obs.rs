@@ -10,14 +10,14 @@ pub(crate) use tracing::field::Empty;
 pub(crate) fn finish<T>(result: Result<T, Error>) -> Result<T, Error> {
     let span = Span::current();
     match &result {
-        Ok(_) => span.record("outcome", "ok").record("rpc.code", 0),
+        Ok(_) => {
+            span.record("rpc.code", 0);
+        }
         Err(error) => {
             if let Error::Observation(status) = error {
                 span.record("rpc.code", i32::from(status.code()));
             }
-            span.record("outcome", "err")
-                .record("error.kind", error.kind())
         }
     };
-    result
+    acyclic_observability::finish(&span, result, Error::kind)
 }

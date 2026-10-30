@@ -172,6 +172,7 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-observability = { version = "=0.2.0", path = "../observability" }
 loom = { version = "=0.7.2", optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 cap-primitives = "4.0.3"

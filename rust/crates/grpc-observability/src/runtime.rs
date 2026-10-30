@@ -282,14 +282,11 @@ fn finish(span: &mut Option<Span>, terminal: Result<u8, &'static str>) {
     if let Some(span) = span.take() {
         match terminal {
             Ok(code) => {
-                span.record("rpc.code", code)
-                    .record("outcome", if code == 0 { "ok" } else { "err" });
-                if code != 0 {
-                    span.record("error.kind", "status");
-                }
+                span.record("rpc.code", code);
+                acyclic_observability::record_outcome(&span, (code != 0).then_some("status"));
             }
             Err(kind) => {
-                span.record("outcome", "err").record("error.kind", kind);
+                acyclic_observability::record_outcome(&span, Some(kind));
             }
         }
     }

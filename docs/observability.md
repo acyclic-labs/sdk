@@ -1,8 +1,42 @@
 # Observability
 
 Rust crates emit `tracing` spans and events; hosts and tests decide whether
-anything records them. Work accounting stays in `WorkCounters`, and spans only
-summarise it.
+anything records them. `acyclic-observability` owns result recording and the
+operation lifecycle projection. Work accounting stays in `WorkCounters`, and
+spans only summarise it.
+
+## One operation lifecycle
+
+Attach one `acyclic_observability::Operations` layer to the host's existing
+registry. It derives one latency histogram sample and one outcome counter from
+each `acyclic.*` span declaring `outcome`. Record completion through the shared
+`finish` or `record_outcome` on the operation's owned span. Metrics stop at the
+first explicit completion, even if descendants retain its handle. A closed span
+without a result is `incomplete`; this does not assert that its accepted work
+failed. RPC method names distinguish operations using the same span factory.
+
+The layer's `Sink` contract is the OpenTelemetry export boundary. Exporters
+receive the original static metadata, method, elapsed duration and outcome;
+they share the same lifecycle implementation. Sinks must not wait for I/O.
+Native `WaitReport` remains the live-wait projection on this registry, preserving
+its own producer, retirement and diagnostic request/acknowledgement guarantees.
+
+With no subscriber there is no metric storage, timer, allocation, lock, task or
+syscall. The operation macro evaluates no fields on wasm32. The shared crate
+keeps tracing dependencies out of wasm32 builds.
+
+## SLO files and live queries
+
+An SLO is a version 1 JSON file in a volume, read and followed using the ordinary
+authorized volume reader. It selects an operation and optional RPC method, a
+success fraction in parts per million, and an optional latency objective. The
+live view is a selected metrics query, woken by that operation's completion
+watch. Losing the producer returns a typed error. There is no SLO endpoint or
+separate settings service. See the [file format and query contract](../rust/crates/observability/README.md).
+
+Empty cohorts are unknown. A histogram bucket crossing a latency threshold is
+unknown whenever that ambiguity can change the verdict. Evaluating a query for
+another operation or an unsupported file version refuses by type.
 
 ## Dependencies
 

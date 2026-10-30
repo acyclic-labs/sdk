@@ -13,13 +13,12 @@ pub(crate) fn finish<T>(result: Result<T, ProviderError>) -> Result<T, ProviderE
     #[cfg(not(target_arch = "wasm32"))]
     {
         let span = Span::current();
-        match &result {
-            Ok(_) => span.record("outcome", "ok").record("rpc.code", 0),
-            Err(error) => span
-                .record("outcome", "err")
-                .record("error.kind", error.kind()),
-        };
+        if result.is_ok() {
+            span.record("rpc.code", 0);
+        }
+        return acyclic_observability::finish(&span, result, ProviderError::kind);
     }
+    #[cfg(target_arch = "wasm32")]
     result
 }
 

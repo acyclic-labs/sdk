@@ -60,6 +60,24 @@ impl From<crate::Error> for VerifyError {
     }
 }
 
+impl VerifyError {
+    /// Stable, path-free failure category for operation telemetry.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::Version(_) => "version",
+            Self::Signature => "signature",
+            Self::Trust => "trust",
+            Self::Unavailable => "unavailable",
+            Self::Revoked => "revoked",
+            Self::Time => "time",
+            Self::RepeatedKey => "repeated_key",
+            Self::Sealed => "sealed",
+            Self::Denied(_) => "denied",
+        }
+    }
+}
+
 /// Authenticated account keyring state, including still-trusted historical issuers.
 pub struct AccountState<'a> {
     /// Authorized account issuer roots; never workload or online leaf keys.
@@ -307,7 +325,9 @@ impl VerifiedCapability {
         trust: &(impl Trust + ?Sized),
         now_unix_seconds: u64,
     ) -> Result<(), VerifyError> {
-        current::check(self, trust, now_unix_seconds)
+        acyclic_observability::operation!("acyclic.auth.check", VerifyError::kind, || {
+            current::check(self, trust, now_unix_seconds)
+        })
     }
 
     /// Authorize the explicit scope against fresh revocations/time and the
@@ -321,9 +341,11 @@ impl VerifiedCapability {
         policy: authority::PolicyDecision,
         scope: authority::Scope,
     ) -> Result<(), VerifyError> {
-        self.check(trust, request.now_unix_seconds)?;
-        authority::permits_current(&self.blocks, request, policy, scope)
-            .map_err(VerifyError::Denied)
+        acyclic_observability::operation!("acyclic.auth.authorize", VerifyError::kind, || {
+            self.check(trust, request.now_unix_seconds)?;
+            authority::permits_current(&self.blocks, request, policy, scope)
+                .map_err(VerifyError::Denied)
+        })
     }
 
     /// Append a conjunctive block. The caller supplies fresh cryptographic entropy;
