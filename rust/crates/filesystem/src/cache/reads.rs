@@ -12,21 +12,19 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
         let guard = ActiveFlightGuard {
             store: self,
             object_id,
-            flight,
+            flight: Some(flight),
         };
-        let read = match self.inner.read(object_id, maximum, work).await {
+        let mut read = match self.inner.read(object_id, maximum, work).await {
             Ok(read) => read,
             Err(error) => {
                 guard.finish(None)?;
                 return Err(error);
             }
         };
-        let bytes = read.bytes.clone();
-        if self.insert(object_id, bytes.clone(), epoch)? {
-            guard.finish(Some(bytes.clone()))?;
-            return shared_read(bytes, maximum);
+        if self.insert(object_id, read.bytes.clone(), epoch)? {
+            read.retention = ObjectReadRetention::Shared;
         }
-        guard.finish(None)?;
+        guard.finish(Some(read.bytes.clone()))?;
         Ok(read)
     }
 
@@ -103,7 +101,7 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
 
     pub(super) async fn load_batch_leaders(
         &self,
-        prepared: &PreparedBatch,
+        prepared: &mut PreparedBatch,
         work: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), ObjectStoreError> {
         if prepared.leaders.value.is_empty() {
@@ -148,9 +146,10 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             if retained {
                 read.retention = ObjectReadRetention::Shared;
             }
-            leader.flight.finish(retained.then_some(bytes));
+            leader.flight.finish(Some(bytes));
             self.remove_flight(leader.object_id, &leader.flight)?;
         }
+        prepared.leaders.value.clear();
         Ok(reads)
     }
 
@@ -169,22 +168,15 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
                 .bytes
                 .clone(),
             BatchSlot::ExternalFollower(flight) => {
-                let result = wait_for_flight(
+                let bytes = wait_for_flight(
                     &flight,
                     work.cancellation,
                     #[cfg(not(target_arch = "wasm32"))]
                     work.original,
                 )
-                .await?;
+                .await;
                 self.record_coalesced()?;
-                if let Some(bytes) = result {
-                    bytes
-                } else {
-                    self.remove_flight(request.object_id, &flight)?;
-                    return self
-                        .read(request.object_id, request.maximum_bytes, work)
-                        .await;
-                }
+                bytes?
             }
         };
         shared_read(bytes, request.maximum_bytes)

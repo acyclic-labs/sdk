@@ -1,7 +1,7 @@
 use super::*;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from_static(value);
@@ -24,53 +24,10 @@ fn options(entries: u32, bytes: u64) -> ObjectCacheOptions {
     }
 }
 
-struct Gate {
-    open: AtomicBool,
-    waiters: Mutex<Vec<Waker>>,
-}
-
-impl Gate {
-    fn new() -> Self {
-        Self {
-            open: AtomicBool::new(false),
-            waiters: Mutex::new(Vec::new()),
-        }
-    }
-
-    async fn wait(&self) {
-        poll_fn(|context| {
-            if self.open.load(Ordering::Acquire) {
-                return Poll::Ready(());
-            }
-            if let Ok(mut waiters) = self.waiters.lock()
-                && !waiters
-                    .iter()
-                    .any(|waiter| waiter.will_wake(context.waker()))
-            {
-                waiters.push(context.waker().clone());
-            }
-            Poll::Pending
-        })
-        .await;
-    }
-
-    fn release(&self) {
-        self.open.store(true, Ordering::Release);
-        let waiters = self
-            .waiters
-            .lock()
-            .map(|mut waiters| std::mem::take(&mut *waiters))
-            .unwrap_or_default();
-        for waiter in waiters {
-            waiter.wake();
-        }
-    }
-}
-
 #[derive(Clone)]
 struct GatedStore {
     inner: Arc<MemoryObjectStore>,
-    gate: Arc<Gate>,
+    gate: futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
     reads: Arc<AtomicUsize>,
 }
 
@@ -221,7 +178,12 @@ impl AsyncObjectStore for GatedStore {
         work.read_budget()?;
         ordinary(work)?;
         self.reads.fetch_add(1, Ordering::AcqRel);
-        self.gate.wait().await;
+        self.gate.clone().await.map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "original read controller closed",
+            )
+        })?;
         self.inner.read(id, maximum, work).await
     }
     async fn read_many(
