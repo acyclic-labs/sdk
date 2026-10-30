@@ -174,7 +174,7 @@ export class CredentialCache {
       const rejected = this.#rejected;
       const flight: Flight = {
         controller, waiters: 0, published: false,
-        promise: abortable(Promise.resolve().then(() => {
+        promise: awaitSignal(Promise.resolve().then(() => {
           controller.signal.throwIfAborted();
           return this.#refresh(rejected, controller.signal);
         }).then(snapshot => {
@@ -205,7 +205,7 @@ export class CredentialCache {
     try {
       // Cancellation withdraws interest in the event callback itself, before
       // a reentrant source observation can publish an abandoned refresh.
-      const snapshot = await abortable(flight.promise, signal, release);
+      const snapshot = await awaitSignal(flight.promise, signal, release);
       this.check(snapshot);
       return snapshot;
     } finally {
@@ -275,7 +275,8 @@ function valid(snapshot: CredentialSnapshot, validity: CredentialValidity): bool
   return snapshot.revision === validity.revision && validity.nowUnixSeconds < snapshot.expiresAtUnixSeconds;
 }
 
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal, onAbort?: () => void): Promise<T> {
+/** Settle this wait on the original signal without cancelling a shared producer. */
+export function awaitSignal<T>(promise: Promise<T>, signal?: AbortSignal, onAbort?: () => void): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     if (signal?.aborted) { promise.catch(() => {}); onAbort?.(); reject(signal.reason); return; }
     const cleanup = () => signal?.removeEventListener("abort", abort);
@@ -293,7 +294,7 @@ async function rawCredential(provider: CredentialProvider, signal?: AbortSignal)
   catch (error) { signal?.throwIfAborted(); throw error; }
   // Attach rejection custody even when the callback synchronously aborts.
   // Deferring invocation can leave its already-created promise unobserved.
-  return abortable(Promise.resolve(result), signal);
+  return awaitSignal(Promise.resolve(result), signal);
 }
 
 /** Raw callbacks resolve afresh; snapshot-aware providers retain exact custody. */
@@ -323,7 +324,7 @@ export function credentialProvider(options: CredentialOptions): CredentialProvid
 export async function resolveCredential(provider: CredentialProvider, signal?: AbortSignal): Promise<CredentialRequest> {
   signal?.throwIfAborted();
   if (provider.resolveRequest) {
-    const request = await abortable(provider.resolveRequest(signal), signal);
+    const request = await awaitSignal(provider.resolveRequest(signal), signal);
     signal?.throwIfAborted();
     validateCredential(request.token());
     request.check();

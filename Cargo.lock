@@ -926,6 +926,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "hyper-util",
+ "js-sys",
  "libc",
  "object_store",
  "pin-project-lite",
@@ -943,6 +944,8 @@ dependencies = [
  "tonic-prost",
  "tower",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wasm-bindgen-test",
 ]
 
@@ -951,9 +954,12 @@ name = "acyclic-objects-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-objects",
+ "acyclic-stream",
+ "futures",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
