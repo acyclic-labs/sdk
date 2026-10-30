@@ -1,11 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { packageClosure } from "./package-closure.mjs";
-import { wasmArtifactFiles, wasmArtifactInventory } from "./archive-utils.mjs";
+import { copyWasmArtifacts } from "./archive-utils.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Manual caller-array copies must stay behind the admitted byte snapshot.
@@ -166,9 +166,7 @@ for (const name of targets) {
     postprocess?.(bindings);
     writeFileSync(stamp, key);
   }
-  const artifacts = wasmArtifactInventory(wasmArtifactFiles(bindings));
-  mkdirSync(output, { recursive: true });
-  cpSync(bindings, output, { recursive: true });
+  const artifacts = copyWasmArtifacts(bindings, output);
   if (producer) {
     await producer.assertSourceSnapshot(source);
     if (capture("git", ["rev-parse", "HEAD"]) !== revision) throw new Error("WASM source revision changed during build");
