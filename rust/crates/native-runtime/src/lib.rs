@@ -19,6 +19,8 @@ use sync::Mutex as CompletionMutex;
 
 #[cfg(target_vendor = "apple")]
 mod apple;
+#[cfg(any(target_vendor = "apple", test))]
+mod device_flush;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 mod held_sync;
 #[cfg(target_os = "linux")]
