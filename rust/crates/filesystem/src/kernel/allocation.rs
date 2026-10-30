@@ -521,6 +521,18 @@ impl AllocationLedger {
         Ok(())
     }
 
+    /// Consumes an immutable read frame after its physical state is destroyed.
+    /// A suspended ledger has handed scratch to another continuation and owns
+    /// no scratch to release. Independently retained leases remain intact.
+    fn retire_read_frame(self) {
+        if let LedgerState::Shared(state) = self.state {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.allocations.live_bytes = state.retained_bytes;
+        }
+    }
+
     /// Releases storage whose owner has retired it, including after cancellation.
     ///
     /// # Errors

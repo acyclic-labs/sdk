@@ -159,7 +159,101 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
     let (retained, guard) = raw_changed_paths(&changes, 6, &original, &cancellation).await?;
     assert_eq!(retained.len(), 6);
     assert!(original.journal_work()?.items_examined < full_scan.items_examined);
+    let expected = retained.clone();
     drop((retained, guard));
+
+    // The owned reader pins these endpoints even after the workspace advances.
+    // Its rows keep their own original allocation after the reader is dropped.
+    let baseline = original.live_allocation_bytes();
+    let mut reader = value!(
+        before
+            .changed_paths_to(&after, &original, &cancellation)
+            .await
+    )?;
+    workspace.write_text("/lib/deep/file", "later head").await?;
+    let mut rows = Vec::new();
+    while let Some(row) = value!(reader.next().await)? {
+        rows.push(row);
+    }
+    assert_eq!(rows.len(), 6);
+    for expected in &expected {
+        assert!(rows.iter().any(|row| row.value() == expected));
+    }
+    assert_eq!(reader.work(), original.journal_work()?);
+    drop(reader);
+    assert!(original.live_allocation_bytes() > baseline);
+    let mut owned_names = rows
+        .iter()
+        .map(|row| namespace_path_text(&row.value().path))
+        .collect::<Result<Vec<_>, _>>()?;
+    owned_names.sort();
+    assert_eq!(
+        owned_names,
+        [
+            "/lib",
+            "/lib/deep",
+            "/lib/deep/file",
+            "/src",
+            "/src/deep",
+            "/src/deep/file"
+        ]
+    );
+    drop(rows);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    // Cancellation remains the caller's original event across row boundaries;
+    // it must refuse before another object read, then retire the same pins.
+    let stopped = CancellationToken::new();
+    let mut reader = value!(before.changed_paths_to(&after, &original, &stopped).await)?;
+    let first = value!(reader.next().await)?.ok_or("missing first changed path")?;
+    let spent = reader.work();
+    stopped.cancel();
+    let failure = match reader.next().await {
+        Err(failure) => failure,
+        Ok(_) => return Err("owned changed-path reader ignored cancellation".into()),
+    };
+    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
+    assert_eq!(
+        failure.work.backend_read_operations,
+        spent.backend_read_operations
+    );
+    drop(reader);
+    assert!(!namespace_path_text(&first.value().path)?.is_empty());
+    drop(first);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+
+    // Standalone reads use the same producer and retain outputs independently;
+    // an explicit zero item budget refuses at the original read boundary.
+    let mut reader = value!(
+        before
+            .changed_paths_to(&after, WorkBudget::UNBOUNDED, &cancellation)
+            .await
+    )?;
+    let row = value!(reader.next().await)?.ok_or("missing standalone changed path")?;
+    drop(reader);
+    assert!(!namespace_path_text(&row.value().path)?.is_empty());
+    drop(row);
+    let failure = match before
+        .changed_paths_to(
+            &after,
+            WorkBudget {
+                items_examined: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .await
+    {
+        Err(failure) => failure,
+        Ok(_) => return Err("zero-item changed-path admission succeeded".into()),
+    };
+    assert!(matches!(
+        failure.error,
+        WorkspaceError::Work(crate::WorkError::BudgetExceeded {
+            counter: "items_examined",
+            ..
+        })
+    ));
     println!("SMALL_DIRECTORY_MOVE_WORK {expanded:?} {full_scan:?}");
     Ok(())
 }

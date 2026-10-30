@@ -404,12 +404,12 @@ pub use windows_usn::{
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, FileCondition, ForkOptions, Generation,
-    IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome, JoinPlan, Transaction,
-    TransactionCommit, TransactionRebase, Workspace, WorkspaceDelete, WorkspaceError,
-    WorkspaceExtentKind, WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata,
-    WorkspaceName, WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat,
+    ApplyOptions, ChangeSet, ChangedPath, ChangedPathEntry, ChangedPaths, DrivenJoinError,
+    FileCondition, ForkOptions, Generation, IdempotencyKey, JoinApplication, JoinBuilder,
+    JoinHistory, JoinOutcome, JoinPlan, Transaction, TransactionCommit, TransactionRebase,
+    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceExtentKind, WorkspaceExtentPlan,
+    WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName, WorkspaceNameError,
+    WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase, WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,
