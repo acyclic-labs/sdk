@@ -1,14 +1,20 @@
 // Installed real native hosts against the shipping mock; no authentication fixture.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
-import {mkdir,readFile,writeFile} from 'node:fs/promises';
-import {dirname,delimiter,join,resolve} from 'node:path';
+import {mkdir,readFile,realpath,writeFile} from 'node:fs/promises';
+import {dirname,delimiter,join,resolve,toNamespacedPath} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {Processes,Events} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
+
+export async function assertInstalledBinary(settings,executable) {
+ const canonical=toNamespacedPath(await realpath(executable));
+ assert.ok((await readFile(settings,'utf8')).includes(JSON.stringify(canonical)),
+  'native extension does not bind admitted shipping binary');
+}
 
 export function assertCodexChildRoundTrip(requests,childMarker='NATIVE_PLUGIN_CHILD_DONE') {
  const generations=requests.filter(row=>row.path==='responses');
@@ -44,7 +50,7 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    if(host==='codex') {
     const listed=await run(native,['plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
     assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled));
-   } else assert.ok((await readFile(settings,'utf8')).includes(JSON.stringify(executable)),'native extension does not bind admitted shipping binary');
+   } else await assertInstalledBinary(settings,executable);
    step='start shipping workspace owner';
    await startWorkspaceOwner({scope,binary:graphcoder,workspace,state:join(root,'state'),env,root,
     capture:record=>captures.push({role:'owner',...record})});
@@ -60,7 +66,8 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    ]:[{when:{user:'NATIVE_PLUGIN_MODEL'},text:[marker]}];
    await writeFile(script,JSON.stringify({cases:{native:{steps}}}));
    const model=scope.start(mock,['--script',script,'--record',join(output,'requests.jsonl')],{env});model.child.stdin.end();
-   const events=new Events(model.child.stdout,model.closed),{port}=await events.wait(event=>event.event==='ready');
+   const events=new Spool(model.child.stdout,model.closed,{key:event=>event.event==='ready'?['ready']:[]});
+   const {port}=await events.keyed('ready');
    step='complete installed native model request';let args;
    if(host==='codex') {
     const initialized=await scope.run(env.E2E_GIT_BINARY??'git',['init','--quiet'],{cwd:workspace,env});
