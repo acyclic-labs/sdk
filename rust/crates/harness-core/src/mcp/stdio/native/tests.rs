@@ -53,9 +53,25 @@ async fn deadlines_cancel_each_remote_request_once_and_preserve_the_connection()
 
 #[tokio::test(start_paused = true)]
 async fn absent_deadline_preserves_a_slow_response_without_cancellation() -> Result<()> {
-    let (transport, server) = fixture("slow").await?;
+    let (arrived, waiting) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let (transport, server) = fixture_with_response_gate("slow", Some((arrived, released))).await?;
     let transport = transport.with_tool_limits(None, None)?;
-    let result = transport.list_tools(OperationId::new(), None).await?;
+    let result = {
+        let request = transport.list_tools(OperationId::new(), None);
+        tokio::pin!(request);
+        tokio::select! {
+            _ = &mut request => return Err(invalid("response settled before release")),
+            arrived = waiting => arrived.map_err(invalid)?,
+        }
+        // Cross the former default deadline while the original response is withheld.
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(futures::poll!(&mut request).is_pending());
+        release
+            .send(())
+            .map_err(|_| invalid("response producer closed"))?;
+        request.await?
+    };
     assert_eq!(result.tools.len(), 1);
     drop(transport);
     let methods = server.await.map_err(invalid)??;
@@ -150,6 +166,19 @@ async fn fixture(
     StdioMcpTransport,
     tokio::task::JoinHandle<Result<Vec<String>>>,
 )> {
+    fixture_with_response_gate(mode, None).await
+}
+
+async fn fixture_with_response_gate(
+    mode: &'static str,
+    mut response_gate: Option<(
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    )>,
+) -> Result<(
+    StdioMcpTransport,
+    tokio::task::JoinHandle<Result<Vec<String>>>,
+)> {
     let (client, server) = tokio::io::duplex(if mode == "stalled-cancel" { 1 } else { 1024 });
     let (read, mut write) = tokio::io::split(server);
     let server = tokio::spawn(async move {
@@ -183,8 +212,11 @@ async fn fixture(
                     unanswered.is_none(),
                     "previous server work was not cancelled"
                 );
-                if mode == "slow" {
-                    tokio::time::sleep(Duration::from_secs(61)).await;
+                if let Some((arrived, released)) = response_gate.take() {
+                    arrived
+                        .send(())
+                        .map_err(|_| invalid("response observer closed"))?;
+                    released.await.map_err(invalid)?;
                 }
                 if mode == "stalled-cancel" {
                     std::future::pending::<()>().await;
