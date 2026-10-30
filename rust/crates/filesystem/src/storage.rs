@@ -343,7 +343,72 @@ impl ObjectId {
     /// Canonical bytes occupied by this reference.
     #[must_use]
     pub const fn encoded_len(self) -> usize {
-        if self.storage.is_some() { 113 } else { 33 }
+        Self::length_for_tag(if self.storage.is_some() { 128 } else { 0 })
+    }
+
+    const fn length_for_tag(tag: u8) -> usize {
+        if tag & 128 == 0 {
+            33
+        } else {
+            Self::ENCODED_LEN
+        }
+    }
+
+    /// Decodes the first canonical reference and returns the unconsumed bytes.
+    ///
+    /// Exact-reference fields use [`Self::try_from`] to reject trailing bytes.
+    pub fn decode_prefix(bytes: &[u8]) -> Result<(Self, &[u8]), ObjectIdError> {
+        let tag = *bytes.first().ok_or(ObjectIdError::Length)?;
+        let (reference, rest) = bytes
+            .split_at_checked(Self::length_for_tag(tag))
+            .ok_or(ObjectIdError::Length)?;
+        Ok((Self::read_slice(reference)?, rest))
+    }
+
+    fn read_slice(bytes: &[u8]) -> Result<Self, ObjectIdError> {
+        let mut remaining = bytes;
+        Self::read_with(
+            |target| {
+                let (source, rest) = remaining
+                    .split_at_checked(target.len())
+                    .ok_or(ObjectIdError::Length)?;
+                target.copy_from_slice(source);
+                remaining = rest;
+                Ok(())
+            },
+            |tag| ObjectIdError::Kind(ObjectKindError::Unknown(tag & 127)),
+        )
+    }
+
+    /// The canonical field order also serves readers that admit each copy.
+    pub(crate) fn read_with<E>(
+        mut read: impl FnMut(&mut [u8]) -> Result<(), E>,
+        unknown_kind: impl FnOnce(u8) -> E,
+    ) -> Result<Self, E> {
+        fn fixed<const N: usize, E>(
+            read: &mut impl FnMut(&mut [u8]) -> Result<(), E>,
+        ) -> Result<[u8; N], E> {
+            let mut bytes = [0; N];
+            read(&mut bytes)?;
+            Ok(bytes)
+        }
+        let [tag] = fixed(&mut read)?;
+        let digest = Digest::from_bytes(fixed(&mut read)?);
+        let kind = ObjectKind::from_canonical_tag(tag & 127).map_err(|_| unknown_kind(tag))?;
+        let storage = if tag & 128 == 0 {
+            None
+        } else {
+            Some(ObjectStorage {
+                locator: Digest::from_bytes(fixed(&mut read)?),
+                root_file_id: crate::FileId::from_bytes(fixed(&mut read)?),
+                origin_generation: Digest::from_bytes(fixed(&mut read)?),
+            })
+        };
+        Ok(Self {
+            kind,
+            digest,
+            storage,
+        })
     }
 
     /// Returns the canonical typed reference, including its sealed association.
@@ -399,38 +464,10 @@ impl TryFrom<&[u8]> for ObjectId {
         let Some((&tag, _)) = bytes.split_first() else {
             return Err(ObjectIdError::Length);
         };
-        let sealed = tag & 128 != 0;
-        if bytes.len() != if sealed { 113 } else { 33 } {
+        if bytes.len() != Self::length_for_tag(tag) {
             return Err(ObjectIdError::Length);
         }
-        let fixed = |range: std::ops::Range<usize>| bytes.get(range).ok_or(ObjectIdError::Length);
-        let digest = <[u8; 32]>::try_from(fixed(1..33)?).map_err(|_| ObjectIdError::Length)?;
-        let storage = if sealed {
-            Some(ObjectStorage {
-                locator: Digest::from_bytes(
-                    fixed(33..65)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-                root_file_id: crate::FileId::from_bytes(
-                    fixed(65..81)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-                origin_generation: Digest::from_bytes(
-                    fixed(81..113)?
-                        .try_into()
-                        .map_err(|_| ObjectIdError::Length)?,
-                ),
-            })
-        } else {
-            None
-        };
-        Ok(Self {
-            kind: ObjectKind::from_canonical_tag(tag & 127)?,
-            digest: Digest::from_bytes(digest),
-            storage,
-        })
+        Self::read_slice(bytes)
     }
 }
 
@@ -779,25 +816,65 @@ mod object_id_codec_tests {
     use super::*;
 
     #[test]
-    fn object_id_bytes_round_trip_and_reject_malformed_input() {
-        let id = ObjectId {
-            storage: None,
-            kind: ObjectKind::TreePage,
-            digest: Digest::from_bytes([7; 32]),
-        };
-        let bytes = id.to_bytes();
-        assert_eq!(bytes[0], 3);
-        assert_eq!(&bytes[1..], &[7; 32]);
-        assert_eq!(ObjectId::try_from(&bytes[..]), Ok(id));
-        for length in [0, 1, 32, 34] {
-            assert_eq!(
-                ObjectId::try_from(&vec![1; length][..]),
-                Err(ObjectIdError::Length)
-            );
+    fn object_references_preserve_associations_and_prefix_boundaries() {
+        for kind in [
+            ObjectKind::Blob,
+            ObjectKind::BlobChunk,
+            ObjectKind::TreePage,
+            ObjectKind::ExtentPage,
+            ObjectKind::FileTablePage,
+            ObjectKind::GenerationRoot,
+            ObjectKind::Metadata,
+            ObjectKind::AttributePage,
+        ] {
+            for storage in [
+                None,
+                Some(ObjectStorage {
+                    locator: Digest::from_bytes([11; 32]),
+                    root_file_id: crate::FileId::from_bytes([13; 16]),
+                    origin_generation: Digest::from_bytes([17; 32]),
+                }),
+            ] {
+                let id = ObjectId {
+                    storage,
+                    kind,
+                    digest: Digest::from_bytes([7; 32]),
+                };
+                let bytes = id.to_bytes();
+                assert_eq!(ObjectId::try_from(bytes.as_slice()), Ok(id));
+                for length in 0..bytes.len() {
+                    assert_eq!(
+                        ObjectId::decode_prefix(&bytes[..length]),
+                        Err(ObjectIdError::Length)
+                    );
+                }
+                let mut framed = bytes.to_vec();
+                framed.extend_from_slice(b"companion");
+                assert_eq!(
+                    ObjectId::decode_prefix(&framed),
+                    Ok((id, &b"companion"[..]))
+                );
+                assert_eq!(
+                    ObjectId::try_from(framed.as_slice()),
+                    Err(ObjectIdError::Length)
+                );
+                let mut unknown = bytes.to_vec();
+                unknown[0] &= 128;
+                assert_eq!(
+                    ObjectId::decode_prefix(&unknown),
+                    Err(ObjectIdError::Kind(ObjectKindError::Unknown(0)))
+                );
+                if storage.is_some() {
+                    for index in [33, 65, 81] {
+                        let mut changed = bytes.to_vec();
+                        changed[index] ^= 1;
+                        let (other, rest) = ObjectId::decode_prefix(&changed).unwrap();
+                        assert!(rest.is_empty());
+                        assert_eq!(other.digest, id.digest);
+                        assert_ne!(other, id, "a changed seal association was discarded");
+                    }
+                }
+            }
         }
-        let mut unknown = bytes.to_vec();
-        unknown[0] = 0;
-        let error = ObjectId::try_from(&unknown[..]);
-        assert_eq!(error, Err(ObjectIdError::Kind(ObjectKindError::Unknown(0))));
     }
 }

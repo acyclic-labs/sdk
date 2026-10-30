@@ -123,14 +123,10 @@ impl StateRecord {
                     .map_err(|_| corrupt())?,
             );
             let reference = start + 16;
-            let length = if bytes.get(reference).ok_or_else(corrupt)? & 128 == 0 {
-                33
-            } else {
-                ObjectId::ENCODED_LEN
-            };
-            let end = reference + length;
-            let file_table = ObjectId::try_from(bytes.get(reference..end).ok_or_else(corrupt)?)
-                .map_err(|_| corrupt())?;
+            let (file_table, companion) =
+                ObjectId::decode_prefix(bytes.get(reference..).ok_or_else(corrupt)?)
+                    .map_err(|_| corrupt())?;
+            let end = bytes.len() - companion.len();
             if file_table.kind != ObjectKind::FileTablePage
                 || file_table
                     .storage

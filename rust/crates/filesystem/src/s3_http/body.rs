@@ -396,15 +396,14 @@ impl<'a> RecordCursor<'a> {
     }
 
     fn object(&mut self) -> S3Result<ObjectId> {
-        let start = self.offset;
-        let tag = self.u8()?;
-        self.offset = start;
-        ObjectId::try_from(self.take(if tag & 128 == 0 {
-            33
-        } else {
-            ObjectId::ENCODED_LEN
-        })?)
-        .map_err(|_| s3s::s3_error!(InvalidRequest))
+        let bytes = self
+            .bytes
+            .get(self.offset..)
+            .ok_or_else(|| s3s::s3_error!(InvalidRequest))?;
+        let (object, rest) =
+            ObjectId::decode_prefix(bytes).map_err(|_| s3s::s3_error!(InvalidRequest))?;
+        self.offset = self.bytes.len() - rest.len();
+        Ok(object)
     }
 
     fn u8(&mut self) -> S3Result<u8> {

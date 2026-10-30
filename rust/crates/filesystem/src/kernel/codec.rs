@@ -388,28 +388,27 @@ impl<'a> Decoder<'a> {
         &mut self,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<crate::ObjectId, E> {
-        let tag = self.u8(observe)?;
-        let digest = crate::Digest::from_bytes(self.fixed::<32, E>(observe)?);
-        let kind = crate::ObjectKind::from_canonical_tag(tag & 127).map_err(|_| {
-            CanonicalDecodeError::UnknownTag {
-                field: "object kind",
-                tag,
-            }
-        })?;
-        let storage = if tag & 128 == 0 {
-            None
-        } else {
-            Some(crate::storage::ObjectStorage {
-                locator: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
-                root_file_id: crate::FileId::from_bytes(self.fixed::<16, E>(observe)?),
-                origin_generation: crate::Digest::from_bytes(self.fixed::<32, E>(observe)?),
-            })
-        };
-        Ok(crate::ObjectId {
-            kind,
-            digest,
-            storage,
-        })
+        crate::ObjectId::read_with(
+            |target| {
+                if let [tag] = target {
+                    *tag = self.u8(observe)?;
+                } else {
+                    let source = self.take(target.len())?;
+                    let copied = usize_to_u64(target.len());
+                    observe(ReadAllocationStep::BeforeCopy(copied))?;
+                    target.copy_from_slice(source);
+                    observe(ReadAllocationStep::Copied(copied))?;
+                }
+                Ok(())
+            },
+            |tag| {
+                CanonicalDecodeError::UnknownTag {
+                    field: "object kind",
+                    tag,
+                }
+                .into()
+            },
+        )
     }
 
     pub(crate) fn bounded_slice<E: From<CanonicalDecodeError>>(
