@@ -16,7 +16,7 @@ const fail = (code) => error => error.code === code;
 const json = (name, schema, value) => Buffer.from(encode_objects_v1_json(name, toBinary(schema, create(schema, value)), 1 << 20));
 const replying = payload => async () => new Response(payload, { headers: { "content-type": "application/json" } });
 
-async function fixture(beforeReply) {
+async function fixture(beforeReply, { usagePaddingBytes = 0 } = {}) {
   await MemoryObjectsV1.create(); // initialize the shared WASM runtime
   const memory = new ObjectsV1Memory();
   const seen = new Set();
@@ -54,6 +54,12 @@ async function fixture(beforeReply) {
       const payload = Buffer.from(encode_objects_v1_json(objects_v1_http_type(route, true), await memory.invoke(route, input), 1 << 30));
       if (beforeReply && !await beforeReply(response)) return;
       response.writeHead(200, { "content-type": "application/json" });
+      if (route === "blobs/usage" && usagePaddingBytes !== 0) {
+        // Whitespace is part of the real response body and the original JSON
+        // decoder consumes it, without growing the provider's logical state.
+        response.end(Buffer.concat([Buffer.alloc(usagePaddingBytes, 0x20), payload]));
+        return;
+      }
       for (let offset = 0; offset < payload.length; offset += 4099) response.write(payload.subarray(offset, offset + 4099));
       response.end();
     } catch (error) {
@@ -239,6 +245,17 @@ test("Objects v1 HTTP serves every canonical route, typed errors and authenticat
     await lifecycle(new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" }));
     assert.deepEqual([...server.seen].sort(), [...expectedRoutes].sort());
     await assert.rejects(new HttpObjectsV1({ endpoint: server.endpoint, token: "wrong" }).usage(), fail(wire.ErrorCode.ACCESS_DENIED));
+    // An explicit caller capacity remains enforced on the real HTTP path.
+    await assert.rejects(new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture", maximumResponseBytes: 1 }).usage(), fail(wire.ErrorCode.QUOTA_EXCEEDED));
+  } finally { await server.close(); }
+});
+test("Objects v1 HTTP has no implicit response total", async () => {
+  // Restoring the former 64 MiB fallback rejects this valid original reply.
+  const server = await fixture(undefined, { usagePaddingBytes: 64 * 1024 * 1024 + 1 });
+  try {
+    const usage = await new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" }).usage();
+    assert.equal(usage.blobs, 0n);
+    assert.equal(usage.uniqueBytes, 0n);
   } finally { await server.close(); }
 });
 test("Objects v1 never reports a reply that does not answer its request", async () => {
