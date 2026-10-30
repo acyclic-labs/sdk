@@ -96,7 +96,7 @@ pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod recovery;
-pub use recovery::{LogTail, is_exclusive_lock_contention, recover_log_tail};
+pub use recovery::{LogFrame, LogTail, is_exclusive_lock_contention, recover_log_tail};
 mod directory;
 pub use directory::remove_child_directory;
 mod namespace;

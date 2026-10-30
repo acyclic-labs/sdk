@@ -27,6 +27,7 @@ acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 bytes.workspace = true
 dirs.workspace = true
 blake3.workspace = true
+sha2.workspace = true
 subtle.workspace = true
 getrandom = { workspace = true, features = ["std"] }
 zeroize.workspace = true
