@@ -172,6 +172,11 @@ struct Shared {
     synced: AtomicU64,
     /// Whether the root opened unclean and its repair has not settled.
     recovered: AtomicBool,
+    /// Whether a write or flush failed after touching the log. The log may
+    /// then end in a partial frame, or a flush may have lost writes, so the
+    /// root refuses every later write and flush and never closes clean: the
+    /// next open recovers it.
+    stopped: AtomicBool,
     #[cfg(test)]
     counts: Counts,
     _lock: std::fs::File,
@@ -188,7 +193,7 @@ pub(crate) struct Counts {
 
 impl Drop for Shared {
     /// A clean close of a settled root leaves nothing unflushed, so the next
-    /// open trusts it; an unsettled one stays marked unclean.
+    /// open trusts it; an unsettled or stopped one stays marked unclean.
     fn drop(&mut self) {
         let settled = !*self.recovered.get_mut();
         let closed = self.sync().and_then(|()| {
@@ -224,6 +229,24 @@ impl Shared {
         acyclic_native_runtime::sync_parent(&self.root, native(self.durability))
     }
 
+    /// Fails once the root has stopped.
+    fn usable(&self) -> std::io::Result<()> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(std::io::Error::other(
+                "local Objects root stopped after a failed write; reopen it to recover",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stops the root if `result`, a write or flush of the log, failed.
+    fn stop_on_error<T>(&self, result: std::io::Result<T>) -> std::io::Result<T> {
+        if result.is_err() {
+            self.stopped.store(true, Ordering::Release);
+        }
+        result
+    }
+
     fn created(&self) {
         #[cfg(test)]
         self.counts.created.fetch_add(1, Ordering::Relaxed);
@@ -232,6 +255,7 @@ impl Shared {
     /// Makes every write appended before it durable with one data flush; a
     /// flush with nothing new is free.
     fn sync(&self) -> std::io::Result<()> {
+        self.usable()?;
         let (file, written) = {
             let log = self.log();
             (Arc::clone(&log.file), log.written)
@@ -239,17 +263,18 @@ impl Shared {
         if self.synced.load(Ordering::Acquire) >= written {
             return Ok(());
         }
-        self.sync_file(&file)?;
+        self.stop_on_error(self.sync_file(&file))?;
         self.synced.fetch_max(written, Ordering::AcqRel);
         Ok(())
     }
 
     /// Appends one frame, returning where it lies.
     fn append(&self, log: &mut Log, frame: &[u8]) -> std::io::Result<u64> {
+        self.usable()?;
         let start = log.end;
-        acyclic_native_runtime::persistence_syscall(|| {
+        self.stop_on_error(acyclic_native_runtime::persistence_syscall(|| {
             acyclic_native_runtime::write_all_at(&log.file, start, frame, None)
-        })?;
+        }))?;
         log.end += frame.len() as u64;
         log.written += 1;
         Ok(start)
@@ -289,7 +314,7 @@ impl Shared {
         if dead < COMPACTION_CHUNK || dead <= log.live {
             return Ok(());
         }
-        self.compact(log)
+        self.stop_on_error(self.compact(log))
     }
 
     /// Rewrites the live frames to a fresh log and renames it over the old
@@ -541,6 +566,7 @@ fn open_root(
         }),
         synced: AtomicU64::new(0),
         recovered: AtomicBool::new(recovered),
+        stopped: AtomicBool::new(false),
         #[cfg(test)]
         counts: Counts::default(),
         _lock: lock,
@@ -669,18 +695,29 @@ impl Medium for LocalMedium {
         if !prefix.is_empty() && !prefix.ends_with('/') {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
-        let log = self.shared.log();
-        let start = match after {
-            Some(after) if after >= prefix => std::ops::Bound::Excluded(after),
-            _ => std::ops::Bound::Included(prefix),
-        };
-        Ok(log
-            .index
-            .range::<str, _>((start, std::ops::Bound::Unbounded))
-            .take_while(|(key, _)| key.starts_with(prefix))
-            .take(limit)
-            .map(|(key, slot)| (key.clone(), slot.length))
-            .collect())
+        let (shared, prefix, after) = (
+            Arc::clone(&self.shared),
+            prefix.to_owned(),
+            after.map(str::to_owned),
+        );
+        // Writers hold the lock across disk work, so it is taken off the
+        // async thread.
+        blocking(self, "list", prefix.as_ptr() as usize, move || {
+            let log = shared.log();
+            let start = match after.as_deref() {
+                Some(after) if after >= prefix.as_str() => std::ops::Bound::Excluded(after),
+                _ => std::ops::Bound::Included(prefix.as_str()),
+            };
+            Ok(log
+                .index
+                .range::<str, _>((start, std::ops::Bound::Unbounded))
+                .take_while(|(key, _)| key.starts_with(prefix.as_str()))
+                .take(limit)
+                .map(|(key, slot)| (key.clone(), slot.length))
+                .collect())
+        })
+        .await
+        .map_err(failed)
     }
 }
 
@@ -845,6 +882,41 @@ mod isolation_tests {
         std::fs::write(root.path().join(OPEN), b"").unwrap();
         damaged(first - 1);
         assert!(matches!(open().await, Err(LocalOpenError::Corrupt)));
+    }
+
+    /// A failed flush may have lost writes, so the root accepts nothing more
+    /// and stays marked unclean; the next open recovers what reached the log.
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn a_failed_flush_stops_the_root_until_it_recovers() {
+        use acyclic_native_runtime::testing::{DurableFault, Schedule};
+        acyclic_native_runtime::initialize_native_io_services().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let open =
+            async || LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await;
+        let medium = open().await.unwrap();
+        assert!(medium.create("k/a", bytes(b"a")).await.unwrap());
+        let (schedule, mut events) = Schedule::new();
+        let driver = tokio::spawn(async move {
+            while let Some(boundary) = events.recv().await {
+                boundary.release();
+            }
+        });
+        schedule.cut_at(0, DurableFault::Failed);
+        assert!(schedule.scope(medium.flush(&[])).await.is_err());
+        schedule.drained().await;
+        driver.abort();
+        let _ = driver.await;
+        assert!(medium.create("k/b", bytes(b"b")).await.is_err());
+        assert!(medium.flush(&[]).await.is_err());
+        drop(medium);
+        assert!(root.path().join(OPEN).exists());
+        let reopened = open().await.unwrap();
+        assert!(reopened.recovered());
+        assert_eq!(
+            contents(&reopened).await.into_keys().collect::<Vec<_>>(),
+            ["k/a"]
+        );
     }
 
     #[tokio::test]
