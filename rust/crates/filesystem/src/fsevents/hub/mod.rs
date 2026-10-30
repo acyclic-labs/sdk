@@ -276,24 +276,39 @@ impl Hub {
     /// Re-arms every shard that has grown or holds mostly dead roots. Arm
     /// custody serializes it; its holder never waits for the queue.
     fn arm_all(&self) {
-        let _arm = self.arm.lock().unwrap_or_else(PoisonError::into_inner);
-        let shards = self.state().shards.len();
-        for index in 0..shards {
-            self.arm_shard(index);
+        // Reuse each failed shard's pending routes; retaining failures until
+        // arm custody is released needs no new queue or heap allocation.
+        let mut failed: [Option<(Vec<Route>, DemandError)>; SHARDS] = std::array::from_fn(|_| None);
+        {
+            let _arm = self.arm.lock().unwrap_or_else(PoisonError::into_inner);
+            let shards = self.state().shards.len();
+            for (index, failed) in failed.iter_mut().enumerate().take(shards) {
+                *failed = self.arm_shard(index);
+            }
+        }
+        // Failure delivery follows the same rule as record delivery: user
+        // callbacks run with neither the routing nor the arm lock held.
+        for (routes, error) in failed.into_iter().flatten() {
+            let error = Arc::new(error);
+            for route in routes {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    (route.registration.handler)(Err(Arc::clone(&error)));
+                }));
+            }
         }
     }
 
-    fn arm_shard(&self, index: usize) {
+    fn arm_shard(&self, index: usize) -> Option<(Vec<Route>, DemandError)> {
         let now = self.current_event_id();
-        let (batch, roots, since, old) = {
+        let (mut batch, roots, since, old) = {
             let mut state = self.state();
             let Some(shard) = state.shards.get_mut(index) else {
-                return;
+                return None;
             };
             // History arrives in path order, so a replaying stream has no
             // id below which it has delivered everything; it re-arms when done.
             if (shard.pending.is_empty() && !shard.purge) || shard.replaying {
-                return;
+                return None;
             }
             let mut batch = std::mem::take(&mut shard.pending);
             for route in &mut batch {
@@ -328,16 +343,22 @@ impl Hub {
         let mut state = self.state();
         // Shards are never removed.
         let Some(shard) = state.shards.get_mut(index) else {
-            return;
+            return None;
         };
-        let Ok(stream) = stream else {
-            for route in batch {
-                route.registration.failed.store(true, Ordering::Release);
-                if route.registration.live.swap(false, Ordering::AcqRel) {
-                    shard.load -= route.registration.roots.len();
-                }
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(error) => {
+                batch.retain(|route| {
+                    if route.registration.live.swap(false, Ordering::AcqRel) {
+                        route.registration.failed.store(true, Ordering::Release);
+                        shard.load -= route.registration.roots.len();
+                        true
+                    } else {
+                        false
+                    }
+                });
+                return (!batch.is_empty()).then_some((batch, error));
             }
-            return;
         };
         // A callback already running when the queue was suspended may have
         // delivered more since `since` was read. Now none can: the old stream
@@ -381,6 +402,7 @@ impl Hub {
             }
         }
         drop(suspended);
+        None
     }
 
     fn create(&self, roots: &[PathBuf], since: u64) -> Result<FsEventStreamRef, DemandError> {
@@ -507,12 +529,12 @@ impl Hub {
             if batch.registration.live.load(Ordering::Acquire) {
                 // A panicking handler loses its batch, not the hub.
                 let _ = catch_unwind(AssertUnwindSafe(|| {
-                    (batch.registration.handler)(EventBatch {
+                    (batch.registration.handler)(Ok(EventBatch {
                         paths: &batch.paths,
                         flags: &batch.flags,
                         #[cfg(test)]
                         ids: &batch.ids,
-                    });
+                    }));
                 }));
             }
         }

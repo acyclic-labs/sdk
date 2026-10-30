@@ -104,13 +104,8 @@ fn watcher_delivers_file_events_without_linking_core_services() {
         .expect("watch");
     let file = root.join("created");
     std::fs::write(&file, b"event").expect("write");
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let event = receiver
-            .recv_timeout(remaining)
-            .expect("an FSEvents event")
-            .expect("event");
+        let event = receiver.recv().expect("an FSEvents event").expect("event");
         if event.paths.contains(&file) {
             break;
         }

@@ -112,7 +112,8 @@ fn a_thousand_roots_share_the_bounded_streams() -> TestResult {
     let started = Instant::now();
     let streams = watch_all(&roots, |index| {
         let (seen, touched) = (Arc::clone(&seen), roots[index].join("touched"));
-        Arc::new(move |events: EventBatch<'_>| {
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
             if events
                 .iter()
                 .any(|(path, flags)| path == touched || rescans(path, flags, &touched))
@@ -162,7 +163,8 @@ fn a_burst_across_many_roots_loses_nothing() -> TestResult {
     );
     let streams = watch_all(&roots, |index| {
         let (seen, root) = (Arc::clone(&seen), roots[index].clone());
-        Arc::new(move |events: EventBatch<'_>| {
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
             let seen = &seen[index];
             let mut names = seen.names.lock().unwrap_or_else(PoisonError::into_inner);
             for (path, flags) in events.iter() {
@@ -214,7 +216,8 @@ fn rearming_loses_and_repeats_nothing() -> TestResult {
     let delivered = Arc::new(Mutex::new(Vec::<(PathBuf, u32, u64)>::new()));
     let stream = watch(&watched, {
         let delivered = Arc::clone(&delivered);
-        Arc::new(move |events: EventBatch<'_>| {
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
             let ids = events.ids();
             let mut delivered = delivered.lock().unwrap_or_else(PoisonError::into_inner);
             for ((path, flags), &id) in events.iter().zip(ids) {
@@ -299,7 +302,8 @@ fn a_panicking_handler_does_not_stop_the_hub() -> TestResult {
     let seen = Arc::new(AtomicUsize::new(0));
     let counting = watch(&roots[1], {
         let seen = Arc::clone(&seen);
-        Arc::new(move |events: EventBatch<'_>| {
+        Arc::new(move |events: Result<EventBatch<'_>, Arc<DemandError>>| {
+            let events = events.expect("native stream delivery failed");
             seen.fetch_add(events.iter().len(), Ordering::AcqRel);
         })
     })?;
@@ -407,6 +411,31 @@ fn count_raw_streams() -> TestResult {
             failed = Some(index + 1);
             break;
         }
+    }
+    if failed.is_some() {
+        // Keep the actual exhausted native streams alive while a shared
+        // registration fails. Its error must be delivered outside both
+        // locks, before startup releases the callback producer.
+        let hub = hub()?;
+        let (failure, received) = std::sync::mpsc::channel();
+        let refused = watch(
+            &roots[0],
+            Arc::new(move |events| {
+                if let Err(error) = events {
+                    let unlocked = hub.arm.try_lock().is_ok() && hub.state.try_lock().is_ok();
+                    let _ = failure.send((error, unlocked));
+                }
+            }),
+        );
+        assert!(
+            refused.is_err(),
+            "exhausted native capacity admitted another stream"
+        );
+        let (error, unlocked) = received.recv()?;
+        assert!(
+            unlocked,
+            "failure callback retained a routing or arm lock: {error}"
+        );
     }
     for (stream, queue, started) in running {
         // SAFETY: each stream is ours; the barrier drains its queue first.

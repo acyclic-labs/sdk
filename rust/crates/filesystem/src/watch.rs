@@ -3337,6 +3337,11 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<(), NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
+        // The serial producer cannot wait for its own next callback.
+        #[cfg(target_os = "macos")]
+        if crate::fsevents::on_queue() {
+            return self.invalidate();
+        }
         let pending = match (&self.pending_source_watch, &self.watcher) {
             (Some(owner), _) | (_, NativeWatchDriver::StartupFailure(owner)) => Some(owner),
             _ => None,
@@ -3418,10 +3423,6 @@ impl NativeWatch {
         work: &mut W,
     ) -> Result<bool, NativeWatchError> {
         self.take_lost_delivery(work)?;
-        // The serial producer cannot wait for its own next callback.
-        if crate::fsevents::on_queue() {
-            return Ok(false);
-        }
         if !self.confirmable()? {
             return Ok(false);
         }
@@ -3527,12 +3528,12 @@ impl NativeWatch {
     /// Waits for native delivery to settle. The next batch either contains
     /// the changes completed before this call or requires a rescan.
     pub fn fence(&mut self) -> Result<(), NativeWatchError> {
+        if let Some(work) = self.original_work.clone() {
+            return self.fence_with_native_work(&work);
+        }
         #[cfg(target_os = "macos")]
         if crate::fsevents::on_queue() {
             return self.invalidate();
-        }
-        if let Some(work) = self.original_work.clone() {
-            return self.fence_with_native_work(&work);
         }
         #[cfg(not(windows))]
         let adapter = matches!(self.watcher, NativeWatchDriver::Adapter(_));
