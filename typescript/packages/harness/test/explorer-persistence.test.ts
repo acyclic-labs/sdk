@@ -203,3 +203,28 @@ test("disposal commits its saved bytes and releases the database connection", as
     globalThis.indexedDB = previous;
   }
 });
+
+test("a display-free explorer renders changes without a frame timer", async () => {
+  const stream = new WasmStream();
+  const rendered = deferred<void>();
+  const timers = spyOn(globalThis, "setTimeout");
+  let count = 0;
+  let explorer: AgentExplorer | undefined;
+  try {
+    explorer = await AgentExplorer.open(stream, {
+      render() { count++; rendered.resolve(); },
+    });
+    await rendered.promise;
+    const before = count;
+    timers.mockClear();
+    explorer.schedule();
+    explorer.schedule();
+    expect(timers).not.toHaveBeenCalled();
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect(count).toBe(before + 1);
+    explorer.schedule();
+    explorer.dispose();
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+    expect(count).toBe(before + 1);
+  } finally { timers.mockRestore(); explorer?.dispose(); stream.free(); }
+});
