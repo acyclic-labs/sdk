@@ -4,6 +4,7 @@ use super::Invocation;
 use super::{NativeProcessObserver, NativeProcessResult, capture};
 use crate::{Error, Result, tools::ShellInput, workspace::MountTable};
 use acyclic_fs::access::Action;
+use acyclic_native_runtime::{NativeCommand, NativeHost};
 use std::path::Path;
 #[cfg(test)]
 #[cfg(unix)]
@@ -16,12 +17,12 @@ use std::sync::Arc;
 pub(crate) async fn run<T>(
     input: ShellInput,
     mounts: &MountTable<T>,
-    invocation: Invocation,
+    host: NativeHost,
     now: u64,
     observer: Option<Arc<NativeProcessObserver>>,
     check: impl Fn() -> std::io::Result<()> + Send + 'static,
 ) -> Result<Option<NativeProcessResult>> {
-    let invocation = prepare(input, mounts, invocation, now)?;
+    let invocation = prepare(input, mounts, host, Path::new("/bin/bash"), 32_768, now)?;
     capture::capture_with_custody(
         invocation,
         move |_: &mut (), chunk| {
@@ -42,7 +43,9 @@ pub(crate) async fn run<T>(
 pub fn prepare<T>(
     input: ShellInput,
     mounts: &MountTable<T>,
-    mut invocation: Invocation,
+    mut host: NativeHost,
+    shell: &Path,
+    maximum_output_bytes: usize,
     now: u64,
 ) -> Result<Invocation> {
     input.validate()?;
@@ -77,9 +80,9 @@ pub fn prepare<T>(
         let (mount, path) = mounts.resolve(selected)?;
         mount.check(Action::List, &path, now)?;
     }
-    invocation.cwd = cwd;
+    host.cwd = cwd;
     for (name, value) in mounts.environment()? {
-        if invocation.environment.insert(name, value).is_some() {
+        if host.environment.insert(name, value).is_some() {
             return Err(Error::Invalid(
                 "volume discovery hint collides with the explicit process environment".into(),
             ));
@@ -88,26 +91,25 @@ pub fn prepare<T>(
     // Shell commands receive only the host's explicit ordinary variables and
     // discovery hints. Ambient credentials and startup hooks stay host-owned,
     // even when another native process caller requested inheritance.
-    invocation.inherit_environment = false;
-    invocation.timeout_ms = input.timeout_ms()?;
-    let (command, standard_input) = match crate::tools::shell::PLATFORM.stdin_bootstrap {
-        Some(bootstrap) => (bootstrap.to_owned(), Some(input.command.into_bytes())),
-        None => (input.command, None),
+    host.inherit_environment = false;
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(u64::from(
+            input.timeout_ms()?,
+        )))
+        .ok_or_else(|| Error::Invalid("shell timeout is outside the native clock range".into()))?;
+    let mut argv = vec![shell.as_os_str().to_owned()];
+    let stdin = crate::tools::shell::PLATFORM.compose(&mut argv, input.command);
+    let invocation = Invocation {
+        host,
+        command: NativeCommand {
+            argv,
+            cwd: None,
+            stdin,
+            deadline,
+            maximum_output_bytes,
+        },
     };
-    invocation.argv = crate::tools::shell::PLATFORM
-        .arguments
-        .iter()
-        .map(|argument| (*argument).into())
-        .chain([command])
-        .collect();
-    invocation.standard_input = standard_input;
-    super::invocation::validate(
-        &invocation.executable,
-        &invocation.cwd,
-        root,
-        &invocation.environment,
-        &invocation.argv,
-    )?;
+    invocation.validate(root)?;
     Ok(invocation)
 }
 

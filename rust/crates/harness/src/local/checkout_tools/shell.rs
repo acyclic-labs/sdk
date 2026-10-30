@@ -1,6 +1,6 @@
 //! Task shell execution through the shared native process capture engine.
 use super::*;
-use crate::filesystem::native_process::{self, Invocation};
+use crate::filesystem::native_process;
 
 impl CheckoutTools {
     pub(super) async fn shell(
@@ -20,22 +20,17 @@ impl CheckoutTools {
             || Arc::clone(&self.workspace),
             |(_, workspace)| workspace.clone(),
         );
-        let invocation = Invocation {
-            executable: executable()?.to_path_buf(),
-            argv: Vec::new(),
-            cwd: workspace.path.clone(),
-            environment: self.environment.clone(),
-            inherit_environment: false,
-            timeout_ms: 300_000,
-            control_timeout_ms: output::CONTROL_TIMEOUT_MS,
-            maximum_output_bytes: maximum_output,
-            standard_input: None,
-            process_custody: workspace.processes.clone(),
-        };
         let invocation = native_process::shell::prepare(
             input,
             &state.mounts,
-            invocation,
+            acyclic_native_runtime::NativeHost {
+                cwd: workspace.path.clone(),
+                environment: self.environment.clone(),
+                inherit_environment: false,
+                custody: workspace.processes.clone(),
+            },
+            executable()?,
+            maximum_output,
             self.clock.now_unix_millis() / 1000,
         )?;
         let control =

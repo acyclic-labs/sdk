@@ -61,7 +61,7 @@ async fn shared_workspace_runs_the_actual_local_machine_shell() -> Result<()> {
                 .map_err(|_| Error::Storage("local shell test has no current directory".into()))?,
             environment: Default::default(),
             inherit_environment: true,
-            process_custody: None,
+            custody: None,
         },
         Arc::new(acyclic_stream::MemoryStream::default()),
         acyclic_stream::StreamPath::new(format!("workspace-tests/{machine}"))

@@ -53,7 +53,7 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
                 ),
             ]),
             inherit_environment: true,
-            process_custody: None,
+            custody: None,
         },
     )?;
     let command = || {

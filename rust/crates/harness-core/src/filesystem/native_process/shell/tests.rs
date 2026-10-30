@@ -80,19 +80,22 @@ fn table(root: PathBuf) -> Result<MountTable<()>> {
     )
 }
 
-fn invocation(root: &Path) -> Invocation {
-    Invocation {
-        executable: PathBuf::from("/bin/bash"),
-        argv: Vec::new(),
+fn invocation(root: &Path) -> NativeHost {
+    NativeHost {
         cwd: root.into(),
         environment: BTreeMap::new(),
         inherit_environment: false,
-        timeout_ms: 300_000,
-        control_timeout_ms: 1000,
-        maximum_output_bytes: 32_768,
-        process_custody: None,
-        standard_input: None,
+        custody: None,
     }
+}
+
+fn prepare<T>(
+    input: ShellInput,
+    mounts: &MountTable<T>,
+    host: NativeHost,
+    now: u64,
+) -> Result<Invocation> {
+    super::prepare(input, mounts, host, Path::new("/bin/bash"), 32_768, now)
 }
 
 proptest::proptest! {
@@ -125,8 +128,8 @@ proptest::proptest! {
             prop_assert!(matches!(result, Err(Error::Invalid(_))));
         } else {
             let prepared = result.unwrap();
-            prop_assert_eq!(prepared.cwd, native.join(&component));
-            prop_assert_eq!(prepared.environment.get("ACYCLIC_VOLUME_DATA").unwrap(), native.to_str().unwrap());
+            prop_assert_eq!(prepared.host.cwd, native.join(&component));
+            prop_assert_eq!(prepared.host.environment.get("ACYCLIC_VOLUME_DATA").unwrap(), native.to_str().unwrap());
         }
     }
 }
@@ -226,9 +229,9 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     };
     for inherit_environment in [false, true] {
         let prepared = prepare(input.clone(), &mounts, configured(inherit_environment), 1)?;
-        assert!(!prepared.inherit_environment);
+        assert!(!prepared.host.inherit_environment);
         assert_eq!(
-            prepared.environment.get("ACYCLIC_VOLUME_DATA"),
+            prepared.host.environment.get("ACYCLIC_VOLUME_DATA"),
             mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
         );
         let output = capture::capture_with_custody(prepared, |(), _| Ok(()), || Ok(()), (), None)
@@ -253,7 +256,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     ));
     // An empty production map loses a tool outside the shell's default path.
     let mut missing_path = prepare(input.clone(), &mounts, configured(false), 1)?;
-    missing_path.environment.remove("PATH");
+    missing_path.host.environment.remove("PATH");
     let output = capture::capture_with_custody(missing_path, |(), _| Ok(()), || Ok(()), (), None)
         .await?
         .0
@@ -272,7 +275,7 @@ async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() 
     // The old inheritance choice physically exposes both named credentials and
     // the ambient shell startup hook to exactly the same command.
     let mut broken = prepare(input, &mounts, configured(false), 1)?;
-    broken.inherit_environment = true;
+    broken.host.inherit_environment = true;
     let output = capture::capture_with_custody(broken, |(), _| Ok(()), || Ok(()), (), None)
         .await?
         .0
@@ -361,5 +364,46 @@ async fn symlink_cwd_cannot_escape_the_task_view() -> Result<()> {
     .await;
     assert!(matches!(result, Err(Error::Invalid(_))));
     assert!(!temp.path().join("should-not-exist").exists());
+    Ok(())
+}
+
+/// A shell at a non-UTF-8 native path runs: the executable stays an
+/// `OsString` from resolution through spawn. The UTF-8 path is the control.
+#[tokio::test]
+async fn a_shell_at_a_non_utf8_path_runs() -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
+    let temp = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let root = temp.path().join("view");
+    std::fs::create_dir(&root).map_err(|error| Error::Storage(error.to_string()))?;
+    let mounts = table(root.canonicalize().map_err(|error| Error::Storage(error.to_string()))?)?;
+    let native = temp.path().join(std::ffi::OsStr::from_bytes(b"bash-\xff"));
+    std::os::unix::fs::symlink("/bin/bash", &native)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    for shell in [Path::new("/bin/bash"), native.as_path()] {
+        let invocation = super::prepare(
+            ShellInput {
+                command: "printf ran".into(),
+                cwd: None,
+                timeout: None,
+            },
+            &mounts,
+            invocation(&mounts.root),
+            shell,
+            32_768,
+            1,
+        )?;
+        assert_eq!(invocation.command.argv[0], shell.as_os_str());
+        let (output, ()) = super::super::capture::capture_with_custody(
+            invocation,
+            |(), _| Ok(()),
+            || Ok(()),
+            (),
+            None,
+        )
+        .await?;
+        let output = output.ok_or_else(|| Error::Storage("shell outcome unknown".into()))?;
+        assert!(output.success && output.stdout == b"ran", "{shell:?}: {output:?}");
+    }
     Ok(())
 }
