@@ -24,7 +24,7 @@ const CRASH_READY: &[u8] = b"acyclic-crash-mount-ready\n";
 fn crash_recovery_inner(crash_root: &Path, mount: &Path) -> Result<(), Failure> {
     tokio::runtime::Runtime::new()?.block_on(async {
         let mut child = CapturedChild::spawn(
-            Command::new(std::env::current_exe()?)
+            ProcessCommand::new(std::env::current_exe()?)
                 .arg("--crash-child")
                 .arg(crash_root)
                 .arg(mount),

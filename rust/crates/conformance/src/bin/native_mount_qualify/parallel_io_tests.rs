@@ -1,7 +1,7 @@
 use super::supervision::CapturedChild;
 use super::{Failure, parallel_io_child};
+use acyclic_native_runtime::ProcessCommand;
 use std::path::Path;
-use std::process::Command;
 
 const CHILD_ROOT: &str = "ACYCLIC_PARALLEL_IO_CHILD_ROOT";
 
@@ -29,8 +29,8 @@ fn parallel_io_process() {
     }
 }
 
-fn child(root: &Path, index: usize, count: usize) -> Result<Command, Failure> {
-    let mut command = Command::new(std::env::current_exe()?);
+fn child(root: &Path, index: usize, count: usize) -> Result<ProcessCommand, Failure> {
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",

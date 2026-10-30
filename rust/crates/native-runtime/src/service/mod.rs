@@ -200,14 +200,14 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 /// Runs a trusted host command with closed stdin and bounded captured output.
 /// The caller selects its capture schedule, including an unbounded OS wait.
 pub fn process_output(
-    command: &mut std::process::Command,
+    command: &mut crate::ProcessCommand,
     schedule: impl Into<CaptureSchedule>,
     max_bytes: usize,
 ) -> io::Result<std::process::Output> {
     command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(crate::ProcessStdio::null())
+        .stdout(crate::ProcessStdio::piped())
+        .stderr(crate::ProcessStdio::piped());
     ProcessTree::spawn(command)?
         .wait_with_output(
             schedule,
@@ -224,7 +224,7 @@ pub fn process_output(
 
 /// Runs a trusted host command with its configured streams and caller schedule.
 pub fn process_status(
-    command: &mut std::process::Command,
+    command: &mut crate::ProcessCommand,
     schedule: impl Into<CaptureSchedule>,
 ) -> io::Result<std::process::ExitStatus> {
     let mut tree = ProcessTree::spawn(command)?;

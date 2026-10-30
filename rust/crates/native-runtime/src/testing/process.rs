@@ -1,12 +1,13 @@
 //! The process boundary inherits the same scope as native workers and entropy.
 use super::*;
+use crate::ProcessCommand;
 use crate::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use std::{io, process::Command, process::Output, time::Duration};
+use std::{io, process::Output, time::Duration};
 
 /// Original capture arguments, after command and ownership validation.
 pub struct ProcessCapture<'a> {
     /// Fully composed executable, arguments, environment and working directory.
-    pub command: &'a Command,
+    pub command: &'a ProcessCommand,
     /// Original monotonic deadline allowance.
     pub timeout: Duration,
     /// Shared stdout and stderr bound.
@@ -92,7 +93,7 @@ mod tests {
                 stderr: Vec::new(),
                 cleanup_completed: false,
             }));
-            let command = Command::new("must-not-spawn");
+            let command = ProcessCommand::new("must-not-spawn");
             let capture = || ProcessCapture {
                 command: &command,
                 timeout: Duration::from_millis(10),

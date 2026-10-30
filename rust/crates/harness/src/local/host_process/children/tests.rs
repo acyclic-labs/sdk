@@ -2,7 +2,8 @@
 //! as a detached macOS descendant, without waiting for a watchdog to detect it.
 use super::*;
 use crate::local::{LocalHarness, LocalHarnessConfig};
-use std::{fs, process::Stdio, sync::Arc};
+use acyclic_native_runtime::ProcessStdio;
+use std::{fs, sync::Arc};
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -128,14 +129,14 @@ fn follow_up(host: &str, cwd: &Path, _: &Path) -> Result {
     ];
     for (turn, action) in prompts.into_iter().enumerate() {
         let (mut running, view) = claim(&mut sessions, cwd, "idle", action)?;
-        let mut command = std::process::Command::new("/bin/sh");
+        let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
         command
             .args(["-c", "printf turn > \"turn-$1\"", "fixture"])
             .arg(turn.to_string())
             .current_dir(&view)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::piped());
         let operation = running.claim.operation;
         running.process.spawn(&mut command, operation)?;
         let completed = loop {
@@ -191,9 +192,9 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
     } else {
         ("", "17")
     };
-    let mut command = std::process::Command::new("/bin/sh");
+    let mut command = acyclic_native_runtime::ProcessCommand::new("/bin/sh");
     command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf '%s' \"$2\"; printf native-diagnostic >&2; exit \"$3\"", "fixture"])
-        .arg(state).arg(events).arg(exit).current_dir(&view).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        .arg(state).arg(events).arg(exit).current_dir(&view).stdin(ProcessStdio::null()).stdout(ProcessStdio::piped()).stderr(ProcessStdio::piped());
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
     let pid = loop {

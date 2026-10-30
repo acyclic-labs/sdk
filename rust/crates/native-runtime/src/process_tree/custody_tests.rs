@@ -3,6 +3,7 @@
 //! without custody demonstrably survives the same kill.
 #![cfg(any(target_os = "linux", windows))]
 
+use super::{ProcessCommand, ProcessStdio};
 use super::{ProcessCustody, ProcessCustodyLease, ProcessTree};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -28,7 +29,7 @@ exit $child.ExitCode
 
 /// A long-lived grandchild whose PID is published independently of the shell,
 /// so only whole-tree custody reaches it on every platform.
-fn program(root: &Path) -> Command {
+fn program(root: &Path) -> ProcessCommand {
     #[cfg(unix)]
     {
         let mut command =
@@ -41,9 +42,9 @@ fn program(root: &Path) -> Command {
                 "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
                 std::env::current_exe().expect("test executable"),
             )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::null());
         command
     }
     #[cfg(windows)]
@@ -57,16 +58,16 @@ fn program(root: &Path) -> Command {
                 "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
                 std::env::current_exe().expect("test executable"),
             )
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::piped())
+            .stderr(ProcessStdio::null());
         command
     }
 }
 
 /// A live tree whose original stdin owner controls EOF; no timer or probe runs.
-fn gated_command() -> Command {
-    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+fn gated_command() -> ProcessCommand {
+    let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
     command
         .args([
             "--exact",
@@ -74,9 +75,9 @@ fn gated_command() -> Command {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     command
 }
 
@@ -110,7 +111,12 @@ fn custody_owner_helper() {
         let custody = ProcessCustody::open(&root.join("processes")).expect("custody");
         Some(ProcessTree::spawn_in_custody(&mut command, &custody).expect("custodied spawn"))
     } else {
-        uncontained = Some(command.spawn().expect("uncontained spawn"));
+        uncontained = Some(
+            command
+                .to_std()
+                .and_then(|mut command| command.spawn())
+                .expect("uncontained spawn"),
+        );
         None
     };
     let output = tree
@@ -470,7 +476,7 @@ fn a_custodians_handles_track_live_members_not_every_member() {
     let root = tempfile::tempdir().expect("root");
     let processes = root.path().join("processes");
     let custody = ProcessCustody::acquire(&processes).expect("custody");
-    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    let mut command = ProcessCommand::new(std::env::current_exe().expect("test executable"));
     command
         .args([
             "--exact",
@@ -479,9 +485,9 @@ fn a_custodians_handles_track_live_members_not_every_member() {
         ])
         .env(MODE, "churn")
         .env(ROOT, root.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::null());
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
     let custodian = custodian_of(&processes);
     let mut output = std::io::BufReader::new(tree.take_stdout().expect("churn publication pipe"));
@@ -584,9 +590,9 @@ fn custodied_tree_reports_the_programs_outcome_and_leaves_no_descendant() {
                 "ACYCLIC_CUSTODY_TEST_EXECUTABLE",
                 std::env::current_exe().expect("test executable"),
             )
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stdin(ProcessStdio::null())
+            .stdout(ProcessStdio::null())
+            .stderr(ProcessStdio::null());
         let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
         let status = tree.wait_exit(None).expect("wait");
         let descendant = Watch::new(
@@ -644,9 +650,9 @@ fn a_replaced_custody_directory_refuses_to_record() -> std::io::Result<()> {
     let custody = ProcessCustody::open(&processes)?;
     let mut command = crate::shell_command("exit 0", Some("sh"))?;
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     // Control: the fenced directory records the tree.
     let mut tree = ProcessTree::spawn_in_custody(&mut command, &custody)?;
     tree.wait_exit(None)?;
@@ -671,7 +677,7 @@ fn tree_pid(tree: &ProcessTree) -> u32 {
     {
         tree.child
             .as_ref()
-            .map(std::process::Child::id)
+            .map(|child| child.id())
             .expect("child id")
     }
 }
@@ -729,7 +735,7 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 /// A program whose descendant leaves the tree's process group and session,
 /// publishing its own PID.
 #[cfg(target_os = "linux")]
-fn escaping_program(root: &Path) -> Command {
+fn escaping_program(root: &Path) -> ProcessCommand {
     let mut command = crate::shell_command(
         r#"setsid sh -c 'echo ACYCLIC_CHILD_PID=$$; exec "$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null' sh & wait"#,
         Some("sh"),
@@ -740,9 +746,9 @@ fn escaping_program(root: &Path) -> Command {
         std::env::current_exe().expect("test executable"),
     );
     command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::null())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::null());
     command
 }
 

@@ -2,23 +2,27 @@ use std::io;
 use std::io::{Read, Write};
 use std::mem::{size_of, zeroed};
 use std::os::windows::io::{FromRawHandle as _, OwnedHandle};
+#[cfg(test)]
 use std::os::windows::process::CommandExt as _;
 #[cfg(test)]
 use std::process::Child;
-use std::process::Command;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, NTSTATUS, RtlNtStatusToDosError,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+#[cfg(test)]
+use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-    QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
+    CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject,
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+use windows_sys::Win32::System::Threading::CreateEventW;
+#[cfg(test)]
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -30,7 +34,7 @@ mod job_wait;
 pub(super) mod wait;
 pub(super) use wait::wait_for_exit;
 
-pub(super) fn wait_without_reaping(child: &std::process::Child) -> io::Result<()> {
+pub(super) fn wait_without_reaping(child: &super::Child) -> io::Result<()> {
     crate::process_identity::ProcessProbe::from_process(child)?.await_exit()
 }
 #[cfg(test)]
@@ -223,7 +227,7 @@ pub(super) struct Guard {
 unsafe impl Send for Guard {}
 
 pub(super) fn spawn_controlled(
-    command: &mut Command,
+    command: &mut super::ProcessCommand,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
 ) -> io::Result<()> {
@@ -232,7 +236,7 @@ pub(super) fn spawn_controlled(
 
 /// Spawns into a Job created under `name`, which must not already exist.
 pub(super) fn spawn_named(
-    command: &mut Command,
+    command: &mut super::ProcessCommand,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
     name: &[u16],
@@ -254,7 +258,7 @@ pub(super) fn spawn_named(
 }
 
 fn spawn_in_job(
-    command: &mut Command,
+    command: &mut super::ProcessCommand,
     meter: Option<&dyn crate::NativeReadMeter>,
     custody: &mut Option<super::ProcessTree>,
     named: Option<(
@@ -302,13 +306,17 @@ fn spawn_in_job(
 }
 
 fn start_in_job(
-    command: &mut Command,
+    command: &super::ProcessCommand,
     meter: Option<&dyn crate::NativeReadMeter>,
     tree: &mut super::ProcessTree,
 ) -> io::Result<()> {
-    command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
+    // The process is created suspended and already in the Job.
     super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-        tree.child = Some(super::spawner::spawn(command)?);
+        tree.child = Some(super::windows_create::spawn_suspended(
+            command,
+            Some(tree.guard.job),
+        )?);
+        tree.guard.assigned = true;
         Ok(())
     })?;
     let child = tree.child.as_ref().ok_or(io::ErrorKind::NotFound)?;
@@ -317,15 +325,6 @@ fn start_in_job(
     // process, so aliases and a replaced executable cannot bypass admission.
     super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
         crate::executable::require_unpackaged(child.as_raw_handle().cast())
-    })?;
-    super::process_control_attempt(meter, crate::NativeOperationKind::Write, || {
-        // SAFETY: both handles are owned and the child is still suspended.
-        if unsafe { AssignProcessToJobObject(tree.guard.job, child.as_raw_handle().cast()) } == 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            tree.guard.assigned = true;
-            Ok(())
-        }
     })?;
     // A named tree's custodian holds its Job until every member has exited.
     if let Some(record) = tree.custody.as_mut() {
@@ -336,7 +335,7 @@ fn start_in_job(
         unsafe extern "system" {
             fn NtResumeProcess(process: HANDLE) -> NTSTATUS;
         }
-        // SAFETY: the owned child is suspended and already assigned to this Job.
+        // SAFETY: the owned child is suspended and was created in this Job.
         let status = unsafe { NtResumeProcess(child.as_raw_handle().cast()) };
         if status < 0 {
             // SAFETY: the returned NTSTATUS is a valid input to this conversion.
@@ -610,7 +609,9 @@ fn denied_admission_still_observes_unassigned_child_exit() {
     restricted_guard.job = restricted;
     restricted_guard.active = true;
     let mut restricted = restricted_guard;
-    let mut command = super::tests::command("child", temporary.path());
+    let mut command = super::tests::command("child", temporary.path())
+        .to_std()
+        .expect("standard command");
     command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
     let mut child = command.spawn().expect("spawn suspended child");
     // SAFETY: live handles; this real assignment must fail for lack of rights.
@@ -640,12 +641,12 @@ fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
     let callers = (0..4)
         .map(|_| {
             std::thread::spawn(|| -> io::Result<std::thread::ThreadId> {
-                let mut command = Command::new("cmd.exe");
+                let mut command = super::ProcessCommand::new("cmd.exe");
                 command
                     .args(["/d", "/c", "exit 0"])
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null());
+                    .stdin(super::ProcessStdio::null())
+                    .stdout(super::ProcessStdio::null())
+                    .stderr(super::ProcessStdio::null());
                 let mut tree = super::ProcessTree::spawn(&mut command)?;
                 tree.wait_exit(None)?;
                 Ok(std::thread::current().id())

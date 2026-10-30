@@ -4,7 +4,7 @@ pub(super) fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> R
     #[cfg(target_os = "macos")]
     {
         let write = tool_output(
-            Command::new("/usr/bin/xattr")
+            ProcessCommand::new("/usr/bin/xattr")
                 .args(["-w", "com.acyclic.qualifier", "xattr-value"])
                 .arg(metadata),
         )?;
@@ -16,7 +16,7 @@ pub(super) fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> R
             .into());
         }
         let read = tool_output(
-            Command::new("/usr/bin/xattr")
+            ProcessCommand::new("/usr/bin/xattr")
                 .args(["-px", "com.acyclic.qualifier"])
                 .arg(metadata),
         )?;
@@ -32,7 +32,7 @@ pub(super) fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> R
             .into());
         }
         let resource = tool_output(
-            Command::new("/usr/bin/xattr")
+            ProcessCommand::new("/usr/bin/xattr")
                 .args([
                     "-wx",
                     "com.apple.ResourceFork",
@@ -48,7 +48,7 @@ pub(super) fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> R
             .into());
         }
         let read = tool_output(
-            Command::new("/usr/bin/xattr")
+            ProcessCommand::new("/usr/bin/xattr")
                 .args(["-px", "com.apple.ResourceFork"])
                 .arg(metadata),
         )?;
@@ -56,7 +56,11 @@ pub(super) fn macos_nfs_xattrs_and_toolchain(mount: &Path, metadata: &Path) -> R
             .replace([' ', '\n'], "")
             .to_ascii_lowercase();
         if !read.status.success() || encoded != "7265736f757263652d666f726b" {
-            let listed = tool_output(Command::new("/usr/bin/xattr").args(["-l"]).arg(metadata))?;
+            let listed = tool_output(
+                ProcessCommand::new("/usr/bin/xattr")
+                    .args(["-l"])
+                    .arg(metadata),
+            )?;
             let sidecar = metadata.with_file_name("._metadata.txt");
             let sidecar_bytes = fs::read(&sidecar).ok();
             let sidecar_payload_offset = sidecar_bytes.as_ref().and_then(|bytes| {
@@ -104,7 +108,11 @@ where
     }
     #[cfg(target_os = "macos")]
     {
-        let detached = tool_output(Command::new("/sbin/umount").arg("-f").arg(&destination))?;
+        let detached = tool_output(
+            ProcessCommand::new("/sbin/umount")
+                .arg("-f")
+                .arg(&destination),
+        )?;
         if !detached.status.success() {
             return Err(format!(
                 "forced mount-loss detach failed: {}",
@@ -126,7 +134,7 @@ fn macos_nfs_toolchain(mount: &Path) -> Result<(), Failure> {
     let binary = mount.join("nested/toolchain");
     fs::write(&source, b"int main(void) { return 0; }\n")?;
     let compiled = tool_output(
-        Command::new("/usr/bin/clang")
+        ProcessCommand::new("/usr/bin/clang")
             .arg(&source)
             .arg("-o")
             .arg(&binary),
@@ -139,7 +147,7 @@ fn macos_nfs_toolchain(mount: &Path) -> Result<(), Failure> {
         .into());
     }
     if !acyclic_native_runtime::process_status(
-        &mut Command::new(&binary),
+        &mut ProcessCommand::new(&binary),
         acyclic_native_runtime::CaptureSchedule::Unbounded,
     )?
     .success()

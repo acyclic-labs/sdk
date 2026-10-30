@@ -129,7 +129,7 @@ pub(super) async fn run_parallel_io_children(mount: &Path, count: usize) -> Resu
     let result = async {
         for index in 0..count {
             children.push(Some(CapturedChild::spawn(
-                Command::new(&executable)
+                ProcessCommand::new(&executable)
                     .arg("--parallel-io-child")
                     .arg(mount)
                     .arg(index.to_string())

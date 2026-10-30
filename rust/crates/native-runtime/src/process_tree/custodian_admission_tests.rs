@@ -2,7 +2,6 @@
 //! the tree's secret may name its members.
 use super::*;
 use std::net::TcpStream;
-use std::process::{Command, Stdio};
 
 /// Asks the custodian at `address` to admit `pid` into `tree`.
 fn admit(address: &str, pid: u32, tree: u64, secret: &Secret) -> bool {
@@ -23,12 +22,12 @@ fn only_a_holder_of_the_trees_secret_is_admitted() {
     let custody =
         super::super::ProcessCustody::acquire(&root.path().join("trees")).expect("custody");
     // Reads its open stdin until the tree is killed.
-    let mut command = Command::new(r"C:\Windows\System32\findstr.exe");
+    let mut command = super::super::ProcessCommand::new(r"C:\Windows\System32\findstr.exe");
     command
         .arg("x")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(super::super::ProcessStdio::piped())
+        .stdout(super::super::ProcessStdio::null())
+        .stderr(super::super::ProcessStdio::null());
     let mut tree =
         super::super::ProcessTree::spawn_in_custody(&mut command, &custody).expect("spawn");
     let endpoint = tree
@@ -39,15 +38,27 @@ fn only_a_holder_of_the_trees_secret_is_admitted() {
     let mut parts = endpoint.split('/');
     let (address, id, secret) = (
         parts.next().expect("address"),
-        parts.next().and_then(|id| id.parse::<u64>().ok()).expect("tree"),
+        parts
+            .next()
+            .and_then(|id| id.parse::<u64>().ok())
+            .expect("tree"),
         parts.next().and_then(decode).expect("secret"),
     );
     let pid = tree.child.as_ref().expect("child").id();
     // Negative control: the right tree and a member, but a foreign secret.
     let mut foreign = secret;
     foreign[0] ^= 1;
-    assert!(!admit(address, pid, id, &foreign), "a foreign request was admitted");
-    assert!(!admit(address, pid, id, &[0; 16]), "an empty secret was admitted");
-    assert!(admit(address, pid, id, &secret), "the tree's own secret was refused");
+    assert!(
+        !admit(address, pid, id, &foreign),
+        "a foreign request was admitted"
+    );
+    assert!(
+        !admit(address, pid, id, &[0; 16]),
+        "an empty secret was admitted"
+    );
+    assert!(
+        admit(address, pid, id, &secret),
+        "the tree's own secret was refused"
+    );
     tree.terminate(None).expect("terminate");
 }

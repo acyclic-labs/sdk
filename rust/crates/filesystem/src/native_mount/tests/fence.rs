@@ -457,15 +457,15 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     let mut children = Vec::new();
     for _ in 0..3 {
         let mut child = acyclic_native_runtime::ProcessTree::spawn(
-            std::process::Command::new(&executable)
+            acyclic_native_runtime::ProcessCommand::new(&executable)
                 .args([
                     "--exact",
                     "native_mount::tests::destination_reclaim_child_waits_for_external_release",
                     "--nocapture",
                 ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::inherit())
+                .stdin(acyclic_native_runtime::ProcessStdio::piped())
+                .stdout(acyclic_native_runtime::ProcessStdio::piped())
+                .stderr(acyclic_native_runtime::ProcessStdio::inherit())
                 .env("ACYCLIC_FS_RECLAIM_CHILD_DESTINATION", &destination),
         )?;
         let release = child
@@ -736,9 +736,11 @@ fn a_dropped_lock_is_released_while_another_process_shares_its_description()
     let root = tempfile::tempdir()?;
     let path = root.path().join("shared.lock");
     let lock = super::fence::acquire_mount_lock(&path, false)?;
-    let mut child = std::process::Command::new("sleep")
+    let mut child = acyclic_native_runtime::ProcessCommand::new("sleep")
         .arg("30")
-        .stdin(std::process::Stdio::from(lock.try_clone()?))
+        .stdin(acyclic_native_runtime::ProcessStdio::from(
+            lock.try_clone()?,
+        ))
         .spawn()?;
     drop(lock);
     let reacquired = super::fence::acquire_existing_mount_lock(&path);

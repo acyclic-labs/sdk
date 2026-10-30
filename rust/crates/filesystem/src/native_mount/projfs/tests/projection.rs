@@ -38,7 +38,7 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
     let external = acyclic_native_runtime::process_output(
-        std::process::Command::new("cmd.exe")
+        acyclic_native_runtime::ProcessCommand::new("cmd.exe")
             .args(["/D", "/C", "echo c> c.txt && del b.txt"])
             .current_dir(&destination),
         std::time::Duration::from_secs(120),
@@ -392,7 +392,7 @@ async fn rustc_links_object_files_created_inside_projection()
     let compiler_path = path.clone();
     let output = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(
-            std::process::Command::new("rustc")
+            acyclic_native_runtime::ProcessCommand::new("rustc")
                 .current_dir(compiler_path)
                 .args([
                     "--edition",
@@ -415,7 +415,7 @@ async fn rustc_links_object_files_created_inside_projection()
     let executable = path.join("acyclic-workflow-bin.exe");
     let execution = tokio::task::spawn_blocking(move || {
         acyclic_native_runtime::process_output(
-            &mut std::process::Command::new(executable),
+            &mut acyclic_native_runtime::ProcessCommand::new(executable),
             std::time::Duration::from_secs(120),
             8 * 1024 * 1024,
         )

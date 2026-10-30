@@ -1,10 +1,9 @@
 use super::super::*;
-use std::process::Stdio;
 use std::sync::atomic::Ordering;
 
 #[test]
 fn quiet_termination_wait_does_not_retry_observation_on_a_timer() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -12,9 +11,9 @@ fn quiet_termination_wait_does_not_retry_observation_on_a_timer() -> io::Result<
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
     // This fixture creates no descendants. Let the leader exit naturally to
     // exercise the wait after containment has already stopped issuing kills.
@@ -38,7 +37,7 @@ fn quiet_termination_wait_does_not_retry_observation_on_a_timer() -> io::Result<
 #[cfg(target_vendor = "apple")]
 #[test]
 fn permission_denied_group_wait_does_not_poll_live_members() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -46,9 +45,9 @@ fn permission_denied_group_wait_does_not_poll_live_members() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
     let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
     let release = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
@@ -83,7 +82,7 @@ fn group_member_fixture() -> io::Result<()> {
         // These children deliberately outlive their leader in its process
         // group; the supervising ProcessTree retains the unreaped leader.
         children.push(
-            Command::new(std::env::current_exe()?)
+            std::process::Command::new(std::env::current_exe()?)
                 .args([
                     "--exact",
                     "process_tree::capture_events_tests::event_capture_child",
@@ -91,9 +90,9 @@ fn group_member_fixture() -> io::Result<()> {
                 ])
                 .env_remove("ACYCLIC_GROUP_MEMBER_FIXTURE")
                 .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdin(std::process::Stdio::inherit())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .spawn()?,
         );
     }
@@ -105,7 +104,7 @@ fn group_member_fixture() -> io::Result<()> {
 #[cfg(target_vendor = "apple")]
 #[test]
 fn group_wait_observes_descendants_after_the_leader_exits() -> io::Result<()> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -113,9 +112,9 @@ fn group_wait_observes_descendants_after_the_leader_exits() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_GROUP_MEMBER_FIXTURE", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::null())
+        .stderr(ProcessStdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
     let group = process.guard.process_group;
     let release = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;

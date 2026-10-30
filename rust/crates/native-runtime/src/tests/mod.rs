@@ -86,7 +86,7 @@ pub(crate) fn passed_in_exclusive_process(test: &str) -> io::Result<bool> {
         return Ok(false);
     }
     let output = crate::process_output(
-        std::process::Command::new(std::env::current_exe()?)
+        crate::ProcessCommand::new(std::env::current_exe()?)
             .args(["--exact", test, "--nocapture"])
             .env(EXCLUSIVE_CHILD, test),
         CaptureSchedule::Unbounded,

@@ -142,7 +142,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .map_err(stop_failed_mount)?;
     watcher.watch(&mount_path)?;
     let child_result = capture_child(
-        Command::new(std::env::current_exe()?)
+        ProcessCommand::new(std::env::current_exe()?)
             .arg("--io-child")
             .arg(&mount_path)
             .env("ACYCLIC_EXPECTED_NATIVE_KIND", kind),
@@ -335,7 +335,7 @@ pub(super) fn verify_large_windows_directory(mount: &Path) -> Result<(), Failure
         return Err("large projected directory was incomplete or corrupt".into());
     }
     let wildcard = tool_output(
-        Command::new("cmd")
+        ProcessCommand::new("cmd")
             .current_dir(&large)
             .args(["/D", "/Q", "/C", "dir", "/B", "/A:-D", "/ON", "*.rs"]),
     )?;

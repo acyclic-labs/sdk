@@ -602,10 +602,7 @@ mod windows {
             job: HANDLE,
             process: HANDLE,
         ) -> io::Result<()> {
-            self.link = Some(
-                self.custodian
-                    .open(self.tree, &self.secret, job, process)?,
-            );
+            self.link = Some(self.custodian.open(self.tree, &self.secret, job, process)?);
             Ok(())
         }
     }

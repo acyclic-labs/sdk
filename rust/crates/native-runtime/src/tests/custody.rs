@@ -3,7 +3,7 @@ use super::*;
 #[cfg(windows)]
 #[test]
 fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<()> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -11,9 +11,9 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let meter = ReadBudgetMeter::shared(u64::MAX, u64::MAX);
     meter.deny_allocations.store(true, Ordering::Release);
@@ -47,7 +47,7 @@ fn capture_refuses_pending_input_storage_before_accepting_input() -> io::Result<
 
 #[test]
 fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage() -> io::Result<()> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = ProcessCommand::new(std::env::current_exe()?);
     command
         .args([
             "--exact",
@@ -55,9 +55,9 @@ fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage()
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "backpressure")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(ProcessStdio::piped())
+        .stdout(ProcessStdio::piped())
+        .stderr(ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     #[cfg(unix)]
     let meter = Arc::new(ReadBudgetMeter::new(u64::MAX, u64::MAX));
@@ -245,12 +245,12 @@ fn ownership_release_waits_for_physical_cleanup_and_retained_fences()
 #[cfg(unix)]
 #[test]
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {
-    let mut command = std::process::Command::new("/bin/sh");
+    let mut command = ProcessCommand::new("/bin/sh");
     command
         .args(["-c", "printf out; printf err >&2; exec cat >/dev/null"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::piped())
+        .stderr(crate::ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let mut meter = ReadBudgetMeter::new(1024, 32);
     meter.memory_limit = 0;
@@ -295,12 +295,12 @@ fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Res
 #[cfg(unix)]
 #[test]
 fn callback_panic_preserves_original_meter_work_and_pipe_owner() -> io::Result<()> {
-    let mut command = std::process::Command::new("/bin/sh");
+    let mut command = ProcessCommand::new("/bin/sh");
     command
         .args(["-c", "printf out; exec cat >/dev/null"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stdin(crate::ProcessStdio::piped())
+        .stdout(crate::ProcessStdio::piped())
+        .stderr(crate::ProcessStdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
     let mut meter = ReadBudgetMeter::new(1024, 32);
     meter.memory_limit = 0;
