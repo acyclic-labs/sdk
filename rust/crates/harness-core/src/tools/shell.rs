@@ -13,7 +13,8 @@ pub use acyclic_host_platform::shell::{PLATFORM, ShellSpec};
 )]
 #[serde(deny_unknown_fields)]
 pub struct ShellInput {
-    /// Source for the platform shell, inheriting the host environment.
+    /// Source for the platform shell. Only explicitly supplied ordinary process
+    /// variables and volume discovery hints are available; host settings are not inherited.
     #[schemars(length(min = 1))]
     pub command: String,
     /// Optional directory relative to the task view. Parent traversal is forbidden.

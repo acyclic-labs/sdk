@@ -31,6 +31,8 @@ pub(super) struct CheckoutTools {
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     /// The signed scope's authenticated expiry; a running command stops there.
     expiry_unix_ms: u64,
+    /// Tool locations selected once by the native owner, never guest input.
+    environment: std::collections::BTreeMap<String, String>,
     // Lock order: checkout state is outermost; command-local git merge cache
     // and switched-view locks are innermost and never held together. Native
     // completion locks are also inner; neither callback reacquires state.
@@ -87,6 +89,8 @@ impl CheckoutTools {
         verifier: &AuthorityVerifier,
     ) -> Result<Self> {
         let expiry_unix_ms = verifier.expiry(signed)?.saturating_mul(1000);
+        let environment =
+            crate::native_environment::tool_environment().map_err(Error::process_io)?;
         if workspace
             .filesystem
             .workspace_id(&project.storage_name(&mut None)?)
@@ -126,6 +130,7 @@ impl CheckoutTools {
             workspace,
             clock,
             expiry_unix_ms,
+            environment,
             state: shared,
         })
     }

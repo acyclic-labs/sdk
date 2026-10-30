@@ -132,7 +132,7 @@ proptest::proptest! {
 }
 
 #[tokio::test]
-async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> {
+async fn shell_preserves_explicit_environment_without_inheriting_host_secrets() -> Result<()> {
     use proptest::prelude::*;
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     const CHILD: &str = "ACYCLIC_TEST_BASH_HOST_ENVIRONMENT";
@@ -142,43 +142,49 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
         let home = temp.path().join("home");
         std::fs::create_dir(&bin).map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::create_dir(&home).map_err(|error| Error::Storage(error.to_string()))?;
-        let tool = bin.join("acyclic-host-path-only");
-        std::fs::write(&tool, b"#!/bin/sh\nprintf 'host tool: %s\\nnative: %s\\n' \"$HOME\" \"$ACYCLIC_TEST_NATIVE_BYTES\"\n")
+        let tool = bin.join("acyclic-explicit-path-only");
+        std::fs::write(&tool, b"#!/bin/sh\nprintf 'ordinary: %s\\nhome: %s\\n' \"$ACYCLIC_TEST_ORDINARY\" \"$HOME\"\n")
             .map_err(|error| Error::Storage(error.to_string()))?;
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
             .map_err(|error| Error::Storage(error.to_string()))?;
-        // Isolate host settings in a child test process; never mutate this
-        // process's environment while other tests or native workers run.
-        // libtest names omit the crate; derive the path so a module move
-        // cannot leave a stale literal behind.
+        let startup = temp.path().join("startup");
+        std::fs::write(&startup, b"printf ambient-startup >&2\n")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        // A separate real test process owns the hostile ambient environment;
+        // never mutate environment shared by other tests or native workers.
         let test_name = format!(
-            "{}::host_home_and_path_survive_mount_environment_overrides",
+            "{}::shell_preserves_explicit_environment_without_inheriting_host_secrets",
             module_path!()
                 .split_once("::")
                 .map_or(module_path!(), |(_, path)| path)
         );
         let executable =
             std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?;
-        // Property: every non-NUL native value survives launch byte-for-byte,
-        // while host tools remain reachable and mount hints override the host.
+        // Arbitrary non-NUL native values must stay outside the shell, without
+        // interpreting UTF-8 or enumerating credential names in production.
         proptest::test_runner::TestRunner::new(ProptestConfig::with_cases(32))
             .run(&prop::collection::vec(1u8..=255, 0..32), |value| {
                 let result = std::process::Command::new(&executable)
                     .args([test_name.as_str(), "--exact", "--nocapture"])
                     .env(CHILD, &home)
                     .env("PATH", &bin)
-                    .env("HOME", &home)
+                    .env("HOME", "ambient-home")
+                    .env("ANTHROPIC_API_KEY", "fixture-only-credential")
+                    .env(
+                        "ACYCLIC_TEST_RENAMED_SECRET",
+                        "fixture-only-renamed-credential",
+                    )
                     .env("ACYCLIC_VOLUME_DATA", "stale mount")
                     .env("ACYCLIC_VOLUME_DATA_MODE", "ro")
+                    .env("BASH_ENV", &startup)
                     .env(
                         "ACYCLIC_TEST_NATIVE_BYTES",
                         std::ffi::OsString::from_vec(value),
                     )
                     .env(
-                        std::ffi::OsString::from_vec(b"ACYCLIC_TEST_UNRELATED_\xff".to_vec()),
-                        "native key",
+                        std::ffi::OsString::from_vec(b"ACYCLIC_TEST_NATIVE_\xff".to_vec()),
+                        std::ffi::OsString::from_vec(b"fixture-native-\xff".to_vec()),
                     )
-                    .env_remove("BASH_ENV")
                     .output()
                     .map_err(|error| TestCaseError::fail(error.to_string()))?;
                 prop_assert!(
@@ -187,13 +193,8 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
                     String::from_utf8_lossy(&result.stdout),
                     String::from_utf8_lossy(&result.stderr)
                 );
-                // A drifted test name selects nothing and exits successfully; the
-                // child must actually have run exactly this test.
-                prop_assert!(
-                    String::from_utf8_lossy(&result.stdout).contains("1 passed"),
-                    "child selected no test: {}",
-                    String::from_utf8_lossy(&result.stdout)
-                );
+                // A stale selector may succeed after running zero tests.
+                prop_assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"));
                 Ok(())
             })
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -209,46 +210,75 @@ async fn host_home_and_path_survive_mount_environment_overrides() -> Result<()> 
             .map_err(|error| Error::Storage(error.to_string()))?,
     )?;
     let input = ShellInput {
-        command:
-            r#"test -n "$HOME" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-host-path-only"#
-                .into(),
+        command: r#"test -z "${ANTHROPIC_API_KEY+x}" && test -z "${ACYCLIC_TEST_RENAMED_SECRET+x}" && test -z "${ACYCLIC_TEST_NATIVE_BYTES+x}" && test -z "${ACYCLIC_TEST_BASH_HOST_ENVIRONMENT+x}" && test -z "${BASH_ENV+x}" && test "$ACYCLIC_VOLUME_DATA_MODE" = rw && acyclic-explicit-path-only"#.into(),
         cwd: None,
         timeout: Some(5),
     };
-    let prepared = prepare(input.clone(), &mounts, invocation(&mounts.root), 1)?;
-    assert_eq!(
-        prepared.environment.get("ACYCLIC_VOLUME_DATA"),
-        mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
-    );
-    // Negative control: mount-only settings cannot find the host-PATH tool,
-    // even after restoring HOME independently.
-    let mut broken = prepared;
-    broken.inherit_environment = false;
-    broken.environment = mounts.environment()?;
-    broken.environment.insert("HOME".into(), home.into());
-    assert!(
-        !capture::capture_with_custody(broken, |(), _| Ok(()), || Ok(()), (), None)
+    let configured = |inherit_environment| {
+        let mut invocation = invocation(&mounts.root);
+        invocation.inherit_environment = inherit_environment;
+        invocation.environment = crate::native_environment::tool_environment().unwrap();
+        invocation.environment.insert("HOME".into(), home.into());
+        invocation
+            .environment
+            .insert("ACYCLIC_TEST_ORDINARY".into(), "approved".into());
+        invocation
+    };
+    for inherit_environment in [false, true] {
+        let prepared = prepare(input.clone(), &mounts, configured(inherit_environment), 1)?;
+        assert!(!prepared.inherit_environment);
+        assert_eq!(
+            prepared.environment.get("ACYCLIC_VOLUME_DATA"),
+            mounts.environment()?.get("ACYCLIC_VOLUME_DATA")
+        );
+        let output = capture::capture_with_custody(prepared, |(), _| Ok(()), || Ok(()), (), None)
             .await?
             .0
-            .unwrap()
-            .success
+            .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
+        assert!(output.success);
+        assert_eq!(
+            output.stdout,
+            format!("ordinary: approved\nhome: {home}\n").as_bytes()
+        );
+        assert!(output.stderr.is_empty());
+    }
+    let mut collision = configured(false);
+    collision.environment.insert(
+        "ACYCLIC_VOLUME_DATA_MODE".into(),
+        "stale explicit mode".into(),
     );
-    let output = run(input, &mounts, invocation(&mounts.root), 1, None, || Ok(()))
+    assert!(matches!(
+        prepare(input.clone(), &mounts, collision, 1),
+        Err(Error::Invalid(_))
+    ));
+    // An empty production map loses a tool outside the shell's default path.
+    let mut missing_path = prepare(input.clone(), &mounts, configured(false), 1)?;
+    missing_path.environment.remove("PATH");
+    let output = capture::capture_with_custody(missing_path, |(), _| Ok(()), || Ok(()), (), None)
         .await?
-        .ok_or_else(|| Error::Storage("process capture was indeterminate".into()))?;
-    assert!(
-        output.success,
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let mut expected = format!("host tool: {home}\nnative: ").into_bytes();
-    expected.extend(
-        crate::native_environment::variable("ACYCLIC_TEST_NATIVE_BYTES")
-            .unwrap()
-            .into_vec(),
-    );
-    expected.push(b'\n');
-    assert_eq!(output.stdout, expected);
+        .0
+        .ok_or_else(|| Error::Storage("tool search capture was indeterminate".into()))?;
+    assert!(!output.success);
+    assert!(output.stdout.is_empty());
+    let mut invalid = configured(false);
+    invalid
+        .environment
+        .insert("invalid=key".into(), "fixture-only-credential".into());
+    let error = prepare(input.clone(), &mounts, invalid, 1)
+        .err()
+        .expect("invalid settings refuse");
+    assert!(matches!(error, Error::Invalid(_)));
+    assert!(!error.to_string().contains("fixture-only-credential"));
+    // The old inheritance choice physically exposes both named credentials and
+    // the ambient shell startup hook to exactly the same command.
+    let mut broken = prepare(input, &mounts, configured(false), 1)?;
+    broken.inherit_environment = true;
+    let output = capture::capture_with_custody(broken, |(), _| Ok(()), || Ok(()), (), None)
+        .await?
+        .0
+        .ok_or_else(|| Error::Storage("negative control was indeterminate".into()))?;
+    assert!(!output.success);
+    assert_eq!(output.stderr, b"ambient-startup");
     Ok(())
 }
 
