@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { ActorStateBinding, ActorStateHost, semantic } from "@acyclic-labs/actors";
 import type { GuestAdmissionHost } from "@acyclic-labs/auth";
 import type { ImmutableObjects } from "@acyclic-labs/objects";
-import { materializeBindings } from "../src/index.js";
+import { materializeBindings } from "../src/bindings.js";
 import { SqliteObjects, type SqliteStorage } from "../../harness/src/cloudflare-storage.js";
 
 const base = { name: "binding", capability: "", resource: "", targetAccount: new Uint8Array() };
@@ -69,10 +69,11 @@ test("immutableObjects materializes the original durable SQLite port without exp
   try {
     const original = new SqliteObjects(storage, "selected");
     const declaration = { ...base, capability: "grant", resource: "objects:/" };
-    const env = await materializeBindings([declaration], { ...transports, immutableObjects(binding) {
-      expect(binding).toEqual(declaration); return original;
+    const scoped = { ...declaration, name: "scoped", resource: "objects:/harness" };
+    const env = await materializeBindings([declaration, scoped], { ...transports, immutableObjects(binding) {
+      expect(binding).toEqual(binding.name === scoped.name ? scoped : declaration); return original;
     } });
-    const objects = env.binding as ImmutableObjects;
+    const objects = env.scoped as ImmutableObjects;
     expect(Object.keys(objects).sort()).toEqual(["length", "put", "read"]);
     expect(barriers).toBe(0);
     const key = new Uint8Array(33); key[0] = 1;
@@ -88,7 +89,8 @@ test("immutableObjects materializes the original durable SQLite port without exp
   } finally { database.close(); }
 });
 
-for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["streams:/", "streams"]] as const) {
+for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machines:/harness", "machinesWorkspace"],
+  ["streams:/", "streams"], ["streams:/harness", "streams"]] as const) {
   test(`${resource} requires its owner producer and preserves its terminal refusal`, async () => {
     const declaration = { ...base, capability: "grant", resource };
     await expect(materializeBindings([declaration], transports)).rejects.toThrow(`missing ${producer} producer`);
@@ -104,7 +106,7 @@ test("unsupported and malformed resource selections refuse before any host produ
   const authority = { ...transports, immutableObjects(): never { effects++; throw new Error("unexpected producer"); } };
   const valid = { ...base, capability: "grant", resource: "objects:/" };
   const invalid: semantic.Binding[] = [
-    { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects:/child" }, { ...valid, resource: "streams:/child" },
+    { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects-other:/child" }, { ...valid, resource: "streams-other:/child" },
     { ...valid, stateTransaction: true }, { ...valid, guestAdmission: "hostAccess" },
     { ...valid, targetAccount: new Uint8Array([1]) }, { ...valid, guestAdmission: "unknown" },
   ];
