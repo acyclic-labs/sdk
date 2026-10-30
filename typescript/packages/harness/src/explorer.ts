@@ -73,12 +73,12 @@ export class AgentExplorer {
   readonly #options: ExplorerOptions;
   readonly #db: IDBDatabase | undefined;
   #frame: number | undefined;
-  #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
+  #renderQueued = false;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #closed = false;
   readonly #render = () => {
     this.#frame = undefined;
-    this.#fallbackFrame = undefined;
+    this.#renderQueued = false;
     if (this.#closed) return;
     this.#options.render(this.#core.frame() as ExplorerRow[], this);
     if (!this.#closed) this.#arm();
@@ -115,13 +115,14 @@ export class AgentExplorer {
     return explorer;
   }
 
-  /** Renders on the next animation frame; repeated calls coalesce. */
+  /** Coalesces committed changes onto a frame, or the host event queue without a display. */
   schedule(): void {
-    if (this.#closed || this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
+    if (this.#closed || this.#frame !== undefined || this.#renderQueued) return;
     if (typeof globalThis.requestAnimationFrame === "function") {
       this.#frame = globalThis.requestAnimationFrame(this.#render);
     } else {
-      this.#fallbackFrame = setTimeout(this.#render, 16);
+      this.#renderQueued = true;
+      queueMicrotask(this.#render);
     }
   }
 
@@ -173,10 +174,9 @@ export class AgentExplorer {
       globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
       if (this.#timer !== undefined) clearTimeout(this.#timer);
       if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
-      if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
       this.#timer = undefined;
       this.#frame = undefined;
-      this.#fallbackFrame = undefined;
+      this.#renderQueued = false;
       this.#db?.close();
       this.#core.free();
     }
