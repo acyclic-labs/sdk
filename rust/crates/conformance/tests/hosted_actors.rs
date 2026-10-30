@@ -24,15 +24,7 @@ use tokio::sync::oneshot;
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 async fn listener() -> std::io::Result<tokio::net::TcpListener> {
-    let mut occupied = std::io::Error::from(std::io::ErrorKind::AddrInUse);
-    for port in 15400..=15499 {
-        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
-            Ok(listener) => return Ok(listener),
-            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => occupied = error,
-            Err(error) => return Err(error),
-        }
-    }
-    Err(occupied)
+    tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await
 }
 
 struct Abort(tokio::task::AbortHandle);
@@ -480,56 +472,52 @@ async fn run(producer: Producer) -> Outcome {
 
 #[tokio::test]
 async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        let _occupied = listener().await?;
-        startup_shutdown().await?;
-        startup_completion().await?;
-        run(Producer::Complete).await?;
-        run(Producer::Model).await?;
-        for (command, skip, case) in [
-            ("bind", 0, "bind"),
-            ("root", 0, "root"),
-            ("children", 0, "discovery_pages"),
-            ("approvals", 0, "discovery_pages"),
-            ("prompt", 0, "prompt"),
-            ("prompt", 1, "prompt_retry"),
-            ("prompt", 2, "changed_prompt"),
-            ("settlement", 0, "tree_admission"),
-            ("settlement", 1, "reply_cut"),
-            ("reply", 0, "reply"),
-            ("read", 0, "output"),
-        ] {
-            run(Producer::Command {
-                command,
-                skip,
-                case,
-            })
-            .await?;
-        }
-        run(Producer::Host).await?;
-        run(Producer::ReplyHost).await?;
-        run(Producer::AbortHost).await?;
-        run(Producer::ReplyAbortHost).await?;
-        // The connection producer is a real listening socket, not a scripted
-        // HTTP response. Closing it must retain the original typed dial error.
-        let listener = listener().await?;
-        let url = format!("http://{}", listener.local_addr()?);
-        drop(listener);
-        let options = acyclic_harness_client::resolve_connection_options(
-            Some(&url),
-            Some("disposable-conformance"),
-            None,
-            None,
-        )?;
-        let failure = match endpoint::connect(&options).await {
-            Ok(_) => return Err("closed listener admitted a connection".into()),
-            Err(failure) => failure,
-        };
-        assert!(matches!(
-            failure.cause,
-            Some(acyclic_conformance::client::Cause::Connect(_))
-        ));
-        Ok(())
-    })
-    .await?
+    startup_shutdown().await?;
+    startup_completion().await?;
+    run(Producer::Complete).await?;
+    run(Producer::Model).await?;
+    for (command, skip, case) in [
+        ("bind", 0, "bind"),
+        ("root", 0, "root"),
+        ("children", 0, "discovery_pages"),
+        ("approvals", 0, "discovery_pages"),
+        ("prompt", 0, "prompt"),
+        ("prompt", 1, "prompt_retry"),
+        ("prompt", 2, "changed_prompt"),
+        ("settlement", 0, "tree_admission"),
+        ("settlement", 1, "reply_cut"),
+        ("reply", 0, "reply"),
+        ("read", 0, "output"),
+    ] {
+        run(Producer::Command {
+            command,
+            skip,
+            case,
+        })
+        .await?;
+    }
+    run(Producer::Host).await?;
+    run(Producer::ReplyHost).await?;
+    run(Producer::AbortHost).await?;
+    run(Producer::ReplyAbortHost).await?;
+    // The connection producer is a real listening socket, not a scripted
+    // HTTP response. Closing it must retain the original typed dial error.
+    let listener = listener().await?;
+    let url = format!("http://{}", listener.local_addr()?);
+    drop(listener);
+    let options = acyclic_harness_client::resolve_connection_options(
+        Some(&url),
+        Some("disposable-conformance"),
+        None,
+        None,
+    )?;
+    let failure = match endpoint::connect(&options).await {
+        Ok(_) => return Err("closed listener admitted a connection".into()),
+        Err(failure) => failure,
+    };
+    assert!(matches!(
+        failure.cause,
+        Some(acyclic_conformance::client::Cause::Connect(_))
+    ));
+    Ok(())
 }

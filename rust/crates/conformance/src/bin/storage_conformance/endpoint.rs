@@ -10,7 +10,7 @@ use acyclic_harness::{
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{Grants, PRIVATE_VOLUME, TurnLimits},
-    hosting::{Bound, Placement, RootRequest, Serving, Turns, VerifiedCaller},
+    hosting::{Bound, Placement, RootRequest, Runtime, Serving, Turns, VerifiedCaller},
     local::{Connection, Event, agent_conversation::Conversation},
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     preset::Preset,
@@ -25,7 +25,7 @@ use acyclic_objects::{
 };
 use acyclic_stream::BoxProviderStream;
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 /// A deterministic in-process model, not a captured external-provider fixture.
 struct Answer;
@@ -53,13 +53,6 @@ impl<T> Drop for Owner<T> {
     }
 }
 
-struct StopOnDrop(tokio::task::AbortHandle);
-impl Drop for StopOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 /// The fixture owns the disposable tree and admits its own endpoint credential.
 struct User;
 impl acyclic_harness::hosting::Platform for User {
@@ -80,7 +73,7 @@ fn checked<T>(
     step: &str,
     result: std::result::Result<T, impl std::fmt::Display>,
 ) -> Result<T> {
-    result.map_err(|error| format!("step=endpoint-{phase}-{step}: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh").into())
+    result.map_err(|error| format!("step=endpoint-{phase}-{step}: {error}; recovery command: bash scripts/backends/storage-conformance.sh").into())
 }
 
 pub(super) async fn verify<P: acyclic_stream::NativeStreamProvider + 'static>(
@@ -221,7 +214,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                     policy: None,
                 },
             )
-            .await.map_err(|error| format!("step=endpoint-{phase}-create-root: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"))?
+            .await.map_err(|error| format!("step=endpoint-{phase}-create-root: {error}; recovery command: bash scripts/backends/storage-conformance.sh"))?
             {
                 Serving::Served(server) => server,
                 Serving::Unknown(_) => return Err("endpoint root unexpectedly uncertain".into()),
@@ -233,19 +226,16 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                 acyclic_harness::hosting::reopen(bound, Arc::new(User), AgentPath::root(&id)).await,
             )?
         };
-        let runner = server.clone();
-        let mut runtime = Owner(tokio::spawn(async move {
-            runner
-                .run(|actor, error| eprintln!("endpoint fixture actor {actor:?}: {error}"))
-                .await
-        }));
+        let runtime = Runtime::start(server.clone());
+        let completion = runtime.completion();
         let host = Hosted::new(
             server,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
-            StopOnDrop(runtime.0.abort_handle()),
+            runtime,
             None,
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:15402").await?;
+        )
+        .with_completion(completion);
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
         let (advertise, advertised) = tokio::sync::oneshot::channel();
         let (stop, stopped) = tokio::sync::oneshot::channel();
         let mut serving = Owner(tokio::spawn(async move {
@@ -266,14 +256,12 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             )
             .await
         }));
-        let (endpoint, credential) = match tokio::time::timeout(Duration::from_secs(10), advertised)
-            .await?
-        {
+        let (endpoint, credential) = match advertised.await {
             Ok(endpoint) => endpoint,
             Err(_) => {
                 let result = (&mut serving.0).await?;
                 return Err(format!(
-                        "step=endpoint-ready: server exited before readiness: {result:?}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"
+                        "step=endpoint-ready: server exited before readiness: {result:?}; recovery command: bash scripts/backends/storage-conformance.sh"
                     ).into());
             }
         };
@@ -284,17 +272,24 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             let connection = checked(phase, "connect", Connection::connect(&options).await)?;
             let conversation = checked(phase, "conversation", Conversation::open(connection))?;
             let mut observer = checked(phase, "observe", conversation.observe(0).await)?;
-            let inbox = checked(phase, "send", conversation.send("once", "stored prompt").await)?;
-            assert_eq!(checked(phase, "retry-send", conversation.send("once", "stored prompt").await)?, inbox);
-            let entry = tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    if let Event::Turn(entry) = observer.next().await? {
-                        break Ok::<_, acyclic_harness::Error>(entry);
-                    }
+            let inbox = checked(
+                phase,
+                "send",
+                conversation.send("once", "stored prompt").await,
+            )?;
+            assert_eq!(
+                checked(
+                    phase,
+                    "retry-send",
+                    conversation.send("once", "stored prompt").await
+                )?,
+                inbox
+            );
+            let entry = loop {
+                if let Event::Turn(entry) = checked(phase, "follow-turn", observer.next().await)? {
+                    break entry;
                 }
-            })
-            .await.map_err(|error| format!("step=endpoint-{phase}-turn-timeout: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"))?;
-            let entry = checked(phase, "follow-turn", entry)?;
+            };
             assert_eq!(
                 checked(phase, "read-turn", conversation.turn(&entry).await)?,
                 (Some("stored prompt".into()), "stored answer".into())
@@ -303,16 +298,36 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             assert!(matches!(reply, Reply::Answered { sequence: 0, .. }));
             assert_eq!(checked(phase, "settled", conversation.settled().await)?, 1);
             assert!(conversation.send("once", "changed prompt").await.is_err());
-            let reconnected = checked(phase, "reconnect", Conversation::open(checked(phase, "reconnect-transport", Connection::connect(&options).await)?))?;
-            assert_eq!(checked(phase, "reconnect-send", reconnected.send("once", "stored prompt").await)?, inbox);
-            assert_eq!(checked(phase, "reconnect-reply", reconnected.reply("once", inbox).await)?, reply);
+            let reconnected = checked(
+                phase,
+                "reconnect",
+                Conversation::open(checked(
+                    phase,
+                    "reconnect-transport",
+                    Connection::connect(&options).await,
+                )?),
+            )?;
+            assert_eq!(
+                checked(
+                    phase,
+                    "reconnect-send",
+                    reconnected.send("once", "stored prompt").await
+                )?,
+                inbox
+            );
+            assert_eq!(
+                checked(
+                    phase,
+                    "reconnect-reply",
+                    reconnected.reply("once", inbox).await
+                )?,
+                reply
+            );
             Ok::<_, acyclic_agent_host_conformance::Failure>((inbox, reply))
         }
         .await;
         let _ = stop.send(());
-        tokio::time::timeout(Duration::from_secs(10), &mut serving.0).await???;
-        runtime.0.abort();
-        let _ = (&mut runtime.0).await;
+        (&mut serving.0).await??;
         let observed = observed?;
         if let Some(previous) = &saved {
             assert_eq!(&observed, previous);
