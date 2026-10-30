@@ -185,6 +185,7 @@ fn page_tail_records_keep_keys_and_attributes() {
                 value: b"running".to_vec().into(),
                 commit_id: vec![9; 32].into(),
                 committed_at_micros: 1,
+                origin: "agents/a".to_owned(),
                 keys: vec![b"agent".to_vec().into()],
                 attributes: vec![wire::Attribute {
                     name: "kind".to_owned(),

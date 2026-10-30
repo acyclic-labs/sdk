@@ -156,6 +156,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             let waited = crate::revision::served(&*self.provider, &request.at_least)
                 .await
                 .map_err(|error| error_status(&error))?;
+            let path = request.path.clone();
             let records = self
                 .provider
                 .read(request)
@@ -174,7 +175,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 return Ok(observe_body(&span, stream::iter([Ok(frame)])).boxed());
             }
             let records = records.map(move |record| {
-                record_frame(record).map(|mut frame| {
+                record_frame(record, &path).map(|mut frame| {
                     frame.applied = applied.take();
                     frame
                 })
@@ -238,9 +239,12 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     }
 }
 
-fn record_frame(record: Result<Record, StreamError>) -> Result<wire::ReadResponse, Status> {
+fn record_frame(
+    record: Result<Record, StreamError>,
+    path: &crate::StreamPath,
+) -> Result<wire::ReadResponse, Status> {
     record
-        .map(|record| read_response_wire(vec![record_wire(record)]))
+        .map(|record| read_response_wire(vec![record_wire(record, Some(path))]))
         .map_err(|error| error_status(&error))
 }
 

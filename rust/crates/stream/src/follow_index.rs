@@ -315,6 +315,7 @@ mod tests {
             headers: RecordHeaders::new(vec![key.into()], vec![]).unwrap(),
             commit_id: CommitId::default(),
             committed_at_micros: 0,
+            origin: crate::StreamPath::new("origin").unwrap(),
         };
         index.lock().unwrap().publish(&[record("z", 0)], 1);
         assert!(!followed.changed.has_changed().unwrap());

@@ -40,6 +40,9 @@ message Record {
   uint64 committed_at_micros = 4;
   repeated bytes keys = 5;
   repeated Attribute attributes = 6;
+  // Stream that appended the record. Empty means the path being read or
+  // followed; a record inherited through a fork names its source segment.
+  string origin = 7;
 }
 
 // Indexed headers are part of the immutable, size-bounded record.

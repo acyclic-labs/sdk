@@ -298,6 +298,10 @@ mod http {
                 Ok(result.into())
             })?,
         )?;
+        if let Some(origin) = item.get("origin") {
+            path(origin)?;
+            set(&result, "origin", &string_js(origin)?)?;
+        }
         Ok(result.into())
     }
 

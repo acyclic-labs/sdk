@@ -240,6 +240,7 @@ mod tests {
             headers: appended.headers,
             commit_id: acyclic_stream::CommitId::from_bytes([9; 32]),
             committed_at_micros: 0,
+            origin: acyclic_stream::StreamPath::new("origin").unwrap(),
         };
         assert!(matches!(
             project(record.clone(), volume, config, &trie, &authorization).unwrap(),

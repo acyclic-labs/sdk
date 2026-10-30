@@ -67,8 +67,10 @@ pub fn heads_to_wire(value: crate::Heads) -> Result<wire::HeadsResponse, StreamE
             .retained
             .into_iter()
             .map(|selected| wire::RetainedRecordObservation {
+                record: selected
+                    .record
+                    .map(|record| record_wire(record, Some(&selected.path))),
                 path: selected.path.to_string(),
-                record: selected.record.map(record_wire),
             })
             .collect(),
         projection: projection_to_wire(value.projection),
@@ -92,10 +94,14 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
             .retained
             .into_iter()
             .map(|selected| {
+                let path =
+                    StreamPath::new(selected.path).map_err(|_| StreamError::InvalidResponse)?;
                 Ok(crate::RetainedRecordObservation {
-                    path: StreamPath::new(selected.path)
-                        .map_err(|_| StreamError::InvalidResponse)?,
-                    record: selected.record.map(record).transpose()?,
+                    record: selected
+                        .record
+                        .map(|record| self::record(record, Some(&path)))
+                        .transpose()?,
+                    path,
                 })
             })
             .collect::<Result<_, _>>()?,
@@ -134,7 +140,11 @@ fn head_observation_from_wire(
     let mut head = crate::PathHead {
         retained_through: value.retained_through,
         tail: value.tail,
-        last: value.last.map(record).transpose()?,
+        // A head names no path of its own, so its last record spells its origin.
+        last: value
+            .last
+            .map(|record| self::record(record, None))
+            .transpose()?,
         durable: value.durable,
         origin: None,
     };
@@ -167,7 +177,7 @@ pub fn head_to_wire(value: crate::PathHead) -> wire::PathHead {
     wire::PathHead {
         retained_through: value.retained_through,
         tail: value.tail,
-        last: value.last.map(record_wire),
+        last: value.last.map(|record| record_wire(record, None)),
         durable: value.durable,
         origin: value.origin.map(fork_origin_to_wire),
     }
@@ -217,7 +227,7 @@ mod tests {
                     path: selected.path.clone(),
                     record: (selected.sequence % 2 == 0).then(|| crate::Record {
                         sequence: selected.sequence, value: selected.path.as_str().as_bytes().to_vec().into(),
-                        commit_id: selected.commit_id, committed_at_micros: 1,
+                        commit_id: selected.commit_id, committed_at_micros: 1, origin: selected.path.clone(),
                         headers: Default::default(),
                     }),
                 }).collect(),

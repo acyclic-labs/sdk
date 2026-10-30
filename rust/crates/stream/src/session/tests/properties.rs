@@ -22,6 +22,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
             Channel {
                 binding: Some(testing::binding()),
                 opaque_cursor: false,
+                followed: None,
                 revalidate: None,
                 generation: 1,
                 latest,
@@ -63,7 +64,7 @@ proptest! {
             let value = crate::AppendRecord::latest(OwnedBytes::from(vec![*value]), OwnedBytes::from(vec![*key]), *attention)?;
             let record = Record { headers: value.headers,
                 sequence: index as u64, value: value.value,
-                commit_id: CommitId::from_bytes([1; 32]), committed_at_micros: 0,
+                commit_id: CommitId::from_bytes([1; 32]), committed_at_micros: 0, origin: crate::StreamPath::new("origin").unwrap(),
             };
             let identity = wire::SessionChannel { channel_id: 1, generation: 1 };
             prop_assert!(session.record(identity, Ok(Event::Record(record))).is_ok());
@@ -141,6 +142,7 @@ fn exercise_admission(operations: &[u8], broken: bool) {
                             value: vec![0].into(),
                             commit_id: CommitId::from_bytes([1; 32]),
                             committed_at_micros: 0,
+                            origin: crate::StreamPath::new("origin").unwrap(),
                         })),
                     )
                     .unwrap();

@@ -331,6 +331,7 @@ fn record_bytes(record: Record) -> (u64, Vec<u8>, CommitId, u64) {
         value,
         commit_id,
         committed_at_micros,
+        origin: _,
         headers: _,
     } = record;
     (sequence, value.to_vec(), commit_id, committed_at_micros)
@@ -413,4 +414,75 @@ proptest! {
             Ok(())
         })?;
     }
+}
+
+/// Follows the tip of a fork chain from zero, where every hop appended one
+/// record. Returns the records' (value, origin) pairs and the peak live
+/// allocation while following.
+fn follow_chain(depth: usize) -> (Vec<(u64, String)>, u64) {
+    let provider = MemoryStream::new(MemoryLimits::default());
+    let hop = |index: usize| StreamPath::new(format!("chain/{index}")).unwrap();
+    futures::executor::block_on(async {
+        for index in 0..depth {
+            if index > 0 {
+                provider
+                    .fork(ForkRequest {
+                        exclude: Vec::new(),
+                        source: hop(index - 1),
+                        destination: hop(index),
+                        at_tail: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            provider
+                .append(AppendRequest {
+                    path: hop(index),
+                    records: vec![Bytes::from((index as u64).to_le_bytes().to_vec()).into()],
+                    if_tail: Some(index as u64),
+                    idempotency_key: crate::IdempotencyKey::unique(),
+                })
+                .await
+                .unwrap();
+        }
+    });
+    let state = futures::executor::block_on(provider.state.read());
+    let tip = state.paths.get(&hop(depth - 1)).unwrap();
+    let mut cursor = HistoryCursor::at(0);
+    let mut records = Vec::with_capacity(depth);
+    let allocations = acyclic_test_support::measure(|| {
+        cursor.sync(tip.history.as_ref(), tip.tail);
+        while let Some(record) = futures::FutureExt::now_or_never(cursor.next_record())
+            .expect("memory pages are immediately ready")
+            .unwrap()
+        {
+            // The oracle shares the origin and was reserved before measuring.
+            records.push((
+                u64::from_le_bytes(record.value.as_ref().try_into().unwrap()),
+                record.origin,
+            ));
+        }
+    });
+    let records = records
+        .into_iter()
+        .map(|(value, origin)| (value, origin.to_string()))
+        .collect();
+    (records, allocations.bytes_max)
+}
+
+#[test]
+fn a_deep_fork_chain_follows_each_origin_in_bounded_memory() {
+    let mut per_depth = Vec::new();
+    for depth in [2_000, 20_000] {
+        let (records, peak) = follow_chain(depth);
+        assert_eq!(records.len(), depth);
+        for (sequence, (value, origin)) in records.iter().enumerate() {
+            assert_eq!(*value, sequence as u64);
+            assert_eq!(*origin, format!("chain/{sequence}"));
+        }
+        per_depth.push(peak);
+    }
+    // The follow holds one page however deep the chain is.
+    assert_eq!(per_depth[0], per_depth[1], "follow memory grew with depth");
 }

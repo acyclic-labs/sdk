@@ -1572,6 +1572,7 @@ mod reader_tests {
                 value: value.to_vec().into(),
                 commit_id: commit,
                 committed_at_micros: 0,
+                origin: acyclic_stream::StreamPath::new("origin").unwrap(),
                 headers: Default::default(),
             }),
         }
@@ -1866,6 +1867,7 @@ mod reader_tests {
                         value: b"later".to_vec().into(),
                         commit_id: CommitId::from_bytes([2; 32]),
                         committed_at_micros: 0,
+                        origin: acyclic_stream::StreamPath::new("origin").unwrap(),
                         headers: Default::default(),
                     }),
                 },

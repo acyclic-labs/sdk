@@ -132,6 +132,7 @@ pub(super) async fn read(
 ) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
+    let path = request.path.clone();
     let records = run_with_cancellation(
         async {
             client
@@ -144,7 +145,7 @@ pub(super) async fn read(
     .await?;
     Ok(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            records: Arc::new(Mutex::new(Some(record_frames(records, path)))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },
@@ -161,6 +162,7 @@ pub(super) async fn open_follow(
     if request.progress {
         return Err(stream_error(&StreamError::InvalidArgument));
     }
+    let path = request.path.clone();
     let records = run_with_cancellation(
         async move {
             client
@@ -174,23 +176,25 @@ pub(super) async fn open_follow(
     .await?;
     Ok(NativeStreamFollow {
         state: FollowState {
-            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            records: Arc::new(Mutex::new(Some(record_frames(records, path)))),
             token: cancellation_state(cancellation).unwrap_or_default(),
             closed: Arc::new(AtomicBool::new(false)),
         },
     })
 }
 
+/// Encodes the records of `path`, spelling only an origin other than it.
 pub(super) fn record_frames(
     records: impl futures::Stream<
         Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>,
     > + Send
     + 'static,
+    path: acyclic_stream::StreamPath,
 ) -> FollowFrames {
     records
-        .map(|record| {
+        .map(move |record| {
             record.map(|record| {
-                wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
+                wire_codec::read_response_wire(vec![wire_codec::record_wire(record, Some(&path))])
                     .encode_to_vec()
             })
         })

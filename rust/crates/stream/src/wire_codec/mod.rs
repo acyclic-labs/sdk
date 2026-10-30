@@ -12,6 +12,9 @@ use crate::{
 #[cfg(test)]
 mod read_response_tests;
 
+#[cfg(test)]
+mod origin_tests;
+
 include!("conversion_0.rs");
 
 include!("conversion_1.rs");

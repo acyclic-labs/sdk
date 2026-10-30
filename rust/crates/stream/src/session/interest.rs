@@ -108,6 +108,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let mut opaque_cursor = false;
         let binding;
         let mut terminal = None;
+        // Records of a stream follow spell only an origin other than its path.
+        let mut followed = None;
         let (latest, source, revalidate) = match subscription.kind {
             Some(Kind::Follow(follow)) => {
                 let (preceding, latest, until) = follow_parameters(&follow, &resume)?;
@@ -164,6 +166,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         Err(reason) => return Ok(Admission::Denied(identity, reason)),
                     };
                     binding = Some(authorization);
+                    followed = Some(path.clone());
                     let source = follow_source(
                         Follow {
                             provider: Arc::clone(&self.provider),
@@ -268,7 +271,15 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         };
         Ok(Admission::Open(Box::new(Opened {
             identity,
-            channel: Channel::opened(binding, identity, resume, revalidate, latest, opaque_cursor),
+            channel: Channel::opened(
+                binding,
+                identity,
+                resume,
+                revalidate,
+                latest,
+                opaque_cursor,
+                followed,
+            ),
             source,
             terminal,
         })))
@@ -335,9 +346,11 @@ impl Channel {
         revalidate: Option<ResourceRevalidation>,
         latest: bool,
         opaque_cursor: bool,
+        followed: Option<StreamPath>,
     ) -> Self {
         Self {
             binding,
+            followed,
             generation: identity.generation,
             latest,
             opaque_cursor,

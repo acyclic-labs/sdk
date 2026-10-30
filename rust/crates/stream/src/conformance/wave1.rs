@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 mod agent;
 pub mod coverage;
 mod fork;
+mod origin;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
 pub const RECOVERY: &str =
@@ -44,11 +45,13 @@ pub enum Case {
     InheritedFollow,
     /// Fork-of-fork keeps every ancestor's adoption record and conversation cut.
     ForkLineage,
+    /// Records of nested and empty forks name their appending segment at every cut.
+    RecordOrigin,
 }
 
 impl Case {
     /// Every gate history in stable order.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::AppendRetry,
         Self::CommitRetry,
         Self::AbsentZeroTail,
@@ -58,6 +61,7 @@ impl Case {
         Self::ClosedInbox,
         Self::InheritedFollow,
         Self::ForkLineage,
+        Self::RecordOrigin,
     ];
 
     /// Stable name used in receipts and case selection.
@@ -73,6 +77,7 @@ impl Case {
             Self::ClosedInbox => "closed_inbox",
             Self::InheritedFollow => "inherited_follow",
             Self::ForkLineage => "fork_lineage",
+            Self::RecordOrigin => "record_origin",
         }
     }
 }
@@ -112,6 +117,8 @@ pub enum Invariant {
     MissingFollow,
     /// Descendants carry ancestor records with their original identities.
     Lineage,
+    /// A record names the stream that appended it, never the path read.
+    RecordOrigin,
 }
 
 /// A semantic violation is distinct from provider/setup/transport failure.
@@ -311,7 +318,7 @@ fn provider_failure(case: Case, step: &'static str, source: StreamError) -> Fail
 pub async fn verify<P: StreamProvider + ?Sized>(
     provider: &P,
     namespace: &StreamPath,
-) -> Result<[Case; 9], Failure> {
+) -> Result<[Case; 10], Failure> {
     for case in Case::ALL {
         verify_case(provider, namespace, case).await?;
     }
@@ -336,6 +343,7 @@ pub async fn verify_case<P: StreamProvider + ?Sized>(
         Case::ClosedInbox => agent::closed_inbox(&history).await,
         Case::InheritedFollow => agent::inherited_follow(&history).await,
         Case::ForkLineage => agent::fork_lineage(&history).await,
+        Case::RecordOrigin => origin::nested(&history).await,
     }
 }
 

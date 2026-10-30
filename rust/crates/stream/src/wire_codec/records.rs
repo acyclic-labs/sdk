@@ -1,5 +1,19 @@
 /// Validates and converts a canonical wire record without copying its payload.
-pub fn record(value: wire::Record) -> Result<Record, StreamError> {
+/// An empty origin names `followed`, the path read or followed; a context
+/// with no such path spells every origin.
+pub fn record(value: wire::Record, followed: Option<&StreamPath>) -> Result<Record, StreamError> {
+    let origin = match (value.origin.is_empty(), followed) {
+        (true, Some(followed)) => followed.clone(),
+        (true, None) => return Err(StreamError::InvalidArgument),
+        (false, followed) => {
+            let origin = StreamPath::new(value.origin)?;
+            // The followed path is never spelled, so a record has one encoding.
+            if followed == Some(&origin) {
+                return Err(StreamError::InvalidArgument);
+            }
+            origin
+        }
+    };
     let body = append_record(wire::AppendRecord {
         value: value.value,
         keys: value.keys,
@@ -11,12 +25,24 @@ pub fn record(value: wire::Record) -> Result<Record, StreamError> {
         commit_id: commit_id(&value.commit_id)?,
         committed_at_micros: value.committed_at_micros,
         headers: body.headers,
+        origin,
     })
 }
 
-/// Converts a domain record into its canonical wire representation.
-pub fn record_wire(value: Record) -> wire::Record {
+/// The origin a record's wire form spells: none when it is the `followed`
+/// path. Encoding and its precomputed length both ask here, so they agree.
+pub(crate) fn spelled_origin<'a>(
+    record: &'a Record,
+    followed: Option<&StreamPath>,
+) -> Option<&'a StreamPath> {
+    (followed != Some(&record.origin)).then_some(&record.origin)
+}
+
+/// Converts a domain record into its canonical wire representation, spelling
+/// the origin only when it is not `followed`.
+pub fn record_wire(value: Record, followed: Option<&StreamPath>) -> wire::Record {
     let (keys, attributes) = headers_wire(&value.headers);
+    let origin = spelled_origin(&value, followed).map_or_else(String::new, ToString::to_string);
     wire::Record {
         sequence: value.sequence,
         value: bytes::Bytes::from_owner(value.value),
@@ -24,7 +50,25 @@ pub fn record_wire(value: Record) -> wire::Record {
         committed_at_micros: value.committed_at_micros,
         keys,
         attributes,
+        origin,
     }
+}
+
+/// Records a committed mutation appends belong to its path, so none spells
+/// an origin and a persisted envelope carries no path per record.
+pub(crate) fn owned_records(
+    values: Vec<wire::Record>,
+    owner: &StreamPath,
+) -> Result<Vec<Record>, StreamError> {
+    values
+        .into_iter()
+        .map(|value| {
+            if !value.origin.is_empty() {
+                return Err(StreamError::InvalidArgument);
+            }
+            record(value, Some(owner))
+        })
+        .collect()
 }
 
 fn headers(

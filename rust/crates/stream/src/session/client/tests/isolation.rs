@@ -102,7 +102,9 @@ fn malformed_child(id: u64) -> wire::SessionFrame {
                     headers: Default::default(),
                     commit_id: crate::CommitId::from_bytes([1; 32]),
                     committed_at_micros: 0,
+                    origin: crate::StreamPath::new("origin").unwrap(),
                 },
+                None,
             ))),
         }),
     )

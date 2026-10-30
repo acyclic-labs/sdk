@@ -442,6 +442,7 @@ impl Client {
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
+        let path = request.path.clone();
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
             key: wire_codec::read_key_to_wire(&request.key),
@@ -465,8 +466,8 @@ impl Client {
                 crate::FollowFilter::default(),
             )
             .await?
-            .map(|data| match data?.item {
-                Some(Item::Record(record)) => wire_codec::record(record),
+            .map(move |data| match data?.item {
+                Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
                 _ => Err(StreamError::Unavailable),
             }),
         );
@@ -496,13 +497,13 @@ impl Client {
         request: crate::FollowRequest,
     ) -> Result<RecordStream, StreamError> {
         let filter = Some(request.filter.transport_filter()?);
-        let from = request.from;
+        let (from, path) = (request.from, request.path.clone());
         Ok(super::runtime::boxed(
             self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
                 .await?
-                .map(|item| match item? {
+                .map(move |item| match item? {
                     Received::Data(data) => match data.item {
-                        Some(Item::Record(record)) => wire_codec::record(record),
+                        Some(Item::Record(record)) => wire_codec::record(record, Some(&path)),
                         _ => Err(StreamError::Unavailable),
                     },
                     _ => Err(StreamError::Unavailable),
@@ -518,7 +519,7 @@ impl Client {
         StreamError,
     > {
         let filter = Some(request.filter.transport_filter()?);
-        let (from, progress) = (request.from, request.progress);
+        let (from, progress, path) = (request.from, request.progress, request.path.clone());
         let source = self
             .open_subscription(
                 follow_kind(request),
@@ -537,7 +538,7 @@ impl Client {
                     ..
                 })) => Some(match data.item {
                     Some(Item::Record(record)) => {
-                        wire_codec::record(record).map(crate::FollowUpdate::Record)
+                        wire_codec::record(record, Some(&path)).map(crate::FollowUpdate::Record)
                     }
                     _ => Err(StreamError::Unavailable),
                 }),

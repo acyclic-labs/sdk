@@ -217,6 +217,7 @@ async fn canonical_all_data_preserves_the_exact_cursor_and_both_watermarks() -> 
             value: Bytes::from_static(b"accepted"),
             commit_id: vec![7; 32].into(),
             committed_at_micros: 123,
+            origin: String::new(),
         })),
     };
     fixture

@@ -19,6 +19,7 @@ fn envelope() -> wire::CommittedEnvelope {
                         value: Bytes::from_static(b"actual"),
                         commit_id: id,
                         committed_at_micros: 9007199254740993,
+                        origin: String::new(),
                         keys: vec![],
                         attributes: vec![],
                     }],

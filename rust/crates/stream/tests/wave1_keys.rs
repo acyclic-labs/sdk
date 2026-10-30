@@ -111,3 +111,12 @@ async fn local_inherited_follow() -> TestResult {
 async fn local_fork_lineage() -> TestResult {
     local(Case::ForkLineage).await
 }
+#[tokio::test]
+async fn memory_record_origin() -> TestResult {
+    memory(Case::RecordOrigin).await
+}
+#[cfg(feature = "local")]
+#[tokio::test]
+async fn local_record_origin() -> TestResult {
+    local(Case::RecordOrigin).await
+}
