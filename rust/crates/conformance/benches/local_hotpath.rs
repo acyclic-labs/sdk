@@ -97,8 +97,9 @@ fn run() -> Result {
         "os": std::env::consts::OS, "arch": std::env::consts::ARCH,
         "root": options.root, "samples": options.samples,
         "runtime_threads": 1, "payload_bytes": 1024, "actor_payload_bytes": 128,
+        "actor_checkpoint_bytes": 128,
         "durability": "full", "batch": 1,
-        "instrumentation": "follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
+        "instrumentation": "original Handler entry timestamp; follow notification waker timestamp; public provider request ledger; current-thread allocator; no tracing subscriber",
         "populations": POPULATIONS,
     }))?;
     let floors = calibrate::run(&options.root, options.samples)?;
