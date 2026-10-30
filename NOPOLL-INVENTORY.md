@@ -86,8 +86,8 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/actors/src/local/runtime/dispatcher.rs:33` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/dispatcher.rs:74` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/dispatcher.rs:112` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/interrupt.rs:62` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/src/local/runtime/interrupt.rs:181` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/interrupt.rs:62` | Loop (inspect progress source) | Await cancellation from the original interrupt input follow; terminal follow failure/EOF returns a typed error. The finite lookahead drains real ready records in cooperative chunks, never rechecks readiness on a timer. Later-subscription starvation control remains | Actioned |
+| `rust/crates/actors/src/local/runtime/interrupt.rs:181` | Timed wait / readiness | Await cancellation from the original interrupt input follow; terminal follow failure/EOF returns a typed error. The finite lookahead drains real ready records in cooperative chunks, never rechecks readiness on a timer. Later-subscription starvation control remains | Actioned |
 | `rust/crates/actors/src/local/runtime/limits.rs:34` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/tests.rs:330` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/src/local/runtime/tests.rs:844` | Loop (inspect progress source) | Each recheck follows a real record on the original same-commit state stream; closed producer returns an error. No timer, periodic probe or retry budget exists | Actioned |
@@ -98,7 +98,7 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/actors/src/local/tests.rs:10` | Retry / backoff / identity | Explicit re-send of the original actor operation/publication must recover the same state/reply records across real store reopen; no automatic retry loop | Allowed retry identity |
 | `rust/crates/actors/src/local/tests.rs:135` | Retry / backoff / identity | Explicit re-send of the original actor operation/publication must recover the same state/reply records across real store reopen; no automatic retry loop | Allowed retry identity |
 | `rust/crates/actors/src/local/tests.rs:318` | Timed wait / readiness | Await the already-registered original state follow after the real atomic publication. Pause/resume and foreign-history controls precede the same waiter; no test timer remains | Actioned |
-| `rust/crates/actors/src/timers.rs:139` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/timers.rs:139` | Retry / backoff / identity | Durable alarm record and exact derived fire identity; fire performs at most one original stream append when due, with no scheduler, timer wait or retry loop | Allowed retry identity |
 | `rust/crates/actors/tests/fixtures/authoring/guest.ts:13` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/fixtures/authoring/guest.ts:141` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/fixtures/authoring/guest.ts:409` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
@@ -111,10 +111,10 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/actors/tests/guest_contract.rs:342` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/guest_contract.rs:343` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/timer-negative-control.py:17` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/tests/timer_contract.rs:40` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/tests/timer_contract.rs:94` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/tests/timer_contract.rs:95` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
-| `rust/crates/actors/tests/timer_contract.rs:96` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_contract.rs:40` | Retry / backoff / identity | Explicit due-fire resend retains the original timer/fire key and exact payload; changed deadline or target is refused under that identity. No automatic retry or wait loop | Allowed retry identity |
+| `rust/crates/actors/tests/timer_contract.rs:94` | Retry / backoff / identity | Explicit due-fire resend retains the original timer/fire key and exact payload; changed deadline or target is refused under that identity. No automatic retry or wait loop | Allowed retry identity |
+| `rust/crates/actors/tests/timer_contract.rs:95` | Retry / backoff / identity | Explicit due-fire resend retains the original timer/fire key and exact payload; changed deadline or target is refused under that identity. No automatic retry or wait loop | Allowed retry identity |
+| `rust/crates/actors/tests/timer_contract.rs:96` | Timed wait / readiness | Await original inbox follow after the real due-fire publication commits. Not-yet-due publication remains absent at its settled return; duplicate fire and changed-identity controls share the same original record | Actioned |
 | `rust/crates/actors/tests/timer_loom.rs:51` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/timer_loom.rs:69` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
 | `rust/crates/actors/tests/timer_loom.rs:72` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
@@ -1423,7 +1423,7 @@ Candidates include event-driven loops and retry identity references; these requi
 | `rust/crates/inference/src/host/mod.rs:130` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
 | `rust/crates/inference/src/host/mod.rs:131` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
 | `rust/crates/machines/proto/machines/v1/machines.proto:435` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
-| `rust/crates/machines/src/conformance.rs:279` | Timed wait / readiness | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/conformance.rs:279` | Timed wait / readiness | Deleted conformance deadline. Await original operation watch current-state event; closed watch or typed producer error ends the observation. The actual requested terminal operation identity and state are checked | Actioned |
 | `rust/crates/machines/src/grpc/native.rs:11` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
 | `rust/crates/machines/src/grpc/native.rs:12` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
 | `rust/crates/machines/src/grpc/native.rs:148` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |

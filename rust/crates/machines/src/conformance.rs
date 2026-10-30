@@ -474,9 +474,9 @@ async fn verify_provider(
         .watch_operation(operation)
         .await
         .map_err(|error| error.to_string())?;
-    let watched = tokio::time::timeout(std::time::Duration::from_secs(1), operation_stream.next())
+    let watched = operation_stream
+        .next()
         .await
-        .map_err(|_| "operation watch did not make bounded progress".to_owned())?
         .ok_or_else(|| "operation watch ended before its current state".to_owned())?
         .map_err(|error| error.to_string())?;
     if watched != expected_operation {

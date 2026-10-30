@@ -93,9 +93,7 @@ async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
     let first = fire(&provider, &record, inbox.clone(), 20).await?;
     let retry = fire(&provider, &record, inbox.clone(), u64::MAX).await?;
     assert_eq!(first, retry);
-    let delivered = tokio::time::timeout(std::time::Duration::from_secs(1), next)
-        .await?
-        .ok_or("follow ended")??;
+    let delivered = next.await.ok_or("follow ended")??;
     assert_eq!(TimerRecord::decode(&delivered.value)?, record);
     assert_eq!(provider.tail(inbox.clone()).await?, 2);
     let changed = TimerRecord {

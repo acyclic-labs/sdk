@@ -178,14 +178,11 @@ mod tests {
             );
         }
         let cancellation = CancellationToken::new();
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            tokio::select! {
-                () = cancellation.cancelled() => Ok(()),
-                error = runtime.interrupt(&mut inner, cancellation.clone()) =>
-                    Err(format!("interrupt observation failed: {error}")),
-            }
-        })
-        .await??;
+        tokio::select! {
+            () = cancellation.cancelled() => Ok(()),
+            error = runtime.interrupt(&mut inner, cancellation.clone()) =>
+                Err(format!("interrupt observation failed: {error}")),
+        }?;
         assert!(
             hot_records.load(Ordering::SeqCst) <= 256,
             "a later subscription must interrupt before the hot input gets another lookahead budget"
