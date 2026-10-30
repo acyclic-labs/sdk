@@ -64,8 +64,16 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
         // Negative control: omitting the real seal allows the stale effect.
         assert!(matches!(outcome, CommitOutcome::Committed(_)));
         assert_eq!(provider.tail(effect).await?, 1);
-        let crate::FilesystemCommitOutcome::Unknown { mut commit, error } =
-            store.settle(commit, outcome, &mut work).await?
+        let fs = crate::Fs::new(
+            store,
+            crate::Fs::memory().objects().clone(),
+            crate::EmbeddedCapabilities::MEMORY,
+        );
+        let crate::FilesystemCommitOutcome::Unknown { mut commit, error } = fs
+            .settle_commit(commit, outcome, WorkBudget::UNBOUNDED, &token)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
         else {
             return Err("unsealed settlement consumed its original owner".into());
         };

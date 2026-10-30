@@ -803,12 +803,54 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
     publication = unknown(store.submit(publication, &mut stopped).await?)?;
     assert_eq!(publication.request(), &request);
+    let fs = crate::Fs::new(
+        store.clone(),
+        crate::Fs::memory().objects().clone(),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let refused = fs
+        .submit_commit(publication, WorkBudget::UNBOUNDED, &cancelled)
+        .await
+        .map_err(|failure| failure.error)?;
+    assert!(matches!(
+        &refused.value,
+        FilesystemCommitOutcome::Unknown {
+            error: AuthorityStoreError::Cancelled,
+            ..
+        }
+    ));
+    publication = unknown(refused.value)?;
+    assert_eq!(publication.request(), &request);
     publication = unknown(other.submit(publication, &mut work).await?)?;
     publication = unknown(
         other
             .settle(publication, outcome.clone(), &mut work)
             .await?,
     )?;
+    let foreign_fs = crate::Fs::new(
+        other,
+        fs.objects().clone(),
+        crate::EmbeddedCapabilities::MEMORY,
+    );
+    let refused = foreign_fs
+        .settle_commit(
+            publication,
+            outcome.clone(),
+            WorkBudget::UNBOUNDED,
+            &cancelled,
+        )
+        .await
+        .map_err(|failure| failure.error)?;
+    assert!(matches!(
+        &refused.value,
+        FilesystemCommitOutcome::Unknown {
+            error: AuthorityStoreError::RejectedStatic(
+                "filesystem commit belongs to another Streams owner"
+            ),
+            ..
+        }
+    ));
+    publication = unknown(refused.value)?;
     assert_eq!(publication.request(), &request);
     assert_eq!(publication.deadline(), Some(u64::MAX));
     assert_eq!(spy.commit_attempts(), 1, "local refusals must not resubmit");
@@ -819,12 +861,17 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     );
 
     assert!(matches!(
-        store.settle(publication, outcome, &mut work).await?,
+        fs.settle_commit(publication, outcome, WorkBudget::UNBOUNDED, &cancelled)
+            .await
+            .map_err(|failure| failure.error)?
+            .value,
         FilesystemCommitOutcome::Committed(_)
     ));
     assert!(futures::poll!(collecting.as_mut()).is_ready());
     drop(request);
     drop(work);
+    drop(fs);
+    drop(foreign_fs);
     drop(store);
     drop(spy);
     drop(provider);

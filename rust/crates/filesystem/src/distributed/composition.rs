@@ -472,6 +472,21 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
+        self.settle_recorded(commit, outcome, async |commit, commit_id| {
+            self.refresh_committed(commit, commit_id, work).await;
+        })
+        .await
+    }
+
+    // A recorded decision needs no new admission. Only its best-effort cache
+    // refresh needs work. Admit that work only after owner and seal checks,
+    // and only for an accepted result.
+    pub(crate) async fn settle_recorded(
+        &self,
+        commit: FilesystemCommit,
+        outcome: CommitOutcome,
+        refresh: impl AsyncFnOnce(FilesystemCommit, acyclic_stream::CommitId),
+    ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
         if let Err(error) = commit
             .check_owner(self.operation_claims().owner_identity())
             .and_then(|()| commit.ensure_sealed())
@@ -480,8 +495,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
-                self.refresh_committed(commit, envelope.commit_id, work)
-                    .await;
+                refresh(commit, envelope.commit_id).await;
                 FilesystemCommitOutcome::Committed(envelope)
             }
             CommitOutcome::Conflict(conflicts) => FilesystemCommitOutcome::Rejected(conflicts),
