@@ -368,7 +368,7 @@ impl<W: Write + Send + 'static> Owner<W> {
                     // Cancellation can leave a partial query even with an empty undo
                     // journal. Fence its worker first, then cancel the control string.
                     let cancel = guard.writer().write_all(b"\x18");
-                    let dec = guard.restore().or_else(|_| guard.restore());
+                    let dec = guard.restore();
                     let os = os_restore(guard.writer());
                     cancel.and(dec).and(os)
                 },
