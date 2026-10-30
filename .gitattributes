@@ -15,6 +15,7 @@
 *.node binary
 rust/crates/auth/fuzz/corpus/** binary
 rust/codec-fuzz/corpus/*/* binary
+rust/crates/harness-providers/fuzz/corpus/provider_stream/* binary
 
 # Preserve byte-exact patch context.
 patches/*.patch -whitespace

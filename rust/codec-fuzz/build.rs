@@ -43,38 +43,54 @@ fn messages(
 fn generate() -> Result<(), Box<dyn std::error::Error>> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out = PathBuf::from(std::env::var_os("OUT_DIR").ok_or("missing OUT_DIR")?);
-    let families = [
-        ("auth", "acyclic.auth.v1", "acyclic_auth::contract", true),
-        ("actors", "acyclic.actors.v1", "acyclic_actors::wire", false),
+    let families: &[(&str, &[&str], &str, bool)] = &[
+        ("auth", &["acyclic.auth.v1"], "acyclic_auth::contract", true),
+        (
+            "actors",
+            &["acyclic.actors.v1"],
+            "acyclic_actors::wire",
+            false,
+        ),
         (
             "filesystem-wire",
-            "acyclic.filesystem.v2",
+            &["acyclic.filesystem.v2"],
             "acyclic_fs_wire::wire::filesystem::v2",
             false,
         ),
         (
             "inference",
-            "inference.customer.v1",
+            &["inference.customer.v1"],
             "acyclic_inference::wire",
             false,
         ),
         (
             "machines",
-            "acyclic.machines.v1",
+            &["acyclic.machines.v1"],
             "acyclic_machines::wire",
             false,
         ),
         (
             "objects",
-            "acyclic.objects.v1",
+            &["acyclic.objects.v1"],
             "acyclic_objects::wire",
             false,
         ),
-        ("stream", "acyclic.stream.v1", "acyclic_stream::wire", false),
+        (
+            "stream",
+            &["acyclic.stream.v1"],
+            "acyclic_stream::wire",
+            false,
+        ),
+        (
+            "harness-core",
+            &["acyclic.harness.v2", "acyclic.protocol.v1"],
+            "acyclic_harness_core::wire",
+            false,
+        ),
     ];
     let mut table = String::from("pub static DECODERS: &[Decoder] = &[\n");
     let mut descriptors = String::from("static DESCRIPTORS: &[&[u8]] = &[\n");
-    for (index, (family, package, rust, auth)) in families.into_iter().enumerate() {
+    for (index, (family, packages, rust, auth)) in families.iter().copied().enumerate() {
         let (_, _, protos) = acyclic_proto_build::FAMILIES
             .iter()
             .find(|entry| entry.0 == family)
@@ -90,8 +106,19 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
             println!("cargo:rerun-if-changed={}", manifest.join(proto).display());
         }
         let set = prost_types::FileDescriptorSet::decode(std::fs::read(descriptor)?.as_slice())?;
-        for file in set.file.iter().filter(|file| file.package() == package) {
-            messages(&mut table, package, rust, &file.message_type, auth, index)?;
+        for file in set
+            .file
+            .iter()
+            .filter(|file| packages.contains(&file.package()))
+        {
+            messages(
+                &mut table,
+                file.package(),
+                rust,
+                &file.message_type,
+                auth,
+                index,
+            )?;
         }
     }
     table.push_str("];\n");

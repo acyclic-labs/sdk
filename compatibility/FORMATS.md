@@ -20,6 +20,7 @@ in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 | Machines RPC messages | `machines::wire` | `acyclic.machines.v1` route | `protobuf` | Payload goldens |
 | Objects RPC messages | `objects::wire` | `acyclic.objects.v1` route | `protobuf` | Payload goldens |
 | Stream RPC messages | `stream::wire` | `acyclic.stream.v1` route | `protobuf` | Payload goldens |
+| Harness RPC and protocol identity messages | `harness-core::wire` | `acyclic.harness.v2`, `acyclic.protocol.v1`, exact negotiated descriptor identity | `protobuf`, `protobuf_json`; existing `harness-fuzz/protocol_identity` semantic oracle | 84 additional descriptor messages inventoried; typed table compilation and encoder capture pending |
 | Protobuf JSON projections | `protobuf-json`, service JSON codecs | Same versioned routes | `protobuf_json` | Capture and refusals |
 | Session admission | `stream::session`, client handshake | Hello/Welcome version 2; initial interest shares Hello | `session_protocol`, shared with existing session target | Central admission/refusal golden; execute |
 | Session delimited/gRPC frames | `stream::wire_codec::session::FrameDecoder` | Admitted session owns version | `session_frames` | Kani prefix/EOF/progress harnesses; execute and capture |
@@ -53,8 +54,13 @@ in `compatibility/frames/`, alongside their producing encoder and refusal cases.
 | Filesystem immutable pages and roots | `filesystem::{kernel,storage}` | Eight-byte domains and u16 version 1; typed unknown-version refusal | `filesystem_pages`; existing `decoder_work` | Central goldens; private file-record/source-state hooks |
 | Filesystem native checkpoint | `filesystem::windows_usn_codec`, shared by Windows adapter | `ACYUSN 00 01`; typed old/unknown version refusal before fixed fields | `filesystem_codecs` | Portable production codec and seed producer added; compile, capture and refusals pending |
 | Machine journal records | `machines::provider::journal_codec` | Canonical JSON header version `1`, typed admission before deserializing the value | `machine_journal` | Captured golden; refusal execution |
-| Harness retained records/checkpoints | `harness-core::{agent,context,conversation}` | Record v2 and format-specific guards | Pending | Complete retained-record inventory and captures |
-| Harness wire and streaming transports | `harness-core::{wire_codec,mcp,model}` | Own protocol/version negotiation, including external protocols | Pending | Boundary-specific parsing and captures |
+| Harness agent records and effects | `harness-core::agent::records::{open,seal}`, `AgentRecord` | Shared record version 2, typed old/unknown version refusal before semantic record decoding | `harness_codecs`: inbox, status, close, conversation and private turn-effect codecs | Six real writer seed producers added with the checkpoint below; compilation, capture and shared goldens pending |
+| Harness agent checkpoint | `harness-core::agent::checkpoint` | `acyclic.harness.agent/1`; exact identity admitted by shared Actors primitive before decoding protobuf/JSON | `harness_codecs`: actual decoder and semantic value round trip | Named malformed-body/old-codec negative control added; execution and capture pending |
+| Harness context/model snapshots | `harness-core::{context,model,conversation}` | Enclosing journal admission; individual bare JSON format admission audit pending | Existing `harness-fuzz/model_request`, `bounded_json`, `recorded_invocation` | Context manifest/model request covered by existing targets; context checkpoint/compaction and retained-reference inventory, capture and version work remain |
+| Harness MCP stdio | `harness-core::mcp::stdio::{codec,exchange}`, `native::codec` | JSON-RPC 2.0, MCP initialization negotiation | `harness_codecs` runs the finite actual exchange with chunk/EOF/sticky-failure controls; existing `harness-fuzz/mcp_stdio_codec` compiles the native codec without an entry cutoff | Actual transcript writer seed producer added; compile/capture and existing corpus provenance audit pending |
+| Harness MCP HTTP/SSE | `harness-core::mcp::{http::response,http::sse,rpc}` | JSON-RPC 2.0, MCP initialization negotiation | `harness_codecs` runs the same finite-body response decoder as transport dispatch, comparing whole and chunked typed results at caller-selected bounds | JSON/SSE/request/initialization writer seed producers added; compile/capture, callback-router coverage and deep-JSON stack safety remain |
+| Harness provider HTTP/SSE and projections | `harness-providers::{stream,sse,projection,counting,catalog_document}` | External provider protocol and API versions | Existing `harness-providers/fuzz`: `provider_stream`, `response_sequence`, `turns`, `tool_arguments`, `native_image`, `catalog`; streaming path checks chunk invariance | Three retained real llama.cpp SSE captures added with body/seed SHA-256 provenance; replay and the remaining corpus provenance audit pending; no campaign result claimed |
+| Harness search HTTP | `harness-search` HTTP codec | External HTTP/schema contract | Existing `harness-fuzz/search_http_codec`, shared real codec oracle | Corpus provenance and version/response coverage audit pending |
 
 Version checks must precede payload interpretation and side effects. A refused
 version never triggers migration, repair, truncation or rewrite. Tests mutate a
@@ -67,6 +73,13 @@ replay with recorded lengths and SHA-256 values. Their exact bytes also appear
 under `corpus/` names in the one shared golden lookup. Encoder comparison
 against that newly installed baseline and format-specific refusal execution
 remain separate obligations; replay alone does not establish either.
+
+The Harness descriptor baseline was captured with Buf 1.75.0 from the actual
+schemas using `buf build --path rust/crates/harness-core/proto/harness/v2/harness.proto
+--path rust/crates/harness-core/proto/protocol/v1/protocol.proto --output
+compatibility/descriptors/harness-v2.bin`. The shared descriptor equality check
+still needs execution for this added family. The new table appends its 84
+messages after the original 403, preserving the captured selectors.
 
 Fixed-width codecs do constant work. Variable payload codecs necessarily take
 work proportional to the admitted payload; their cost must not depend on retained
