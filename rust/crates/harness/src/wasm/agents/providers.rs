@@ -286,15 +286,18 @@ impl Providers {
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
-        let turns = Arc::new(FilesystemTurnHost::new(
-            Arc::clone(&self.stream),
-            Arc::clone(&self.filesystem),
-            owner.issuer.clone(),
-            admission.clone(),
-            Arc::new(Self::executors(options, registry)?),
-            turn_limits,
-            options.preset.approval_policy.clone(),
-        ));
+        let turns = Arc::new(
+            FilesystemTurnHost::new(
+                Arc::clone(&self.stream),
+                Arc::clone(&self.filesystem),
+                owner.issuer.clone(),
+                admission.clone(),
+                Arc::new(Self::executors(options, registry)?),
+                turn_limits,
+                options.preset.approval_policy.clone(),
+            )
+            .with_filesystem_tools(),
+        );
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
