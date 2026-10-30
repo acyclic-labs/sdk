@@ -155,7 +155,7 @@ pub(super) async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     );
     eprintln!("qualification phase: I/O child finished; parallel clients starting");
     let parallel = if kind == "macos-nfs" {
-        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS)
+        run_parallel_io_children(&mount_path, MACOS_NFS_PARALLEL_CLIENTS).await
     } else {
         Ok(())
     };
