@@ -50,9 +50,9 @@ fn repository() -> std::path::PathBuf {
 /// The owner side of the lifetime test, run in its own process: it parks a model command, reports the
 /// acknowledgement, and waits to be killed. The model inherits this process's stderr.
 #[test]
-fn parked_model_owner_process() {
+fn parked_model_owner_process() -> std::io::Result<()> {
     let Some(fault) = std::env::var_os("STREAM_MODEL_OWNER") else {
-        return;
+        return Ok(());
     };
     let mut driver = driver::Driver::configured(&repository(), "move", fault.to_str().unwrap());
     driver.send(json!({"action":"park"}));
@@ -61,13 +61,16 @@ fn parked_model_owner_process() {
         .expect("model process exited before parking");
     assert_eq!(ack["ack"], "parked", "{ack}");
     std::io::Write::write_all(&mut std::io::stderr(), b"parked\n").unwrap();
-    loop {
-        std::thread::park();
-    }
+    let mut release = [0];
+    std::io::Read::read_exact(&mut std::io::stdin(), &mut release)?;
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "model owner received an unexpected orderly release",
+    ))
 }
-/// Kills a real owner process while its model command is parked. The model shares the owner's stderr pipe, so that
-/// pipe reaches end of file only once the model process has exited too.
-fn killed_owner_ends_its_model(fault: &str) -> Result<(), String> {
+/// Ends a real owner by forced exit or loss of its original control producer.
+/// Shared stderr reaches EOF only once its model process has exited too.
+fn owner_exit_ends_its_model(fault: &str, kill: bool) -> Result<(), String> {
     use std::io::{BufRead, Read};
     let name = concat!(module_path!(), "::parked_model_owner_process");
     let mut owner = std::process::Command::new(std::env::current_exe().unwrap())
@@ -78,7 +81,7 @@ fn killed_owner_ends_its_model(fault: &str) -> Result<(), String> {
             "--test-threads=1",
         ])
         .env("STREAM_MODEL_OWNER", fault)
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -94,22 +97,36 @@ fn killed_owner_ends_its_model(fault: &str) -> Result<(), String> {
             break true;
         }
     };
-    owner.kill().unwrap();
-    owner.wait().unwrap();
+    if parked {
+        if kill {
+            owner.kill().unwrap();
+        } else {
+            drop(owner.stdin.take());
+        }
+    }
+    let status = owner.wait().unwrap();
     if !parked {
         return Err("the owner never saw its model park".into());
     }
+    assert!(
+        !status.success(),
+        "the parked owner cannot complete successfully"
+    );
     // Returns only when every holder of the pipe, the parked model included, has exited.
     shared.read_to_end(&mut Vec::new()).unwrap();
     Ok(())
 }
 #[test]
 fn a_parked_model_process_exits_when_its_owner_is_killed() {
-    killed_owner_ends_its_model("").unwrap();
+    owner_exit_ends_its_model("", true).unwrap();
+}
+#[test]
+fn a_parked_model_process_exits_when_its_original_control_producer_is_lost() {
+    owner_exit_ends_its_model("", false).unwrap();
 }
 #[test]
 fn a_model_that_crashes_at_startup_fails_the_lifetime_test() {
-    assert!(killed_owner_ends_its_model("startupCrash").is_err());
+    assert!(owner_exit_ends_its_model("startupCrash", true).is_err());
 }
 
 /// Connects exactly `connections` times in one command against a budget of `steps`: the command itself is one step
