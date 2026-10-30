@@ -17,6 +17,14 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
             + 64
             + 8 * crate::MAX_RECORD_KEYS as u64
             + 16 * crate::MAX_RECORD_ATTRIBUTES as u64;
+        use tracing_subscriber::prelude::*;
+        let metrics = acyclic_observability::Metrics::default();
+        let prepare = metrics.query("acyclic.stream.prepare_commit");
+        let settle = metrics.query("acyclic.stream.commit");
+        let inspect = metrics.query("acyclic.stream.inspect_idempotency");
+        let _subscriber = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(acyclic_observability::Operations(metrics)),
+        );
         let meter = Arc::new(Meter::default());
         let packet = provider
             .native_prepare_commit(request, 64, meter.original())
@@ -44,6 +52,16 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
         let observed = recovery.await??;
         assert!(observed.value().is_some());
         drop(observed);
+        for query in [&prepare, &settle, &inspect] {
+            let snapshot = query.snapshot();
+            assert_eq!(
+                (snapshot.ok, snapshot.err, snapshot.incomplete),
+                (1, 0, 0),
+                "native preparation, settlement and recovery must each complete once"
+            );
+            assert_eq!(snapshot.latency_ns.iter().sum::<u64>(), 1);
+        }
+
         drop(guard);
         drop(provider);
         meter.assert_refunded();
@@ -86,6 +104,12 @@ async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error:
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
     let meter = Arc::new(Meter::local());
+    use tracing_subscriber::prelude::*;
+    let metrics = acyclic_observability::Metrics::default();
+    let query = metrics.query("acyclic.stream.read");
+    let _subscriber = tracing::subscriber::set_default(
+        tracing_subscriber::registry().with(acyclic_observability::Operations(metrics)),
+    );
     meter.deny_allocation.store(true, Ordering::SeqCst);
     let error = provider
         .native_read(
@@ -102,6 +126,10 @@ async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error:
         .err()
         .ok_or("native read unexpectedly captured")?;
     assert_original_denial(&error, "allocation");
+    let snapshot = query.snapshot();
+    assert_eq!((snapshot.ok, snapshot.err, snapshot.incomplete), (0, 1, 0));
+    assert_eq!(snapshot.latency_ns.iter().sum::<u64>(), 1);
+
     assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
     assert_eq!(meter.held.load(Ordering::SeqCst), 0);
     assert_eq!(meter.copied.load(Ordering::SeqCst), 0);
