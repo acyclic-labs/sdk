@@ -56,9 +56,10 @@ activation address.
 `ScopedDurableObjectState` (Rust) and `DurableObjectState` (TypeScript) pass that
 address to the host for the sole alarm, storage deletion and hibernating sockets.
 Alarm handlers receive validated retry metadata. Socket APIs cover tags,
-attachments, auto-response and message/close/error delivery. The Cloud host owns
-alarm persistence, activation fencing and the socket engine; these adapters do
-not implement them. See [the parity contract](actors-workers-parity.md) for the
+attachments, auto-response and message/close/error delivery through `SocketHost`;
+`DurableHost` adds storage deletion. The host owns alarm persistence, activation
+fencing and the socket engine: Cloud's, and `local::Sockets` for the local
+runtime. See [the parity contract](actors-workers-parity.md) for the
 exact SDK/Cloud boundary.
 
 Restore produces logical state. The host wraps it in `GuestState`; event, fetch
@@ -88,7 +89,14 @@ channel, resume position and reconnect diagnostics. The enclosing event supplies
 connection identity. Return SocketAccept(subprotocol, attachment, tags) or
 SocketReject(status, reason). Message uses text or binary payload; Close includes
 offset and peer/actor/runtime initiator; Error includes offset, code and message.
-Close/error advance application delivery offsets. Ping/pong, channel-0 keepalive,
+Close/error advance application delivery offsets. Exactly one Close follows every
+delivered Open, including after SocketReject, and nothing for that connection
+follows the Close; a runtime restart closes every socket it held with
+Close(runtime, 1012). Locally an Open is an Invoke whose reply is the
+GuestEventResult (`acyclic_actors::sockets::socket_reply`), later events are inbox
+records marked `acyclic.actors.socket`, and `Delivery::socket` reads both; sockets
+ride the stream session as `actor_socket` channels admitted as `actors/invoke`.
+Ping/pong, channel-0 keepalive,
 keepalive templates and auto-response matches never wake guests, produce events or
 advance those offsets. Only events delivered to event count as messages_in/wakes.
 

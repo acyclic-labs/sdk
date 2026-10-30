@@ -32,6 +32,8 @@ pub mod local;
 pub mod namespace;
 /// Reusable fenced reservations over the actor's original checkpoint/alarm.
 pub mod reservation;
+/// Actor sockets v1: session channel frames and inbox socket events.
+pub mod sockets;
 /// Shared durable timer records, derived from the harness timer stream format.
 pub mod timers;
 
