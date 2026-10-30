@@ -76,32 +76,6 @@ impl ViewObserver for DarwinMountContext {
     }
 }
 
-#[cfg(test)]
-pub(super) fn uptime(
-    clock: &super::super::clock::Clock,
-    work: &Work,
-) -> Result<Duration, NativeMountError> {
-    work.charge(READ_WORK)?;
-    #[cfg(feature = "test-support")]
-    if let Some(elapsed) = clock.elapsed() {
-        return Ok(elapsed);
-    }
-    #[cfg(not(feature = "test-support"))]
-    let _ = clock;
-    let mut now = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // SAFETY: `now` is a valid, writable timespec; the clock always exists.
-    if unsafe { libc::clock_gettime(libc::CLOCK_UPTIME_RAW, &raw mut now) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    Ok(Duration::new(
-        u64::try_from(now.tv_sec).unwrap_or(0),
-        u32::try_from(now.tv_nsec).unwrap_or(0),
-    ))
-}
-
 impl DarwinMountContext {
     pub(super) fn new(
         source: Arc<dyn MountFilesystem>,

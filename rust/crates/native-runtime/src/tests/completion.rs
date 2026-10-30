@@ -121,6 +121,65 @@ fn host_task_panic_preserves_payload_and_retires_controls() -> io::Result<()> {
 }
 
 #[test]
+fn interrupted_wait_retains_the_native_producer_until_terminal_completion() -> io::Result<()> {
+    initialize_native_io_services()?;
+    for dropped in [false, true] {
+        let meter = Arc::new(ReadBudgetMeter::new(0, 0));
+        let (entered, started) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let (cancel, mut cancelled) = tokio::sync::oneshot::channel();
+        let (registered, waiting) = mpsc::channel();
+        let mut task = run_blocking_io(
+            move || -> io::Result<usize> {
+                entered.send(()).map_err(io::Error::other)?;
+                blocked.recv().map_err(io::Error::other)?;
+                Ok(37)
+            },
+            Some((meter.clone(), true)),
+        )?;
+        submit(&mut task);
+        started.recv().map_err(io::Error::other)?;
+        let allocations = meter.used_allocations.load(Ordering::Acquire);
+        meter.deny_allocations.store(true, Ordering::Release);
+        let caller = std::thread::spawn(move || {
+            let mut registered = Some(registered);
+            let result = task.wait_interruptible(std::future::poll_fn(|context| {
+                match Pin::new(&mut cancelled).poll(context) {
+                    Poll::Ready(_) => Poll::Ready(()),
+                    Poll::Pending => {
+                        if let Some(registered) = registered.take() {
+                            let _ = registered.send(());
+                        }
+                        Poll::Pending
+                    }
+                }
+            }));
+            (task, result)
+        });
+        waiting.recv().map_err(io::Error::other)?;
+        cancel
+            .send(())
+            .map_err(|()| io::Error::other("cancellation waiter disappeared"))?;
+        let (task, result) = caller
+            .join()
+            .map_err(|_| io::Error::other("waiter panicked"))?;
+        assert!(result?.is_none());
+        if !dropped {
+            release.send(()).map_err(io::Error::other)?;
+        }
+        drop(release);
+        let result = task.wait(None, std::future::pending(), || {})?;
+        if dropped {
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Other);
+        } else {
+            assert_eq!(result?, 37);
+        }
+        assert_eq!(meter.used_allocations.load(Ordering::Acquire), allocations);
+    }
+    Ok(())
+}
+
+#[test]
 fn measured_sync_wait_expired_deadline_stops_before_body() -> io::Result<()> {
     initialize_native_io_services()?;
     let meter = Arc::new(ReadBudgetMeter::new(0, 0));

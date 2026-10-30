@@ -102,6 +102,39 @@ impl<T> NativeCompletion<T> {
         let wake = self.prepared_wake.take();
         wait_measured_completion(self, &meter, wake, deadline, cancellation, on_deadline)
     }
+
+    /// Waits for this completion, returning `None` on caller cancellation.
+    ///
+    /// Cancellation leaves the operation in this owner. An accepted native
+    /// operation must still be observed or retired; dropping the caller's wait
+    /// does not revoke it. Its terminal producer and the cancellation future
+    /// wake the same measured completion engine. Successive waits retain one
+    /// notifier allocation, including when cancellation stops a wait.
+    pub fn wait_interruptible(
+        &mut self,
+        cancellation: impl Future<Output = ()>,
+    ) -> io::Result<Option<T>> {
+        if let Some(result) = self.ready.take() {
+            return result.map(Some);
+        }
+        let meter =
+            measured_completion_meter(self.state.as_ref().ok_or(io::ErrorKind::InvalidInput)?)?;
+        if self.prepared_wake.is_none() {
+            self.prepared_wake = Some(allocate_blocking_wait_wake(&meter)?);
+        }
+        let wake = self.prepared_wake.clone();
+        let mut cancellation = std::pin::pin!(cancellation);
+        let task = std::future::poll_fn(|context| {
+            if let Poll::Ready(result) = Pin::new(&mut *self).poll(context) {
+                return Poll::Ready(result.map(Some));
+            }
+            if cancellation.as_mut().poll(context).is_ready() {
+                return Poll::Ready(Ok(None));
+            }
+            Poll::Pending
+        });
+        wait_measured_completion(task, &meter, wake, None, std::future::pending(), || {})
+    }
 }
 
 impl<T> Future for NativeCompletion<T> {

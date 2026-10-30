@@ -7,6 +7,7 @@ pub(crate) struct BlockingWaitWake {
 }
 
 /// Every retained waker owns the notifier's original allocation charge.
+#[derive(Clone)]
 pub(crate) struct PreparedWake {
     wake: Arc<BlockingWaitWake>,
 }
