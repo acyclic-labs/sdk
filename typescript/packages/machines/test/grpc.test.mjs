@@ -8,7 +8,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { createMachinesGrpcClient, createMachinesGrpcTransport, MAX_OUTPUT_READ_BYTES } from "../dist/grpc.js";
-import { createMachinesRpcTransport } from "../dist/transport.js";
+import { createMachinesClient, createMachinesRpcTransport } from "../dist/transport.js";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
@@ -49,7 +49,7 @@ async function fixture(t, implementation, rawExec = false) {
   const client = createMachinesGrpcClient(options);
   const raw = createMachinesGrpcTransport(options);
   t.after(async () => { raw.close(); client.close(); await closeServer(); });
-  return { ...client, options, rpc: createMachinesRpcTransport(raw.transport) };
+  return { ...client, options, transport: raw.transport, rpc: createMachinesRpcTransport(raw.transport) };
 }
 
 function authenticate(context) {
@@ -421,6 +421,34 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   assert.equal((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data.length, 0);
   assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data, first.data);
   assert.deepEqual(seen, [offset, next, next]);
+});
+
+test("exec retains the original caller deadline without a completion grace window", async t => {
+  let calls = 0;
+  const { transport } = await fixture(t, {
+    async *exec(query, context) {
+      authenticate(context);
+      assert.equal(query.timeoutMs, 60000n);
+      calls++;
+      yield { machine, output: { case: "exitCode", value: 0 } };
+    },
+  });
+  // Observe the original transport boundary, then delegate the same request
+  // to its authenticated TLS owner. No transport reply or clock is fabricated.
+  const deadlines = [];
+  const { machines } = createMachinesClient({
+    ...transport,
+    stream(method, signal, timeoutMs, ...rest) {
+      deadlines.push(timeoutMs);
+      return transport.stream(method, signal, timeoutMs, ...rest);
+    },
+  });
+  const request = { protocol, machine, argv: ["exit"], timeoutMs: 60000n };
+  for (const options of [undefined, { timeoutMs: 0 }, { timeoutMs: 30000 }]) {
+    assert.equal(await exec(machines, request, options), 0);
+  }
+  assert.deepEqual(deadlines, [60000, 60000, 30000]);
+  assert.equal(calls, 3);
 });
 
 test("an exec RPC deadline cancels the pending call without redispatch", async t => {
