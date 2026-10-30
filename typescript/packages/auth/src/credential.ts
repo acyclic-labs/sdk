@@ -270,7 +270,11 @@ export function credentialProvider(options: CredentialOptions): CredentialProvid
       validateCredential(token);
       return token;
     }, {
-      resolveRequest: (signal?: AbortSignal) => resolveCredential(provider, signal),
+      // Preserve the owner's request; the transport's resolveCredential performs
+      // the one boundary validation instead of wrapping and validating twice.
+      resolveRequest: provider.resolveRequest
+        ? (signal?: AbortSignal) => provider.resolveRequest!(signal)
+        : (signal?: AbortSignal) => resolveCredential(provider, signal),
       ...(provider.watch ? { watch: () => provider.watch!() } : {}),
     });
   }
