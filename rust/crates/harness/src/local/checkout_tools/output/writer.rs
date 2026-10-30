@@ -85,17 +85,14 @@ impl Writer {
             pending.try_reserve(amount).map_err(std::io::Error::other)?;
             pending.extend_from_slice(prefix);
             bytes = rest;
-            if pending.len() == maximum {
+            if pending.len() == maximum || bytes.is_empty() {
                 let runtime = self.runtime.clone();
                 await_publication(&runtime, || async {
                     self.flush(stderr).await.map_err(std::io::Error::other)
                 })?;
             }
         }
-        let runtime = self.runtime.clone();
-        await_publication(&runtime, || async {
-            self.flush(stderr).await.map_err(std::io::Error::other)
-        })
+        Ok(())
     }
 
     // Retain the bytes and sequence until their file is staged.
