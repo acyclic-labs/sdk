@@ -5,6 +5,25 @@ session for local, self-hosted Actors and managed Swarm. The TypeScript package
 exports the generated client rather than maintaining a second transport or agent
 runtime.
 
+Hosted resource factories return a canonical provider port for an admitted
+`streams:/` grant. After WASM initialization, the host's `streams(binding)`
+callback can call `connectStreamProvider(endpoint, credential)` from
+`@acyclic-labs/harness/hosting`, selecting the endpoint and original credential
+owner from that grant. Pass its result directly to `WasmStream.connectProvider`.
+`streamProviderPort(stream)` transfers an existing canonical provider instead;
+`streamLedgerPort(ledger, actor)` binds the original shared event ledger.
+Root and child Actors must resolve their bindings to the same Streams consistency
+domain, rather than opening separate journals in their Actor state.
+
+`EventStreamLedger` accepts an `EventStreamProvider` factory returning that same
+port. The factory installs the consistency domain's original change producer
+through the supplied callback; the local SQLite composition preserves its
+existing atomic journal/wake transaction. A remote port alone does not supply
+Actor placement or wake delivery. Those remain the owning host's capabilities.
+Closing an owned port cancels its pending calls, registrations and cursors. An
+already accepted write can still commit; reconcile its original idempotency key
+after an unavailable outcome, without automatically submitting it again.
+
 Connection configuration uses one Rust policy for native and TS callers:
 explicit endpoint, then `ACYCLIC_ENDPOINT`, then
 `https://swarm.cloud.acyclic.dev`. The credential is explicit or comes from

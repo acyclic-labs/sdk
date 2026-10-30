@@ -152,6 +152,16 @@ fn negative_control_does_not_rebind_the_pending_home_entry() {
 }
 
 #[test]
+fn cancelled_pending_open_cannot_own_a_rebound_dial() {
+    acyclic_stream::session::verify_admission_cancellation(false);
+}
+#[test]
+#[should_panic(expected = "cancelled pending Open must not own a dial")]
+fn negative_control_cancels_before_withdrawing_pending_membership() {
+    acyclic_stream::session::verify_admission_cancellation(true);
+}
+
+#[test]
 fn latest_consumption_and_move_fence_share_one_application_cut() {
     acyclic_stream::session::verify_latest_progress(false);
 }

@@ -1,7 +1,8 @@
-import { type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority,
+import { WasmStream, type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority,
   type WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
 import { EventAgentHost, type EventHostAccess } from "./event-host.js";
 import { EventStreamLedger, type StreamLedger } from "./event-ledger.js";
+import { streamProviderPort } from "./stream-provider.js";
 import { SqliteEventStorage, SqliteJournal, SqliteObjects, type SqliteStorage } from "./cloudflare-storage.js";
 
 export { SqliteJournal, SqliteObjects } from "./cloudflare-storage.js";
@@ -25,5 +26,6 @@ export function openCloudflareLedger(ctx: CloudflareContext, wake: (actor: strin
   limits: WasmJournalStreamLimits): EventStreamLedger {
   return new EventStreamLedger(new SqliteEventStorage(ctx.storage, "wakes"),
     new SqliteObjects(ctx.storage, "filesystem"),
-    changed => new SqliteJournal(ctx.storage, "streams", changed), wake, limits);
+    changed => WasmStream.openJournal(new SqliteJournal(ctx.storage, "streams", changed), limits)
+      .then(streamProviderPort), wake, limits);
 }

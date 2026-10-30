@@ -33,13 +33,9 @@ use outbound::Outbound;
 type ReleaseSender = Arc<signal::Signal<Released>>;
 mod link;
 mod pool;
-#[cfg(not(all(test, not(loom), not(target_arch = "wasm32"))))]
-type Routes = BTreeMap<u64, Route>;
-#[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 mod routes;
 #[cfg(loom)]
-pub use admissions::verify_admission_binding;
+pub use admissions::{verify_admission_binding, verify_admission_cancellation};
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use cache::verify_cache;
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
@@ -50,8 +46,6 @@ pub use pool::model::{
 };
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use pool::retry_model::verify_initial_retry_yield;
-#[cfg(test)]
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
 use routes::Routes;
 mod progress;
 use progress::Progress;
@@ -750,7 +744,7 @@ impl Client {
                 active.checked_add(1)
             })
             .map_err(|_| StreamError::Capacity)?;
-        if let Err(error) = self.admissions.insert(id, Arc::clone(&progress)) {
+        if let Err(error) = self.admissions.insert(id) {
             self.active.fetch_sub(1, Ordering::AcqRel);
             return Err(error);
         }
@@ -804,9 +798,8 @@ impl Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
-        self.progress.cancel();
+        self.client.admissions.cancel(self.id, &self.progress);
         self.receiver.close();
-        let _ = self.client.admissions.remove(self.id);
         self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }

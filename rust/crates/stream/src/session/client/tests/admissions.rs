@@ -4,8 +4,7 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
     let (mut pool, receiver_b) = pool::fixture::fixture(channel);
     pool.links.remove("bad");
     let (records, receiver_a) = mpsc::channel(2);
-    let route_a = pool.routes.get_mut(&1).unwrap();
-    route_a.node = "good".into();
+    let route_a = pool.routes.rehome(&1, "good").unwrap();
     route_a.records = records;
     let client = Client {
         connections: super::super::super::Connections::new(),

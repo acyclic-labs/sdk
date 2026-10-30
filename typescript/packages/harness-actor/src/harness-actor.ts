@@ -1,7 +1,7 @@
 /** The shared harness as one Actor application: the same event host and
  * session engine as every other deployment, behind the public guest ABI. */
 import { defineActor, GUEST_ABI_VERSION, type CheckpointCodec, type GuestState } from "@acyclic-labs/actors";
-import { ActorStateStorage, EventAgentHost, EventStreamLedger, initializeHosting, serveActorFetch,
+import { ActorStateStorage, EventAgentHost, EventStreamLedger, WasmStream, streamProviderPort, initializeHosting, serveActorFetch,
   type ActorState, type EventHostAccess, type ImmutableObjects } from "@acyclic-labs/harness/hosting";
 import { BrowserAgentAuthority, BrowserAgentRegistry, type BrowserAgentOptions,
   type BrowserMachinesWorkspace, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
@@ -106,7 +106,8 @@ export const actor = defineActor<Opened, HarnessBindings>({
     registry.bindMachinesWorkspace(env.workspace);
     const state = new ActorStateStorage(env.storage);
     let host: EventAgentHost | undefined;
-    const ledger = new EventStreamLedger(state.domain("wakes"), env.objects, appended => state.journal(appended),
+    const ledger = new EventStreamLedger(state.domain("wakes"), env.objects,
+      appended => WasmStream.openJournal(state.journal(appended), ledger_limits).then(streamProviderPort),
       async () => { await host?.wake(); }, ledger_limits);
     // The tree's Stream is this Actor's own journal, which runs only this
     // actor's agent. With no Streams provider bound the host runs no children:

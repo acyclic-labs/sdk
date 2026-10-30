@@ -51,8 +51,6 @@ mod sync;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
 pub use client::transport;
-#[cfg(loom)]
-pub use client::verify_admission_binding;
 pub use client::{ApplicationDelivery, ApplicationSubscription, Client};
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
@@ -61,6 +59,8 @@ pub use client::{
     verify_node_dials, verify_pool_lifetime, verify_registration_deadline,
     verify_terminal_cursor_dial,
 };
+#[cfg(loom)]
+pub use client::{verify_admission_binding, verify_admission_cancellation};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub use service::Service;
 const DATA_FRAME_BYTES: usize = crate::MAX_RECORD_BYTES + 128;

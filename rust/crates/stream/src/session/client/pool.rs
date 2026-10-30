@@ -100,13 +100,15 @@ impl Pool {
                 if (node.is_empty() || home_endpoint) && self.home.is_empty() {
                     self.admissions.bind_home(&installed)?;
                     self.home = installed.clone();
-                    for (id, route) in self
-                        .routes
-                        .iter_mut()
-                        .filter(|(_, route)| route.node.is_empty())
-                    {
-                        route.node = installed.clone();
-                        bound.push((*id, route.generation));
+                    bound.extend(
+                        self.routes
+                            .on_node("")
+                            .map(|(id, route)| (*id, route.generation)),
+                    );
+                    for (id, _) in &bound {
+                        self.routes
+                            .rehome(id, &installed)
+                            .ok_or(StreamError::Unavailable)?;
                     }
                 }
                 if reused {
@@ -117,8 +119,7 @@ impl Pool {
                 } else {
                     self.pending.extend(
                         self.routes
-                            .iter()
-                            .filter(|(_, route)| route.node == installed)
+                            .on_node(&installed)
                             .map(|(id, route)| (*id, route.generation)),
                     );
                 }
@@ -148,10 +149,7 @@ impl Pool {
         }
     }
     pub(super) fn node_interested(&self, node: &str) -> bool {
-        self.routes
-            .values()
-            .any(|route| route.node == node && route.live())
-            || self.admissions.interested(node)
+        self.routes.on_node(node).any(|(_, route)| route.live()) || self.admissions.interested(node)
     }
     fn close_links(&mut self) {
         self.reset_home();
@@ -466,8 +464,10 @@ impl Pool {
                 }
                 route.placement_epoch = destination.placement_epoch;
                 route.generation = route.progress.fence()?;
-                route.node = destination.node_id.clone();
                 route.opened = false;
+                self.routes
+                    .rehome(&id, &destination.node_id)
+                    .ok_or(StreamError::Unavailable)?;
                 if self.links.contains_key(&destination.node_id) {
                     self.subscribe(id)
                 } else {
@@ -529,10 +529,7 @@ impl Pool {
     /// minimum is always proven; a missing revision proves no minimum.
     fn proves(kind: &Kind, applied: Option<&crate::Revision>) -> bool {
         match kind {
-            Kind::Follow(follow) if !follow.at_least.is_empty() => {
-                wire_codec::cut_from_wire(follow.at_least.clone())
-                    .is_ok_and(|minimum| minimum.proven_by(applied))
-            }
+            Kind::Follow(follow) => wire_codec::cut_proven_by(&follow.at_least, applied),
             _ => true,
         }
     }
@@ -738,8 +735,7 @@ impl Pool {
         }
         let ids = self
             .routes
-            .iter()
-            .filter(|(_, route)| route.node == node)
+            .on_node(node)
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in ids {

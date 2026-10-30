@@ -425,8 +425,10 @@ fn old_receive(pool: &mut Pool, node: &str, input: wire::SessionFrame) -> Result
             }
             route.placement_epoch = destination.placement_epoch;
             route.generation = route.progress.fence()?;
-            route.node = destination.node_id.clone();
             route.opened = false;
+            pool.routes
+                .rehome(&id, &destination.node_id)
+                .ok_or(StreamError::Unavailable)?;
             if pool.links.contains_key(&destination.node_id) {
                 pool.subscribe(id)
             } else {

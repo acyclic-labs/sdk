@@ -5,12 +5,15 @@ import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
 export { serveActorFetch, serveGrpcSession, type GrpcSessionResponse } from "./session-host.js";
 /** Instantiate the harness module once from the platform-delivered bytes or module. */
 export { default as initializeHosting } from "../generated/wasm/acyclic_harness_wasm.js";
+export { WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
 import { decodeMetadata, type EventStorage } from "./event-storage.js";
 
 export { EventStreamLedger, streamLedgerPort } from "./event-ledger.js";
 export { ActorStateStorage, type ActorState, type ActorStateView } from "./actor-state-storage.js";
-export type { StreamLedger, ImmutableObjects, ProviderReply } from "./event-ledger.js";
+export { connectStreamProvider, streamProviderPort } from "./stream-provider.js";
+export type { StreamProviderPort, OwnedStreamProviderPort, StreamProviderCursor } from "./stream-provider.js";
+export type { StreamLedger, ImmutableObjects, ProviderReply, EventStreamProvider } from "./event-ledger.js";
 export type { EventStorage, StreamChange, Placement } from "./event-storage.js";
 
 interface Identity {
