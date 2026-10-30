@@ -48,7 +48,7 @@
       { "name": "platformAuthority", "capability": "", "resource": "", "guestAdmission": "platformAuthority" },
       { "name": "machinesWorkspace", "capability": "harnessMachines", "resource": "machines:/harness" }
     ],
-    "machines": { "origin": "https://machines.example.com", "credential": "secrets:/machines/account" },
+    "machines": { "origin": "https://machines.example.com" },
     "grants": [
       { "name": "harnessStreams", "grant": { "resource": { "name": "streams:/", "prefix": true }, "actions": ["streams/append", "streams/follow", "streams/fork", "streams/list"] }, "limits": null },
       { "name": "harnessObjects", "grant": { "resource": { "name": "objects:/harness", "prefix": true }, "actions": ["objects/get", "objects/put"] }, "limits": null },

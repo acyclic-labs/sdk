@@ -1,10 +1,10 @@
 /** Lower the owner's deployment choices to the public deployment manifest.
  * The Rust validator remains the sole admission rule set; this adds only the
  * harness entry's own selection of its descriptor bindings. */
-import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, SubscriptionSpec,
-  VolumeProvider } from "@acyclic-labs/workers/manifest";
+import type { ActorLimits, Binding, BindingGrant, DeploymentManifest, EntryAsset, HostCredential,
+  SubscriptionSpec, VolumeProvider } from "@acyclic-labs/workers/manifest";
 import type { ProviderSpec } from "@acyclic-labs/harness";
-import { HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "./bindings.js";
+import { ACCOUNT_LEAF, HARNESS_BINDINGS, HARNESS_MODULE, MACHINES_ENDPOINT, MODEL_FETCH } from "./bindings.js";
 
 /** Declared name of the model credential reference; never a credential value. */
 export const MODEL_SECRET = "modelCredential";
@@ -19,8 +19,9 @@ export interface HarnessDeployment {
   readonly bindings: Binding[];
   readonly grants: BindingGrant[];
   /** The platform's Machines endpoint for creating each actor's Machine. Its
-   * bearer credential is host-only: it never enters the guest environment. */
-  readonly machines: { readonly origin: string; readonly credential: string };
+   * credential, by default the platform's account leaf, is host-only: it never
+   * enters the guest environment. */
+  readonly machines: { readonly origin: string; readonly credential?: HostCredential };
 }
 
 /** Typed refusal of a deployment that omits a harness binding. */
@@ -76,7 +77,7 @@ export function harnessManifest(deployment: HarnessDeployment, spec: ProviderSpe
         hostFetch: [{
           name: MACHINES_ENDPOINT,
           origin: { host: machines.hostname, port: Number(machines.port || 443) },
-          credential: { scheme: "bearer", reference: deployment.machines.credential },
+          credential: deployment.machines.credential ?? ACCOUNT_LEAF,
         }],
       }],
       bindings: deployment.bindings,

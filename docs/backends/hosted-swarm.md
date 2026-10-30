@@ -246,7 +246,20 @@ spawn command is refused as `spawn_refused` before anything commits.
 `BrowserMachinesWorkspace.open` in its own module, under its platform authority,
 and binds the `shell` tool to it. Its grant needs only `machines/exec`. The
 platform creates the Machine through the entry's host-only `hostFetch` endpoint,
-built from the owner's `deployment.machines` (`origin`, bearer `credential`).
+built from the owner's `deployment.machines` (`origin`, `credential`).
+The credential is `{scheme, reference}`. It defaults to `account-leaf` at
+`secrets:/account/leaf`, the platform's one account leaf, which every
+host-only endpoint shares. With `bearer`, the referenced secret is sent as the
+bearer. With `account-leaf`, the referenced secret is the JSON object
+`{key, certificate, birth}` in the platform's own leaf encoding: the
+leaf's private key, its account-signed certificate, and the account birth.
+Only the host reads it. For each exchange the host mints a short-lived bearer
+that its own platform verifies. Its lifetime is `min(caller deadline, the
+platform's maximum bearer lifetime)`, and where the platform supports scoping,
+the bearer is scoped to this endpoint. The host sends it as
+`Authorization: Bearer`. Every bearer is minted inside its exchange, so no
+stored token is ever refreshed. The key never reaches the guest, a stream, a
+volume, a log or a fixture.
 Admission refuses a host-only endpoint whose credential any environment secret
 declares, or whose origin any guest fetch allow-list names, so the guest never
 holds Create authority. The entry's `runtime.actorMachine` names the binding,
