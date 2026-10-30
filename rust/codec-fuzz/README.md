@@ -19,10 +19,12 @@ target here does not register a scheduled check.
 | `machine_journal` | Retained Machine observations and operation envelopes through the shared journal decoder, with version admission before the JSON payload. |
 | `harness_codecs` | Agent inbox, status, close and conversation records, retained turn effects, compact checkpoints, and the actual MCP JSON/SSE and stdio exchange decoders with chunk invariance and typed EOF. MCP service parameters/results cover resources, prompts and tools; callback admission checks canonical request identity, pinned policy and protocol refusal. |
 
-The protobuf oracle compares encoded fixed points, rather than Rust equality:
-valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
-fields may be discarded at a service boundary. Persisted canonical codecs also
-check byte equality wherever their contract requires it.
+The protobuf oracle requires a semantic fixed point. When encoded bytes differ,
+it compares values through the actual protobuf JSON writer: unordered maps may
+change wire order, and valid floating-point NaNs do not compare equal to
+themselves. Unknown protobuf fields may be discarded at a service boundary.
+Persisted canonical codecs also check byte equality wherever their contract
+requires it.
 
 The generated table links all thirty-six Actors message types to the actual
 semantic conversions, including their nested validation and post-admission
