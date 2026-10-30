@@ -146,9 +146,11 @@ impl transport::Transport for Grpc {
             if let Some(lease) = &lease {
                 request.extensions_mut().insert(lease.clone());
             }
-            request
-                .metadata_mut()
-                .insert("authorization", authorization);
+            if let Some(authorization) = authorization {
+                request
+                    .metadata_mut()
+                    .insert("authorization", authorization);
+            }
             let mut service = wire::stream_session_service_client::StreamSessionServiceClient::new(
                 acyclic_auth::channel::guard(self.channel.clone()),
             );

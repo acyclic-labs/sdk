@@ -42,6 +42,10 @@ pub enum CredentialError {
     /// Empty, oversized or header-delimited credentials fail before transport.
     #[error("invalid credential")]
     Invalid,
+    /// The provider names the channel's own transport identity and has no
+    /// bearer to resolve; only transports that honor it may dispatch.
+    #[error("credential is the channel's transport identity")]
+    TransportIdentity,
 }
 
 /// One native renewal invocation, cancelled by dropping its future.
@@ -66,6 +70,7 @@ enum Source {
     Raw(Shared<Callback>),
     Cached(CredentialCache),
     Custodian(Shared<dyn CredentialSource>),
+    TransportIdentity,
 }
 
 /// Exact credential custody for one transport attempt. Retain through the reply
@@ -196,7 +201,25 @@ impl CredentialProvider {
             Source::Raw(_) => Ok(None).into(),
             Source::Cached(cache) => cache.watch().map(Some).map_err(cache_error).into(),
             Source::Custodian(source) => source.watch(),
+            Source::TransportIdentity => Ok(None).into(),
         }
+    }
+
+    /// The caller is the channel's own transport identity (mutual TLS): no
+    /// authorization is attached. The server admits the peer by its verified
+    /// certificate, which breaks the bearer-before-trust cycle on trust
+    /// Streams. Transports that cannot omit authorization refuse it via
+    /// [`CredentialError::TransportIdentity`], never sending an empty bearer.
+    #[must_use]
+    pub const fn transport_identity() -> Self {
+        Self(Source::TransportIdentity)
+    }
+
+    /// Whether requests carry no authorization and rely on the channel's
+    /// transport identity.
+    #[must_use]
+    pub const fn is_transport_identity(&self) -> bool {
+        matches!(self.0, Source::TransportIdentity)
     }
 
     /// Capture a provider once, invoking it afresh for every request.
@@ -242,6 +265,7 @@ impl CredentialProvider {
                 }))
             }
             Source::Custodian(source) => source.resolve().await,
+            Source::TransportIdentity => Err(CredentialError::TransportIdentity),
         }
     }
 }

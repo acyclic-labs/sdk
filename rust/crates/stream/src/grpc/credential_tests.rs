@@ -133,6 +133,7 @@ fn session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback() 
                         Some(&provider),
                     ))
                     .unwrap();
+                    let value = value.expect("bearer attached");
                     prop_assert_eq!(value.to_str().unwrap(), format!("Bearer {token}"));
                     prop_assert!(value.is_sensitive());
                     prop_assert_eq!(calls.load(Ordering::SeqCst), index + 1);
@@ -237,5 +238,88 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
             assert_eq!(calls.load(Ordering::SeqCst), 2);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn transport_identity_follows_without_any_authorization() -> tests::TestResult {
+    use futures::StreamExt as _;
+    use wire::stream_service_server::StreamServiceServer;
+    let memory = Arc::new(crate::MemoryStream::default());
+    let path = "trust/v1/test";
+    crate::Stream::new(memory.clone(), path)?
+        .append("record", IdempotencyKey::unique())
+        .await?;
+    let headers = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (seen, admitted) = (headers.clone(), requests.clone());
+    let served = memory.clone();
+    let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
+        tower::service_fn(move |_| {
+            let (seen, admitted, served) = (seen.clone(), admitted.clone(), served.clone());
+            async move {
+                let (client, server) = tokio::io::duplex(64 * 1024);
+                tokio::spawn(async move {
+                    // Both services observe every RPC's metadata.
+                    let observe = move |request: Request<()>| {
+                        admitted.fetch_add(1, Ordering::SeqCst);
+                        if request.metadata().contains_key("authorization") {
+                            seen.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Ok(request)
+                    };
+                    let session = crate::session::Service::new(
+                        served.clone(),
+                        crate::session::testing::authority(),
+                        "fixture".into(),
+                        crate::session::Limits::default(),
+                    );
+                    tonic::transport::Server::builder()
+                        .add_service(StreamServiceServer::with_interceptor(
+                            Service::new(served),
+                            observe.clone(),
+                        ))
+                        .add_service(
+                            wire::stream_session_service_server::StreamSessionServiceServer::with_interceptor(
+                                session, observe,
+                            ),
+                        )
+                        .serve_with_incoming(stream::once(async {
+                            Ok::<_, std::io::Error>(server)
+                        }))
+                        .await
+                });
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+            }
+        }),
+    );
+    let refuse: ChannelConnector = Arc::new(|_| Box::pin(async { Err(StreamError::AccessDenied) }));
+    let client = Arc::new(Client::from_authenticated_channel(
+        channel,
+        CredentialProvider::transport_identity(),
+        refuse,
+    ));
+    // The memory server admits sessions in-band; a platform server admits
+    // trust paths by the channel's transport identity instead.
+    client
+        .session_client()?
+        .register_credential(0, crate::session::testing::credential())?;
+    let source: &dyn crate::trust_feed::Source = &client;
+    let tail = source.tail(path).await?;
+    let mut records = source.follow(path, 0).await?;
+    let first = records.next().await.expect("one record")?;
+    assert_eq!(first.value.as_ref(), b"record");
+    assert_eq!(tail, 1);
+    assert!(requests.load(Ordering::SeqCst) > 0);
+    assert_eq!(headers.load(Ordering::SeqCst), 0);
+    // Negative control: a bearer client over the same server is observed.
+    let bearer = Arc::new(client.with_credential("fixture")?);
+    crate::trust_feed::Source::tail(&bearer, path).await?;
+    assert!(headers.load(Ordering::SeqCst) > 0);
+    // Transports that cannot omit authorization refuse rather than send none.
+    assert!(matches!(
+        CredentialProvider::transport_identity().resolve().await,
+        Err(CredentialError::TransportIdentity)
+    ));
     Ok(())
 }

@@ -121,6 +121,8 @@ impl<P> Clone for Service<P> {
 impl Client {
     /// Adopt an authenticated home channel and an explicit policy for every
     /// routed connection. No credential resolution or connection starts here.
+    /// [`CredentialProvider::transport_identity`] sends no authorization: the
+    /// channel's mutual-TLS identity is the caller, as for trust Streams.
     /// There is no fallback from the supplied connector to platform trust.
     pub fn from_authenticated_channel(
         channel: Channel,
@@ -300,9 +302,11 @@ impl Client {
         if let Some(lease) = lease {
             request.extensions_mut().insert(lease);
         }
-        request
-            .metadata_mut()
-            .insert("authorization", authorization);
+        if let Some(authorization) = authorization {
+            request
+                .metadata_mut()
+                .insert("authorization", authorization);
+        }
         Ok(request)
     }
 
@@ -438,16 +442,20 @@ async fn shared_channel(
         })
 }
 
+/// `None` authorization means the channel's transport identity is the caller.
 pub(crate) async fn request_authorization(
     fixed: Option<&MetadataValue<Ascii>>,
     credential: Option<&CredentialProvider>,
 ) -> Result<
     (
-        MetadataValue<Ascii>,
+        Option<MetadataValue<Ascii>>,
         Option<acyclic_auth::credential::ResolvedCredential>,
     ),
     Status,
 > {
+    if credential.is_some_and(CredentialProvider::is_transport_identity) {
+        return Ok((None, None));
+    }
     if let Some(provider) = credential {
         let token = provider
             .resolve()
@@ -458,13 +466,13 @@ pub(crate) async fn request_authorization(
             .await
             .map_err(|_| Status::unauthenticated("credential expired or changed"))?;
         Ok((
-            authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?,
+            Some(authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?),
             Some(token),
         ))
     } else {
         fixed
             .cloned()
-            .map(|header| (header, None))
+            .map(|header| (Some(header), None))
             .ok_or_else(|| Status::unauthenticated("missing credential"))
     }
 }
