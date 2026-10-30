@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { create, toJsonString } from "@bufbuild/protobuf";
-import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/actors/credential";
+import { CredentialCache, CredentialSnapshot, resolveCredential } from "@acyclic-labs/actors/credential";
 import {
   HttpInferenceTransport, InferenceTransportError, InspectRunRequestSchema,
   ListModelsResponseSchema, RunEventSchema, WatchRunRequestSchema,
@@ -26,13 +26,22 @@ function source() {
   let revision = crypto.randomUUID();
   let now = 1;
   let refreshes = 0;
+  let active = 0;
   const cache = new CredentialCache(async () => {
     refreshes += 1;
     return new CredentialSnapshot(crypto.randomUUID(), revision, now + 10);
   }, () => ({ revision, nowUnixSeconds: now }));
+  const originalWatch = cache.provider.watch!;
+  Object.assign(cache.provider, { watch() {
+    const watch = originalWatch();
+    active += 1;
+    return { ...watch, close() { active -= 1; watch.close(); } };
+  } });
   return {
-    cache, refreshes: () => refreshes,
+    cache, refreshes: () => refreshes, active: () => active,
+    rotate: () => { revision = crypto.randomUUID(); },
     change: () => { revision = crypto.randomUUID(); cache.invalidate(); },
+    lose: () => { revision = ""; cache.invalidate(); },
     expire: () => { now += 10; },
   };
 }
@@ -54,7 +63,8 @@ test("late HTTP rejection retains a newer lease and policy denial leaves it reus
     // Own the rejection immediately while the original server attempt is held.
     const refused = rejected(old);
     await dispatched(admitted.promise, refused);
-    owner.change();
+    // Hold the source event to exercise the separate old-401/new-lease race.
+    owner.rotate();
     await transport.listModels();
     reply.resolve();
     expect(await refused).toMatchObject({ status: 401 });
@@ -71,6 +81,66 @@ test("late HTTP rejection retains a newer lease and policy denial leaves it reus
     await transport.listModels();
     expect(owner.refreshes()).toBe(3);
   } finally { reply.resolve(); await server.stop(true); }
+});
+
+test("Inference source events retire pending headers and original body readers", async () => {
+  for (const stop of ["change", "lose", "cancel"] as const) {
+    const owner = source();
+    const admitted = Promise.withResolvers<void>();
+    const reply = Promise.withResolvers<void>();
+    const parent = new AbortController();
+    let original: AbortSignal | null | undefined;
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch() {
+      admitted.resolve(); await reply.promise; return new Response(models());
+    } });
+    const fetcher = localFetch(server.url.origin);
+    const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, (input, init) => {
+      original = init?.signal;
+      return fetcher(input, init);
+    });
+    const result = rejected(transport.inspectRun(create(InspectRunRequestSchema), parent.signal));
+    try {
+      await dispatched(admitted.promise, result);
+      expect(owner.active()).toBe(1);
+      if (stop === "cancel") parent.abort(); else owner[stop]();
+      // This observation also makes a removed watch fail before awaiting the
+      // held response. The finally path always releases that original owner.
+      expect(original?.aborted).toBe(true);
+      expect(owner.active()).toBe(0);
+      expect(await result).toBeInstanceOf(Error);
+      expect(owner.refreshes()).toBe(1);
+    } finally { reply.resolve(); await result; await server.stop(true); }
+  }
+  for (const stream of [false, true]) for (const stop of ["change", "lose", "cancel"] as const) {
+    const owner = source();
+    const pulled = Promise.withResolvers<void>();
+    const parent = new AbortController();
+    let cancelled = 0;
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const body = new ReadableStream<Uint8Array>({
+      start(value) { controller = value; },
+      pull() { pulled.resolve(); },
+      cancel() { cancelled += 1; },
+    }, { highWaterMark: 0 });
+    const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, async () => new Response(body));
+    const events = stream ? transport.watchRun(create(WatchRunRequestSchema), parent.signal)[Symbol.asyncIterator]() : undefined;
+    const result = rejected(events ? events.next() : transport.inspectRun(create(InspectRunRequestSchema), parent.signal));
+    try {
+      await dispatched(pulled.promise, result);
+      // ReadableStream's original pull is admitted, even when its Fetch
+      // adapter has no independent signal listener to cancel the body for us.
+      expect(owner.active()).toBe(1);
+      if (stop === "cancel") parent.abort(); else owner[stop]();
+      expect(cancelled).toBe(1);
+      expect(owner.active()).toBe(0);
+      expect(await result).toBeInstanceOf(Error);
+      expect(owner.refreshes()).toBe(1);
+    } finally {
+      if (!cancelled) controller?.close();
+      await result;
+      await events?.return?.();
+    }
+  }
 });
 
 test("changed source and absolute expiry refuse unary bodies before JSON decoding", async () => {
@@ -93,6 +163,35 @@ test("changed source and absolute expiry refuse unary bodies before JSON decodin
       expect(await result).toMatchObject({ message: "credential source changed or expired" });
       expect(owner.refreshes()).toBe(1);
     } finally { reply.resolve(); await server.stop(true); }
+  }
+});
+
+test("authenticated rejection retires its exact lease before a diagnostic body can block", async () => {
+  const owner = source();
+  const lease = await resolveCredential(owner.cache.provider);
+  const pulled = Promise.withResolvers<void>();
+  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+  let cancelled = 0;
+  const body = new ReadableStream<Uint8Array>({
+    start(value) { controller = value; },
+    pull() { pulled.resolve(); },
+    cancel() { cancelled += 1; },
+  }, { highWaterMark: 0 });
+  const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, async () => new Response(body, { status: 401 }));
+  const result = rejected(transport.listModels());
+  try {
+    // The former diagnostic read admits pull; current rejection finishes
+    // without reading. Either original event makes the assertion decisive.
+    await Promise.race([result, pulled.promise]);
+    expect(() => lease.check()).toThrow();
+    expect(cancelled).toBe(1);
+    expect(await result).toMatchObject({ status: 401 });
+    expect(owner.active()).toBe(0);
+    await resolveCredential(owner.cache.provider);
+    expect(owner.refreshes()).toBe(2);
+  } finally {
+    if (!cancelled) controller?.close();
+    await result;
   }
 });
 

@@ -1,5 +1,5 @@
 import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type MessageShape } from "@bufbuild/protobuf";
-import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
@@ -264,9 +264,23 @@ function utf8Length(value: string): number {
   return utf8.encode(value).byteLength;
 }
 
-async function readBoundedText(response: Response, maximumBytes: number, kind: string, check: () => void): Promise<string> {
+function openBody(body: ReadableStream<Uint8Array>, signal?: AbortSignal) {
+  const reader = body.getReader();
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => { cancellation ??= reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  return { reader, close(completed: boolean): Promise<void> | undefined {
+    signal?.removeEventListener("abort", cancel);
+    if (!completed) cancel();
+    if (cancellation) return cancellation.then(() => reader.releaseLock());
+    reader.releaseLock();
+  } };
+}
+
+async function readBoundedText(response: Response, maximumBytes: number, kind: string, check: () => void, signal?: AbortSignal): Promise<string> {
   if (response.body === null) { check(); return ""; }
-  const reader = response.body.getReader();
+  const body = openBody(response.body, signal);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const decode = (bytes: Uint8Array, stream: boolean): string => {
     try {
@@ -281,7 +295,7 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
   try {
     check();
     for (;;) {
-      const item = await reader.read();
+      const item = await body.reader.read();
       check();
       if (item.done) break;
       observed += item.value.byteLength;
@@ -294,8 +308,8 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
     completed = true;
     return chunks.join("");
   } finally {
-    if (!completed) await reader.cancel().catch(() => undefined);
-    reader.releaseLock();
+    const retired = body.close(completed);
+    if (retired) await retired;
   }
 }
 
@@ -383,9 +397,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     const route = routeFor(RunsService.method.watch);
     if (route.method.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
     await validateRuntimeShape(route.method.input, request);
-    const { response, check } = await this.#request(route.path, toJsonString(route.method.input, request), signal);
-    if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
-    const reader = response.body.getReader();
+    const { response, check, close, signal: original } = await this.#request(route.path, toJsonString(route.method.input, request), signal);
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const decodeLine = (bytes: Uint8Array): string => {
       try {
@@ -394,13 +406,16 @@ export class HttpInferenceTransport implements InferenceTransport {
         throw new InferenceTransportError(response.status, "run event is not valid UTF-8");
       }
     };
+    let body: ReturnType<typeof openBody> | undefined;
     let completed = false;
     try {
+      if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
+      body = openBody(response.body, original);
       check();
       let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
       let lineLength = 0;
       for (;;) {
-        const item = await reader.read();
+        const item = await body.reader.read();
         check();
         if (item.done) break;
         for (const byte of item.value) {
@@ -432,8 +447,10 @@ export class HttpInferenceTransport implements InferenceTransport {
       }
       completed = true;
     } finally {
-      if (!completed) await reader.cancel().catch(() => undefined);
-      reader.releaseLock();
+      try {
+        const retired = body?.close(completed);
+        if (retired) await retired;
+      } finally { close(); }
     }
   }
 
@@ -445,53 +462,74 @@ export class HttpInferenceTransport implements InferenceTransport {
     return observed(this.#observer, "inference", route.path, async sizes => {
       if (route.method.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
       await validateRuntimeShape(route.method.input, request);
-      const { response, check } = await this.#request(route.path, toJsonString(route.method.input as Method["input"], request), signal, sizes);
-      const text = await readBoundedText(response, this.maximumMessageBytes, "unary response", check);
-      check();
-      return fromJson(route.method.output as Method["output"], JSON.parse(text));
+      const { response, check, close, signal: original } = await this.#request(route.path, toJsonString(route.method.input as Method["input"], request), signal, sizes);
+      try {
+        const text = await readBoundedText(response, this.maximumMessageBytes, "unary response", check, original);
+        check();
+        return fromJson(route.method.output as Method["output"], JSON.parse(text));
+      } finally { close(); }
     });
   }
 
-  async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<{ response: Response; check: () => void }> {
+  async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<{ response: Response; check: () => void; close: () => void; signal: AbortSignal | undefined }> {
     const length = utf8Length(body);
     if (sizes) sizes.requestBytes = length;
     if (length > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
     signal?.throwIfAborted();
-    const lease = this.#credential === undefined ? undefined : await resolveCredential(this.#credential, signal);
-    const headers = new Headers(lease === undefined
-      ? await this.authorization(signal)
-      : { authorization: `Bearer ${lease.token()}` });
-    const check = () => { signal?.throwIfAborted(); lease?.check(); };
-    // Shared Auth validates lease tokens once. Raw header callbacks have no lease.
-    if (lease === undefined) {
-      const authorization = headers.get("authorization") ?? "";
-      if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
-        throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
+    const watch = this.#credential === undefined ? undefined : watchCredential(this.#credential, signal,
+      () => new Error("credential source changed or expired"));
+    const original = watch?.signal ?? signal;
+    let retained = false;
+    const close = () => watch?.close();
+    try {
+      const lease = this.#credential === undefined ? undefined : await resolveCredential(this.#credential, original);
+      const headers = new Headers(lease === undefined
+        ? await this.authorization(original)
+        : { authorization: `Bearer ${lease.token()}` });
+      const check = () => { original?.throwIfAborted(); lease?.check(); };
+      // Shared Auth validates lease tokens once. Raw header callbacks have no lease.
+      if (lease === undefined) {
+        const authorization = headers.get("authorization") ?? "";
+        if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
+          throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
+        }
       }
-    }
-    headers.set("content-type", "application/json");
-    check();
-    const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
-      method: "POST",
-      redirect: "error",
-      headers,
-      body,
-      ...(signal === undefined ? {} : { signal }),
-    });
-    if (signal?.aborted) {
-      await response.body?.cancel().catch(() => undefined);
-      signal.throwIfAborted();
-    }
-    if (!response.ok) {
-      if (response.status === 401) lease?.reject();
-      throw new InferenceTransportError(
-        response.status,
-        await readBoundedText(response, this.maximumMessageBytes, "error response", () => signal?.throwIfAborted()),
-      );
-    }
-    return { response, check };
+      headers.set("content-type", "application/json");
+      check();
+      const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
+        method: "POST",
+        redirect: "error",
+        headers,
+        body,
+        ...(original === undefined ? {} : { signal: original }),
+      });
+      if (original?.aborted) {
+        await response.body?.cancel().catch(() => undefined);
+        original.throwIfAborted();
+      }
+      if (!response.ok) {
+        if (response.status === 401) {
+          // Rejection belongs to the authenticated headers. An uncompleted
+          // diagnostic body cannot keep the exact rejected lease reusable.
+          lease?.reject();
+          await response.body?.cancel().catch(() => undefined);
+          throw new InferenceTransportError(401, "credential rejected");
+        }
+        throw new InferenceTransportError(
+          response.status,
+          await readBoundedText(response, this.maximumMessageBytes, "error response", () => original?.throwIfAborted(), original),
+        );
+      }
+      retained = true;
+      return { response, check, close, signal: original };
+    } catch (error) {
+      if (watch?.changed.aborted && !signal?.aborted && !(error instanceof InferenceTransportError && error.status === 401)) {
+        throw new Error("credential source changed or expired");
+      }
+      throw error;
+    } finally { if (!retained) close(); }
   }
 }
 
