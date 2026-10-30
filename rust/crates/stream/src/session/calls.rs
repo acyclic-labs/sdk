@@ -22,7 +22,7 @@ impl CallAuthorization {
         attributes: &acyclic_auth::contract::RecordAttributes,
         policy: acyclic_auth::authority::PolicyDecision,
     ) -> Result<(), StreamError> {
-        if resource != self.0.resource.as_ref() {
+        if resource != self.0.resource.name {
             return Err(StreamError::AccessDenied);
         }
         self.0.authorize(resource, keys, attributes, policy)

@@ -632,7 +632,7 @@ fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
     assert!(!matches(b"public-other"));
 }
 #[test]
-fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure() {
+fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
     for revoke in [false, true] {
         let state = State::new();
         let auth = Arc::new(authority(state.clone()));
@@ -643,11 +643,32 @@ fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure()
             .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
             .unwrap();
         let attributes = RecordAttributes::try_new(vec![]).unwrap();
-        assert!(
-            context
-                .authorize("fs:/volume/public", &[], &attributes, PolicyDecision::Allow)
-                .is_ok()
-        );
+        for checks in [1, 100, 1000] {
+            let measured = acyclic_test_support::measure(|| {
+                for _ in 0..checks {
+                    assert_eq!(
+                        context.authorize(
+                            "fs:/volume/public",
+                            &[],
+                            &attributes,
+                            PolicyDecision::Allow
+                        ),
+                        Ok(())
+                    );
+                }
+            });
+            assert_eq!(measured.count_total, 0);
+            // The former per-check reconstruction must fail the same oracle.
+            let copied = acyclic_test_support::measure(|| {
+                for _ in 0..checks {
+                    std::hint::black_box(ResourcePattern {
+                        name: context.resource.name.clone(),
+                        prefix: true,
+                    });
+                }
+            });
+            assert_eq!(copied.count_total, checks);
+        }
         let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
         state.publish(
             signed::Snapshot {
