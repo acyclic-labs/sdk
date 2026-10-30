@@ -13,13 +13,16 @@ fn a_quiet_job_wait_has_no_periodic_queries() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut tree = super::super::ProcessTree::spawn(&mut command)?;
     // This fixture has one member and no descendants. Let that member exit
     // naturally after the kill has already been issued by its previous owner.
     tree.guard.termination_sent = true;
+    let release = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
+    assert!(tree.try_wait(None)?.is_none());
+    drop(release);
     let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
     let started = std::time::Instant::now();
     tree.terminate(Some(&meter))?;

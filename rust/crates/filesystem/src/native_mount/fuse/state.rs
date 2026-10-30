@@ -76,9 +76,9 @@ pub(super) struct ProjectionState {
 }
 
 impl ProjectionState {
-    /// Whether an invalidation pass has work or a waiter asked for a retry.
+    /// Whether a live invalidator has work.
     pub(super) fn invalidation_wanted(&self) -> bool {
-        self.invalidation.is_pending(self.invalidation.notified) || self.invalidation.retry
+        !self.invalidation.denied && self.invalidation.is_pending(self.invalidation.notified)
     }
 
     pub(super) fn invalidate_attributes(

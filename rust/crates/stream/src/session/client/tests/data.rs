@@ -63,9 +63,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
             ..Default::default()
         }),
     )))?;
-    let mark = tokio::time::timeout(Duration::from_secs(1), all.next())
-        .await?
-        .ok_or("missing watermark")??;
+    let mark = all.next().await.ok_or("missing watermark")??;
     assert!(matches!(
         mark.wire().body,
         Some(Body::Watermark(wire::SessionWatermark {
@@ -108,9 +106,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
     let mut cursor = 0;
     let mut attention = false;
     while cursor < 8 {
-        let frame = tokio::time::timeout(Duration::from_secs(1), latest.next())
-            .await?
-            .ok_or("missing status")??;
+        let frame = latest.next().await.ok_or("missing status")??;
         let Some(Body::Data(data)) = frame.into_wire().body else {
             return Err("expected status".into());
         };
@@ -125,8 +121,8 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
     assert!(attention);
     let first = client.connections().changed(0).await?;
     fixture.reset()?;
-    tokio::time::timeout(Duration::from_secs(1), client.connections().changed(first)).await??;
-    tokio::time::timeout(Duration::from_secs(1), async {
+    client.connections().changed(first).await?;
+    (async {
         loop {
             let changed = fixture.counts.changed.notified();
             if fixture
@@ -142,7 +138,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
             changed.await;
         }
     })
-    .await?;
+    .await;
     Ok(())
 }
 
@@ -151,11 +147,7 @@ async fn filtered_loopback_preserves_idle_cuts_matches_and_checked_resume() -> T
     let provider = Arc::new(MemoryStream::default());
     let fixture = Fixture::open(provider, "filtered-node").await?;
     let client = fixture.client()?;
-    tokio::time::timeout(
-        Duration::from_secs(4),
-        crate::filtered_follow_tests::qualify_progress(&client),
-    )
-    .await??;
+    crate::filtered_follow_tests::qualify_progress(&client).await?;
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
     assert_eq!(fixture.counts.actors.load(Ordering::Relaxed), 0);
     Ok(())

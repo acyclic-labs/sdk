@@ -55,7 +55,6 @@ impl Pool {
         let Some(route) = self.routes.get(&owner) else {
             return;
         };
-        let recovering = route.generation > 1;
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
@@ -68,20 +67,13 @@ impl Pool {
                             Some(channel) => channel.clone(),
                             None => connect(node.clone()).await?,
                         };
-                        open_link(
-                            channel,
-                            &name,
-                            identity.clone(),
-                            credentials.clone(),
-                            executor.clone(),
-                        )
-                        .await
+                        open_link(channel, &name, identity.clone(), credentials.clone()).await
                     }
                     .await;
                     match result {
-                        // Existing interests own recovery until cancellation.
-                        // Initial admission and credential rejection stay bounded.
-                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        // Retry only an observed transport failure. Dropping the
+                        // final interest cancels the dial and its backoff.
+                        Err(StreamError::Unavailable) => executor.sleep(100).await,
                         result => break result,
                     }
                 };
@@ -361,8 +353,8 @@ impl Pool {
         );
         if registering && let Some(dial) = self.dials.remove(destination) {
             let executor = self.executor.clone();
-            // An immediate Welcome/EOF peer can otherwise monopolize the
-            // browser microtask queue and prevent registration deadlines.
+            // Back off after EOF so a repeatedly disconnected transport yields
+            // to cancellation and other work before opening another RPC.
             self.dials.insert(
                 destination.into(),
                 Box::pin(async move {
@@ -380,40 +372,23 @@ async fn open_link(
     destination: &str,
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
-    executor: std::sync::Arc<dyn crate::runtime::Executor>,
 ) -> Result<Ready, StreamError> {
-    for attempt in 0..3 {
-        let mut observation = Observation::session(attempt);
-        let result = observation
-            .operation
-            .clone()
-            .scope(deadline::until(
-                handshake(
-                    channel.clone(),
-                    destination,
-                    identity.clone(),
-                    credentials.clone(),
-                ),
-                executor.sleep(1_000),
-            ))
-            .await
-            .unwrap_or(Err(StreamError::Unavailable));
-        let result = match result {
-            Ok((node, mut link, response)) => {
-                link.observation = Some(observation);
-                Ok((node, link, response))
-            }
-            Err(error) => {
-                observation.finish(Some(&error));
-                Err(error)
-            }
-        };
-        match result {
-            Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,
-            result => return result,
+    let mut observation = Observation::session(0);
+    let result = observation
+        .operation
+        .clone()
+        .scope(handshake(channel, destination, identity, credentials))
+        .await;
+    match result {
+        Ok((node, mut link, response)) => {
+            link.observation = Some(observation);
+            Ok((node, link, response))
+        }
+        Err(error) => {
+            observation.finish(Some(&error));
+            Err(error)
         }
     }
-    Err(StreamError::Unavailable)
 }
 
 async fn handshake(
@@ -475,16 +450,16 @@ async fn handshake(
         .transpose()?
         .ok_or(StreamError::Unavailable)?;
     if welcome.wire().channel_id != 0 || welcome.wire().generation != 0 {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::InvalidResponse);
     }
     let Some(Body::Welcome(welcome)) = welcome.into_wire().body else {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::InvalidResponse);
     };
     if welcome.version != 1
         || welcome.node_id.is_empty()
         || (!destination.is_empty() && welcome.node_id != destination)
     {
-        return Err(StreamError::Unavailable);
+        return Err(StreamError::InvalidResponse);
     }
     Ok((welcome.node_id, link, response))
 }

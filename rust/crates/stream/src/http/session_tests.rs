@@ -216,8 +216,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
             .await?;
         append(&provider, "events").await?;
         assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), checked.next())
-                .await?
+            checked.next().await
                 .ok_or("checked follow ended")??
                 .sequence,
             1
@@ -225,8 +224,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         drop(checked);
         for follow in &mut follows {
             assert_eq!(
-                tokio::time::timeout(Duration::from_secs(1), follow.next())
-                    .await?
+                follow.next().await
                     .ok_or("follow ended")??
                     .sequence,
                 1
@@ -288,8 +286,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
         append(&provider, "events").await?;
         append(&provider, "agents/one").await?;
         assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), records.next())
-                .await?
+            records.next().await
                 .ok_or("missing TLS record")??
                 .sequence,
             1

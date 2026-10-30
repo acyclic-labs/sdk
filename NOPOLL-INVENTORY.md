@@ -1,0 +1,2137 @@
+# Polling and timed-wait inventory
+
+Baseline: `d33ed17571`. Locations refer to that baseline so deletion does not erase the audit trail.
+
+Scope: `rust/crates/**` and `typescript/packages/**`, excluding the separately owned `harness`, `harness-core`, `harness-tui` and `harness-client` packages. Product code, tests, conformance, examples, benchmarks and scripts are included.
+
+Candidates include event-driven loops and retry identity references; these require classification, not mechanical removal. Pending rows are not approval to retain a timer. The only timing exceptions are caller-chosen request deadlines and backoff following transient transport failure. Tool/model retry and exact idempotent resend identities are allowed. Actor alarm implementations are the event primitive itself.
+
+| Baseline site | Kind | Replacement event or permitted exception | Status |
+| --- | --- | --- | --- |
+| `rust/crates/actors/proto/actors/v1/actors.proto:239` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:384` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:395` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:475` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:511` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:535` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:563` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:798` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:876` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/conformance.rs:926` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/domain/formal_proofs.rs:175` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/domain/observations.rs:27` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/domain/observations.rs:65` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/domain/observations.rs:66` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest.rs:122` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest.rs:146` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest.rs:148` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/activation.rs:83` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/authoring.rs:3` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/authoring.rs:97` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/authoring.rs:99` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/authoring.rs:152` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/authoring.rs:153` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:23` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:24` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:26` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:31` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:32` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:37` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:38` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:40` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:45` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:46` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:48` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:49` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:50` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:53` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:55` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:56` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:334` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:335` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:338` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/durable.rs:345` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/handler.rs:201` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/sockets.rs:98` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/sockets.rs:102` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/state.rs:94` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/guest/state.rs:144` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/http.rs:191` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local.rs:625` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/invoke.rs:128` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/model/composition.rs:217` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/model/composition.rs:251` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/model/composition.rs:397` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/model/composition.rs:468` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/model/composition.rs:521` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/ready.rs:353` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/ready/tests.rs:199` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:44` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:53` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:54` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/actors/src/local/runtime.rs:59` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/actors/src/local/runtime.rs:64` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/actors/src/local/runtime.rs:266` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:298` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:302` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:309` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:340` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:416` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:418` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:507` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:587` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime.rs:738` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/actors/src/local/runtime/dispatcher.rs:33` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/dispatcher.rs:74` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/dispatcher.rs:112` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/interrupt.rs:62` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/interrupt.rs:181` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/limits.rs:34` | Scheduler recheck candidate | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:330` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:844` | Loop (inspect progress source) | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:960` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:1167` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:1405` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/runtime/tests.rs:1641` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/tests.rs:10` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/tests.rs:135` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/local/tests.rs:318` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/src/timers.rs:139` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/fixtures/authoring/guest.ts:13` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/fixtures/authoring/guest.ts:141` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/fixtures/authoring/guest.ts:409` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:92` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:93` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:94` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:232` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:237` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:238` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:342` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/guest_contract.rs:343` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer-negative-control.py:17` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_contract.rs:40` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_contract.rs:94` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_contract.rs:95` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_contract.rs:96` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:51` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:69` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:72` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:125` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:145` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/actors/tests/timer_loom.rs:146` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `rust/crates/auth/src/channel.rs:114` | Loop (inspect progress source) | Credential admission and transport futures return Pending to their producer wakers; only an explicit operation Context supplies a deadline | Actioned |
+| `rust/crates/auth/src/channel.rs:271` | Additional timer / implicit deadline candidate | Credential admission and transport futures return Pending to their producer wakers; only an explicit operation Context supplies a deadline | Actioned |
+| `rust/crates/auth/src/credential/cache.rs:161` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/auth/src/operation.rs:4` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/auth/src/operation.rs:46` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/auth/src/operation.rs:116` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/README.md:5` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/agent-host/README.md:16` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/client-conformance.md:31` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/fixture-authority.mjs:16` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/run.mjs:32` | Timer / delay / interval | Control-fd listen record, control closure, or process close; shutdown waits for forced termination | Actioned |
+| `rust/crates/conformance/cloudflare/run.mjs:50` | Timer / delay / interval | Control-fd listen record, control closure, or process close; shutdown waits for forced termination | Actioned |
+| `rust/crates/conformance/cloudflare/src/wasm.rs:12` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/src/wasm.rs:43` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:36` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:170` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:177` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:180` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:269` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:270` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/cloudflare/worker.ts:271` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:158` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:182` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:221` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:222` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:236` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:255` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:259` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:263` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/mutation.rs:129` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/mutation.rs:302` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/parallel_io_tests.rs:1` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/parallel_io_tests.rs:28` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/parallel_io_tests.rs:41` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/parallel_io_tests.rs:44` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/parallel_io_tests.rs:55` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:16` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:43` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:53` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:102` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:103` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:117` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:130` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:139` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/native_mount_qualify/supervision.rs:218` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify.rs:62` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/object_cases.rs:26` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/object_cases.rs:42` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/tools/capture.rs:215` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/tools/capture.rs:223` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/tools/fixtures.rs:209` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/qualify/tools/mounting.rs:277` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/storage_conformance/endpoint.rs:269` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/storage_conformance/endpoint.rs:288` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/storage_conformance/endpoint.rs:289` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/storage_conformance/endpoint.rs:290` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/bin/storage_conformance/endpoint.rs:313` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:160` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:161` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:162` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:164` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:177` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:188` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:238` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:290` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/client/endpoint.rs:307` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:117` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:118` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:266` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:286` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:287` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/filesystem.rs:1402` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/inference/replay.rs:179` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/inference/replay.rs:280` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/src/inference/replay.rs:403` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:212` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:357` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:360` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:376` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:391` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:392` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:399` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:402` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/graphcoder_backends.rs:404` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/hosted_actors.rs:483` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/conformance/tests/hosted_actors.rs:495` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/contract-derive/tests/ingress.rs:408` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/contract-derive/tests/ingress.rs:428` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem-napi/src/bindings/publication/mod.rs:380` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem-napi/src/bindings/wire/mod.rs:112` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem-wasm/src/bindings/authored/mod.rs:106` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem-wasm/src/bindings/publication/mod.rs:54` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem-wasm/src/bindings/publication/mod.rs:346` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/filesystem/README.md:87` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/fuzz/tests/model.rs:66` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/fuzz/tests/retry.rs:6` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/fuzz/tests/retry.rs:56` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/fuzz/tests/retry.rs:70` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/mod.rs:16` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/mod.rs:17` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/projection.rs:220` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/projection.rs:304` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/projection.rs:342` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/retry.rs:16` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/retry.rs:25` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/retry.rs:28` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/access/retry.rs:33` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/accounting/mod.rs:94` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/async_storage/fork.rs:49` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/async_storage/fork.rs:150` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/async_storage/fork.rs:175` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/cache/decoded_model.rs:32` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/cache/provider.rs:168` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/collection/tests.rs:422` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/group/tests.rs:142` | Timed wait / readiness | Producer readiness channel | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:115` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:275` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:278` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:283` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:285` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/journal.rs:306` | Retry / backoff / identity | One native record-lock acquisition followed by one journal read | Actioned |
+| `rust/crates/filesystem/src/core_state/log/checkpoint/durability.rs:143` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/log/mod.rs:176` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/mod.rs:28` | Additional timer / implicit deadline candidate | Exclusive record FileLock::lock; hidden lock deadline and recheck interval removed | Actioned |
+| `rust/crates/filesystem/src/core_state/mod.rs:29` | Timer / delay / interval | Exclusive record FileLock::lock; hidden lock deadline and recheck interval removed | Actioned |
+| `rust/crates/filesystem/src/core_state/native_records/contexts.rs:65` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/owners/models.rs:14` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/owners/models.rs:67` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/owners/models.rs:75` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/records.rs:147` | Loop (inspect progress source) | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:257` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:260` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:263` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:265` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:278` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:281` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:283` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:285` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:291` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:294` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:303` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:306` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:307` | Timer / delay / interval | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:310` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:318` | Timer / delay / interval | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:322` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:325` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:327` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:333` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:339` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:377` | Additional timer / implicit deadline candidate | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:378` | Loop (inspect progress source) | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records.rs:388` | Retry / backoff / identity | Native record lock event replaces acquisition probes; remaining read loop advances bytes to EOF | Actioned |
+| `rust/crates/filesystem/src/core_state/records/windows_publication_tests.rs:124` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/records/windows_publication_tests.rs:188` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/records/windows_publication_tests.rs:239` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/records/windows_publication_tests.rs:288` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/tests/contexts.rs:64` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/tests/contexts.rs:81` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/tests/crash_matrix.rs:169` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:72` | Loop (inspect progress source) | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:81` | Loop (inspect progress source) | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:107` | Loop (inspect progress source) | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:258` | Retry / backoff / identity | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:263` | Retry / backoff / identity | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:275` | Retry / backoff / identity | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/logical_release.rs:294` | Retry / backoff / identity | Native ready/release pipes and real child join; each raw pre-exec IO attempt either transfers its byte or terminates the fixture | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/mod.rs:145` | Loop (inspect progress source) | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:33` | Retry / backoff / identity | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:36` | Timed wait / readiness | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:38` | Timer / delay / interval | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:42` | Retry / backoff / identity | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:43` | Timer / delay / interval | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:76` | Retry / backoff / identity | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:84` | Retry / backoff / identity | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:89` | Retry / backoff / identity | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/nodes.rs:90` | Timer / delay / interval | Obsolete lock retry arithmetic and its tests deleted | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:33` | Scheduler recheck candidate | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:35` | Scheduler recheck candidate | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:40` | Scheduler recheck candidate | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:112` | Timed wait / readiness | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:118` | Timer / delay / interval | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:175` | Timed wait / readiness | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/core_state/tests/ownership.rs:181` | Timer / delay / interval | Transaction entry/completion channels and child stdout readiness | Actioned |
+| `rust/crates/filesystem/src/demand/admissions_tests.rs:361` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/demand/context_loom_tests.rs:38` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/demand/context_loom_tests.rs:41` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/demand/native/file.rs:22` | Additional timer / implicit deadline candidate | Original native read completion; hidden remote-read deadline removed | Actioned |
+| `rust/crates/filesystem/src/demand/native/file.rs:317` | Timed wait / readiness | Original native read completion; hidden remote-read deadline removed | Actioned |
+| `rust/crates/filesystem/src/demand/page.rs:51` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/demand/tests.rs:101` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:828` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:829` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:831` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:833` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:835` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:838` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:869` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:870` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:872` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:875` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/actor.rs:878` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append/group/identity_tests.rs:55` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append/group_tests.rs:97` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append/group_tests.rs:100` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append/group_tests.rs:108` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append/preparation.rs:94` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append_retry_tests.rs:71` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append_retry_tests.rs:154` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append_retry_tests.rs:159` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append_retry_tests.rs:164` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/append_retry_tests.rs:169` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/authority.rs:14` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:31` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:33` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:85` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:94` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:380` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/composition.rs:401` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/head_payload_loom_tests.rs:235` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/mod.rs:160` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/native_tests.rs:91` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/native_tests.rs:92` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/native_tests.rs:143` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/placement.rs:31` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/placement.rs:61` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/records.rs:25` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/reservations.rs:131` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/state.rs:12` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/state.rs:150` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/state_tests.rs:356` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:955` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:994` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1054` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1082` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1083` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1085` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1088` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1090` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1092` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1095` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1144` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1145` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests.rs:1148` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests/operation_tests.rs:383` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests/operation_tests.rs:384` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests/operation_tests.rs:385` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests/operation_tests.rs:388` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/distributed/tests/policy_tests.rs:84` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/attributes.rs:259` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/collection.rs:134` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/error.rs:89` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/error.rs:90` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/error.rs:92` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/fork_selection.rs:394` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/generation_cache.rs:80` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/join_witness.rs:24` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:179` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:223` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:227` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:257` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:315` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:348` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/live.rs:366` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:27` | Retry / backoff / identity | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:29` | Retry / backoff / identity | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:35` | Retry / backoff / identity | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:41` | Retry / backoff / identity | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:48` | Retry / backoff / identity | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:64` | Timed wait / readiness | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:71` | Timed wait / readiness | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:73` | Scheduler recheck candidate | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:79` | Timed wait / readiness | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/local_root_tests.rs:81` | Scheduler recheck candidate | Actual ownership destructor completion barrier | Actioned |
+| `rust/crates/filesystem/src/facade/merged_names.rs:17` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/names.rs:577` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/names_unique.rs:17` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/policy_cache.rs:128` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/publication.rs:359` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/publication.rs:488` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/retirement.rs:84` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/transactions.rs:419` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/volume_creation.rs:33` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/volume_creation.rs:425` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/volume_creation.rs:461` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/volume_creation.rs:482` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/volume_creation.rs:814` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/facade/workspace_creation.rs:106` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/foundation.rs:358` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/foundation.rs:373` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/fsevents/hub/tests.rs:74` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/fsevents/tests.rs:108` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/fsevents/tests.rs:111` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/capture/traversal.rs:55` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/errors.rs:38` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/refs.rs:264` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:323` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:324` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:341` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:344` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:345` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:352` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/capture.rs:355` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/history.rs:752` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/history.rs:757` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/model.rs:90` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/tree.rs:113` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tests/tree.rs:286` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tree.rs:18` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/git_compat/tree.rs:199` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted.rs:51` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/hosted.rs:68` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/hosted.rs:85` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/hosted.rs:168` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted.rs:252` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/hosted.rs:253` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted.rs:362` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted/workspace.rs:62` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted/workspace.rs:249` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/hosted/workspace.rs:342` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/allocation.rs:732` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/allocation.rs:735` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/allocation.rs:789` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/allocation/accounting.rs:404` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/allocation/fixed_index.rs:228` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/blob/build.rs:61` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/blob/index.rs:103` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/blob/index.rs:193` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:239` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:248` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:250` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:258` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:271` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:295` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:303` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:306` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:318` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/loom_tests.rs:323` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/test_support.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/test_support.rs:15` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:10` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:14` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:19` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:22` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:40` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:77` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:82` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/published/tests.rs:115` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/walk/incremental.rs:209` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/closure/walk/incremental.rs:229` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/extent_mutation/context.rs:20` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/extent_mutation/context.rs:36` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:1` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:7` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:82` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:100` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:193` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:197` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/live.rs:200` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/merge/links.rs:150` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/persistent_btree.rs:205` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/persistent_btree.rs:221` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/persistent_point.rs:226` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/composition.rs:116` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests.rs:397` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests.rs:414` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests/prefix.rs:156` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests/prefix.rs:254` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/dispatch.rs:56` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/mod.rs:337` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/mod.rs:363` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/mod.rs:402` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/plan.rs:47` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/preparation.rs:276` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:10` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:355` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:371` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:372` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:374` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:375` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:393` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:394` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:395` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:396` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:399` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:400` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:402` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/combiner/state/tests.rs:403` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/mod.rs:63` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/mod.rs:79` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/publication/mod.rs:126` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/live.rs:45` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/api.rs:35` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/api.rs:36` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/api.rs:37` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/api.rs:62` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/api.rs:64` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/codec.rs:92` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/generation_catalog.rs:808` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/kernel/tests/publication/generation_catalog.rs:813` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/directory.rs:278` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/exactify.rs:53` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/exactify.rs:145` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/exactify.rs:322` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/overlay.rs:78` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/overlay.rs:111` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/overlay.rs:192` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/tests/mount.rs:485` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/tests/mount.rs:487` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/tests/snapshot.rs:98` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lazy_workspace/treap.rs:14` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lineage/mod.rs:102` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lineage/tests.rs:151` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lineage/tests.rs:199` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/lock_order/checked.rs:178` | Timed wait / readiness | Rank-tracked condition-variable notification; timed-wait API and tuple adapter removed | Actioned |
+| `rust/crates/filesystem/src/lock_order/checked.rs:183` | Timed wait / readiness | Rank-tracked condition-variable notification; timed-wait API and tuple adapter removed | Actioned |
+| `rust/crates/filesystem/src/lock_order/tests.rs:111` | Timed wait / readiness | Real notifying producer holds the same ranked mutex; descending reacquisition is rejected before waiting | Actioned |
+| `rust/crates/filesystem/src/lock_order/tests.rs:119` | Timed wait / readiness | Real notifying producer holds the same ranked mutex; descending reacquisition is rejected before waiting | Actioned |
+| `rust/crates/filesystem/src/materializer/directories.rs:31` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/directory_preparation.rs:146` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/metadata.rs:368` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/paths.rs:28` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/preflight.rs:140` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/reservation.rs:239` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/reservation.rs:240` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/types.rs:38` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/types.rs:275` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/types.rs:276` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/types.rs:281` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/window/tests.rs:72` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/materializer/window/tests.rs:73` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/memory/authority/store.rs:64` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/memory/authority/store.rs:90` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/model.rs:54` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/model.rs:58` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/multi_root.rs:50` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/multi_root.rs:627` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/multi_root.rs:629` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/multi_root/tests/mod.rs:339` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/accounting.rs:37` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/checkout_walk.rs:72` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:226` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:281` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:282` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:283` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:288` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/native_range_tests.rs:289` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/sparse_scan_loom.rs:52` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/sparse_scan_loom.rs:87` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_capture/watch_replay.rs:4` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/cwd.rs:31` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/cwd.rs:134` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/cwd.rs:366` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/held_files.rs:77` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/held_files.rs:82` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/held_files.rs:233` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/identity.rs:125` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/links.rs:28` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/links.rs:38` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/mutation.rs:297` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/mutation.rs:362` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/mutation.rs:435` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/open.rs:33` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/open.rs:281` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/open.rs:286` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/open.rs:299` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/ranges.rs:94` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/ranges.rs:257` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/reader.rs:53` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/record.rs:90` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/root.rs:148` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/root.rs:614` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/root_path.rs:76` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/search.rs:183` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/sparse.rs:96` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/sparse.rs:147` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/sparse.rs:252` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/stat_probe.rs:253` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/tests_bounded_record.rs:222` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/tests_bounded_record.rs:223` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/tests_bounded_record.rs:224` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/tests_interrupted_sync.rs:65` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/unix_stat.rs:37` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/unix_stat.rs:56` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/unix_stat.rs:142` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/unix_stat.rs:245` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/unix_stat.rs:315` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/yielding.rs:6` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_host/yielding.rs:236` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_host/yielding.rs:245` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/access.rs:19` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/checkout.rs:122` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/checkout.rs:152` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/locks.rs:15` | Timed wait / readiness | Original lock future, completion and cancellation events; hidden callback deadline removed | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/locks.rs:16` | Additional timer / implicit deadline candidate | Original lock future, completion and cancellation events; hidden callback deadline removed | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/mod.rs:40` | Additional timer / implicit deadline candidate | Original callback future completion; hidden callback deadline removed | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/runtime.rs:227` | Loop (inspect progress source) | One future poll per waker notification, parked on the producer condition variable; no callback timer | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/runtime.rs:251` | Timed wait / readiness | One future poll per waker notification, parked on the producer condition variable; no callback timer | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/runtime.rs:264` | Timed wait / readiness | One future poll per waker notification, parked on the producer condition variable; no callback timer | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/runtime.rs:321` | Timer / delay / interval | One future poll per waker notification, parked on the producer condition variable; no callback timer | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/source_io.rs:183` | Loop (inspect progress source) | Capture producer release and explicit cancellation notify the same guarded condition variable | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/source_io.rs:257` | Timed wait / readiness | Capture producer release and explicit cancellation notify the same guarded condition variable | Actioned |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/concurrent/publication.rs:78` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:141` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:145` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:180` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:214` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:248` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:287` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:206` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:215` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:218` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:227` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:435` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:6` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:9` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:17` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:18` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:24` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:29` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:414` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:531` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:537` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:542` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:601` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/return_fence.rs:603` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:124` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:127` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:192` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:198` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:229` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:726` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:727` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:736` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:747` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:753` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/adapter/tests/source_limits.rs:757` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/attribute_ops.rs:80` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs:192` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs:202` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/context.rs:561` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/directory.rs:30` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/directory.rs:150` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/directory.rs:222` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/mod.rs:32` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/mod.rs:33` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/mod.rs:34` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/mod.rs:68` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/session.rs:9` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/session.rs:58` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/session.rs:252` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/session.rs:274` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/startup.rs:54` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/startup.rs:55` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/startup.rs:273` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/startup.rs:283` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:91` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:98` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:111` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:122` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:359` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:383` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:388` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/mod.rs:378` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount/tests/mod.rs:381` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/darwin_mount_bridge.c:445` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/disconnected/kernel.rs:110` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/disconnected/kernel.rs:324` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/filesystem/src/native_mount/disconnected/kernel.rs:329` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/filesystem/src/native_mount/error.rs:109` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/destination.rs:5` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/destination/retry_tests.rs:276` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/models.rs:19` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/models.rs:58` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/models.rs:102` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence/models.rs:280` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fence_io.rs:95` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/core.rs:51` | Timed wait / readiness | Condition-variable notification at producer publication, cancellation and mount stop | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/core.rs:69` | Timed wait / readiness | Condition-variable notification at producer publication, cancellation and mount stop | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/dir.rs:80` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/dir.rs:275` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/dir.rs:439` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/dir.rs:496` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/host_io.rs:57` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/host_io.rs:87` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/host_io.rs:93` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:78` | Retry / backoff / identity | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:199` | Retry / backoff / identity | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:202` | Loop (inspect progress source) | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:220` | Timed wait / readiness | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:315` | Retry / backoff / identity | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:336` | Retry / backoff / identity | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:338` | Retry / backoff / identity | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:346` | Loop (inspect progress source) | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:348` | Loop (inspect progress source) | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation.rs:402` | Loop (inspect progress source) | Condition-variable notification and registered cancellation; refused invalidation terminates through the original mount failure receipt | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation/model_checking.rs:158` | Retry / backoff / identity | Production condition-variable transitions; missing producer notification is the deterministic deadlock negative control; retry proof removed with retry state | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/invalidation/model_checking.rs:185` | Retry / backoff / identity | Production condition-variable transitions; missing producer notification is the deterministic deadlock negative control; retry proof removed with retry state | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/lifecycle.rs:96` | Loop (inspect progress source) | One measured OS helper-exit wait; one stat attempt returns its typed error; no hidden recovery deadline or periodic probe | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/lifecycle.rs:101` | Timed wait / readiness | One measured OS helper-exit wait; one stat attempt returns its typed error; no hidden recovery deadline or periodic probe | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/lifecycle.rs:204` | Loop (inspect progress source) | One measured OS helper-exit wait; one stat attempt returns its typed error; no hidden recovery deadline or periodic probe | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/lifecycle.rs:234` | Timer / delay / interval | One measured OS helper-exit wait; one stat attempt returns its typed error; no hidden recovery deadline or periodic probe | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/mount.rs:130` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount.rs:206` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/reply.rs:16` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:188` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:240` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:243` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:252` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:256` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/mount/tests.rs:260` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/packet_router.rs:267` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/session.rs:502` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/shared.rs:211` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/shared.rs:214` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/state.rs:79` | Retry / backoff / identity | Failed invalidators remain terminal; no reattempt on a later waiter or changed inputs | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/state.rs:81` | Retry / backoff / identity | Failed invalidators remain terminal; no reattempt on a later waiter or changed inputs | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/cache.rs:432` | Timed wait / readiness | Deleted timer-dependent duplicate of the production Loom wake proof and tests of the removed reattempt mechanism | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/cache.rs:450` | Timer / delay / interval | Deleted timer-dependent duplicate of the production Loom wake proof and tests of the removed reattempt mechanism | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/cache.rs:529` | Retry / backoff / identity | Deleted timer-dependent duplicate of the production Loom wake proof and tests of the removed reattempt mechanism | Actioned |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/directory_reply.rs:61` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/disclosure.rs:75` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/folded.rs:364` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:47` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:373` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:576` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:613` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/native.rs:683` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/packet_cancellation.rs:28` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/packets.rs:169` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/packets.rs:184` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/shared.rs:313` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/shared.rs:366` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/vhost_session.rs:77` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/tests/write_gate.rs:78` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/transport_io.rs:36` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/vring_event.rs:23` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/vring_packet.rs:77` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/vring_worker.rs:21` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/fuse/xattr.rs:98` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/lazy/promotion.rs:226` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/lazy/queries.rs:68` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/lazy/tests/live_mount.rs:50` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/lazy/tests/source_changes.rs:87` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/materialize/api.rs:360` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/materialize/restore/artifacts.rs:100` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/materialize/restore/artifacts.rs:111` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/directory.rs:206` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:18` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:20` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:39` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:64` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:138` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:148` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:89` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:105` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:108` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:111` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:146` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:272` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:335` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:444` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/notifications.rs:449` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:423` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:437` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:450` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:492` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:503` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:622` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:625` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector.rs:659` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:22` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:75` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:141` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:157` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:169` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/projector_state.rs:180` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:35` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:63` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:103` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:111` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:113` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/service.rs:127` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/command_retirement.rs:301` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/command_retirement.rs:346` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/crash_recovery.rs:44` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/crash_recovery.rs:83` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/crash_recovery.rs:573` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/crash_recovery.rs:575` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/metadata_client.rs:47` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/metadata_client.rs:188` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/mutations.rs:204` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/notifications.rs:110` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/notifications.rs:142` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/projfs/tests/shared.rs:18` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/provider_stack.rs:163` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/publication.rs:23` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/publication.rs:138` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/publication.rs:284` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/publication.rs:435` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/recovery.rs:19` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/recovery.rs:623` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/recovery.rs:645` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/recovery.rs:760` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/shared/callback_gate.rs:160` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/shared/callback_gate.rs:165` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/shared/callback_gate.rs:173` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/shared/instances.rs:114` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/shared/view_table.rs:474` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/source.rs:607` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/startup.rs:21` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/storage_capabilities_linux.rs:46` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:313` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:327` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:330` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:331` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:446` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/fence.rs:453` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/mod.rs:79` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/tests/mod.rs:100` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_gate/mod.rs:161` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_gate/mod.rs:206` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_gate/mod.rs:373` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_ledger/storage.rs:108` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_ledger/tests.rs:313` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/native_mount/view_ledger/tests.rs:324` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/obs.rs:416` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/obs.rs:429` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/obs.rs:438` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_claim.rs:163` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window.rs:60` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window.rs:151` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window.rs:280` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window/coordinator.rs:336` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window/coordinator.rs:476` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/operation_window/tests.rs:476` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/package_install.rs:60` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/s3.rs:1263` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/s3_http/tests.rs:565` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/s3_http/tests.rs:599` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/s3_http/tests.rs:608` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/s3_http/tests.rs:612` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/simulation/objects.rs:291` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source.rs:102` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:195` | Timer / delay / interval | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:259` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:288` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:329` | Loop (inspect progress source) | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:361` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:363` | Timer / delay / interval | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:1966` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2684` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2689` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2791` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2797` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2810` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2854` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source.rs:2859` | Retry / backoff / identity | One capture; concurrent invalidation returns NeedsRescan to the caller | Actioned |
+| `rust/crates/filesystem/src/source_watch/directory_changes/hub.rs:113` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/reader.rs:181` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/shutdown.rs:280` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/shutdown.rs:283` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:50` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:153` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:434` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:460` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:468` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:524` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:165` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:221` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:222` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:224` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:225` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:226` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:500` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:517` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:526` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:528` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:539` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:733` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:760` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/events.rs:142` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/events.rs:267` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:359` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:372` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:406` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:506` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:542` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/hub.rs:545` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/mod.rs:214` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/registration.rs:76` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/registration.rs:113` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:63` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:369` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:389` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:421` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:444` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:447` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:493` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:509` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:602` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:614` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:727` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:730` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1047` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:133` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:315` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:355` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:378` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:381` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:489` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:544` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:581` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:584` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/source_watch/tests.rs:615` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/speculation/promotion.rs:81` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/speculation/promotion.rs:548` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/publication.rs:95` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/tests/native_write.rs:365` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/tests/native_write.rs:437` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/tests/native_write.rs:445` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/tests/native_write.rs:449` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/staged_objects/tests/ordinary.rs:138` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/streams_record.rs:27` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/accounting/pages.rs:38` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:43` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:44` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:77` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:96` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:132` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:156` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:186` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/cache/flights.rs:187` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/batching.rs:178` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/batching.rs:179` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/owners.rs:351` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/owners.rs:390` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/owners.rs:677` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/rounds.rs:118` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/concurrency/rounds.rs:180` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/creation.rs:19` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/creation.rs:27` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/creation.rs:32` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_creation.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_creation.rs:113` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_creation.rs:238` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_mutations.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_mutations.rs:320` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_mutations.rs:535` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_publication.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_publication.rs:223` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/fault_publication.rs:311` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:5` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:92` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:216` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:238` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:240` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:268` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:274` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/live.rs:282` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:152` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:153` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:154` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:158` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:164` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:200` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:478` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:485` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:492` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/local.rs:493` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/publication.rs:78` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/publication.rs:87` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/publication.rs:103` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/publication.rs:159` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/publication.rs:174` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/facade/transfer.rs:32` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/simulation/authority.rs:4` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/simulation/authority.rs:40` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/simulation/authority.rs:47` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:627` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:640` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:658` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:687` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:705` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:768` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/mod.rs:777` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/watch/native_contract.rs:68` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/composition.rs:311` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/composition.rs:436` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/composition.rs:456` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/composition.rs:460` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/creation_race.rs:57` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/operation_identity.rs:35` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/operation_identity.rs:52` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/operation_identity.rs:66` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/operation_identity.rs:68` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:85` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:171` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:223` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:240` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:245` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:254` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:289` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:295` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:298` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:303` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:307` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/populated_creation.rs:308` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/proof_cache.rs:164` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/proof_cache.rs:169` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/proof_cache.rs:171` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/proof_cache.rs:172` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/publication/mod.rs:353` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/publication/mod.rs:355` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:63` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:64` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:65` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:69` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:73` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:74` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/tests/workspace/transactions.rs:78` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:1675` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:2641` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:3600` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:4784` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:4799` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:4814` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/watch.rs:4836` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service.rs:96` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service.rs:158` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:137` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:138` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:143` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:148` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:212` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:216` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:221` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/authority_error_tests.rs:226` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/errors/tests.rs:254` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/tests.rs:523` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/tests.rs:531` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/tests.rs:572` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/wire_service/tests.rs:580` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/access_read_model.rs:183` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/commit.rs:31` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/commit.rs:144` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/identity.rs:207` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/identity.rs:213` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/identity_loom.rs:16` | Scheduler recheck candidate | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/join.rs:178` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/join_native.rs:152` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/lifecycle.rs:163` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/name_reference.rs:82` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:7` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:11` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:22` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:35` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:44` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:83` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:91` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/outcomes.rs:118` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace/reverse_traversal.rs:475` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:245` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:314` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:460` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:612` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:666` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/src/workspace_context.rs:1461` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/browser_commit/storage.rs:123` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/browser_commit/storage.rs:127` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/native_owner_notifications.rs:145` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/projfs_names.rs:125` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/projfs_names.rs:133` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/session_fs.rs:300` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/session_fs.rs:316` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/session_fs.rs:333` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/cases/session_fs.rs:534` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/distributed.rs:587` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/distributed.rs:604` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/linux_ext4_perf.rs:1056` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/macos_apfs_perf.rs:110` | Loop (inspect progress source) | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/macos_apfs_perf.rs:137` | Timer / delay / interval | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/companion.rs:209` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:202` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:213` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:222` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:225` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:231` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:232` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:270` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:340` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:344` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:353` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/measured_native_source/cursor.rs:356` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/tests/recovery_concurrency/recovery.rs:53` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/filesystem/vendor/darwinfuse/include/fuse.h:119` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/vendor/darwinfuse/src/darwinfuse.c:153` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/filesystem/vendor/darwinfuse/src/nfs4_server.c:175` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `rust/crates/grpc-observability/src/tests.rs:230` | Timer / delay / interval | Caller-held release channel; producer drop emits UNAVAILABLE | Actioned |
+| `rust/crates/harness-fuzz/fuzz_targets/mcp_stdio_codec.rs:37` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-mock-model/src/bindings.rs:58` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-mock-model/src/main.rs:236` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/alloy_tests.rs:40` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/alloy_tests.rs:63` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/api_key_tests.rs:62` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/api_key_tests.rs:65` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization.rs:62` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization/tests.rs:132` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization/tests.rs:133` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization/tests.rs:134` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization/tests.rs:202` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/authorization/tests.rs:271` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/catalog.rs:186` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/catalog_tests.rs:21` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex.rs:533` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_dispatch_tests.rs:63` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_dispatch_tests.rs:263` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_failure_tests.rs:34` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_race_tests.rs:88` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_race_tests.rs:246` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_recovery_tests.rs:100` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_recovery_tests.rs:206` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_recovery_tests.rs:216` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_stock_tests.rs:42` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_tests.rs:27` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_tests.rs:30` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/codex_tests.rs:330` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/admission_tests.rs:91` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/admission_tests.rs:206` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/admission_tests.rs:211` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:227` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:243` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:264` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:272` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:285` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:291` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:297` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/counting/mod.rs:302` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:15` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:60` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:66` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:141` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:234` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:235` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:316` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline.rs:338` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:28` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:30` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:41` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:46` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:57` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:95` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:241` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/deadline_tests.rs:273` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:46` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:48` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:49` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:52` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:53` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:79` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:86` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/dispatch.rs:221` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/endpoints.rs:18` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:50` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:58` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:383` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:385` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:386` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/fuzzing.rs:387` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:33` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:51` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:60` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:148` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:150` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:152` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:163` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:172` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:186` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:225` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http.rs:238` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser.rs:85` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser.rs:87` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser.rs:90` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser.rs:95` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser.rs:126` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_delay.rs:20` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_delay.rs:32` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:36` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:38` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:50` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:51` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:110` | Timer / delay / interval | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/browser_tests.rs:234` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/refusal_tests.rs:10` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/http/refusal_tests.rs:37` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/lib.rs:57` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:252` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:253` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:254` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:257` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:260` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:280` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:298` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native.rs:351` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_retry_tests.rs:1` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_retry_tests.rs:88` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_retry_tests.rs:96` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_retry_tests.rs:124` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_tests.rs:60` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/native_tests.rs:273` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/protocol_tests.rs:304` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:44` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:51` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:76` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:77` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:86` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:92` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:93` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:120` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:121` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:123` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:183` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:184` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:190` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:197` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:199` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:200` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:201` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:206` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:208` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:209` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/retry.rs:210` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/spec.rs:73` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/spec.rs:81` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/spec.rs:121` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:46` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:47` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:253` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:275` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:319` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:510` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tests.rs:689` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tool_name_tests.rs:372` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tool_names.rs:400` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/tool_names.rs:403` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/transport_tests.rs:19` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/transport_tests.rs:94` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/transport_tests.rs:218` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/wasm/credentials/tests.rs:140` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/src/wasm/tests.rs:208` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/integration/mcp_identity.rs:20` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/integration/provider_http.rs:161` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/integration/provider_http.rs:227` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/models/credential_snapshot.rs:25` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/models/refresh.rs:67` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-providers/tests/models/refresh.rs:146` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http.rs:78` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/native_tests.rs:222` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/native_tests.rs:307` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/tests.rs:151` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/tests.rs:179` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/tests.rs:204` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/http/tests.rs:243` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http.rs:46` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/native_tests.rs:115` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/native_tests.rs:236` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/tests.rs:63` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/tests.rs:83` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/tests.rs:243` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/harness-search/src/url_fetch/http/tests.rs:483` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/inference/README.md:13` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/inference/proto/inference/v1/inference.proto:485` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/inference/src/host/mod.rs:130` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/inference/src/host/mod.rs:131` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/machines/proto/machines/v1/machines.proto:435` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/machines/src/conformance.rs:279` | Timed wait / readiness | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/grpc/native.rs:11` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/native.rs:12` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/native.rs:148` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/native.rs:149` | Timed wait / readiness | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/native.rs:186` | Additional timer / implicit deadline candidate | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/native.rs:187` | Timed wait / readiness | Connection and RPC futures; no implicit connection or request deadline | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:222` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:476` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:550` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:588` | Timer / delay / interval | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:611` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:674` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:681` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/guest_io.rs:719` | Timed wait / readiness | RPC closure/server task completion; completed EOF tested after advancing logical caller-deadline clock | Actioned |
+| `rust/crates/machines/src/grpc/tests/mod.rs:317` | Timer / delay / interval | Explicit observation-release channel; dropped producer returns UNAVAILABLE | Actioned |
+| `rust/crates/machines/src/local/provider/tests.rs:39` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/local/provider/tests.rs:55` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/local/provider/tests.rs:203` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/local/provider/tests.rs:262` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/local/provider/tests.rs:282` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/provider/deadline.rs:61` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/machines/src/results.rs:137` | Retry / backoff / identity | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/machines/src/results/tests.rs:175` | Loop (inspect progress source) | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `rust/crates/manifest/tests/manifest_contract.rs:568` | Timed wait / readiness | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/markdown/src/inline.rs:135` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/markdown/src/inline.rs:548` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/markdown/src/lib.rs:248` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/markdown/src/visibility.rs:15` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/native-runtime/README.md:14` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple.rs:413` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple.rs:424` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple.rs:488` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple.rs:489` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple.rs:652` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple_flush.rs:7` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple_flush.rs:42` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple_flush_tests.rs:107` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple_tests.rs:466` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/apple_tests.rs:611` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/blocking/wait.rs:67` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/model.rs:175` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/model.rs:247` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/model.rs:275` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/model.rs:530` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/model.rs:659` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/claim/process.rs:390` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/completion/fence.rs:76` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/descriptor/cache.rs:171` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/operations.rs:51` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/operations.rs:74` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/operations.rs:77` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/operations.rs:342` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/operations.rs:352` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/sync_batch/tests.rs:59` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file/sync_batch/tests.rs:305` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file_lock_tests.rs:180` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/file_lock_tests.rs:201` | Timed wait / readiness | Child stdout readiness and actual native lock acquisition | Actioned |
+| `rust/crates/native-runtime/src/file_lock_tests.rs:202` | Timer / delay / interval | Child stdout readiness and actual native lock acquisition | Actioned |
+| `rust/crates/native-runtime/src/held_sync.rs:1` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/held_sync.rs:11` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/lines.rs:72` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/linux/backend.rs:31` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/linux/backend.rs:33` | Timed wait / readiness | Native completion-source wake or mailbox delivery/disconnection | Actioned |
+| `rust/crates/native-runtime/src/linux/backend.rs:254` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/linux/backend.rs:255` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/linux/mod.rs:155` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/namespace/mod.rs:113` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/namespace/mod.rs:194` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/obs/tests.rs:308` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/ownership/mod.rs:160` | Timed wait / readiness | Caller-chosen absolute release deadline; no periodic rechecks | Allowed deadline |
+| `rust/crates/native-runtime/src/ownership/model.rs:12` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/ownership/model.rs:38` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/ownership/model.rs:182` | Retry / backoff / identity | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/private_file/mod.rs:156` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_identity/windows.rs:8` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_identity/windows.rs:94` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:8` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:9` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:10` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:13` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:23` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:78` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:81` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:113` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/apple_group_wait.rs:114` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:28` | Loop (inspect progress source) | Readiness message releases explicit cancellation; child fixture waits on stdin EOF or OS park; obsolete wall-clock quiet-window test deleted | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:56` | Timer / delay / interval | Readiness message releases explicit cancellation; child fixture waits on stdin EOF or OS park; obsolete wall-clock quiet-window test deleted | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:126` | Timed wait / readiness | Readiness message releases explicit cancellation; child fixture waits on stdin EOF or OS park; obsolete wall-clock quiet-window test deleted | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:212` | Timed wait / readiness | Readiness message releases explicit cancellation; child fixture waits on stdin EOF or OS park; obsolete wall-clock quiet-window test deleted | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:214` | Timer / delay / interval | Readiness message releases explicit cancellation; child fixture waits on stdin EOF or OS park; obsolete wall-clock quiet-window test deleted | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_wait_windows.rs:4` | Additional timer / implicit deadline candidate | Deleted unused duplicate capture implementation and its tests; Windows event and cleanup-handle ownership is shared by the caller-deadline wait | Actioned |
+| `rust/crates/native-runtime/src/process_tree/capture_wait_windows.rs:115` | Additional timer / implicit deadline candidate | Deleted unused duplicate capture implementation and its tests; Windows event and cleanup-handle ownership is shared by the caller-deadline wait | Actioned |
+| `rust/crates/native-runtime/src/process_tree/custodian.rs:285` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody.rs:348` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody.rs:632` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:19` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:75` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:98` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:123` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:126` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:363` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:393` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:396` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:486` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:533` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:597` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:637` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:668` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:686` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:689` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:757` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:767` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:820` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/custody_tests.rs:823` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/events/apple.rs:34` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/events/mod.rs:146` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/events/tests.rs:41` | Timer / delay / interval | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/tests.rs:68` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/events/windows.rs:14` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/events/windows.rs:378` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/exit_wait.rs:18` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/exit_wait.rs:38` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/exit_wait.rs:195` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/exit_wait.rs:259` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/exit_wait/tests.rs:91` | Timer / delay / interval | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/exit_wait/tests.rs:175` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:286` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:340` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:416` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:452` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:515` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:586` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/external_host.rs:637` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/job_members.rs:20` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:173` | Additional timer / implicit deadline candidate | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:321` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:343` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:630` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:640` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:800` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:866` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:1014` | Additional timer / implicit deadline candidate | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:1015` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/mod.rs:1060` | Additional timer / implicit deadline candidate | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:19` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:30` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:39` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:46` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:47` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:142` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:143` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:243` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:244` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:329` | Loop (inspect progress source) | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:334` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:336` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:337` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:375` | Timed wait / readiness | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:403` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/pump.rs:404` | Periodic check configuration / hidden deadline | Pipe readiness, child exit and explicit ProcessWake; periodic owner checks removed; caller-selected capture deadline remains | Actioned |
+| `rust/crates/native-runtime/src/process_tree/scale_tests.rs:109` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/scale_tests.rs:110` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage.rs:104` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage.rs:105` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage.rs:296` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage.rs:298` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:22` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:30` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:58` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:65` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:71` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:174` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:178` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:180` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/storage_tests.rs:237` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/stream.rs:168` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/stream.rs:172` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/termination_wait_tests.rs:6` | Retry / backoff / identity | Real stdin EOF releases child and orphan descendants; waitid retains leader identity through terminal cleanup | Actioned |
+| `rust/crates/native-runtime/src/process_tree/termination_wait_tests.rs:120` | Additional timer / implicit deadline candidate | Real stdin EOF releases child and orphan descendants; waitid retains leader identity through terminal cleanup | Actioned |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:72` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:91` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:297` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:302` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:308` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:327` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:339` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:354` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:372` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:457` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:481` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:506` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:606` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:611` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:768` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:847` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:859` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:861` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:1310` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:1312` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:1406` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/tests.rs:1446` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/unix.rs:46` | Loop (inspect progress source) | One native spawn, exit observation or reap attempt; interruption is returned as its original typed IO error without another attempt | Actioned |
+| `rust/crates/native-runtime/src/process_tree/unix.rs:89` | Loop (inspect progress source) | One native spawn, exit observation or reap attempt; interruption is returned as its original typed IO error without another attempt | Actioned |
+| `rust/crates/native-runtime/src/process_tree/unix.rs:490` | Loop (inspect progress source) | One native spawn, exit observation or reap attempt; interruption is returned as its original typed IO error without another attempt | Actioned |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:173` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:222` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:235` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:240` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:355` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:381` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:383` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/wait_tests.rs:390` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wake.rs:77` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/wake.rs:130` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:283` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:473` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:565` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:590` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:602` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:623` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:698` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:744` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/warden.rs:803` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:11` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:370` | Loop (inspect progress source) | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:371` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:383` | Timer / delay / interval | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:541` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:644` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:670` | Timed wait / readiness | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows.rs:671` | Timer / delay / interval | Original OS exit, lock, channel or future event replaces the readiness timer; completion retains its original owner and terminal error | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:2` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:18` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:20` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:24` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:32` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:36` | Periodic check configuration / hidden deadline | Native process exit event, without a hidden termination deadline or periodic recheck | Actioned |
+| `rust/crates/native-runtime/src/process_tree/windows_job_wait.rs:212` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:7` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:120` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:138` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:141` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:185` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/process_tree/windows_wait.rs:187` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/service/mod.rs:43` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/signing_key/fixture/host.rs:139` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/stdin.rs:49` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/sync.rs:29` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/sync/mpsc.rs:52` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/task.rs:362` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/task.rs:366` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/clock.rs:155` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/clock.rs:194` | Timer / delay / interval | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/durability/tests.rs:228` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/entropy.rs:142` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/executor.rs:520` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:252` | Timer / delay / interval | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:263` | Timer / delay / interval | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:271` | Timed wait / readiness | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:302` | Timer / delay / interval | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:308` | Timer / delay / interval | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/executor/tests.rs:313` | Timed wait / readiness | Seeded executor futures exchange explicit entry, release and completion channel events; no timer budget | Actioned |
+| `rust/crates/native-runtime/src/testing/host.rs:124` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/host.rs:167` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/host.rs:176` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/host/pool.rs:57` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:29` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:208` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:279` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:402` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:440` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:545` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:617` | Timed wait / readiness | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/host/tests.rs:629` | Loop (inspect progress source) | Seeded worker channels and producer condition variables; saturation is asserted at one pending submission before physical workers are released | Actioned |
+| `rust/crates/native-runtime/src/testing/queue.rs:117` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/queue.rs:164` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/queue_model.rs:365` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/testing/resources.rs:355` | Loop (inspect progress source) | Removed periodic resource monitor; remaining loops grow buffers only on OS-reported truncation | Actioned |
+| `rust/crates/native-runtime/src/testing/resources.rs:408` | Loop (inspect progress source) | Removed periodic resource monitor; remaining loops grow buffers only on OS-reported truncation | Actioned |
+| `rust/crates/native-runtime/src/testing/resources/monitor.rs:32` | Loop (inspect progress source) | Periodic resource sampler deleted; resources sampled at workload boundaries | Actioned |
+| `rust/crates/native-runtime/src/testing/resources/monitor.rs:40` | Timer / delay / interval | Periodic resource sampler deleted; resources sampled at workload boundaries | Actioned |
+| `rust/crates/native-runtime/src/tests/admission.rs:35` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/admission.rs:78` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/claim.rs:291` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/claim.rs:488` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/custody.rs:140` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/tests/custody.rs:190` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/tests/mod.rs:29` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/mod.rs:69` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/tests/mod.rs:125` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/wake.rs:40` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/wall_alarm.rs:129` | Loop (inspect progress source) | OS wait on the earliest actual alarm or alarm-registration change; test completion uses a channel | Actioned |
+| `rust/crates/native-runtime/src/wall_alarm.rs:593` | Timed wait / readiness | OS wait on the earliest actual alarm or alarm-registration change; test completion uses a channel | Actioned |
+| `rust/crates/native-runtime/src/wall_alarm.rs:612` | Timed wait / readiness | OS wait on the earliest actual alarm or alarm-registration change; test completion uses a channel | Actioned |
+| `rust/crates/native-runtime/src/wall_alarm.rs:616` | Timer / delay / interval | OS wait on the earliest actual alarm or alarm-registration change; test completion uses a channel | Actioned |
+| `rust/crates/native-runtime/src/windows/driver.rs:183` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/windows/driver.rs:374` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/windows/driver_retirement_tests.rs:138` | Timed wait / readiness | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/windows/terminal.rs:8` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/windows/terminal.rs:131` | Scheduler recheck candidate | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/windows/terminal.rs:143` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/native-runtime/src/windows/terminal.rs:153` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/native-runtime/src/workers/admission.rs:315` | Loop (inspect progress source) | OS wait, task completion, channel or explicit alarm/deadline; review context | Pending |
+| `rust/crates/objects/benches/objects.rs:92` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/examples/bench-objects.rs:35` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/proto/objects/v1/objects.proto:192` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/availability/client.rs:56` | Timer / delay / interval | Exact authenticated credential-expiry event; revocation competes through the original credential watch | Event primitive |
+| `rust/crates/objects/src/availability/client.rs:116` | Timed wait / readiness | Opening future with only the original caller Context budget | Actioned |
+| `rust/crates/objects/src/batch.rs:88` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/conformance.rs:403` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/grpc.rs:3` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/grpc.rs:27` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:88` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/grpc.rs:166` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:191` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:407` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:448` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:466` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:485` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:509` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:526` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:553` | Additional timer / implicit deadline candidate | Request future has no implicit deadline; only caller Context or explicitly configured transfer timeout creates one | Actioned |
+| `rust/crates/objects/src/grpc.rs:652` | Timer / delay / interval | Exact grpc-timeout supplied by the caller; no metadata means an unbounded request | Allowed deadline |
+| `rust/crates/objects/src/grpc_tests.rs:288` | Timer / delay / interval | Actual HTTP/2 request metadata receipt before replica advancement | Actioned |
+| `rust/crates/objects/src/grpc_tests.rs:556` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/grpc_tests.rs:558` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/http.rs:172` | Timed wait / readiness | Original caller Context deadline; no implicit 30-second timeout | Actioned |
+| `rust/crates/objects/src/http/availability.rs:77` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/http_context_tests.rs:56` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/operation.rs:10` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/operation.rs:57` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/objects/src/s3.rs:175` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:510` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:981` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:1010` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:1090` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:1453` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/store.rs:1741` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests.rs:157` | Timed wait / readiness | Nonblocking future observation at the unissued-revision boundary | Actioned |
+| `rust/crates/objects/src/tests.rs:314` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests.rs:743` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests.rs:1283` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests.rs:2553` | Scheduler recheck candidate | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests/availability.rs:147` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests/availability.rs:170` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests/availability.rs:178` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/objects/src/tests/availability.rs:205` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/sdk-docs/src/scenarios/render.rs:71` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/sdk-generation/src/historical/archives.rs:65` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/sdk-generation/src/historical/corpus.rs:122` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/sdk-generation/src/historical/corpus.rs:252` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/sdk-generation/src/historical/tests.rs:32` | Additional timer / implicit deadline candidate | Native pipe input holds the real fixture until process cancellation; retained writer prevents accidental early EOF | Actioned |
+| `rust/crates/sdk-generation/src/historical/tests.rs:53` | Additional timer / implicit deadline candidate | Native pipe input holds the real fixture until process cancellation; retained writer prevents accidental early EOF | Actioned |
+| `rust/crates/sdk-generation/src/historical/tests.rs:67` | Timed wait / readiness | Native pipe input holds the real fixture until process cancellation; retained writer prevents accidental early EOF | Actioned |
+| `rust/crates/stream-napi/src/lib.rs:4` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/lib.rs:422` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests.rs:404` | Timed wait / readiness | Real TCP lifecycle notification races the server terminal JoinHandle, so producer exit returns an error instead of leaving the wait pending | Actioned |
+| `rust/crates/stream-napi/src/tests.rs:407` | Timed wait / readiness | Real TCP lifecycle notification races the server terminal JoinHandle, so producer exit returns an error instead of leaving the wait pending | Actioned |
+| `rust/crates/stream-napi/src/tests.rs:416` | Timed wait / readiness | Real TCP lifecycle notification races the server terminal JoinHandle, so producer exit returns an error instead of leaving the wait pending | Actioned |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:38` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:128` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:421` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:429` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:437` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:647` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream-napi/src/tests/reconnect.rs:676` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:29` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:157` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:159` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:161` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:163` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:165` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:167` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:179` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/README.md:269` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/browser-test-host.rs:95` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/browser-test-host.rs:108` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/browser-test-host.rs:291` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:49` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:65` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:83` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:161` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:210` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/postgres_conformance/checks.rs:214` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/provider-conformance.rs:80` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/examples/wave1-conformance.rs:68` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/proto/stream/v1/session.proto:72` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/publication-models/change.rs:18` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/publication-models/change.rs:22` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/publication-models/cursor.rs:17` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/browser/follow.rs:71` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/browser/notifications.rs:97` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/change.rs:98` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/changes.rs:16` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance.rs:220` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:29` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:31` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:67` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:68` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:330` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:331` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:342` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:361` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:364` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:366` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:405` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:418` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/conformance/wave1.rs:422` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:255` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:256` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:324` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:325` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:329` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/filtered_follow_tests.rs:332` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/client.rs:99` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/client.rs:108` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/client.rs:146` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/client.rs:172` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/client.rs:187` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/client.rs:224` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/credential_tests.rs:42` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/credential_tests.rs:69` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/credential_tests.rs:84` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/credential_tests.rs:100` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:46` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:47` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:48` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:198` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:325` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:327` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:341` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:386` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:399` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/mod.rs:415` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:9` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:286` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:314` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:329` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:345` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:351` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:358` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:359` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:379` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:380` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:381` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:382` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:383` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:411` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:413` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:420` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:425` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:426` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:431` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:436` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:438` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:537` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:558` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:559` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:566` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:571` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:573` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests.rs:578` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:23` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:33` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:34` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:42` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:68` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:76` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/grpc/tests/retry_capture.rs:78` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http.rs:95` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http.rs:613` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http.rs:620` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http/http_follow_tests.rs:61` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http/http_follow_tests.rs:116` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http/http_follow_tests.rs:318` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http/http_follow_tests.rs:349` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/http/session.rs:78` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/http/session_tests.rs:219` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/http/session_tests.rs:228` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/http/session_tests.rs:291` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/lib.rs:176` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:23` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:44` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:184` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:218` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:620` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/domain.rs:631` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/native_provider.rs:54` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/path_text_tests/native.rs:73` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/path_text_tests/native.rs:87` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/provider.rs:65` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/provider.rs:70` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/provider_ext.rs:25` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/provider_ext.rs:30` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/provider_ext.rs:35` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/revision.rs:557` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/revision.rs:646` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/revision.rs:648` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/revision.rs:679` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/tests.rs:256` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/lib/write.rs:1` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/follow.rs:51` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/follow_progress.rs:28` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/local_inner.rs:71` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/local_stream.rs:609` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/native_mutations.rs:40` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/port.rs:237` | Loop (inspect progress source) | Revision watch and explicit failure event; every recheck follows one producer wake | Actioned |
+| `rust/crates/stream/src/local/tests/accepted.rs:209` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/accepted.rs:216` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/accepted.rs:221` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:67` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:78` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:160` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:341` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:343` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_0.rs:671` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/cases_1.rs:286` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/compaction.rs:80` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/compaction.rs:123` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/compaction.rs:166` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/descriptors.rs:63` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:14` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:25` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:29` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:62` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:63` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:67` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/durability_retries.rs:87` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:203` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:204` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:206` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:218` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:420` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:422` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:473` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:475` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/native.rs:654` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:37` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:59` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:63` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:103` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:105` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:111` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:167` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:185` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:187` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:197` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/local/tests/ownership.rs:201` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/replay_work.rs:95` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/replay_work.rs:107` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/replay_work.rs:109` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/revisions.rs:60` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/wakeups.rs:40` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/wakeups.rs:90` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/local/tests/wakeups.rs:149` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/commit.rs:613` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/commit.rs:745` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/commit_index.rs:96` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/commit_index.rs:107` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/follow.rs:63` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/follow.rs:94` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/follow_progress.rs:107` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/history.rs:52` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/prepared.rs:28` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/provider.rs:610` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/recovery_model.rs:667` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/recovery_model.rs:823` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/snapshot/tests.rs:174` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/snapshot/tests.rs:523` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:145` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:255` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:258` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:259` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:261` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:543` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:646` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/cases_0.rs:675` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/head.rs:149` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/key_seek.rs:181` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_commit.rs:175` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:285` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:295` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:299` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:301` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:304` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/native_controls.rs:305` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/parking.rs:139` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/memory/tests/runtime_shutdown.rs:104` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/operation_claim.rs:106` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/operation_claim.rs:111` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/operation_claim.rs:157` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/pending/tests.rs:11` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/persistence.rs:9` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/persistence.rs:18` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/postgres.rs:191` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/postgres/schema.sql:23` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/postgres/tests.rs:171` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/postgres/tests.rs:209` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/record_header_tests.rs:87` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/record_header_tests.rs:111` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/record_header_tests.rs:116` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/record_headers.rs:75` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/replicated.rs:105` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/replicated.rs:284` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/replicated.rs:393` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:1` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:34` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:97` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:111` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:123` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/request.rs:188` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:9` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:11` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:32` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:33` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/runtime.rs:72` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/runtime.rs:74` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:83` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/runtime.rs:128` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/runtime.rs:144` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/authority.rs:596` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/authority_tests.rs:369` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/authority_tests.rs:388` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/authority_tests.rs:402` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/authority_tests.rs:755` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client.rs:52` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client.rs:653` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client.rs:730` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client.rs:777` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/data.rs:23` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/link.rs:65` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/link.rs:84` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/link.rs:364` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/link.rs:392` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/link.rs:407` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/native.rs:75` | Loop (inspect progress source) | Credential admission and input-stream futures yield to their producer wakers; denied admission closes the input with AccessDenied | Actioned |
+| `rust/crates/stream/src/session/client/pool.rs:12` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool.rs:19` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool/retry_model.rs:12` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/pool/retry_model.rs:51` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool/retry_model.rs:77` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool/retry_model.rs:88` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool/retry_model.rs:94` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/pool/route_searches.rs:46` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/client/progress/model.rs:14` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests.rs:89` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests.rs:240` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests.rs:245` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests.rs:379` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests.rs:380` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests.rs:506` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests.rs:507` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests.rs:538` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/application.rs:19` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/application.rs:189` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/checked.rs:140` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked.rs:145` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/checked.rs:171` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked.rs:185` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/checked.rs:220` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/checked_recovery.rs:106` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked_recovery.rs:116` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked_recovery.rs:133` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked_recovery.rs:163` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/checked_recovery.rs:242` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/connections.rs:61` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/connections.rs:274` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/connections.rs:345` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/context.rs:2` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:10` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:11` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:38` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/context.rs:58` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/context.rs:92` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:104` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:116` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:175` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:255` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:267` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:297` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:298` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:357` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:369` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:388` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:464` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:489` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:504` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:508` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:559` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:589` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:594` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/context.rs:595` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/credentials.rs:138` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/credentials.rs:204` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/credentials.rs:205` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/credentials.rs:243` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/credentials.rs:265` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/data.rs:66` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/data.rs:111` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/data.rs:128` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/data.rs:129` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/data.rs:130` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/data.rs:154` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/isolation.rs:5` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/isolation.rs:56` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/latest.rs:156` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:148` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:155` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:159` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:200` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:230` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:269` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:275` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/lifecycle.rs:279` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/outbound.rs:144` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/reads.rs:193` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/reads.rs:275` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/reads.rs:502` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/reads.rs:525` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/recovery.rs:53` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/client/tests/tenk.rs:166` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/tenk.rs:259` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/client/tests/tenk.rs:362` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/interest.rs:405` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/interest.rs:510` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/session/mod.rs:60` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/mod.rs:373` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/runtime/browser.rs:6` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/runtime/browser.rs:49` | Scheduler recheck candidate | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/sources.rs:281` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/session/tests.rs:88` | Timed wait / readiness | Original stream/frame/connection or fixture completion event | Actioned |
+| `rust/crates/stream/src/session/tests.rs:403` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/snapshot.rs:50` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/snapshot.rs:104` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/wasm/provider_rpc.rs:70` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/wasm/remote.rs:37` | Timed wait / readiness | Fetch completion or caller cancellation; implicit one-second request deadline removed | Actioned |
+| `rust/crates/stream/src/wasm/session_authority.rs:62` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `rust/crates/stream/src/wasm/session_server.rs:76` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/src/wasm/socket.rs:185` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/client_pool_loom.rs:181` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/client_pool_loom.rs:182` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/client_pool_loom.rs:185` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/client_pool_loom.rs:186` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/client_pool_loom.rs:187` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/support/session.rs:364` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:13` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:22` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:33` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:37` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:55` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_keys.rs:60` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/stream/tests/wave1_recovery.rs:1` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `rust/crates/test-support/src/physical_cuts.rs:72` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `rust/crates/test-support/src/readiness.rs:15` | Loop (inspect progress source) | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `typescript/packages/actors/src/durable.ts:64` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `typescript/packages/actors/src/state-binding.ts:37` | Timer / delay / interval | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `typescript/packages/actors/test/actors.test.ts:178` | Timer / delay / interval | Connection-entry/release promises and explicit late rejection | Actioned |
+| `typescript/packages/actors/test/actors.test.ts:208` | Timer / delay / interval | Connection-entry/release promises and explicit late rejection | Actioned |
+| `typescript/packages/actors/test/actors.test.ts:233` | Timer / delay / interval | Connection-entry/release promises and explicit late rejection | Actioned |
+| `typescript/packages/actors/test/browser-http-conformance.mjs:184` | Timer / delay / interval | Shared browser driver events, page result publication, authenticated-request entry and response-close events | Actioned |
+| `typescript/packages/actors/test/browser-http-conformance.mjs:193` | Bounded retry / endpoint probe / retry configuration | Shared browser driver events, page result publication, authenticated-request entry and response-close events | Actioned |
+| `typescript/packages/actors/test/browser-http-conformance.mjs:240` | Bounded retry / endpoint probe / retry configuration | Shared browser driver events, page result publication, authenticated-request entry and response-close events | Actioned |
+| `typescript/packages/actors/test/credential-interleavings.mjs:128` | Timed wait / readiness | Credential-provider entry event followed by explicit caller cancellation | Actioned |
+| `typescript/packages/actors/test/credential-interleavings.mjs:130` | Timer / delay / interval | Credential-provider entry event followed by explicit caller cancellation | Actioned |
+| `typescript/packages/actors/test/native-companion-installed.mjs:43` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `typescript/packages/actors/test/native-companion-installed.mjs:46` | Timed wait / readiness | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `typescript/packages/actors/test/native-fallback-installed.mjs:75` | Retry / backoff / identity | Actor delivery/alarm, commit result or cancellation; review context | Pending |
+| `typescript/packages/auth/src/credential.ts:96` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `typescript/packages/filesystem/src/grpc.ts:28` | Additional timer / implicit deadline candidate | Deleted defaultTimeoutMs fallback; the caller owns the request deadline | Actioned |
+| `typescript/packages/filesystem/src/workspace-copies.ts:122` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `typescript/packages/filesystem/test/browser-multitab.js:10` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:15` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:16` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:385` | Timer / delay / interval | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:409` | Timer / delay / interval | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:545` | Timer / delay / interval | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:560` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:561` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:578` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-multitab.js:582` | Bounded retry / endpoint probe / retry configuration | One opening and initialization; actor readiness/failure/retirement messages; coordinator closes the window after fs.close acknowledgement | Actioned |
+| `typescript/packages/filesystem/test/browser-publication.mjs:99` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:34` | Additional timer / implicit deadline candidate | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:117` | Timer / delay / interval | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:142` | Bounded retry / endpoint probe / retry configuration | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:170` | Timer / delay / interval | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:233` | Additional timer / implicit deadline candidate | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:324` | Additional timer / implicit deadline candidate | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-qualify.mjs:398` | Bounded retry / endpoint probe / retry configuration | Driver stdout/stderr endpoint publication, page result mutation and protocol disconnect; no startup/result probes or default deadlines | Actioned |
+| `typescript/packages/filesystem/test/browser-stream.mjs:65` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `typescript/packages/filesystem/test/grpc.test.mjs:132` | Retry / backoff / identity | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `typescript/packages/filesystem/test/grpc.test.mjs:207` | Timed wait / readiness | Filesystem notification, commit result, owner release or operation-completion channel; review context | Pending |
+| `typescript/packages/inference/test/idle-kv.test.ts:17` | Retry / backoff / identity | Producer completion event; review context for transport/model backoff or caller deadline | Pending |
+| `typescript/packages/machines/src/rpc-transport.ts:9` | Retry / backoff / identity | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `typescript/packages/machines/src/transport.ts:17` | Retry / backoff / identity | Operation stream, guest I/O channel or process completion; review context | Pending |
+| `typescript/packages/objects/src/v1-grpc.ts:57` | Additional timer / implicit deadline candidate | Only explicitly provided caller timeoutMs supplies defaultTimeoutMs; omitted timeout is unbounded | Allowed deadline |
+| `typescript/packages/objects/src/v1-http.ts:42` | Timer / delay / interval | Only explicitly provided caller timeoutMs arms AbortController; omitted or zero timeout is unbounded | Allowed deadline |
+| `typescript/packages/objects/src/v1-http.ts:52` | Timer / delay / interval | Only explicitly provided caller timeoutMs arms AbortController; omitted or zero timeout is unbounded | Allowed deadline |
+| `typescript/packages/objects/test/v1-conformance.mjs:127` | Timer / delay / interval | Fetch-entry/release promises | Actioned |
+| `typescript/packages/stream/CHANGELOG.md:12` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/README.md:62` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/models/session_model.rs:64` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/models/session_model.rs:88` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/models/session_model.rs:153` | Loop (inspect progress source) | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/src/grpc.ts:194` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/src/types.ts:56` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/grpc-provider-conformance.mjs:34` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/grpc-provider-conformance.mjs:45` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/grpc-provider-conformance.mjs:121` | Additional timer / implicit deadline candidate | Inspect original budget or replace with producer completion event | Pending |
+| `typescript/packages/stream/test/native-credential.test.ts:31` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:10` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:14` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:19` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:30` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/remote-history.browser.ts:57` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-deadline-model-driver.ts:69` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-deadline-model-driver.ts:78` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-deadline-model-driver.ts:85` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-error-driver.ts:54` | Timed wait / readiness | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-error-driver.ts:61` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session-model-driver.ts:92` | Timer / delay / interval | Existing stdin/readline lifetime; idle keepalive interval deleted | Actioned |
+| `typescript/packages/stream/test/session.test.ts:185` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session.test.ts:190` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session.test.ts:195` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/session.test.ts:206` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:32` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:190` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:630` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:631` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:633` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:635` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:636` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:642` | Retry / backoff / identity | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:875` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:876` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:884` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:887` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:888` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |
+| `typescript/packages/stream/test/stream.test.ts:910` | Timer / delay / interval | Stream frame, connection-state change, operation result or transport-failure backoff; review context | Pending |

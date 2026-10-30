@@ -482,25 +482,29 @@ async fn watch_errors_never_consume_an_inspection_or_reopen()
     Ok(())
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn quiet_watch_receives_its_terminal_producer_event_without_inspection()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+    let (release, released) = tokio::sync::oneshot::channel();
     let (service, script, machine) = scripted_operation_service(
-        vec![WatchReply::Delayed(
+        vec![WatchReply::Gated(
             suspended_state(operation),
-            Duration::from_secs(61),
+            Arc::new(std::sync::Mutex::new(Some(released))),
         )],
         vec![],
     );
     let key = service.expected_key;
+    let started = script.lock().expect("script").started.clone();
     let (provider, shutdown, server) = serve_operation_service(service).await?;
-    let before = tokio::time::Instant::now();
-    assert_eq!(
-        provider.suspend(machine, key).await?,
-        MutationOutcome::Suspended(machine)
-    );
-    assert!(before.elapsed() >= Duration::from_secs(61));
+    let mut waiting = Box::pin(provider.suspend(machine, key));
+    tokio::select! {
+        result = &mut waiting => panic!("watch completed before its producer: {result:?}"),
+        () = started.notified() => {}
+    }
+    assert!(futures::poll!(waiting.as_mut()).is_pending());
+    release.send(()).map_err(|_| "watch producer was dropped")?;
+    assert_eq!(waiting.await?, MutationOutcome::Suspended(machine));
     let _ = shutdown.send(());
     server.await??;
     let script = script.lock().expect("script");

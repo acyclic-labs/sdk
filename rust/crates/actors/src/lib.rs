@@ -215,13 +215,16 @@ mod tests {
         }
     }
 
-    /// Serves one RPC whose OK headers precede a 50 ms body ending in an UNAVAILABLE trailer.
+    /// Serves one RPC whose OK headers precede a caller-released UNAVAILABLE trailer.
     #[cfg(not(target_arch = "wasm32"))]
-    async fn slow_status_server() -> std::io::Result<std::net::SocketAddr> {
+    async fn slow_status_server()
+    -> std::io::Result<(std::net::SocketAddr, tokio::sync::oneshot::Sender<()>)> {
         use std::task::Poll;
 
         #[derive(Clone)]
-        struct SlowStatus;
+        struct SlowStatus(
+            std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+        );
         impl tonic::server::NamedService for SlowStatus {
             const NAME: &'static str = "acyclic.actors.v1.ActorsService";
         }
@@ -239,18 +242,22 @@ mod tests {
                 &mut self,
                 _: tonic::codegen::http::Request<tonic::body::Body>,
             ) -> Self::Future {
-                let body = acyclic_grpc_observability::tests::delayed_unavailable_body();
+                let release = self.0.lock().unwrap().take().unwrap();
+                let body = acyclic_grpc_observability::tests::unavailable_body_after(release);
                 std::future::ready(Ok(tonic::codegen::http::Response::new(body)))
             }
         }
         let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;
         let address = incoming.local_addr()?;
+        let (release, released) = tokio::sync::oneshot::channel();
         tokio::spawn(
             tonic::transport::Server::builder()
-                .add_service(SlowStatus)
+                .add_service(SlowStatus(std::sync::Arc::new(std::sync::Mutex::new(
+                    Some(released),
+                ))))
                 .serve_with_incoming(incoming),
         );
-        Ok(address)
+        Ok((address, release))
     }
 
     /// Sends one empty request through a fresh [`grpc::TracedChannel`].
@@ -328,13 +335,24 @@ mod tests {
         assert!(traced_call(address, "DeployNamespace").await.is_err());
 
         // The span stays open while a slow body runs and records a status sent in trailers.
-        let address = slow_status_server().await?;
-        let mut body = traced_call(address, "GetActor").await?.into_body();
         let grpc_closed = || seen.closed("acyclic.actors.grpc.transport");
-        assert_eq!(grpc_closed(), 1);
-        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
-        assert!(frame.is_some_and(|frame| frame.is_ok_and(|frame| frame.is_trailers())));
-        assert_eq!(grpc_closed(), 2);
+        for (index, producer_dropped) in [false, true].into_iter().enumerate() {
+            let (address, release) = slow_status_server().await?;
+            let mut body = traced_call(address, "GetActor").await?.into_body();
+            assert!(
+                futures::poll!(std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)))
+                    .is_pending()
+            );
+            assert_eq!(grpc_closed(), index + 1);
+            if producer_dropped {
+                drop(release);
+            } else {
+                release.send(()).unwrap();
+            }
+            let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+            assert!(frame.is_some_and(|frame| frame.is_ok_and(|frame| frame.is_trailers())));
+            assert_eq!(grpc_closed(), index + 2);
+        }
 
         let seen = seen.0.lock().unwrap();
         let fields = || {

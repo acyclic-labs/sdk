@@ -60,28 +60,15 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     );
 
     // The real registry, lifecycle lock, providers and physical cleanup are used.
-    // Restoring eager registration makes this same assertion time out.
-    let fs = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        Fs::local_with_ownership_anchor(LocalOptions::new(&root), owner),
-    )
-    .await??;
+    let root_released = retained.release_barrier();
+    let fs = Fs::local_with_ownership_anchor(LocalOptions::new(&root), owner).await?;
     let released = fs.local_root_release_barrier().ok_or("missing lifecycle")?;
     drop(fs);
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while !released.is_released() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    released.released().await;
     assert!(root.exists(), "the retained caller still owns the root");
     drop(retained);
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while root.exists() {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await?;
+    root_released.released().await;
+    assert!(!root.exists(), "final owner cleanup must remove the root");
     Ok(())
 }
 

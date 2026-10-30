@@ -12,7 +12,7 @@ fn quiet_termination_wait_does_not_retry_observation_on_a_timer() -> io::Result<
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
@@ -46,11 +46,14 @@ fn permission_denied_group_wait_does_not_poll_live_members() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
     let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    let release = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
+    assert!(process.try_wait(None)?.is_none());
+    drop(release);
     let started = Instant::now();
     // Exercise the actual EPERM fallback against a live, reserved group. The
     // single fixture exits naturally; keep its leader unreaped throughout.
@@ -88,7 +91,7 @@ fn group_member_fixture() -> io::Result<()> {
                 ])
                 .env_remove("ACYCLIC_GROUP_MEMBER_FIXTURE")
                 .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
-                .stdin(Stdio::null())
+                .stdin(Stdio::inherit())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()?,
@@ -110,18 +113,19 @@ fn group_wait_observes_descendants_after_the_leader_exits() -> io::Result<()> {
             "--nocapture",
         ])
         .env("ACYCLIC_GROUP_MEMBER_FIXTURE", "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut process = ProcessTree::spawn(&mut command)?;
     let group = process.guard.process_group;
+    let release = process.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
     let id = libc::id_t::try_from(group).map_err(io::Error::other)?;
-    let status =
-        super::super::exit_wait::wait(id, Instant::now() + ProcessTree::TERMINATION_TIMEOUT)?;
+    let status = super::await_exiting_id(id, None)?;
     assert!(
         status.success(),
         "the descendant fixture failed to spawn its children"
     );
+    drop(release);
     let meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
     let started = Instant::now();
     let empty = super::group_has_no_live_members(group, Some(&meter))?;

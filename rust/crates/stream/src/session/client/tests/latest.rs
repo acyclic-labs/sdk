@@ -142,7 +142,7 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
         status(&memory, sequence, false).await?;
         fixture
             .until(|counts| counts.sent.load(Ordering::Relaxed) == sent + 1)
-            .await;
+            .await?;
     }
     for sequence in 3..=9 {
         keyed_status(
@@ -334,7 +334,7 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
             .lock()
             .is_ok_and(|resumes| resumes.contains(&(1, 2, 2)))
     })
-    .await;
+    .await?;
     let mut cut = 2;
     let mut attention = Vec::new();
     while cut < 5 {
@@ -358,7 +358,7 @@ async fn latest_moves_and_reconnects_resume_consumed_cursors_and_keep_attention(
             .lock()
             .is_ok_and(|resumes| resumes.contains(&(1, 3, 5)))
     })
-    .await;
+    .await?;
     status(&memory, 5, true).await?;
     assert_status(&delivery(&mut raw).await?, 5, true);
     assert_eq!(old.counts.sessions.load(Ordering::Relaxed), 1);

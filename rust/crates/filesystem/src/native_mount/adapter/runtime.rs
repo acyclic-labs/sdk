@@ -267,9 +267,7 @@ impl CallbackRuntime {
         &self,
         create: impl FnOnce() -> F,
     ) -> Result<T, MountSourceError> {
-        self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, create()), None)
-            .map_err(capture_io_error)?
-            .map_err(|_| MountSourceError::Stale)?
+        self.block_on(create, None).map_err(capture_io_error)?
     }
 }
 
@@ -279,12 +277,8 @@ pub(super) fn invoke<T, F: Future<Output = Result<T, MountSourceError>>>(
     create: impl FnOnce() -> F,
 ) -> Result<T, MountSourceError> {
     runtime
-        .block_on(
-            || tokio::time::timeout(CALLBACK_TIMEOUT, create()),
-            Some(work.runtime_meter().as_ref()),
-        )
+        .block_on(create, Some(work.runtime_meter().as_ref()))
         .map_err(|error| MountSourceError::NativeWork(work.runtime_error(error)))?
-        .map_err(|_| MountSourceError::Stale)?
 }
 
 #[cfg(test)]
@@ -337,13 +331,8 @@ mod future_custody_tests {
         runtime.wait_prepared(prepared, || {
             // Construct before returning the future: this requires the bridge's
             // runtime even when its caller has no Tokio context.
-            let timer = tokio::time::sleep(std::time::Duration::ZERO);
-            async move {
-                // Construction itself needs the reactor. Do not register a
-                // wake that the timer driver may still own after this returns.
-                drop(timer);
-                Ok::<_, MountSourceError>(())
-            }
+            let socket = tokio::net::TcpSocket::new_v4();
+            async move { socket.map(drop).map_err(capture_io_error) }
         })?;
         assert_eq!(
             work.live_allocation_bytes(),

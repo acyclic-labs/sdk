@@ -11,7 +11,10 @@ use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 enum WatchReply {
     Reject(Code),
     Items(Vec<WatchItem>),
-    Delayed(wire::OperationState, Duration),
+    Gated(
+        wire::OperationState,
+        Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
+    ),
     Silent,
     Script(std::sync::Arc<std::sync::Mutex<ObservationScript>>),
 }
@@ -313,10 +316,14 @@ operation_service! {
                 Ok(Response::new(Box::pin(stream::iter(items))))
             }
             WatchReply::Script(_) => Err(Status::internal("nested observation script")),
-            WatchReply::Delayed(value, delay) => Ok(Response::new(Box::pin(stream::once(async move {
-                tokio::time::sleep(delay).await;
+            WatchReply::Gated(value, release) => {
+                let release = release.lock().expect("watch release").take()
+                    .ok_or_else(|| Status::internal("watch release already consumed"))?;
+                Ok(Response::new(Box::pin(stream::once(async move {
+                release.await.map_err(|_| Status::unavailable("watch producer ended"))?;
                 Ok(value)
-            })))),
+            }))))
+            },
             WatchReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
         }
     }

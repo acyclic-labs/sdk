@@ -303,15 +303,17 @@ fn archive_requires_checksum_vcs_and_exact_cargo_identity() {
             .unwrap_err()
             .contains("checksum differs")
     );
-    assert!(verify_archive(
-        &metadata,
-        fixture.path(),
-        &"c".repeat(40),
-        &release,
-        &archive
-    )
-    .unwrap_err()
-    .contains("revision differs"));
+    assert!(
+        verify_archive(
+            &metadata,
+            fixture.path(),
+            &"c".repeat(40),
+            &release,
+            &archive
+        )
+        .unwrap_err()
+        .contains("revision differs")
+    );
     let (escaping, archive) = fixture.archive(&revision, "../outside");
     assert!(
         verify_archive(&metadata, fixture.path(), &revision, &escaping, &archive)
@@ -438,55 +440,63 @@ fn actual_cargo_examples_keep_required_features_execute_and_reject_drift_failure
         "fn main() { panic!(\"failure\"); }\n",
     )
     .unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &discovered,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed before execution"));
+    assert!(
+        execute_examples(
+            fixture.path(),
+            &cargo(),
+            &fixture.path().join("target"),
+            &discovered,
+            None,
+            None
+        )
+        .unwrap_err()
+        .contains("changed before execution")
+    );
     let failing = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &failing,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("failed"));
+    assert!(
+        execute_examples(
+            fixture.path(),
+            &cargo(),
+            &fixture.path().join("target"),
+            &failing,
+            None,
+            None
+        )
+        .unwrap_err()
+        .contains("failed")
+    );
     fs::write(
         fixture.path().join("examples/old-example.rs"),
         r#"fn main() { std::fs::write("examples/old-example.rs", "fn main() {}\n").unwrap(); }"#,
     )
     .unwrap();
     let mutating = examples(&metadata, fixture.path(), &owners).unwrap();
-    assert!(execute_examples(
-        fixture.path(),
-        &cargo(),
-        &fixture.path().join("target"),
-        &mutating,
-        None,
-        None
-    )
-    .unwrap_err()
-    .contains("changed during execution"));
-    assert!(examples(
-        &metadata,
-        fixture.path(),
-        &BTreeSet::from(["modern-absent-owner".into()])
-    )
-    .unwrap_err()
-    .contains("absent"));
+    assert!(
+        execute_examples(
+            fixture.path(),
+            &cargo(),
+            &fixture.path().join("target"),
+            &mutating,
+            None,
+            None
+        )
+        .unwrap_err()
+        .contains("changed during execution")
+    );
+    assert!(
+        examples(
+            &metadata,
+            fixture.path(),
+            &BTreeSet::from(["modern-absent-owner".into()])
+        )
+        .unwrap_err()
+        .contains("absent")
+    );
 }
 #[test]
 fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
     use sdk_docs::rustdoc_profiles::{
-        execute_profile, observe_rustdoc, ProfileSpec, RustdocTarget,
+        ProfileSpec, RustdocTarget, execute_profile, observe_rustdoc,
     };
     let fixture = Fixture::new();
     fs::write(
@@ -527,10 +537,12 @@ fn cargo_binary_target_produces_native_receipt_without_public_api_admission() {
         },
         &RustdocTarget::Binary("absent".into()),
     );
-    assert!(absent
-        .unwrap_err()
-        .to_string()
-        .contains("absent from Cargo"));
+    assert!(
+        absent
+            .unwrap_err()
+            .to_string()
+            .contains("absent from Cargo")
+    );
     assert!(!target_dir.exists());
     let observation = execute_profile(
         fixture.path().join("Cargo.toml"),

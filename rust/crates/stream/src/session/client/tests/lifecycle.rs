@@ -6,7 +6,6 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
         Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),

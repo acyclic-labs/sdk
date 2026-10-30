@@ -128,9 +128,6 @@ pub(super) fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
         LazyWorkspaceError::NativeRecordJson(error, allocation) => {
             MountSourceError::NativeRecordJson(error, allocation)
         }
-        LazyWorkspaceError::NativeRecordLockTimeout(path, allocation) => {
-            MountSourceError::NativeRecordLockTimeout(path, allocation)
-        }
         LazyWorkspaceError::NativeRecordOwnershipConflict(path, allocation) => {
             MountSourceError::NativeRecordOwnershipConflict(path, allocation)
         }

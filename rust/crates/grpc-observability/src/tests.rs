@@ -225,14 +225,13 @@ impl Capture {
 #[cfg(test)]
 mod interest_tests;
 
-/// A gRPC body that emits one unavailable trailer after 50 ms.
-pub fn delayed_unavailable_body() -> tonic::body::Body {
-    tonic::body::Body::new(Trailers(Some(Box::pin(tokio::time::sleep(
-        std::time::Duration::from_millis(50),
-    )))))
+/// A gRPC body that emits one unavailable trailer when its producer settles.
+/// Dropping the producer also ends the body with the unavailable status.
+pub fn unavailable_body_after(release: tokio::sync::oneshot::Receiver<()>) -> tonic::body::Body {
+    tonic::body::Body::new(Trailers(Some(release)))
 }
 
-struct Trailers(Option<std::pin::Pin<Box<tokio::time::Sleep>>>);
+struct Trailers(Option<tokio::sync::oneshot::Receiver<()>>);
 impl http_body::Body for Trailers {
     type Data = tonic::codegen::Bytes;
     type Error = std::convert::Infallible;
@@ -241,10 +240,10 @@ impl http_body::Body for Trailers {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
         use std::{future::Future as _, task::Poll};
-        let Some(sleep) = self.0.as_mut() else {
+        let Some(release) = self.0.as_mut() else {
             return Poll::Ready(None);
         };
-        std::task::ready!(sleep.as_mut().poll(cx));
+        let _ = std::task::ready!(std::pin::Pin::new(release).poll(cx));
         self.0 = None;
         let mut trailers = tonic::codegen::http::HeaderMap::new();
         trailers.insert("grpc-status", 14.into());

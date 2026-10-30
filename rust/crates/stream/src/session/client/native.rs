@@ -60,7 +60,12 @@ async fn session_error(
     if grpc::retryable(&error) {
         StreamError::Unavailable
     } else {
-        grpc::status(&error)
+        match grpc::status(&error) {
+            // Unknown peer statuses are terminal; only the transport
+            // classifier above may request another physical connection.
+            StreamError::Unavailable => StreamError::InvalidResponse,
+            error => error,
+        }
     }
 }
 impl futures::Stream for Input {
@@ -197,7 +202,13 @@ impl Client {
                     Some(verifier) => grpc::channel_with_verifier(&node.endpoint, verifier).await,
                     None => grpc::channel_tls(&node.endpoint, ca.as_deref()).await,
                 }
-                .map_err(|_| StreamError::Unavailable)
+                .map_err(|error| {
+                    if error.transient() {
+                        StreamError::Unavailable
+                    } else {
+                        StreamError::InvalidResponse
+                    }
+                })
             })
         });
         Self::connector(channel, authorization, credential, connect, revisions)

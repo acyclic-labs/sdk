@@ -8,7 +8,6 @@ use crate::{NativeMaterializationWork, NativeTreeMaterializationError, WorkCount
 #[cfg(not(all(test, loom)))]
 use acyclic_native_runtime::ProcessTree as RecoveryHelper;
 use std::ffi::CStr;
-use std::time::Instant;
 
 /// Crash recovery paired with the original destination fence.
 #[derive(Default)]
@@ -92,23 +91,12 @@ impl FuseRecoveryControl {
         &mut self,
         work: &NativeMaterializationWork,
     ) -> Result<std::process::ExitStatus, NativeMountError> {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            let status = self
-                .helper
-                .as_mut()
-                .ok_or(NativeMountError::FuseShutdownFailed)?
-                .try_wait(Some(work.runtime_meter().as_ref()))
-                .map_err(|error| work.runtime_error(error))?;
-            if let Some(status) = status {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                self.retire_controls(work)?;
-                return Err(NativeMountError::Lifecycle("fusermount recovery timed out"));
-            }
-            helper_pause();
-        };
+        let status = self
+            .helper
+            .as_mut()
+            .ok_or(NativeMountError::FuseShutdownFailed)?
+            .wait_exit(Some(work.runtime_meter().as_ref()))
+            .map_err(|error| work.runtime_error(error))?;
         self.retire_controls(work)?;
         Ok(status)
     }
@@ -201,17 +189,12 @@ pub(super) fn fuse_recovery_stat(
     path: &CStr,
     work: &mut &NativeMaterializationWork,
 ) -> Result<rustix::fs::Stat, NativeTreeMaterializationError> {
-    loop {
-        work.charge(ReadOperations.delta(1))?;
-        #[cfg(all(test, loom))]
-        if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
-            return Ok(kernel.helper_stat());
-        }
-        match rustix::fs::stat(path) {
-            Err(rustix::io::Errno::INTR) => continue,
-            result => return result.map_err(|error| std::io::Error::from(error).into()),
-        }
+    work.charge(ReadOperations.delta(1))?;
+    #[cfg(all(test, loom))]
+    if let Some(kernel) = crate::native_mount::disconnected::kernel::current() {
+        return Ok(kernel.helper_stat());
     }
+    rustix::fs::stat(path).map_err(|error| std::io::Error::from(error).into())
 }
 
 fn pinned_umount(path: &CStr) -> std::io::Result<()> {
@@ -226,12 +209,6 @@ fn pinned_umount(path: &CStr) -> std::io::Result<()> {
     } else {
         Err(std::io::Error::last_os_error())
     }
-}
-
-fn helper_pause() {
-    // Modeled process observations have their own instrumented transitions.
-    #[cfg(not(all(test, loom)))]
-    std::thread::sleep(Duration::from_millis(10));
 }
 
 pub(super) fn fuse_recovery_is_mounted(

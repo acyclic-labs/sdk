@@ -192,11 +192,9 @@ async fn reconnect_fences_an_outstanding_application_decision() -> TestResult {
         "wire transport invented provider backing custody"
     );
     fixture.reset()?;
-    tokio::time::timeout(
-        Duration::from_secs(1),
-        fixture.until(|counts| counts.follows.load(Ordering::Relaxed) >= 2),
-    )
-    .await?;
+    fixture
+        .until(|counts| counts.follows.load(Ordering::Relaxed) >= 2)
+        .await?;
     assert!(
         !old.commit()?,
         "a fenced generation certified a later application cut"

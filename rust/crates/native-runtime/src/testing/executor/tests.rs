@@ -236,20 +236,22 @@ fn fair_rounds(seed: u64, forget_round: bool) {
 
 #[test]
 fn concurrent_scopes_keep_their_roots_and_wakes() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     runtime.block_on(async {
-        tokio::time::pause();
         for seed in 0..32 {
             let (schedule, _) = Schedule::seeded(seed);
             let (left_send, left_receive) = oneshot::channel();
             let (right_send, right_receive) = oneshot::channel();
+            let (left_entered, entered_left) = oneshot::channel();
+            let (release_left, left_released) = oneshot::channel();
+            let (right_entered, entered_right) = oneshot::channel();
+            let (release_right, right_released) = oneshot::channel();
             let left_schedule = schedule.clone();
             let left = tokio::spawn(async move {
                 left_schedule
                     .scope(async {
-                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                        left_entered.send(()).unwrap();
+                        left_released.await.unwrap();
                         left_send.send(13).unwrap();
                         right_receive.await.unwrap()
                     })
@@ -260,7 +262,8 @@ fn concurrent_scopes_keep_their_roots_and_wakes() -> io::Result<()> {
                 right_schedule
                     .scope(async {
                         assert_eq!(left_receive.await.unwrap(), 13);
-                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                        right_entered.send(()).unwrap();
+                        right_released.await.unwrap();
                         right_send.send(37).unwrap();
                         53
                     })
@@ -268,11 +271,11 @@ fn concurrent_scopes_keep_their_roots_and_wakes() -> io::Result<()> {
             });
             // Separate Tokio tasks supply different caller wakers. The channel
             // exchange requires concurrent progress; serializing scopes hangs.
-            let (left, right) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                tokio::join!(left, right)
-            })
-            .await
-            .expect("concurrent scope lost a root wake");
+            entered_left.await.unwrap();
+            release_left.send(()).unwrap();
+            entered_right.await.unwrap();
+            release_right.send(()).unwrap();
+            let (left, right) = tokio::join!(left, right);
             assert_eq!(left.unwrap(), 37);
             assert_eq!(right.unwrap(), 53);
             let executor = schedule.0.executor.as_ref().unwrap();
@@ -285,34 +288,33 @@ fn concurrent_scopes_keep_their_roots_and_wakes() -> io::Result<()> {
 
 #[test]
 fn borrowed_concurrent_scopes_and_nested_reentry_complete() -> io::Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
-        .build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().build()?;
     runtime.block_on(async {
-        tokio::time::pause();
         for seed in 0..32 {
             let (schedule, _) = Schedule::seeded(seed);
             let mut left = 0;
             let mut right = 0;
+            let (right_entered, entered_right) = oneshot::channel();
+            let (left_completed, completed_left) = oneshot::channel();
             let work = async {
                 tokio::join!(
                     schedule.scope(async {
                         schedule
                             .scope(async {
-                                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                                entered_right.await.unwrap();
                                 left = 13;
+                                left_completed.send(()).unwrap();
                             })
                             .await;
                     }),
                     schedule.scope(async {
-                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                        right_entered.send(()).unwrap();
+                        completed_left.await.unwrap();
                         right = 37;
                     }),
                 );
             };
-            tokio::time::timeout(std::time::Duration::from_secs(1), work)
-                .await
-                .expect("borrowed scope or nested reentry lost progress");
+            work.await;
             assert_eq!((left, right), (13, 37));
             let executor = schedule.0.executor.as_ref().unwrap();
             assert!(lock(&executor.0).live.is_empty());

@@ -44,17 +44,21 @@ fn event_capture_child() -> io::Result<()> {
             std::io::stderr().flush()?;
         }
         println!("INPUT_BYTES={count}");
-    } else {
-        let delay = if mode == "cancel" { 2_000 } else { 200 };
-        if mode == "cancel" {
-            println!("CONTROL_READY");
-            std::io::stdout().flush()?;
-        } else {
-            println!("QUIET_BEGIN");
-            std::io::stdout().flush()?;
+    } else if mode == "quiet" {
+        // Closing the original stdin is the fixture's release event.
+        std::io::copy(&mut std::io::stdin(), &mut std::io::sink())?;
+    } else if mode == "cancel" {
+        println!("CONTROL_READY");
+        std::io::stdout().flush()?;
+        // Only the owning process tree can release this fixture.
+        loop {
+            std::thread::park();
         }
-        std::thread::sleep(Duration::from_millis(delay));
-        println!("EVENT_CAPTURE_DONE");
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unknown capture fixture",
+        ));
     }
     Ok(())
 }
@@ -122,9 +126,7 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         .as_mut()
         .unwrap()
         .read_exact(&mut output)?;
-    let result = completion
-        .recv_timeout(Duration::from_secs(3))
-        .map_err(io::Error::other);
+    let result = completion.recv().map_err(io::Error::other);
     process.terminate(None)?;
     assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
@@ -133,67 +135,6 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         "completion must not revive admission"
     );
     assert!(process.is_reaped());
-    Ok(())
-}
-
-#[test]
-fn a_quiet_capture_sleeps_until_readiness_instead_of_polling() -> io::Result<()> {
-    let mut process = child("quiet")?;
-    let mut checks = 0;
-    let quiet = std::cell::Cell::<Option<Instant>>::new(None);
-    let idle_checks = std::cell::Cell::new(0);
-    let mut observed = Vec::new();
-    let started = Instant::now();
-    let output = process
-        .wait_with_output(
-            Duration::from_secs(2),
-            16 * 1024,
-            None,
-            || {
-                checks += 1;
-                if quiet.get().is_some_and(|start| {
-                    (Duration::from_millis(20)..Duration::from_millis(150))
-                        .contains(&start.elapsed())
-                }) {
-                    idle_checks.set(idle_checks.get() + 1);
-                }
-                Ok(())
-            },
-            |chunk| {
-                if let ProcessOutput::Stdout(bytes) = chunk {
-                    observed.extend_from_slice(bytes);
-                    if quiet.get().is_none()
-                        && observed
-                            .windows(b"QUIET_BEGIN".len())
-                            .any(|bytes| bytes == b"QUIET_BEGIN")
-                    {
-                        quiet.set(Some(Instant::now()));
-                    }
-                }
-                Ok(ProcessInput::default())
-            },
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)?;
-    eprintln!(
-        "IDLE_CAPTURE checks={checks} idle_checks={} elapsed_us={}",
-        idle_checks.get(),
-        started.elapsed().as_micros()
-    );
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("EVENT_CAPTURE_DONE"));
-    assert!(process.is_reaped());
-    assert!(
-        quiet.get().is_some(),
-        "child never declared its quiet interval"
-    );
-    assert_eq!(
-        idle_checks.get(),
-        0,
-        "quiet capture must wait for readiness"
-    );
     Ok(())
 }
 
@@ -208,14 +149,10 @@ fn control_notification_interrupts_a_silent_child_and_reaps_it() -> io::Result<(
     let mut ready = Some(ready);
     let mut observed = Vec::new();
     let thread = std::thread::spawn(move || {
-        announced
-            .recv_timeout(Duration::from_secs(1))
-            .map_err(io::Error::other)?;
-        std::thread::sleep(Duration::from_millis(50));
+        announced.recv().map_err(io::Error::other)?;
         producer.store(true, Ordering::Release);
         signal.notify()
     });
-    let started = Instant::now();
     let result = process.wait_with_output(
         Duration::from_secs(1),
         16 * 1024,
@@ -247,14 +184,10 @@ fn control_notification_interrupts_a_silent_child_and_reaps_it() -> io::Result<(
     thread
         .join()
         .map_err(|_| io::Error::other("wake producer panicked"))??;
-    let failure = result.expect_err("control wake must stop the sleeping command");
+    let failure = result.expect_err("control wake must stop the blocked command");
     assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
     assert!(failure.cleanup_completed);
     assert!(process.is_reaped());
-    assert!(
-        started.elapsed() < Duration::from_millis(750),
-        "control wake did not interrupt the readiness wait"
-    );
     Ok(())
 }
 

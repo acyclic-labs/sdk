@@ -118,3 +118,6 @@ try {
 } catch (error) {
   globalThis.sdkHttpResult = { status: "failed", detail: error.stack ?? String(error) };
 }
+
+document.body.dataset.result = globalThis.sdkHttpResult.status;
+document.body.textContent = globalThis.sdkHttpResult.detail;

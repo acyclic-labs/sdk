@@ -3,19 +3,7 @@ import initialize, { openBrowserFs } from "../generated/wasm/acyclic_fs_wasm.js"
 import { openBrowserFs as openWorkspaceFs } from "../dist/browser.js";
 import { exerciseWorkspace } from "./workspace-composition.mjs";
 
-// Headless Chrome running many windows at once was seen to fail an actor's
-// module fetch before the request reached the file server ("Failed to
-// fetch", nothing served incomplete). The fetch is the page's own setup, not
-// the SDK under test, so it is tried again a bounded number of times.
-for (let attempt = 1; ; attempt += 1) {
-  try {
-    await initialize();
-    break;
-  } catch (error) {
-    if (attempt === 3 || !(error instanceof TypeError)) throw error;
-    console.error(`wasm fetch attempt ${attempt} failed: ${error}`);
-  }
-}
+await initialize();
 
 const result = document.querySelector("#result");
 const query = new URLSearchParams(location.search);
@@ -373,19 +361,14 @@ async function runActor() {
         fs?.close();
         const next = new URL(location.href);
         next.searchParams.set("reload", "1");
+        window.__actorRetiring = true;
         location.replace(next);
         return;
       }
       if (message.command === "close") {
         fs?.close();
         post(channel, { event: "closed" });
-        // Let the acknowledgement leave the renderer before tearing down the
-        // browsing context. The coordinator uses this boundary to avoid
-        // opening the next actor while Chrome is still retiring this one.
-        setTimeout(() => {
-          channel.close();
-          window.close();
-        }, 0);
+        channel.close();
       }
     } catch (error) {
       post(channel, { event: "failed", error: errorText(error) });
@@ -404,11 +387,9 @@ async function closeActor(channel, nextMessage, actorWindow, actor) {
     (message) => message.actor === actor && message.event === "closed",
     `${actor} closed`,
   );
-  const deadline = Date.now() + 10_000;
-  while (!actorWindow.closed && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  assert(actorWindow.closed, `${actor} actor window did not close`);
+  // The acknowledgement follows fs.close(); the coordinator owns the window.
+  actorWindow.__actorRetiring = true;
+  actorWindow.close();
 }
 
 async function runTargetedCase(
@@ -504,9 +485,7 @@ async function runTargetedCase(
   };
 }
 
-// Waits for actor messages with no deadline of its own: how long a window
-// takes to start depends on the machine, not on the SDK. The page publishes
-// what it is waiting for, so the driver's single deadline can report it.
+// Each actor reports readiness, failure or retirement through this channel.
 function messageQueue(channel) {
   const buffered = [];
   const waiters = [];
@@ -531,9 +510,7 @@ function messageQueue(channel) {
     publishWaiting();
     waiter.resolve(message);
   });
-  // With `timeoutMs`, a wait that sees no match by then is withdrawn and
-  // resolves `undefined`, so no later message is taken for it.
-  return (predicate, label, timeoutMs) => {
+  return (predicate, label) => {
     if (failure !== undefined) return Promise.reject(failure);
     const index = buffered.findIndex(predicate);
     if (index !== -1) return Promise.resolve(buffered.splice(index, 1)[0]);
@@ -541,46 +518,19 @@ function messageQueue(channel) {
       const waiter = { predicate, label, resolve, reject };
       waiters.push(waiter);
       publishWaiting();
-      if (timeoutMs === undefined) return;
-      setTimeout(() => {
-        const pending = waiters.indexOf(waiter);
-        if (pending === -1) return;
-        waiters.splice(pending, 1);
-        publishWaiting();
-        resolve(undefined);
-      }, timeoutMs);
+
     });
   };
 }
 
-// Headless Chrome with many windows was seen to leave an actor page that
-// never ran: a module or wasm fetch failed before reaching the file server.
-// Nothing of the SDK runs before an actor reports ready, so an actor that
-// does not is opened again, a bounded number of times.
-const ACTOR_READY_MS = 30_000;
-const ACTOR_OPENINGS = 3;
-
 async function openActor(nextMessage, actorUrl, windowName, actor) {
-  for (let opening = 1; ; opening += 1) {
-    // Each opening is told apart, so a page that starts late is not taken
-    // for the one opened after it.
-    const openingUrl = new URL(actorUrl);
-    openingUrl.searchParams.set("opening", String(opening));
-    const actorWindow = window.open(openingUrl, windowName);
-    assert(actorWindow !== null, `browser blocked the ${actor} actor window`);
-    const ready = await nextMessage(
-      (message) =>
-        message.actor === actor &&
-        message.event === "ready" &&
-        !message.reloaded &&
-        message.opening === String(opening),
-      `${actor} ready`,
-      ACTOR_READY_MS,
-    );
-    if (ready !== undefined) return actorWindow;
-    actorWindow.close();
-    assert(opening < ACTOR_OPENINGS, `${actor} actor never became ready`);
-  }
+  const actorWindow = window.open(actorUrl, windowName);
+  assert(actorWindow !== null, `browser blocked the ${actor} actor window`);
+  await nextMessage(
+    message => message.actor === actor && message.event === "ready" && !message.reloaded,
+    `${actor} ready`,
+  );
+  return actorWindow;
 }
 
 async function runCoordinator() {
@@ -648,6 +598,7 @@ async function runCoordinator() {
     (message) => message.actor === "abandoned" && message.event === "prepared",
     "abandoned prepared",
   );
+  abandoned.__actorRetiring = true;
   abandoned.close();
   assert(abandoned.closed, "abrupt-lifecycle actor did not close");
   actorUrl.searchParams.set("actor", "verifier");
@@ -707,6 +658,5 @@ async function runCoordinator() {
 }
 
 (actor === null ? runCoordinator() : runActor()).catch((error) => {
-  result.dataset.status = "failed";
-  result.textContent = errorText(error);
+  globalThis.__reportActorFailure(error);
 });

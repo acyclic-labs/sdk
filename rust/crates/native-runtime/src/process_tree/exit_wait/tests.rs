@@ -87,8 +87,6 @@ fn exit_wait_fixture() {
                 .read_exact(&mut release)
                 .expect("exit release");
             assert_eq!(release, [1]);
-        } else {
-            std::thread::sleep(Duration::from_millis(200));
         }
         match std::env::var("ACYCLIC_TEST_EXIT_STATUS").as_deref() {
             Ok("37" | "gated") => std::process::exit(37),
@@ -125,7 +123,10 @@ fn quiet_wait_observes_exit_without_periodic_wakeups_or_reaping() -> io::Result<
     let mut tree = child("0")?;
     OBSERVATIONS.with(|count| count.set(0));
     let started = Instant::now();
-    let status = tree.wait(Duration::from_secs(2))?;
+    let meter = crate::tests::ReadBudgetMeter::new(1, u64::MAX);
+    let status = tree.wait_exit(Some(&meter))?;
+    assert_eq!(meter.read_attempts.load(Ordering::Acquire), 1);
+    assert_eq!(meter.used_operations.load(Ordering::Acquire), 1);
     let observations = OBSERVATIONS.with(std::cell::Cell::get);
     eprintln!(
         "EXIT_WAIT observations={observations} elapsed_us={}",
@@ -148,15 +149,21 @@ fn quiet_wait_observes_exit_without_periodic_wakeups_or_reaping() -> io::Result<
 
 #[test]
 fn exit_deadline_preserves_the_same_live_child_for_a_later_wait() -> io::Result<()> {
-    let mut tree = child("0")?;
+    let mut tree = child("gated")?;
+    let mut release = tree.take_stdin().ok_or(io::ErrorKind::BrokenPipe)?;
     assert_eq!(
-        tree.wait(Duration::from_millis(20))
+        tree.wait(Duration::ZERO)
             .expect_err("child must remain live")
             .kind(),
         io::ErrorKind::TimedOut
     );
     assert!(!tree.is_reaped());
-    assert!(tree.wait(Duration::from_secs(2))?.success());
+    let denied = crate::tests::ReadBudgetMeter::new(0, u64::MAX);
+    assert!(tree.wait_exit(Some(&denied)).is_err());
+    assert_eq!(denied.read_attempts.load(Ordering::Acquire), 0);
+    assert!(!tree.is_reaped(), "denied admission retains the same child");
+    std::io::Write::write_all(&mut release, &[1])?;
+    assert_eq!(tree.wait_exit(None)?.code(), Some(37));
     tree.terminate(None)?;
     Ok(())
 }
@@ -166,7 +173,7 @@ fn exit_notifications_retain_nonzero_and_signal_status() -> io::Result<()> {
     use std::os::unix::process::ExitStatusExt;
     for kind in ["37", "signal"] {
         let mut tree = child(kind)?;
-        let status = tree.wait(Duration::from_secs(2))?;
+        let status = tree.wait_exit(None)?;
         if kind == "37" {
             assert_eq!(status.code(), Some(37));
         } else {

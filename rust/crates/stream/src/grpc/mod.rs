@@ -43,8 +43,6 @@ mod server;
 #[cfg(test)]
 pub(crate) mod tests;
 
-const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Connection configuration failure.
@@ -65,6 +63,22 @@ pub enum ConnectError {
     /// The platform certificate verifier could not be initialized.
     #[error("Stream platform certificate verifier: {0}")]
     PlatformVerifier(#[source] rustls::Error),
+}
+
+impl ConnectError {
+    pub(crate) fn transient(&self) -> bool {
+        let Self::Endpoint(error) = self else {
+            return false;
+        };
+        let mut cause = std::error::Error::source(error);
+        while let Some(current) = cause {
+            if transient_io(current) {
+                return true;
+            }
+            cause = current.source();
+        }
+        false
+    }
 }
 
 /// Authenticated remote provider over one TLS channel.
@@ -194,8 +208,7 @@ impl Client {
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
-        let endpoint =
-            Endpoint::from_shared(endpoint.as_ref().to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+        let endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
         let uri = endpoint.uri();
         let loopback = uri.host().is_some_and(|host| {
             let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -306,13 +319,9 @@ impl Client {
         Ok(request)
     }
 
-    /// Retries transport uncertainty with the same request until the operation deadline.
-    async fn unary<T, U, F>(
-        &self,
-        attempt_timeout: Duration,
-        body: T,
-        mut call: F,
-    ) -> Result<(U, Completion), StreamError>
+    /// Retries observed transient transport failures with the same request.
+    /// The caller owns cancellation and any request deadline.
+    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -322,10 +331,9 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
-        let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
         let mut attempt = 0_u64;
         loop {
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
             // One span describes one physical RPC attempt.
             let mut completion = Completion::new(tracing::info_span!(
                 "acyclic.stream.grpc.call",
@@ -335,10 +343,9 @@ impl Client {
                 outcome = Empty,
                 error.kind = Empty
             ));
-            let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
             let result = completion
                 .span
-                .scope(tokio::time::timeout_at(attempt_deadline, async {
+                .scope(async {
                     let request = self.request(body.clone()).await?;
                     let lease = request
                         .extensions()
@@ -367,12 +374,11 @@ impl Client {
                         }
                     }
                     result
-                }))
+                })
                 .await;
             let error = match result {
-                Ok(Ok(response)) => return Ok((response.into_inner(), completion)),
-                Ok(Err(error)) => error,
-                Err(_) => Status::deadline_exceeded("attempt expired"),
+                Ok(response) => return Ok((response.into_inner(), completion)),
+                Err(error) => error,
             };
             completion.status(&error);
             if !retryable(&error) {
@@ -383,11 +389,7 @@ impl Client {
                 rpc.code = error.code() as u64,
                 "stream rpc retried"
             );
-            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
-                .await;
-            if tokio::time::Instant::now() >= deadline {
-                return Err(status(&error));
-            }
+            tokio::time::sleep(RETRY_DELAY).await;
         }
     }
 }
@@ -396,7 +398,7 @@ pub(crate) async fn channel_tls(
     endpoint: &str,
     certificate_pem: Option<&[u8]>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
@@ -412,7 +414,7 @@ pub(crate) async fn channel_with_verifier(
     endpoint: &str,
     verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
@@ -482,8 +484,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
 /// Whether the outcome of an attempt is unknown because the transport was lost.
 pub(crate) fn retryable(error: &Status) -> bool {
     match error.code() {
-        Code::Unavailable | Code::DeadlineExceeded => return true,
-        Code::Unknown if std::error::Error::source(error).is_none() => return true,
+        Code::Unavailable => return true,
         Code::Unknown | Code::Cancelled => {}
         _ => return false,
     }
@@ -501,31 +502,35 @@ pub(crate) fn retryable(error: &Status) -> bool {
             {
                 return true;
             }
-        } else if current
-            .downcast_ref::<std::io::Error>()
-            .or_else(|| {
-                current
-                    .downcast_ref::<h2::Error>()
-                    .and_then(h2::Error::get_io)
-            })
-            .is_some_and(|error| {
-                use std::io::ErrorKind::*;
-                matches!(
-                    error.kind(),
-                    UnexpectedEof
-                        | ConnectionReset
-                        | ConnectionAborted
-                        | BrokenPipe
-                        | NotConnected
-                        | TimedOut
-                )
-            })
-        {
+        } else if transient_io(current) {
             return true;
         }
         cause = current.source();
     }
     false
+}
+
+fn transient_io(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .or_else(|| {
+            error
+                .downcast_ref::<h2::Error>()
+                .and_then(h2::Error::get_io)
+        })
+        .is_some_and(|error| {
+            use std::io::ErrorKind::*;
+            matches!(
+                error.kind(),
+                ConnectionRefused
+                    | ConnectionReset
+                    | ConnectionAborted
+                    | BrokenPipe
+                    | NotConnected
+                    | UnexpectedEof
+                    | TimedOut
+            )
+        })
 }
 
 use crate::wire_codec::error_status;

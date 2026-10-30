@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
-test("fixture shutdown drains a retained HTTP/2 stream after another RPC completes", { timeout: 3000 }, async () => {
+test("fixture shutdown drains a retained HTTP/2 stream after another RPC completes", async () => {
   const server = createServer();
   const close = ownFixtureServer(server);
   server.on("stream", (stream, headers) => {
@@ -42,7 +42,7 @@ test("fixture shutdown also handles an unstarted server", async () => {
   await ownFixtureServer(server)();
   assert.equal(server.listening, false);
 });
-test("fixture failure drains an unfinished HTTP response without masking the failure", { timeout: 3000 }, async () => {
+test("fixture failure drains an unfinished HTTP response without masking the failure", async () => {
   const server = createHttpServer((_request, response) => { response.writeHead(200); response.write("partial"); });
   const close = ownFixtureServer(server);
   server.listen(0, "127.0.0.1");

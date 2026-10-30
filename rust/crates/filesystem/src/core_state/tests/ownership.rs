@@ -11,11 +11,10 @@ fn local_transactions_work_without_a_tokio_runtime() {
 #[tokio::test(flavor = "current_thread")]
 async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_drop() {
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
 
-    let (entered_tx, entered_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = mpsc::channel();
-    let (finished_tx, finished_rx) = mpsc::channel();
+    let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
     let observer = tokio::spawn(async move {
         let directory = tempfile::tempdir().unwrap();
         LocalCoreStateStore::new(directory.path())
@@ -27,18 +26,11 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
             })
             .await
     });
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while entered_rx.try_recv().is_err() {
-        assert!(Instant::now() < deadline, "transaction did not enter");
-        tokio::task::yield_now().await;
-    }
-    tokio::task::yield_now().await;
+    entered_rx.await.unwrap();
     observer.abort();
+    assert!(observer.await.unwrap_err().is_cancelled());
     release_tx.send(()).unwrap();
-    while finished_rx.try_recv().is_err() {
-        assert!(Instant::now() < deadline, "admitted transaction was lost");
-        tokio::task::yield_now().await;
-    }
+    finished_rx.await.unwrap();
 }
 
 #[tokio::test]
@@ -103,20 +95,13 @@ fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::err
     );
     drop(owner);
 
-    let ready = directory.path().join("ready");
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
-        ownership_child(&root)?.env("ACYCLIC_CORE_STATE_CHILD_READY", &ready),
+        ownership_child(&root)?
+            .env("ACYCLIC_CORE_STATE_CHILD_HOLD", "1")
+            .stdout(std::process::Stdio::piped()),
     )?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready.is_file() {
-        if let Some(status) = child.try_wait(None)? {
-            return Err(format!("owner child exited before readiness: {status}").into());
-        }
-        if Instant::now() >= deadline {
-            return Err("owner child readiness timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let output = child.take_stdout().ok_or("owner child stdout missing")?;
+    acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "OWNER_READY")?;
     assert!(is_ownership_conflict(
         &LocalCoreStateStore::new(&root).namespace()
     ));
@@ -166,20 +151,13 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     let free = measured_admission_reads(&root);
 
     // A dead owner's record stays behind, so each check also probes it.
-    let ready = directory.path().join("ready");
     let mut child = acyclic_native_runtime::ProcessTree::spawn(
-        ownership_child(&root)?.env("ACYCLIC_CORE_STATE_CHILD_READY", &ready),
+        ownership_child(&root)?
+            .env("ACYCLIC_CORE_STATE_CHILD_HOLD", "1")
+            .stdout(std::process::Stdio::piped()),
     )?;
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !ready.is_file() {
-        if let Some(status) = child.try_wait(None)? {
-            return Err(format!("owner child exited before readiness: {status}").into());
-        }
-        if Instant::now() >= deadline {
-            return Err("owner child readiness timed out".into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let output = child.take_stdout().ok_or("owner child stdout missing")?;
+    acyclic_test_support::readiness::wait(&mut std::io::BufReader::new(output), "OWNER_READY")?;
     child.terminate_descendants()?;
     child.wait(Duration::from_secs(5))?;
     let probed = measured_admission_reads(&root);

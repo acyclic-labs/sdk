@@ -66,7 +66,6 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     let mut sent = 0;
                     let (response, _) = client
                         .unary(
-                            ATTEMPT_TIMEOUT,
                             wire::TailRequest {
                                 path: "same/path".into(),
                                 ..Default::default()
@@ -97,7 +96,7 @@ fn credential_provider_renews_each_physical_retry_without_changing_the_body() {
                     prop_assert_eq!(index.load(Ordering::Relaxed), tokens.len());
                     // Exhaustion fails before transport; the static credential cannot be used.
                     let result: Result<((), Completion), StreamError> = client
-                        .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                        .unary((), |_, _| {
                             unreachable!("provider failure reached transport")
                         })
                         .await;

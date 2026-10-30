@@ -1,7 +1,7 @@
 // Real Chrome HTTPS qualification. Trust is limited to this fixture's ephemeral
 // public key in a private browser profile; customer transport security is unchanged.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:https";
@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawnDriver, chromeExecutable, connectBrowser, navigateChrome } from "../../sdk/test/browser-driver.mjs";
 import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import * as objectsWire from "../../objects/generated/proto/objects/v1/objects_pb.js";
@@ -36,7 +37,10 @@ const objects = new ObjectsV1Memory();
 const stream = new MemoryStreamProvider();
 const seen = new Set();
 let cancellationDispatched = false;
-let cancellationClosed = false;
+let cancellationEntered;
+const entered = new Promise(resolve => { cancellationEntered = resolve; });
+let observeCancellationClose;
+const closed = new Promise(resolve => { observeCancellationClose = resolve; });
 const byteValue = value => new Uint8Array(Buffer.from(value, "base64"));
 function revive(name, value) {
   if (value === null) return value;
@@ -133,8 +137,10 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       if (input.actorId === "cancel") {
         assert.equal(cancellationDispatched, false, "one cancellation request must dispatch");
         cancellationDispatched = true;
-        await new Promise(resolveClose => response.once("close", resolveClose));
-        cancellationClosed = !response.writableEnded;
+        const finished = new Promise(resolveClose => response.once("close", resolveClose));
+        cancellationEntered();
+        await finished;
+        observeCancellationClose(!response.writableEnded);
         return;
       }
       seen.add(`${grpcWebService.typeName}/${method.name}`);
@@ -177,65 +183,38 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
 });
 await new Promise(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
 const profile = mkdtempSync(join(tmpdir(), "acyclic-sdk-http-browser-"));
-const chromePath = [process.env.CHROME, "C:/Program Files/Google/Chrome/Application/chrome.exe", "/usr/bin/google-chrome", "/usr/bin/chromium", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find(path => path && existsSync(path));
-let chrome; let socket;
-async function until(description, probe, duration = 30000) {
-  const end = Date.now() + duration;
-  while (Date.now() < end) { const result = await probe(); if (result !== undefined) return result; await new Promise(resolveDelay => setTimeout(resolveDelay, 50)); }
-  throw new Error(`timed out waiting for ${description}`);
-}
+let launched; let browser;
 try {
-  assert.ok(chromePath, "set CHROME to a Chrome/Chromium executable");
-  chrome = spawn(chromePath, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--ignore-certificate-errors-spki-list=${trust}`, "--no-first-run", "--no-default-browser-check", "about:blank"], { stdio: "ignore" });
-  const exit = new Promise(resolveExit => chrome.once("exit", resolveExit));
-  const endpoint = await until("Chrome DevTools", () => {
-    if (chrome.exitCode !== null) throw new Error(`Chrome exited ${chrome.exitCode}`);
-    const file = join(profile, "DevToolsActivePort"); if (!existsSync(file)) return;
-    const [port, path] = readFileSync(file, "utf8").split("\n"); if (path) return `ws://127.0.0.1:${port}${path.trim()}`;
-  });
-  socket = new WebSocket(endpoint);
-  await new Promise((resolveOpen, reject) => { socket.addEventListener("open", resolveOpen, { once: true }); socket.addEventListener("error", reject, { once: true }); });
-  let sequence = 0; const pending = new Map(); const errors = [];
-  socket.addEventListener("message", event => {
-    const message = JSON.parse(event.data);
-    if (message.id !== undefined) { const item = pending.get(message.id); pending.delete(message.id); if (message.error) item.reject(new Error(message.error.message)); else item.resolve(message.result); }
-    if (message.method === "Runtime.exceptionThrown") errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
-  });
-  const send = (method, params = {}, sessionId) => new Promise((resolveSend, reject) => { const id = ++sequence; pending.set(id, { resolve: resolveSend, reject }); socket.send(JSON.stringify({ id, method, params, sessionId })); });
+  const chromePath = chromeExecutable("CHROME=/path/to/chrome node test/browser-http-conformance.mjs");
+  launched = await spawnDriver(chromePath, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--ignore-certificate-errors-spki-list=${trust}`, "--no-first-run", "--no-default-browser-check", "about:blank"], /DevTools listening on (ws:\/\/\S+)/, "set CHROME and rerun node test/browser-http-conformance.mjs");
+  browser = await connectBrowser(launched.endpoint, "node test/browser-http-conformance.mjs");
+  const send = browser.send;
   const { targetId } = await send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
   await send("Runtime.enable", {}, sessionId);
-  await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/actors/test/browser-http.html` }, sessionId);
-  const result = await until("browser HTTP conformance", async () => {
-    if (errors.length) throw new Error(errors.join("\n"));
-    if (cancellationDispatched && !cancellationClosed) {
-      await send("Runtime.evaluate", { expression: "globalThis.abortActorsRequest?.()" }, sessionId);
-    }
-    const value = await send("Runtime.evaluate", { expression: "globalThis.sdkHttpResult", returnByValue: true }, sessionId);
-    return value.result.value;
-  }, 120000);
-  assert.equal(result.status, "passed", result.detail);
-  await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
+  const outcome = navigateChrome(browser, sessionId, `https://localhost:${server.address().port}/typescript/packages/actors/test/browser-http.html`);
+  // The fixture has decoded the authenticated request before the client aborts.
+  const ready = await Promise.race([entered.then(() => true), outcome.then(() => false)]);
+  assert.equal(ready, true, "browser completed before dispatching the cancellation request");
+  await send("Runtime.evaluate", { expression: "globalThis.abortActorsRequest()" }, sessionId);
+  const [result, cancelled] = await Promise.all([outcome, closed]);
+  assert.equal(result.status, "passed", result.text);
+  assert.equal(cancelled, true, "the response must close without completing");
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
   assert.equal(seen.size, 20 + ActorsService.methods.length, `expected 10 Objects, ${ActorsService.methods.length} Actor and 10 Stream HTTP routes: ${[...seen]}`);
-  console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
-  await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
-  const memory = await until("browser Objects v1 memory", async () => {
-    if (errors.length) throw new Error(errors.join("\n"));
-    const value = await send("Runtime.evaluate", {
-      expression: "({ status: document.body?.dataset.result, detail: document.body?.textContent })", returnByValue: true,
-    }, sessionId);
-    const result = value.result.value;
-    return result?.status === "passed" || result?.status === "failed" ? result : undefined;
-  });
-  assert.equal(memory.status, "passed", memory.detail);
+  console.log(`Chrome HTTPS: ${result.text}; ${seen.size} fixture routes observed`);
+  const memory = await navigateChrome(browser, sessionId, `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html`);
+  assert.equal(memory.status, "passed", memory.text);
   console.log("Chrome Objects v1 default export: memory blob PUT, range GET and idempotent re-PUT passed");
-  await send("Browser.close"); await exit;
+  await send("Browser.close"); await launched.exited;
 } finally {
-  socket?.close();
-  if (chrome && chrome.exitCode === null) { const exit = new Promise(resolveExit => chrome.once("exit", resolveExit)); chrome.kill(); await exit; }
+  browser?.close();
+  if (launched) {
+    if (launched.child.exitCode === null && launched.child.signalCode === null) launched.child.kill();
+    await launched.exited;
+  }
   server.closeAllConnections(); await new Promise(resolveClose => server.close(resolveClose));
   assert.ok(resolve(profile).startsWith(`${resolve(tmpdir())}${sep}`), "browser profile must remain in the task's temporary directory");
-  rmSync(profile, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
+  rmSync(profile, { recursive: true, force: true });
 }

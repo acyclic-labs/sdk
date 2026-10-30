@@ -1,8 +1,7 @@
 //! Job membership is rechecked after a pinned member exits, never on a timer.
-use super::super::capture_wait::{CaptureWait, pending::Cleanup};
+use super::super::windows_event::Cleanup;
 use super::*;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::time::Instant;
 use windows_sys::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA};
 use windows_sys::Win32::System::JobObjects::{
     IsProcessInJob, JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList,
@@ -15,25 +14,28 @@ pub(super) fn wait_empty(
     job: HANDLE,
     meter: Option<&dyn crate::NativeReadMeter>,
 ) -> io::Result<()> {
-    let deadline = Instant::now() + super::super::ProcessTree::TERMINATION_TIMEOUT;
-    let mut wait = None;
     loop {
         let Some(pid) = first_member(job, meter)? else {
             return Ok(());
         };
-        if Instant::now() >= deadline {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
         let Some(process) = Member::open(pid, job, meter)? else {
             // The listed process exited or its PID was reused before OpenProcess.
             continue;
         };
-        if wait.is_none() {
-            wait = Some(CaptureWait::new(meter)?);
-        }
-        wait.as_mut()
-            .ok_or(io::ErrorKind::InvalidData)?
-            .wait_handle(&process.handle, deadline)?;
+        super::super::process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+            // SAFETY: the selected member's owned handle pins this process
+            // through its terminal OS event; no timer or resume source is needed.
+            match unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(
+                    process.handle.as_raw_handle(),
+                    windows_sys::Win32::System::Threading::INFINITE,
+                )
+            } {
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),
+                windows_sys::Win32::Foundation::WAIT_FAILED => Err(io::Error::last_os_error()),
+                _ => Err(io::Error::other("invalid job member exit notification")),
+            }
+        })?;
     }
 }
 
@@ -149,7 +151,7 @@ mod tests {
                 "process_tree::capture_events_tests::event_capture_child",
                 "--nocapture",
             ])
-            .env("ACYCLIC_TEST_EVENT_CAPTURE", "quiet")
+            .env("ACYCLIC_TEST_EVENT_CAPTURE", "cancel")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

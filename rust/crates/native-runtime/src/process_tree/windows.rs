@@ -366,22 +366,15 @@ fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) 
     let job = guard.terminate();
     let killed = child.kill();
     let cleanup = (|| {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if child.try_wait()?.is_some() {
-                return job;
+        if let Err(error) = killed {
+            // A failed kill may mean the child already exited; observe once
+            // before reporting a genuinely unresolved termination.
+            if child.try_wait()?.is_none() {
+                return Err(error);
             }
-            if let Err(error) = &killed {
-                return Err(io::Error::new(error.kind(), error.to_string()));
-            }
-            if std::time::Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "unadmitted child termination is unresolved",
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        child.wait()?;
+        job
     })();
     match cleanup {
         Ok(()) => admission,
@@ -667,9 +660,7 @@ fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
                 let mut tree = super::ProcessTree::spawn(&mut command)?;
-                while tree.try_wait(None)?.is_none() {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
+                tree.wait_exit(None)?;
                 Ok(std::thread::current().id())
             })
         })

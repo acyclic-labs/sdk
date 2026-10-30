@@ -1,18 +1,14 @@
 //! An unreaped leader reserves the group while member exit events settle it.
-use super::super::{ProcessTree, exit_wait, process_control_attempt};
+use super::super::{exit_wait, process_control_attempt};
 use crate::{NativeOperationKind, NativeReadMeter};
-use std::{io, time::Instant};
+use std::io;
 
 pub(super) fn wait(group: libc::pid_t, meter: Option<&dyn NativeReadMeter>) -> io::Result<bool> {
     let group = u32::try_from(group).map_err(io::Error::other)?;
-    let deadline = Instant::now() + ProcessTree::TERMINATION_TIMEOUT;
     loop {
-        let Some(member) = live_member(group, meter, deadline)? else {
+        let Some(member) = live_member(group, meter)? else {
             return Ok(true);
         };
-        if Instant::now() >= deadline {
-            return Ok(false);
-        }
         let id = libc::id_t::try_from(member.pid).map_err(io::Error::other)?;
         let watch = exit_wait::open_member(id, meter)?;
         // Registration can race exit and PID reuse. Only wait when both the
@@ -20,9 +16,7 @@ pub(super) fn wait(group: libc::pid_t, meter: Option<&dyn NativeReadMeter>) -> i
         if identity(member.pid, group, meter)? != Some(member) {
             continue;
         }
-        if !exit_wait::wait_member(&watch, id, deadline)? {
-            return Ok(false);
-        }
+        exit_wait::wait_member(&watch, id)?;
     }
 }
 
@@ -72,11 +66,7 @@ fn identity(
     }))
 }
 
-fn live_member(
-    group: u32,
-    meter: Option<&dyn NativeReadMeter>,
-    deadline: Instant,
-) -> io::Result<Option<Member>> {
+fn live_member(group: u32, meter: Option<&dyn NativeReadMeter>) -> io::Result<Option<Member>> {
     let mut minimum = 1;
     loop {
         let hint = list(group, std::ptr::null_mut(), 0, meter)?;
@@ -110,10 +100,7 @@ fn live_member(
             return Ok(None);
         }
         // A full prefix cannot prove emptiness. Grow on actual truncation,
-        // under the original allocation ledger and termination deadline.
-        if Instant::now() >= deadline {
-            return Err(io::ErrorKind::TimedOut.into());
-        }
+        // under the original allocation ledger.
         minimum = members
             .ids
             .len()

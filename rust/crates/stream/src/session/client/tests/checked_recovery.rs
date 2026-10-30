@@ -160,7 +160,7 @@ async fn assert_resumed(
             );
             return Ok(());
         }
-        tokio::time::timeout(Duration::from_secs(1), changed).await?;
+        changed.await;
     }
 }
 async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> TestResult {

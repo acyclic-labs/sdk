@@ -15,103 +15,29 @@ pub(super) enum KernelCacheItem {
     },
 }
 
-/// One affine notification borrowed from the original invalidator's tail.
-/// Only physical delivery advances that tail. Refusal or abandonment leaves
-/// the same item and all following items with their existing owner.
-#[must_use]
-struct PendingInvalidation<'a> {
-    items: &'a mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
-    _work: Work,
-}
-
-impl<'a> PendingInvalidation<'a> {
-    fn next(
-        items: &'a mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
-        work: &Work,
-    ) -> Result<Option<Self>, NativeMountError> {
-        if items.as_slice().is_empty() {
-            return Ok(None);
-        }
-        work.charge(WorkCounters {
-            backend_write_operations: 1,
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        })?;
-        Ok(Some(Self {
-            items,
-            _work: work.clone(),
-        }))
-    }
-
-    fn publish(&self, notifier: &impl KernelCacheNotifier) -> std::io::Result<()> {
-        match self.items.as_slice().first() {
-            Some(KernelCacheItem::Inode(inode)) => notifier.inval_inode(*inode),
-            Some(KernelCacheItem::Entry { parent, name }) => notifier.inval_entry(*parent, name),
-            None => Err(std::io::Error::from_raw_os_error(libc::EPROTO)),
-        }
-    }
-
-    fn delivered(self) {
-        drop(self.items.next());
-    }
-
-    fn undelivered(self) {
-        // The head was borrowed, never removed or copied into another queue.
-    }
-}
-
 #[derive(Default)]
 pub(super) struct InvalidationQueue {
     pub(super) notified: Option<ViewStamp>,
     pub(super) scanned: Option<ViewStamp>,
     pub(super) processed: Option<ViewStamp>,
     pub(super) deferred: FuseOwned<Vec<KernelCacheItem>>,
-    pub(super) pending_tail: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     pub(super) in_flight: bool,
-    /// The last pass failed, so the kernel may hold stale entries.
+    /// A notification failed; the view's terminal receipt owns its cause.
     pub(super) denied: bool,
-    /// Failed passes so far, so each waiter learns of a failure after it began.
-    pub(super) denials: u64,
-    /// A waiter arrived after a failed pass, so the invalidator must try again
-    /// even if its inputs are unchanged. Otherwise the waiter could wait for a
-    /// pass that never comes.
-    pub(super) retry: bool,
 }
 
 impl InvalidationQueue {
     pub(super) fn is_pending(&self, target: Option<ViewStamp>) -> bool {
-        self.processed < target
-            || !self.deferred.is_empty()
-            || !self.pending_tail.as_slice().is_empty()
-            || self.in_flight
+        self.processed < target || !self.deferred.is_empty() || self.in_flight
     }
 
     pub(super) fn take_deferred(&mut self) -> FuseOwned<std::vec::IntoIter<KernelCacheItem>> {
         self.in_flight = true;
-        if self.pending_tail.as_slice().is_empty() {
-            std::mem::take(&mut self.deferred).map(Vec::into_iter)
-        } else {
-            std::mem::take(&mut self.pending_tail)
-        }
-    }
-
-    pub(super) fn retain_pending_tail(
-        &mut self,
-        items: FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
-    ) {
-        assert!(
-            self.pending_tail.as_slice().is_empty(),
-            "one original invalidator pass owns its tail"
-        );
-        if !items.as_slice().is_empty() {
-            self.pending_tail = items;
-        }
+        std::mem::take(&mut self.deferred).map(Vec::into_iter)
     }
 
     pub(super) fn finish(&mut self, through: Option<ViewStamp>) {
-        if self.pending_tail.as_slice().is_empty() {
-            self.processed = self.processed.max(through);
-        }
+        self.processed = self.processed.max(through);
         self.in_flight = false;
     }
 }
@@ -146,6 +72,11 @@ impl FuseSession {
                     None => parent,
                 };
                 let mut state = self.core.state()?;
+                if state.invalidation.denied {
+                    return Err(NativeMountError::Lifecycle(
+                        "FUSE invalidation previously failed",
+                    ));
+                }
                 work.charge(Items.delta(2))?;
                 let file_inode = state.inode_by_path.get(child.key()).copied();
                 let parent_inode = state.inode_by_path.get(&*parent).copied();
@@ -188,36 +119,40 @@ impl FuseSession {
 }
 
 impl ProjectionCore {
-    pub(super) fn wait_for_invalidation(
-        &self,
-        mut state: StateGuard<'_>,
+    pub(super) fn wait_for_invalidation<'a>(
+        self: &'a Arc<Self>,
+        mut state: StateGuard<'a>,
         target: Option<ViewStamp>,
         work: &Work,
     ) -> Result<(), NativeMountError> {
-        let denials = state.invalidation.denials;
-        if state.invalidation.denied {
-            state.invalidation.retry = true;
-            self.invalidation.notify_all();
-        }
+        let mut cancellation = None;
         loop {
             work.charge(Items.delta(1))?;
             if self.stopping.load(Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle("session is stopped"));
             }
-            if self.handler_failed.load(Ordering::Acquire) {
+            if state.invalidation.denied || self.handler_failed.load(Ordering::Acquire) {
                 return Err(NativeMountError::Lifecycle(
                     "FUSE invalidation previously failed",
                 ));
             }
-            // The invalidator retries on the next change; this caller learns
-            // that its changes may not be visible yet.
-            if state.invalidation.denials != denials {
-                return Err(NativeMountError::Lifecycle("FUSE invalidation failed"));
-            }
             if !state.invalidation.is_pending(target) {
                 return Ok(());
             }
-            state = state.wait_timeout(&self.invalidation, Duration::from_millis(10))?;
+            if cancellation.is_none() {
+                // Register outside state: a cancelled token invokes its
+                // notification synchronously. The callback takes state so
+                // cancellation cannot race releasing state into the OS wait.
+                drop(state);
+                let core = Arc::clone(self);
+                cancellation = Some(work.cancellation().on_cancel(Some(work), move || {
+                    let _state = core.state_to_finish();
+                    core.invalidation.notify_all();
+                })?);
+                state = self.state()?;
+                continue;
+            }
+            state = state.wait(&self.invalidation)?;
         }
     }
 }
@@ -312,45 +247,20 @@ pub(super) trait KernelCacheNotifier {
     fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()>;
 }
 
-/// The inputs a failed pass ran with; an unchanged key does not retry.
-pub(super) type InvalidationKey = (Option<ViewStamp>, usize, u64, bool);
-
-/// The key of a pass that should run now, if one should.
-fn ready_invalidation(
-    core: &ProjectionCore,
-    state: &mut ProjectionState,
-    blocked: Option<InvalidationKey>,
-) -> Option<InvalidationKey> {
-    let activation = core
-        .startup_meter
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let key = (
-        state.invalidation.notified,
-        state.invalidation.deferred.len(),
-        activation.generation,
-        activation.depth != 0,
-    );
-    drop(activation);
-    if state.invalidation.is_pending(state.invalidation.notified)
-        && (blocked != Some(key) || state.invalidation.retry)
-    {
-        state.invalidation.retry = false;
-        return Some(key);
-    }
-    None
-}
-
+/// Delivers each admitted notification once. Failure closes the view instead
+/// of repeating an operation whose effect could not be certified.
 pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
-    let mut blocked = None;
     loop {
         let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let wait_key = loop {
-            if core.stopping.load(Ordering::Acquire) {
+        loop {
+            if core.stopping.load(Ordering::Acquire)
+                || core.handler_failed.load(Ordering::Acquire)
+                || state.invalidation.denied
+            {
                 return;
             }
-            if let Some(key) = ready_invalidation(core, &mut state, blocked) {
-                break key;
+            if state.invalidation.is_pending(state.invalidation.notified) {
+                break;
             }
             #[cfg(all(test, loom))]
             model_checking::before_invalidator_wait();
@@ -358,56 +268,33 @@ pub(super) fn run_invalidator(core: &ProjectionCore, notifier: &impl KernelCache
                 .invalidation
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
-        };
-        drop(state);
-        blocked = invalidation_pass(core, notifier, wait_key);
-    }
-}
-
-/// One pass for a view of a shared session, if one should run now. The view's
-/// blocked key lives in its core, since one thread serves every view.
-pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
-    let mut blocked = core
-        .shared_blocked
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let ready = {
-        let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if core.stopping.load(Ordering::Acquire) {
-            return;
         }
-        ready_invalidation(core, &mut state, *blocked)
-    };
-    if let Some(key) = ready {
-        *blocked = invalidation_pass(core, notifier, key);
+        drop(state);
+        invalidation_pass(core, notifier);
     }
 }
 
-/// Runs one pass; returns the key to block on if the pass was denied.
-fn invalidation_pass(
-    core: &ProjectionCore,
-    notifier: &impl KernelCacheNotifier,
-    mut wait_key: InvalidationKey,
-) -> Option<InvalidationKey> {
+/// One pass for a view of a shared session. The session's one invalidator
+/// serializes delivery, and failed views never enqueue another pass.
+pub(super) fn shared_invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
+    let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+    let ready = !core.stopping.load(Ordering::Acquire)
+        && !core.handler_failed.load(Ordering::Acquire)
+        && !state.invalidation.denied
+        && state.invalidation.is_pending(state.invalidation.notified);
+    drop(state);
+    if ready {
+        invalidation_pass(core, notifier);
+    }
+}
+
+fn invalidation_pass(core: &ProjectionCore, notifier: &impl KernelCacheNotifier) {
     let mut through = None;
-    let mut sdk_failure = None;
     let result = core.request(|work| {
-        let mut items = {
-            let mut state = core.state_to_finish();
-            let items = state.invalidation.take_deferred();
-            wait_key.0 = state.invalidation.notified;
-            wait_key.1 = state.invalidation.deferred.len();
-            items
-        };
+        let mut items = core.state_to_finish().invalidation.take_deferred();
         loop {
-            let dropped = drop_kernel_caches(notifier, &mut items, work, &mut sdk_failure);
-            core.state_to_finish()
-                .invalidation
-                .retain_pending_tail(items);
-            dropped?;
-            // A refused notification stays queued, so this pass settles
-            // nothing past it and the next pass starts with it.
-            if through.is_some() || sdk_failure.is_some() {
+            drop_kernel_caches(notifier, &mut items, work)?;
+            if through.is_some() {
                 break;
             }
             let mut state = core.state_to_finish();
@@ -425,51 +312,42 @@ fn invalidation_pass(
             state.invalidation.scanned = Some(target);
             through = Some(target);
         }
-        sdk_failure.take().map_or(Ok(()), Err)
+        Ok(())
     });
-    let denied = result.is_err();
-    // A failed pass does not fail the mount. It is logged, nothing new is
-    // cached until a pass succeeds, and the pass is retried once its
-    // inputs change.
-    if let Err((cause, _)) = &result {
-        tracing::warn!(
-            error = %sdk_failure.as_ref().unwrap_or(cause),
-            "FUSE invalidation failed; caching stops until a later pass succeeds"
-        );
-    }
     {
         let mut state = core.state_to_finish();
-        state.invalidation.denied = denied;
-        if denied {
-            state.invalidation.denials = state.invalidation.denials.wrapping_add(1);
-        }
-        state.invalidation.finish(through);
+        state.invalidation.denied = result.is_err();
+        state
+            .invalidation
+            .finish(if result.is_ok() { through } else { None });
     }
-    if denied {
-        core.invalidation.notify_all();
+    if let Err(failure) = result {
+        core.retain_handler_failure(failure);
     }
-    denied.then_some(wait_key)
 }
 
 fn drop_kernel_caches(
     notifier: &impl KernelCacheNotifier,
     items: &mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
     work: &Work,
-    first_sdk_failure: &mut Option<NativeMountError>,
 ) -> Result<(), NativeMountError> {
     run_native_mount_handler_on_meter(work, |work| {
-        while let Some(pending) = PendingInvalidation::next(items, work)? {
-            let dropped = pending.publish(notifier);
-            // Retire only notifications the kernel accepted, or for which it
-            // holds nothing. A refused one and all after it stay queued.
-            if let Err(error) = dropped
+        while !items.as_slice().is_empty() {
+            work.charge(WorkCounters {
+                backend_write_operations: 1,
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let item = items.next().ok_or(libc::EPROTO)?;
+            let result = match item {
+                KernelCacheItem::Inode(inode) => notifier.inval_inode(inode),
+                KernelCacheItem::Entry { parent, name } => notifier.inval_entry(parent, &name),
+            };
+            if let Err(error) = result
                 && error.kind() != std::io::ErrorKind::NotFound
             {
-                first_sdk_failure.get_or_insert(NativeMountError::Io(error));
-                pending.undelivered();
-                break;
+                return Err(NativeMountError::Io(error));
             }
-            pending.delivered();
         }
         Ok(())
     })

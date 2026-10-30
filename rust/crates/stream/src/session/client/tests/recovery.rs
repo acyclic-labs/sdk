@@ -50,7 +50,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
     let connections = client.connections();
     let first = connections.changed(0).await?;
     fixture.reset()?;
-    let recovered = tokio::time::timeout(Duration::from_secs(2), async {
+    let recovered = (async {
         let connected = connections.changed(first);
         let closed = records.next();
         futures::pin_mut!(connected, closed);
@@ -59,7 +59,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
             _ => false,
         }
     })
-    .await?;
+    .await;
     assert!(
         recovered,
         "recovery must retain live follows across exhausted handshake attempts"

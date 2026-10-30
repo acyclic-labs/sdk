@@ -4,8 +4,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LockResult;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::{Arc, Barrier};
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::Duration;
 
 fn healthy<T>(result: LockResult<T>) -> T {
     result.unwrap_or_else(|error| std::panic::resume_unwind(Box::new(error.to_string())))
@@ -105,21 +103,28 @@ fn poison_recovery_keeps_rank_until_recovered_guard_drops() {
 #[test]
 fn condition_wait_restores_rank_and_rejects_descending_reacquisition() {
     let lower = Mutex::<_, OPERATION>::new(());
-    let higher = Mutex::<_, VIEW>::new(());
-    let condition = Condvar::new();
-    let guard = healthy(higher.lock());
-    let (guard, _) = healthy(condition.wait_timeout(guard, Duration::ZERO));
+    let higher = Arc::new(Mutex::<_, VIEW>::new(false));
+    let condition = Arc::new(Condvar::new());
+    let mut guard = healthy(higher.lock());
+    let notifier = std::thread::spawn({
+        let higher = Arc::clone(&higher);
+        let condition = Arc::clone(&condition);
+        move || {
+            let mut state = healthy(higher.lock());
+            *state = true;
+            condition.notify_all();
+        }
+    });
+    while !*guard {
+        guard = healthy(condition.wait(guard));
+    }
     assert!(catch_unwind(|| lower.lock()).is_err());
     drop(guard);
+    notifier.join().unwrap();
 
     let lower_guard = healthy(lower.lock());
     let higher_guard = healthy(higher.lock());
-    assert!(
-        catch_unwind(AssertUnwindSafe(|| {
-            condition.wait_timeout(lower_guard, Duration::ZERO)
-        }))
-        .is_err()
-    );
+    assert!(catch_unwind(AssertUnwindSafe(|| { condition.wait(lower_guard) })).is_err());
     drop(higher_guard);
     // The rejected wait consumed its guard, so no rank may remain registered.
     drop(

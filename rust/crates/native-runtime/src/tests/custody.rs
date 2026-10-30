@@ -122,6 +122,68 @@ fn ownership_release_barrier_waits_for_the_final_clone() {
     barrier.wait();
 }
 
+async fn cleanup_release_boundary(reference_count_control: bool) {
+    struct Cleanup {
+        entered: Option<tokio::sync::oneshot::Sender<()>>,
+        finish: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.entered.take().unwrap().send(()).unwrap();
+            self.finish.lock().unwrap().recv().unwrap();
+        }
+    }
+    let (entered, started) = tokio::sync::oneshot::channel();
+    let (finish, finished) = std::sync::mpsc::channel();
+    let owner = Arc::new(Cleanup {
+        entered: Some(entered),
+        finish: Mutex::new(finished),
+    });
+    let weak = Arc::downgrade(&owner);
+    let anchor = OwnershipAnchor::new(owner);
+    let barrier = anchor.release_barrier();
+    let mut released = std::pin::pin!(barrier.released());
+    assert!(
+        released
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    let dropping = std::thread::spawn(move || drop(anchor));
+    started.await.unwrap();
+    // The old weak-count condition is already true while the real destructor
+    // still owns cleanup. Finish the producer before asserting either oracle.
+    assert_eq!(weak.strong_count(), 0);
+    let completed_early = if reference_count_control {
+        weak.strong_count() == 0
+    } else {
+        barrier.is_released()
+    };
+    let pending_during_cleanup = released
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+        .is_pending();
+    finish.send(()).unwrap();
+    dropping.join().unwrap();
+    released.await;
+    assert!(barrier.is_released());
+    assert!(
+        !completed_early && pending_during_cleanup,
+        "release preceded cleanup"
+    );
+}
+
+#[tokio::test]
+async fn ownership_release_follows_the_real_destructor() {
+    cleanup_release_boundary(false).await;
+}
+
+#[tokio::test]
+#[should_panic(expected = "release preceded cleanup")]
+async fn reference_count_release_negative_control() {
+    cleanup_release_boundary(true).await;
+}
+
 #[test]
 fn ownership_release_deadline_refuses_a_retained_owner() -> io::Result<()> {
     let anchor = OwnershipAnchor::new(());

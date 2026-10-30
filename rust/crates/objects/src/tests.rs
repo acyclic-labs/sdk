@@ -153,11 +153,7 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
     // This run's own unissued index still waits on its exact applied index.
     let own = applied.at(applied.current().index + 1);
     let kept = first.admitted(RevisionCut::of(own)).await?;
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(100), applied.wait(&kept))
-            .await
-            .is_err()
-    );
+    assert!(futures::FutureExt::now_or_never(applied.wait(&kept)).is_none());
     Ok(())
 }
 

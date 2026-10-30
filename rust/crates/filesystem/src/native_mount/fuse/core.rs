@@ -48,11 +48,7 @@ impl std::ops::DerefMut for StateGuard<'_> {
 
 impl StateGuard<'_> {
     #[track_caller]
-    pub(super) fn wait_timeout(
-        mut self,
-        condition: &RankedCondvar,
-        duration: Duration,
-    ) -> Result<Self, NativeMountError> {
+    pub(super) fn wait(mut self, condition: &RankedCondvar) -> Result<Self, NativeMountError> {
         let Some(state) = self.state.take() else {
             unreachable!("the guard owns its lock until drop");
         };
@@ -66,9 +62,8 @@ impl StateGuard<'_> {
         invalidation::model_checking::before_waiter_wait();
         self.state = Some(
             condition
-                .wait_timeout(state, duration)
-                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
-                .0,
+                .wait(state)
+                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?,
         );
         Ok(self)
     }
@@ -136,8 +131,6 @@ pub(super) struct ProjectionCore {
     /// Set for a view of a shared session, whose one invalidator serves
     /// every view: pending invalidation queues this view there.
     pub(super) shared_wake: OnceLock<Arc<super::shared::SharedWake>>,
-    /// The shared invalidator's blocked key for this view.
-    pub(super) shared_blocked: Mutex<Option<InvalidationKey>>,
     source_original_work: Option<Work>,
     allocation_custody: Arc<crate::demand::NativeMountAllocationCustody>,
     _allocation: NativeAllocation,
@@ -206,7 +199,6 @@ impl ProjectionCore {
             handler_error: Mutex::new(FuseHandlerReports::default()),
             callback_guard,
             shared_wake: OnceLock::new(),
-            shared_blocked: Mutex::new(None),
             source_original_work,
             allocation_custody,
             _allocation: allocation,

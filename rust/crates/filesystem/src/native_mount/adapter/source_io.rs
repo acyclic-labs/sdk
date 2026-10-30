@@ -180,14 +180,25 @@ impl<A, O> CheckoutMountSource<A, O> {
         {
             return Err(MountSourceError::Stale);
         }
+        let _cancellation = wait
+            .map(|wait| {
+                let gate = Arc::clone(&self.capture_gate);
+                let quiesced = Arc::clone(&self.capture_quiesced);
+                wait.on_cancel(self.native_original.as_ref(), move || {
+                    let _gate = gate.lock().unwrap_or_else(PoisonError::into_inner);
+                    quiesced.notify_all();
+                })
+            })
+            .transpose()
+            .map_err(MountSourceError::NativeWork)?;
         loop {
-            if let Some(wait) = wait {
-                wait.check().map_err(|_| MountSourceError::Cancelled)?;
-            }
             let mut gate = self
                 .capture_gate
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            if let Some(wait) = wait {
+                wait.check().map_err(|_| MountSourceError::Cancelled)?;
+            }
             if gate.retired {
                 return Ok(());
             }
@@ -218,45 +229,11 @@ impl<A, O> CheckoutMountSource<A, O> {
                 if let Some(observed) = gate.physical_cleanup_wait_observed.take() {
                     let _ = observed.send(());
                 }
-                // The original worker already owns this join. A wall-clock
-                // poll is not another source item: wait for the last accepted
-                // producer's actual drop, retaining the same source and ledger.
-                gate = self
-                    .capture_quiesced
-                    .wait_while(gate, |gate| gate.producers != 0 && !gate.retired)
-                    .unwrap_or_else(PoisonError::into_inner);
-                drop(gate);
-                continue;
-            }
-            if self.native_original.is_some() {
-                let mut credit = self
-                    .cleanup_credit
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                let credit = credit.as_mut().ok_or(MountSourceError::NativeWork(
-                    crate::NativeTreeMaterializationError::InvalidLayout,
-                ))?;
-                credit
-                    .0
-                    .partition_work(
-                        crate::WorkCounters {
-                            items_examined: 1,
-                            ..crate::WorkCounters::UNCHARGED
-                        },
-                        wait,
-                    )
-                    .map_err(MountSourceError::NativeWork)?
-                    .record_completed(crate::WorkCounters {
-                        items_examined: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    })
-                    .map_err(MountSourceError::NativeWork)?;
             }
             gate = self
                 .capture_quiesced
-                .wait_timeout(gate, Duration::from_millis(10))
-                .unwrap_or_else(PoisonError::into_inner)
-                .0;
+                .wait(gate)
+                .unwrap_or_else(PoisonError::into_inner);
             drop(gate);
         }
     }

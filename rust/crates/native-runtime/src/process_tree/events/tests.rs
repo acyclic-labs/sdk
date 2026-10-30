@@ -38,7 +38,6 @@ fn a_pipe_fires_when_its_data_arrives_and_not_before() -> io::Result<()> {
     use std::os::fd::AsFd as _;
     let (reader, mut writer) = std::io::pipe()?;
     let wait = arm(&[Source::Readable(reader.as_fd())], None)?;
-    std::thread::sleep(Duration::from_millis(20));
     assert!(!wait.fired(), "an empty pipe is not readable");
     writer.write_all(b"x")?;
     wait.block();

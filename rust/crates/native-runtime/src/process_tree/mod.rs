@@ -16,12 +16,11 @@ pub use external_host::run_external_process_host;
 #[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
-#[path = "capture_wait_windows.rs"]
-mod capture_wait;
-#[cfg(windows)]
 mod custodian;
 mod events;
 mod wake;
+#[cfg(windows)]
+mod windows_event;
 pub use wake::ProcessWake;
 mod control;
 pub use control::{ControlledCapture, ProcessControl};
@@ -168,9 +167,6 @@ impl ProcessTree {
             eprintln!("step=retire native process owner: {error}; recovery: {recovery}");
         }
     }
-
-    /// Maximum observation time for each physical termination phase.
-    pub const TERMINATION_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Kernel observations that decide a macOS process group whose kill was
     /// refused, for a group of up to 255 members: two listings and one probe
@@ -687,6 +683,26 @@ impl ProcessTree {
 
     /// Observes direct-child exit within `timeout`, retaining descendant ownership.
     pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+        })?;
+        self.wait_exit_until(Some(deadline), None)
+    }
+
+    /// Waits for direct-child exit, retaining descendant ownership.
+    /// The OS wakes the caller on exit or returns its terminal wait error.
+    pub fn wait_exit(
+        &mut self,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<ExitStatus> {
+        self.wait_exit_until(None, meter)
+    }
+
+    fn wait_exit_until(
+        &mut self,
+        deadline: Option<Instant>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+    ) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
             "acyclic.runtime.wait",
@@ -695,21 +711,27 @@ impl ProcessTree {
         );
         operation.in_scope(|| {
             operation.finish((|| {
-                let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
-                })?;
                 if self.is_reaped() {
                     return Err(io::Error::other("process output was already collected"));
                 }
-                self.close_stdin();
+                self.capture_close_stdin(meter)?;
                 #[cfg(windows)]
-                return platform::wait_for_exit(
-                    self.child.as_mut().ok_or(io::ErrorKind::NotFound)?,
-                    deadline,
-                );
+                {
+                    let child = self.child.as_mut().ok_or(io::ErrorKind::NotFound)?;
+                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
+                        match deadline {
+                            Some(deadline) => platform::wait_for_exit(child, deadline),
+                            None => child.wait(),
+                        }
+                    })
+                }
                 #[cfg(unix)]
                 {
-                    exit_wait::wait(self.owned_child_id()?, deadline)
+                    let id = self.owned_child_id()?;
+                    match deadline {
+                        Some(deadline) => exit_wait::wait_metered(id, deadline, meter),
+                        None => platform::await_exiting_id(id, meter),
+                    }
                 }
             })())
         })
@@ -981,17 +1003,6 @@ impl ProcessTree {
         events::arm(exit.as_slice(), Some(deadline))
     }
 
-    /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(windows)]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
-        use std::os::windows::io::AsHandle as _;
-        let exit = self
-            .child
-            .as_ref()
-            .map(|child| events::Source::Exit(child.as_handle()));
-        events::arm(exit.as_slice(), Some(deadline))
-    }
-
     /// Terminates containment and reaps the direct child.
     pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         if meter.is_some() {
@@ -1015,16 +1026,7 @@ impl ProcessTree {
             self.capture_terminate_descendants(meter)?;
             self.capture_close_stdin(meter)?;
             if self.child.is_some() {
-                let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-                while self.try_wait(meter)?.is_none() {
-                    if Instant::now() >= deadline {
-                        return Err(io::ErrorKind::TimedOut.into());
-                    }
-                    process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        self.arm_exit(deadline)?.block();
-                        Ok(())
-                    })?;
-                }
+                self.wait_exit(meter)?;
                 if let Some(child) = self.child.as_mut() {
                     if child.stdout.is_some() {
                         process_control_attempt(meter, crate::NativeOperationKind::Write, || {
@@ -1061,8 +1063,7 @@ impl ProcessTree {
         self.guard.terminate_with_meter(meter)?;
         self.capture_close_stdin(meter)?;
         if self.child.is_some() || self.native_child.is_some() {
-            let deadline = Instant::now() + Self::TERMINATION_TIMEOUT;
-            exit_wait::wait_metered(self.owned_child_id()?, deadline, meter)?;
+            platform::await_exiting_id(self.owned_child_id()?, meter)?;
             // Only actually retained standard pipes require a release call.
             // Denial keeps the observed leader unreaped and its remaining
             // streams owned by this same tree, rather than hiding their drops

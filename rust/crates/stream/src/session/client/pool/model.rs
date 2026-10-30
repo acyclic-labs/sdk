@@ -24,7 +24,6 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
-                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                     commands,
                     removed: Arc::clone(&pool.removed),
                     next_id: Arc::new(AtomicU64::new(1)),
@@ -138,7 +137,6 @@ pub fn verify_pool_lifetime(fault: u8) {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -250,7 +248,6 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands,
                 removed: Arc::new(signal::Signal::new()),
                 next_id: Arc::new(AtomicU64::new(1)),
@@ -442,7 +439,6 @@ pub fn verify_registration_deadline(broken: bool) {
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
-                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                     commands,
                     removed: Arc::new(signal::Signal::new()),
                     next_id: Arc::new(AtomicU64::new(1)),
@@ -467,20 +463,19 @@ pub fn verify_registration_deadline(broken: bool) {
                 }
             });
             let mut registration = Some(Box::pin(async move {
-                let result = deadline::until(
-                    async {
+                future::select(
+                    Box::pin(async {
                         opened.changed(false).await.unwrap();
-                    },
-                    async {
+                    }),
+                    Box::pin(async {
                         if broken {
                             future::pending::<()>().await;
                         }
                         expiry.changed(false).await.unwrap();
-                    },
+                    }),
                 )
                 .await;
                 drop(cursor); // Existing guard owns cancellation and removal.
-                result
             }));
             let wakes = Arc::new(AtomicU64::new(0));
             let waker =
@@ -548,7 +543,6 @@ pub fn verify_node_dials(fault: u8) {
             let client = Client {
                 pool: PoolHandle {
                     connections: super::super::super::Connections::new(),
-                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                     commands: mpsc::channel(2).0,
                     removed: Arc::clone(&pool.removed),
                     next_id: Arc::new(AtomicU64::new(5)),
@@ -664,7 +658,6 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands: mpsc::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),

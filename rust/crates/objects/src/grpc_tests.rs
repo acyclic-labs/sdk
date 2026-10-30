@@ -18,6 +18,7 @@ struct Replica {
     view: MemoryObjects,
     applied: AppliedRevisions,
     pending: Mutex<Vec<OwnedBytes>>,
+    requested: Mutex<Option<tokio::sync::oneshot::Sender<MetadataMap>>>,
 }
 
 impl Replica {
@@ -35,7 +36,14 @@ impl Replica {
             view: MemoryObjects::memory(),
             applied,
             pending: Mutex::default(),
+            requested: Mutex::default(),
         }))
+    }
+
+    fn next_request(&self) -> tokio::sync::oneshot::Receiver<MetadataMap> {
+        let (requested, request) = tokio::sync::oneshot::channel();
+        assert!(self.requested.lock().unwrap().replace(requested).is_none());
+        request
     }
 
     async fn catch_up(&self) -> Result<(), Error> {
@@ -111,7 +119,12 @@ impl Blobs for Replica {
 /// A client of `replica` over an in-process HTTP/2 transport.
 fn client(replica: &Arc<Replica>) -> GrpcObjects {
     let replica = Arc::clone(replica);
-    let resolve: AccountResolver = Arc::new(move |_| Ok(Arc::clone(&replica) as Arc<dyn Blobs>));
+    let resolve: AccountResolver = Arc::new(move |metadata| {
+        if let Some(requested) = replica.requested.lock().unwrap().take() {
+            let _ = requested.send(metadata.clone());
+        }
+        Ok(Arc::clone(&replica) as Arc<dyn Blobs>)
+    });
     client_over(
         resolve,
         CredentialProvider::new(|| async { Ok("fixture".to_owned()) }),
@@ -283,9 +296,24 @@ async fn written(writer: &GrpcObjects, body: &'static [u8]) -> Result<(Digest, R
     ))
 }
 
-/// Settles everything ready on the current-thread runtime without the read.
-async fn settle() {
-    tokio::time::sleep(Duration::from_millis(50)).await;
+async fn requested_minimum<T>(
+    requested: tokio::sync::oneshot::Receiver<MetadataMap>,
+    read: &mut tokio::task::JoinHandle<Result<T, Error>>,
+    expected: &Revision,
+) -> TestResult {
+    let metadata = tokio::select! {
+        result = read => return Err(format!("read ended before minimum admission: {}", result?.is_ok()).into()),
+        metadata = requested => metadata?,
+    };
+    let minimum = metadata
+        .get_bin(MINIMUM_REVISION)
+        .ok_or("minimum missing")?
+        .to_bytes()?;
+    assert_eq!(
+        acyclic_stream::wire::Revision::decode(minimum)?,
+        revision_to_wire(expected),
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -302,8 +330,9 @@ async fn a_read_after_a_write_waits_for_the_lagging_replica() -> TestResult {
     );
 
     let reader = writer.clone();
-    let read = tokio::spawn(async move { reader.head(digest).await });
-    settle().await;
+    let requested = replica.next_request();
+    let mut read = tokio::spawn(async move { reader.head(digest).await });
+    requested_minimum(requested, &mut read, &committed).await?;
     assert!(!read.is_finished(), "a read below its floor must wait");
     replica.catch_up().await?;
     let head = read.await??;
@@ -330,8 +359,9 @@ async fn an_explicit_minimum_carries_a_write_across_clients() -> TestResult {
     );
     other.revisions().observe(&committed);
     let reader = other.clone();
-    let read = tokio::spawn(async move { reader.get(digest, ByteRange::FULL, 64).await });
-    settle().await;
+    let requested = replica.next_request();
+    let mut read = tokio::spawn(async move { reader.get(digest, ByteRange::FULL, 64).await });
+    requested_minimum(requested, &mut read, &committed).await?;
     assert!(
         !read.is_finished(),
         "an explicit minimum must hold the read"
@@ -395,24 +425,26 @@ async fn a_foreign_minimum_cannot_retire_a_required_floor() -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn the_call_deadline_bounds_the_wait() -> TestResult {
     let replica = Replica::new().await?;
     let writer = client(&replica).with_transfer_timeout(Duration::from_millis(300))?;
     let (digest, _) = written(&writer, b"late").await?;
-    let started = tokio::time::Instant::now();
     let read = writer.get(digest, ByteRange::FULL, 64).await;
     assert_eq!(
         read.map_err(|error| error.code),
         Err(wire::ErrorCode::DeadlineElapsed)
     );
-    assert!(started.elapsed() < Duration::from_secs(5));
     // Negative control: the same deadline admits a read whose floor applies in time.
-    let reader = writer.clone();
-    let read = tokio::spawn(async move { reader.get(digest, ByteRange::FULL, 64).await });
-    settle().await;
     replica.catch_up().await?;
-    assert_eq!(read.await??.body().as_ref(), b"late");
+    assert_eq!(
+        writer
+            .get(digest, ByteRange::FULL, 64)
+            .await?
+            .body()
+            .as_ref(),
+        b"late"
+    );
     Ok(())
 }
 

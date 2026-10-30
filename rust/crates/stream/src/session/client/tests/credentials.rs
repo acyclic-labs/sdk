@@ -207,7 +207,7 @@ impl RotatingFixture {
 
 #[tokio::test]
 async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(4), async {
+    (async {
         let identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
         let certificate = identity.cert.pem();
         let key = identity.signing_key.serialize_pem();
@@ -294,7 +294,7 @@ async fn session_credentials_renew_on_handshake_retry_reconnect_and_move() -> Te
         );
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
-    .await??;
+    .await?;
     Ok(())
 }
 

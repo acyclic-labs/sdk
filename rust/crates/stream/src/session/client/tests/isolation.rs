@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -> TestResult {
-    tokio::time::timeout(Duration::from_secs(3), async {
+    (async {
         let memory = Arc::new(MemoryStream::default());
         append(&memory, "healthy", 1).await?;
         append(&memory, "agents/first", 1).await?;
@@ -80,7 +80,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
-    .await??;
+    .await?;
     Ok(())
 }
 

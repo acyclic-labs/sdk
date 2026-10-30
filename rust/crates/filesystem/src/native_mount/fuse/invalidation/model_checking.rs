@@ -62,7 +62,7 @@ impl KernelCacheNotifier for RefusesFirst {
 }
 
 #[test]
-fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
+fn production_guard_wakes_invalidation_failure_and_its_waiter() {
     crate::initialize_test_native_io();
     let exercise = |broken| {
         loom::model(move || {
@@ -76,7 +76,7 @@ fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
             let invalidator = loom::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 2)));
+                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 1)));
                     let notifier = RefusesFirst {
                         first_gate: Some((attempted, released)),
                         ..Default::default()
@@ -103,86 +103,24 @@ fn production_guard_wakes_a_sleeping_invalidator_and_waiter() {
                 core.wait_for_invalidation(core.state().unwrap(), None, &work),
                 Err(NativeMountError::Lifecycle(_))
             ));
-            // The refusal and waiter wake have both completed. Park the worker
-            // before stop; unrelated teardown interleavings add no wake coverage.
-            asleep.recv().unwrap();
-            {
-                let state = core.state().unwrap();
-                assert!(state.invalidation.denied);
-                assert_eq!(
-                    state.invalidation.pending_tail.as_slice(),
-                    &[KernelCacheItem::Inode(10)]
-                );
-            }
-            core.stop();
             assert_eq!(invalidator.join().unwrap(), [(10, false)]);
+            {
+                let state = core.state_to_finish();
+                assert!(state.invalidation.denied);
+                assert!(!state.invalidation.in_flight);
+            }
+            assert!(core.handler_failed.load(Ordering::Acquire));
+            assert!(core.take_handler_failure().is_some());
+            assert!(
+                core.wait_for_invalidation(core.state_to_finish(), None, &work)
+                    .is_err()
+            );
             drop(ManuallyDrop::into_inner(keeper));
         });
     };
     exercise(false);
     let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
         .expect_err("a missing guard notification must strand the invalidator");
-    let message = error
-        .downcast_ref::<String>()
-        .expect("Loom deadlock message");
-    assert!(message.contains("deadlock"), "{message}");
-}
-
-#[test]
-fn production_waiter_retries_refused_notifications_in_fifo_order() {
-    crate::initialize_test_native_io();
-    let exercise = |broken| {
-        loom::model(move || {
-            let (core, work) = super::super::tests::model_checking::fixture();
-            let keeper = ManuallyDrop::new((Arc::clone(&core), work.clone()));
-            {
-                let mut state = core.state().unwrap();
-                fuse_reserve(&mut state.invalidation.deferred, 2, &work).unwrap();
-                state
-                    .invalidation
-                    .deferred
-                    .extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
-            }
-            let (sleeping, asleep) = mpsc::channel();
-            let invalidator = loom::thread::spawn({
-                let core = Arc::clone(&core);
-                move || {
-                    OMIT_NOTIFY.with(|fault| fault.set(broken));
-                    INVALIDATOR_WAIT.with(|hook| *hook.borrow_mut() = Some((sleeping, 2)));
-                    let notifier = RefusesFirst::default();
-                    run_invalidator(&core, &notifier);
-                    notifier.sent.into_inner()
-                }
-            });
-            // The first production wait occurs after refusal has settled.
-            // Retain state from the inspection through retry admission.
-            asleep.recv().unwrap();
-            let state = core.state().unwrap();
-            assert!(state.invalidation.denied);
-            assert_eq!(
-                state.invalidation.pending_tail.as_slice(),
-                &[KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)],
-                "refused notification tail was lost"
-            );
-            assert!(state.invalidation.is_pending(None));
-            assert!(state.invalidation.deferred.is_empty());
-            core.wait_for_invalidation(state, None, &work).unwrap();
-            // Retry completion and its real wake have been observed. Let the
-            // invalidator finish the pass and park before unrelated stop/teardown
-            // bookkeeping; those operations add no FIFO or waiter-wake coverage.
-            asleep.recv().unwrap();
-            core.stop();
-            assert_eq!(
-                invalidator.join().unwrap(),
-                [(10, false), (10, true), (11, true)]
-            );
-            assert!(!core.state_to_finish().invalidation.is_pending(None));
-            drop(ManuallyDrop::into_inner(keeper));
-        });
-    };
-    exercise(false);
-    let error = catch_unwind(AssertUnwindSafe(|| exercise(true)))
-        .expect_err("a missing completion notification must strand the retry waiter");
     let message = error
         .downcast_ref::<String>()
         .expect("Loom deadlock message");

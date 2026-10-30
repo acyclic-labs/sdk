@@ -1,5 +1,54 @@
 use super::*;
 
+#[test]
+fn cancellation_wakes_an_os_condition_without_a_timer() {
+    let token = CancellationToken::new();
+    let gate = Arc::new(std::sync::Mutex::new(()));
+    let changed = Arc::new(std::sync::Condvar::new());
+    let notification_gate = Arc::clone(&gate);
+    let notification_changed = Arc::clone(&changed);
+    let registration = token
+        .on_cancel(None, move || {
+            let _guard = notification_gate.lock().unwrap();
+            notification_changed.notify_all();
+        })
+        .unwrap();
+    let (entering, entered) = std::sync::mpsc::channel();
+    let waiting_token = token.clone();
+    let waiter = std::thread::spawn(move || {
+        let mut guard = gate.lock().unwrap();
+        entering.send(()).unwrap();
+        while !waiting_token.is_cancelled() {
+            guard = changed.wait(guard).unwrap();
+        }
+    });
+    entered.recv().unwrap();
+    token.cancel();
+    waiter.join().unwrap();
+    drop(registration);
+}
+
+#[test]
+fn cancellation_notification_ends_with_its_registration() {
+    for cancelled_first in [false, true] {
+        let token = CancellationToken::new();
+        let observed = Arc::new(AtomicBool::new(false));
+        if cancelled_first {
+            token.cancel();
+        }
+        let notification_observed = Arc::clone(&observed);
+        let registration = token
+            .on_cancel(None, move || {
+                notification_observed.store(true, Ordering::Release);
+            })
+            .unwrap();
+        assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
+        drop(registration);
+        token.cancel();
+        assert_eq!(observed.load(Ordering::Acquire), cancelled_first);
+    }
+}
+
 fn budget(items: u64) -> crate::WorkBudget {
     crate::WorkBudget {
         items_examined: items,

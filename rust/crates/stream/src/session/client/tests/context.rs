@@ -35,11 +35,9 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1),
-        )
-        .await?;
+        fixture
+            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 1)
+            .await?;
         if observed_first {
             assert_eq!(first.closed("first.request"), 1, "{CLOSE}");
         }
@@ -55,11 +53,9 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             .await?;
         drop(records);
         drop(origin);
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            fixture.until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2),
-        )
-        .await?;
+        fixture
+            .until(|counts| counts.closed_sessions.load(Ordering::Relaxed) == 2)
+            .await?;
         assert_eq!(second.closed("second.request"), 1);
         assert_eq!(
             first.spans("stream.session").len(),
@@ -203,7 +199,7 @@ fn overlapping(fault: u8) -> TestResult {
         drop(first);
         fixture
             .until(|counts| counts.removals.load(Ordering::Relaxed) == 1)
-            .await;
+            .await?;
         append(&memory, "events", 1).await?;
         assert_eq!(next(&mut b).await?.sequence, 1);
         if fault >= 2 {
@@ -316,7 +312,6 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         let client = Client {
             pool: PoolHandle {
                 connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
                 commands: mpsc::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
@@ -655,7 +650,7 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
         drop(a_origin);
         fixture
             .until(|counts| counts.removals.load(Ordering::Relaxed) == 1)
-            .await;
+            .await?;
         assert_eq!(first.closed("first.request"), 1);
         append(&memory, "events", 1).await?;
         assert_eq!(next(&mut b).await?.sequence, 1);

@@ -588,9 +588,6 @@ pub enum MountSourceError {
     /// Original owned native record parser cause; no diagnostic allocation.
     #[error("native record JSON error: {0}")]
     NativeRecordJson(#[source] serde_json::Error, Option<crate::NativeAllocation>),
-    /// Actual record lock acquisition timed out.
-    #[error("native record lock timed out: {}", .0.display())]
-    NativeRecordLockTimeout(PathBuf, Option<crate::NativeAllocation>),
     /// The existing record belongs to a different original owner.
     #[error("native record ownership conflict: {}", .0.display())]
     NativeRecordOwnershipConflict(PathBuf, Option<crate::NativeAllocation>),
