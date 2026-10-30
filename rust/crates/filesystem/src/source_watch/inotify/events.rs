@@ -26,15 +26,11 @@ impl Shared {
             // The fence that unblocks delivery reschedules waiting records.
             return;
         }
-        #[cfg(test)]
-        self.polling.store(false, Ordering::Release);
         let mut work = self.delivery.callback_work();
         let delivered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             work.started_io(READ)?;
             self.read_events_and_deliver_locked(&mut reading, &mut work)
         }));
-        #[cfg(test)]
-        self.polling.store(true, Ordering::Release);
         match delivered {
             Ok(Ok(_)) => {}
             Ok(Err(error)) => {

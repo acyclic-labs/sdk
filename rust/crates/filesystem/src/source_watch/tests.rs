@@ -11,7 +11,7 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Every change delivered, in order.
 #[derive(Default)]
-struct Recorded {
+pub(super) struct Recorded {
     state: Mutex<RecordedState>,
     changed: Condvar,
 }
@@ -105,7 +105,7 @@ impl Recorded {
         self.changed.notify_all();
     }
 
-    fn wait_until(
+    pub(super) fn wait_until(
         &self,
         reported: impl Fn(&[HostChange]) -> bool,
     ) -> std::io::Result<Vec<HostChange>> {
@@ -150,7 +150,7 @@ impl Recorded {
         self.changed.notify_all();
     }
 
-    fn take(&self) -> Vec<HostChange> {
+    pub(super) fn take(&self) -> Vec<HostChange> {
         std::mem::take(
             &mut self
                 .state
@@ -197,7 +197,9 @@ fn reports_until(
     recorded.wait_until(reported)
 }
 
-fn watch(root: &Path) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
+pub(super) fn watch(
+    root: &Path,
+) -> Result<(NativeSourceWatch, Arc<Recorded>), Box<dyn std::error::Error>> {
     let recorded = Arc::new(Recorded::default());
     let watch = NativeSourceWatch::start(
         &HostRoot::open(root, &mut crate::native_host::ordinary_work())

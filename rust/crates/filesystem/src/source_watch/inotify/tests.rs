@@ -58,11 +58,6 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
     // Startup leaves a retired gauge in the owner's admission registry; its
     // compaction is owner housekeeping that the next owner charge settles.
@@ -384,11 +379,6 @@ fn original_cleanup_wait_precancel_and_contention_preserve_custody_for_retry()
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut work)?;
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
     let paused = watch.paused();
     cancellation.cancel();
     let prefix = original.lock().receipt();
@@ -488,11 +478,6 @@ fn original_cleanup_wait_late_cancel_waits_for_the_actual_native_terminal()
     let mut work = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut work)?);
     let watch = Arc::new(NativeSourceWatch::start_driver(&host, delivery, &mut work)?);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
     let wait = CancellationToken::new();
     // Holding only the test's accounting leaf delays recording a genuine wake/retirement, without inventing a mock native completion.
     let state = original.lock();
@@ -1004,51 +989,6 @@ fn a_registration_never_receives_records_that_predate_it() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Counts the changes delivered to one watch.
-#[derive(Default)]
-struct Counted(std::sync::atomic::AtomicUsize);
-impl HostChangeSink for Counted {
-    fn logical_owned_bytes(&self) -> u64 {
-        0
-    }
-    fn host_changed(&self, changes: &[HostChange], _: &mut DemandWork) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
-        Ok(())
-    }
-    fn host_changed_with_native_work(
-        &self,
-        changes: &[HostChange],
-        work: &mut crate::NativeMaterializationWork,
-    ) -> Result<(), DemandError> {
-        self.0.fetch_add(changes.len(), Ordering::AcqRel);
-        work.check()
-    }
-}
-
-fn counted(root: &Path) -> Result<(NativeSourceWatch, Arc<Counted>), Box<dyn std::error::Error>> {
-    let counted = Arc::new(Counted::default());
-    let mut work = crate::native_host::ordinary_work();
-    let host = crate::native_host::HostRoot::open(root, &mut work)
-        .map_err(crate::native_host::ordinary_error)?;
-    let delivery =
-        Delivery::new(counted.clone(), &mut work).map_err(crate::native_host::ordinary_error)?;
-    let watch = NativeSourceWatch::start_driver(&host, Arc::new(delivery), &mut work)
-        .map_err(crate::native_host::ordinary_error)?;
-    Ok((watch, counted))
-}
-
-/// Waits until `done` holds, or fails after a deadline.
-fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::error::Error>> {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !done() {
-        if std::time::Instant::now() >= deadline {
-            return Err(format!("timed out waiting until {what}").into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    Ok(())
-}
-
 /// A watch whose cursor is held never stalls delivery to other watches.
 /// Every watch shares the hub's service pool; a pass that waited for a held
 /// cursor parked a pool thread, and once records had scheduled the held watch
@@ -1064,33 +1004,28 @@ fn a_held_cursor_never_stalls_delivery_to_other_watches() -> Result<(), Box<dyn 
 {
     let held_root = tempfile::tempdir()?;
     let other_root = tempfile::tempdir()?;
-    let (held, held_changes) = counted(held_root.path())?;
-    let (_other, other_changes) = counted(other_root.path())?;
+    let (held, held_changes) = crate::source_watch::tests::watch(held_root.path())?;
+    let (_other, other_changes) = crate::source_watch::tests::watch(other_root.path())?;
     let hub = hub::hub()?;
-    let scheduled = || {
-        held.shared
-            .inbox
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .scheduled()
-    };
     let paused = held.paused();
     // Each routed record schedules the held watch again once a pass started,
     // so it reaches as many pool threads as it receives records.
     for index in 0..hub::SERVICE_THREADS {
+        let started = held
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .next_service();
         std::fs::write(held_root.path().join(format!("held-{index}")), b"")?;
         hub.drain()?;
-        eventually("a pass for the held watch started", || !scheduled())?;
+        started.recv()?;
     }
     std::fs::write(other_root.path().join("other"), b"")?;
-    eventually("the other watch was delivered", || {
-        other_changes.0.load(Ordering::Acquire) > 0
-    })?;
-    assert_eq!(held_changes.0.load(Ordering::Acquire), 0);
+    other_changes.wait_until(|changes| !changes.is_empty())?;
+    assert!(held_changes.take().is_empty());
     drop(paused);
-    eventually("the held watch was delivered", || {
-        held_changes.0.load(Ordering::Acquire) > 0
-    })?;
+    held_changes.wait_until(|changes| !changes.is_empty())?;
     Ok(())
 }
 

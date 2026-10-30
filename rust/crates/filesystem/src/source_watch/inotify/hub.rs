@@ -76,6 +76,8 @@ pub(super) struct Inbox {
     bytes: VecDeque<u8>,
     overflowed: bool,
     scheduled: bool,
+    #[cfg(test)]
+    service_started: Option<std::sync::mpsc::Sender<()>>,
 }
 
 static HUB: OnceLock<Hub> = OnceLock::new();
@@ -631,15 +633,21 @@ impl Inbox {
         (self.bytes.len(), self.overflowed)
     }
 
-    /// Whether a service pass is scheduled and has not yet started.
+    /// Observes the next original service pass, or producer destruction.
     #[cfg(test)]
-    pub(super) fn scheduled(&self) -> bool {
-        self.scheduled
+    pub(super) fn next_service(&mut self) -> std::sync::mpsc::Receiver<()> {
+        let (send, receive) = std::sync::mpsc::channel();
+        assert!(self.service_started.replace(send).is_none());
+        receive
     }
 
     /// Records that a service pass started: later records schedule again.
     pub(super) fn begin_service(&mut self) {
         self.scheduled = false;
+        #[cfg(test)]
+        if let Some(started) = self.service_started.take() {
+            let _ = started.send(());
+        }
     }
 
     /// Marks the inbox scheduled; returns whether it holds records and was not
