@@ -129,7 +129,6 @@ fn dispatch() -> Result<(), Failure> {
         Some("--crash-child") => crash_child(
             required_path(&args, 2, "crash root")?,
             required_path(&args, 3, "mount path")?,
-            required_path(&args, 4, "ready path")?,
         ),
         Some("--qualification-case-worker") => {
             let case = args

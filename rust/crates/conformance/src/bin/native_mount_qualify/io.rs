@@ -123,138 +123,12 @@ fn verify_projected_seed(mount: &Path) -> Result<(), Failure> {
 const PUBLISHED: &[u8] = b"acyclic-parallel-published\n";
 const RELEASE: u8 = b'!';
 
-struct ParallelOutput;
-
-impl acyclic_native_runtime::CaptureHandler for ParallelOutput {
-    fn check(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-
-    fn observe(
-        &mut self,
-        _chunk: acyclic_native_runtime::ProcessOutput<'_>,
-    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
-        Ok(acyclic_native_runtime::ProcessInput::default())
-    }
-}
-
-/// Publication and exit share the original native pipe/capture owner.
-pub(super) struct ParallelChild {
-    output: Option<acyclic_native_runtime::ProcessCaptureStream<ParallelOutput>>,
-    stdin: Option<std::process::ChildStdin>,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-    status: Option<std::process::ExitStatus>,
-}
-
-impl ParallelChild {
-    pub(super) fn spawn(command: &mut Command) -> Result<Self, Failure> {
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut process = ProcessTree::spawn(command)?;
-        let stdin = process.take_stdin();
-        let output = process.stream_capture(
-            &acyclic_native_runtime::TaskSpawner::current(),
-            acyclic_native_runtime::CaptureSchedule::Unbounded,
-            usize::MAX,
-            None,
-            ParallelOutput,
-        );
-        Ok(Self {
-            output: Some(output),
-            stdin,
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-            status: None,
-        })
-    }
-
-    async fn receive(&mut self) -> std::io::Result<bool> {
-        let Some(output) = self.output.as_mut() else {
-            return Ok(false);
-        };
-        if let Some(chunk) = output.recv().await {
-            self.stdout.extend(chunk.stdout);
-            self.stderr.extend(chunk.stderr);
-            return Ok(true);
-        }
-        let completed = self
-            .output
-            .take()
-            .ok_or_else(|| std::io::Error::other("parallel capture owner disappeared"))?
-            .finish()
-            .await?;
-        self.status = Some(completed.result.map_err(std::io::Error::other)?.status);
-        Ok(false)
-    }
-
-    pub(super) async fn published(&mut self) -> Result<(), Failure> {
-        let mut scanned = 0;
-        loop {
-            if self.stdout[scanned..]
-                .windows(PUBLISHED.len())
-                .any(|bytes| bytes == PUBLISHED)
-            {
-                return Ok(());
-            }
-            scanned = self.stdout.len().saturating_sub(PUBLISHED.len() - 1);
-            if !self.receive().await? {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    format!(
-                        "parallel child exited {:?} before publication: {}{}",
-                        self.status,
-                        String::from_utf8_lossy(&self.stdout),
-                        String::from_utf8_lossy(&self.stderr),
-                    ),
-                )
-                .into());
-            }
-        }
-    }
-
-    pub(super) fn release(&mut self) -> Result<(), Failure> {
-        self.stdin
-            .take()
-            .ok_or("parallel child input was already closed")?
-            .write_all(&[RELEASE])?;
-        Ok(())
-    }
-
-    pub(super) async fn finish(mut self) -> Result<std::process::Output, Failure> {
-        self.stdin.take();
-        while self.receive().await? {}
-        Ok(std::process::Output {
-            status: self
-                .status
-                .ok_or("parallel capture omitted its exit status")?,
-            stdout: self.stdout,
-            stderr: self.stderr,
-        })
-    }
-
-    async fn stop(mut self) -> Result<(), Failure> {
-        self.stdin.take();
-        if let Some(output) = self.output.take() {
-            let outcome = output.finish().await?;
-            if let Err(failure) = outcome.result
-                && !failure.cleanup_completed
-            {
-                return Err(failure.into());
-            }
-        }
-        Ok(())
-    }
-}
-
 pub(super) async fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
     let executable = std::env::current_exe()?;
     let mut children = Vec::with_capacity(count);
     let result = async {
         for index in 0..count {
-            children.push(Some(ParallelChild::spawn(
+            children.push(Some(CapturedChild::spawn(
                 Command::new(&executable)
                     .arg("--parallel-io-child")
                     .arg(mount)
@@ -263,12 +137,12 @@ pub(super) async fn run_parallel_io_children(mount: &Path, count: usize) -> Resu
             )?));
         }
         for child in children.iter_mut().flatten() {
-            child.published().await?;
+            child.receipt(PUBLISHED).await?;
         }
         // Each receipt follows its own completed rename. No child lists until
         // every producer has published; the pipe also reports parent loss.
         for child in children.iter_mut().flatten() {
-            child.release()?;
+            child.release(&[RELEASE])?;
         }
         for (index, child) in children.iter_mut().enumerate() {
             let output = child
