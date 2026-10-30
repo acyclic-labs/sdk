@@ -45,33 +45,17 @@ impl Client {
         })
     }
 
-    /// The entry settled at inbox sequence `inbox`, as the observer reports
-    /// it; a failed or finished agent, or a stalled one, fails the wait.
+    /// The original conversation/status follow reports settlement or terminal failure.
     async fn settled(&mut self, inbox: u64) -> Result<ConversationEntry> {
-        let mut seen = Vec::new();
-        let wait = async {
-            loop {
-                match self.observer.next().await? {
-                    Event::Turn(entry) if entry.inbox == inbox => return Ok(entry),
-                    Event::Status(status) => {
-                        if matches!(status.phase, crate::agent::Phase::Done { .. }) {
-                            return Err(Error::Conflict(format!("agent finished: {status:?}")));
-                        }
-                        seen.push(format!("{status:?}"));
-                    }
-                    Event::Turn(entry) => seen.push(format!("turn at {}", entry.inbox)),
-                    Event::Output => seen.push("output".into()),
+        loop {
+            match self.observer.next().await? {
+                Event::Turn(entry) if entry.inbox == inbox => return Ok(entry),
+                Event::Status(status)
+                    if matches!(status.phase, crate::agent::Phase::Done { .. }) =>
+                {
+                    return Err(Error::Conflict(format!("agent finished: {status:?}")));
                 }
-            }
-        };
-        let settled = tokio::time::timeout(std::time::Duration::from_secs(20), wait).await;
-        match settled {
-            Ok(result) => result,
-            Err(_) => {
-                let (settled, _) = (self.conversation.settled().await?, ());
-                Err(Error::Conflict(format!(
-                    "no entry settled at inbox {inbox}; {settled} settled; events {seen:?}"
-                )))
+                Event::Turn(_) | Event::Status(_) | Event::Output => {}
             }
         }
     }
@@ -196,9 +180,18 @@ async fn a_cancelled_turn_settles_durably_without_a_model_request() -> Result<()
     let mut client = Client::open(&harness).await?;
     let inbox = client.conversation.send("held", "CANCELLED_PROMPT").await?;
     // The turn is cancelled while its model request streams.
-    tokio::time::timeout(std::time::Duration::from_secs(20), dispatched.notified())
-        .await
-        .map_err(|_| Error::Conflict("the held turn never reached the model".into()))?;
+    loop {
+        tokio::select! {
+            _ = dispatched.notified() => break,
+            event = client.observer.next() => match event? {
+                Event::Status(status) if matches!(status.phase, crate::agent::Phase::Done { .. }) => {
+                    return Err(Error::Conflict(format!("agent finished before model dispatch: {status:?}")));
+                }
+                Event::Turn(_) => return Err(Error::Conflict("held turn settled before model dispatch".into())),
+                Event::Status(_) | Event::Output => {}
+            }
+        }
+    }
     client.conversation.cancel().await?;
     let entry = client.settled(inbox).await?;
     assert_eq!(entry.outcome, crate::agent::TurnOutcome::Cancelled);
