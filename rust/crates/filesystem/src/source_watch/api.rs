@@ -50,12 +50,11 @@ impl NativeSourceWatch {
     #[cfg(target_os = "linux")]
     pub(crate) fn fence_with_work<W: SourceDemandReadWork>(
         &self,
-        timeout: std::time::Duration,
         work: &mut W,
     ) -> Result<bool, DemandError> {
         work.check()?;
         self.delivery().take_failure(work)?;
-        self.fence_events_with_work(timeout, work)
+        self.fence_events_with_work(work)
     }
 
     #[cfg(windows)]

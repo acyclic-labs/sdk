@@ -1,11 +1,8 @@
 //! The held FSEvents source fences with a cookie in an excluded subtree.
 use super::*;
-use std::time::Duration;
-
-const FENCE: Duration = Duration::from_secs(5);
 
 fn fenced_batch(watch: &mut NativeWatch) -> Result<WatchBatch, Box<dyn std::error::Error>> {
-    watch.fence(FENCE)?;
+    watch.fence()?;
     Ok(watch
         .poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?
         .value)
