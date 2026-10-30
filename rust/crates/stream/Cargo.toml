@@ -15,7 +15,10 @@ categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
 [package.metadata.acyclic]
-consumer-features = [{ features = ["local"], target = "x86_64-unknown-linux-gnu" }]
+consumer-features = [
+    { features = ["local", "postgres", "http", "serde"], target = "x86_64-unknown-linux-gnu" },
+    { features = ["wasm", "wasm-journal"], target = "wasm32-unknown-unknown" },
+]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
