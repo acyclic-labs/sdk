@@ -256,3 +256,12 @@ zero ports and excluded ports refuse. Arbitrary UTF-8 host spellings reach
 direct admission, including malformed forms. Twelve semantic-to-wire writer
 producers cover DNS, suffix, both IP families and both CIDR families with
 default and explicit ports. Capture and runtime execution remain pending.
+
+The identity target also reaches strict DNS and resource-hostname parsing.
+Accepted binary identities with DNS presentations round-trip through their
+original account/resource pair; root-dot/case aliases and foreign suffixes
+refuse. Route-pattern normalization preserves matching and selection under
+the same caller URL. Duplicate identical targets preserve a decision; equally
+specific different targets refuse, and exclusions remain explicit. Eight SDK
+hostname/pattern producers retain their caller context and await capture and
+execution. These are grammar/codec checks, with no network or authorization.

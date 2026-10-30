@@ -1,5 +1,6 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
+pub mod auth_addressing;
 mod auth_resource;
 pub mod auth_socket;
 pub mod filesystem_pages;
@@ -337,8 +338,10 @@ pub fn auth(bytes: &[u8]) {
 }
 
 pub fn identities(bytes: &[u8]) {
+    auth_addressing::check(bytes);
     use acyclic_auth::addressing::{ActorReference, ResourceIdentity};
     if let Ok(value) = ResourceIdentity::decode(bytes) {
+        auth_addressing::identity(&value);
         assert_eq!(value.encode(), bytes);
         assert_eq!(ResourceIdentity::decode(&value.encode()), Ok(value));
     }

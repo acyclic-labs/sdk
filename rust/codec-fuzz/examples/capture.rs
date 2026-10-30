@@ -459,6 +459,15 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
     use acyclic_stream::{CommitId, CommitMutation, MemoryStream, StreamPath};
     use bytes::Bytes;
     use std::{collections::BTreeMap, sync::Arc};
+    for (name, bytes) in acyclic_codec_fuzz::auth_addressing::seeds()? {
+        save(
+            "identities",
+            &name,
+            &bytes,
+            "ResourceIdentity::hostname or RoutePattern::as_str with caller URL context derived from the SDK hostname (NUL-separated fuzz tuple)",
+            manifest,
+        )?;
+    }
     let actor = ActorReference::new(b"account", b"namespace", b"codec")?;
     save(
         "identities",
