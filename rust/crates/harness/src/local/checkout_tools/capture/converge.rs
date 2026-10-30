@@ -27,6 +27,14 @@ impl Cursor {
     ) -> Result<crate::conversation::BoundedContentFuture<'a, WatchBatch>> {
         crate::conversation::BoundedContentFuture::new(None, || async move {
             let rescan = self.watcher.begin_rescan().map_err(storage)?;
+            // The scan owns the continuity state it replaced, so a retry cannot
+            // erase a required recovery while importing display before-images.
+            let optional_before_images = if let Some(reason) = rescan.invalidation() {
+                require_rescan(reason)?;
+                false
+            } else {
+                optional_before_images
+            };
             #[cfg(all(test, not(loom)))]
             self.inject("begin")?;
             self.watcher.watch_tree(EXCLUDED).map_err(storage)?;

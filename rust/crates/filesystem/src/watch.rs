@@ -343,6 +343,7 @@ impl SharedState {
 pub struct NativeWatchRescan {
     shared: Arc<Mutex<SharedState>>,
     epoch: u64,
+    invalidation: Option<WatchInvalidationReason>,
 }
 
 impl NativeWatchRescan {
@@ -350,6 +351,12 @@ impl NativeWatchRescan {
     #[must_use]
     pub const fn epoch(&self) -> u64 {
         self.epoch
+    }
+
+    /// Continuity loss atomically retained before this scan discarded old hints.
+    #[must_use]
+    pub const fn invalidation(&self) -> Option<WatchInvalidationReason> {
+        self.invalidation
     }
 
     /// Abandons this scan without certifying any captured state.
@@ -2936,7 +2943,7 @@ impl NativeWatch {
             return Err(NativeWatchError::RescanAlreadyInProgress);
         }
         match self.prepare_rescan_with_work(work) {
-            Ok(epoch) => {
+            Ok((epoch, invalidation)) => {
                 self.shared
                     .lock()
                     .map_err(|_| NativeWatchError::StatePoisoned)?
@@ -2944,6 +2951,7 @@ impl NativeWatch {
                 Ok(NativeWatchRescan {
                     shared: Arc::clone(&self.shared),
                     epoch,
+                    invalidation,
                 })
             }
             Err(error) => {
@@ -2966,7 +2974,7 @@ impl NativeWatch {
     fn prepare_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self,
         work: &mut W,
-    ) -> Result<u64, NativeWatchError> {
+    ) -> Result<(u64, Option<WatchInvalidationReason>), NativeWatchError> {
         let mut shared = self
             .shared
             .lock()
@@ -2990,6 +2998,7 @@ impl NativeWatch {
             work.with_original_leaf(|actual| actual.reconcile_native_controls())
                 .map_err(NativeWatchError::Work)?;
         }
+        let invalidation = shared.seal_invalidation();
         shared.invalidation = None;
         #[cfg(target_os = "linux")]
         {
@@ -3025,7 +3034,7 @@ impl NativeWatch {
                 return Err(NativeWatchError::BoundedObservationUnavailable);
             }
         }
-        Ok(self.epoch)
+        Ok((self.epoch, invalidation))
     }
 
     /// Admits a baseline only when the Windows USN journal proves continuity.
