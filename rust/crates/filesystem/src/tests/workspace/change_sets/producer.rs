@@ -1,6 +1,8 @@
 //! Real immutable-store reads interrupted at their original asynchronous boundary.
 use super::*;
-use crate::{AuthorityAllocation, AuthorityWork, ObjectRead, ObjectReadRequest, ObjectStoreError};
+use crate::{
+    AuthorityAllocation, AuthorityWork, ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError,
+};
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
