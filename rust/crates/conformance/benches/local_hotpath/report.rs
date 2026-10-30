@@ -1,3 +1,8 @@
+use acyclic_stream::testing::{RequestLedger, Requests};
+use acyclic_test_support::{
+    AllocationInfo,
+    scale::{CORE_OPERATIONS, Idle, Operation, Point, Sample, Work},
+};
 use serde::Serialize;
 use std::{collections::BTreeMap, io::Write, time::Duration};
 
@@ -82,70 +87,123 @@ pub(super) struct Terms {
 
 pub(super) struct Measurements {
     agents: usize,
-    rows: BTreeMap<&'static str, (Terms, Vec<f64>)>,
+    requests: RequestLedger,
+    recovery: String,
+    rows: BTreeMap<Operation, Row>,
 }
 
-const CORE_OPERATIONS: [&str; 17] = [
-    "actors.create",
-    "actors.wake",
-    "actors.durable_write",
-    "actors.warm_read",
-    "objects.put",
-    "objects.get",
-    "objects.head",
-    "objects.list",
-    "streams.append",
-    "streams.read",
-    "streams.follow",
-    "workers.cold",
-    "workers.warm",
-    "fs.pinned_read",
-    "fs.staged_write",
-    "fs.fsync",
-    "swarm.session_start",
-];
+struct Row {
+    terms: Terms,
+    raw_ns: Vec<f64>,
+    work: Sample,
+    coordinator_allocations: Vec<Option<[u64; 2]>>,
+}
+
+pub(super) struct Before {
+    requests: Requests,
+    allocations: Option<AllocationInfo>,
+}
+
+#[derive(Default)]
+pub(super) struct Observation {
+    work: Work,
+    coordinator_allocations: Option<[u64; 2]>,
+}
 
 impl Measurements {
-    pub(super) fn new(agents: usize) -> Self {
+    pub(super) fn new(agents: usize, requests: RequestLedger, recovery: &str) -> Self {
         Self {
             agents,
+            requests,
+            recovery: recovery.into(),
             rows: BTreeMap::new(),
         }
     }
 
-    pub(super) fn record(&mut self, operation: &'static str, floor: Terms, elapsed: Duration) {
-        self.rows
-            .entry(operation)
-            .or_insert_with(|| (floor, Vec::new()))
-            .1
-            .push(ns(elapsed));
+    pub(super) fn start(&self) -> Before {
+        Before {
+            requests: self.requests.requests(),
+            allocations: acyclic_test_support::current_allocations(),
+        }
     }
 
-    pub(super) fn finish(mut self, floors: &super::calibrate::Floors) -> Result<bool> {
+    pub(super) fn stop(&self, before: Before) -> Observation {
+        let requests = self.requests.requests().since(before.requests);
+        let allocations = before
+            .allocations
+            .zip(acyclic_test_support::current_allocations());
+        Observation {
+            // Request accounting observes the public provider boundary. It
+            // does not infer physical syscalls, locks or transport traffic.
+            work: Work([None, None, None, None, Some(requests.control()), None, None]),
+            // This allocator scope cannot observe native worker threads; keep
+            // it diagnostic instead of qualifying the allocation dimension.
+            coordinator_allocations: allocations.map(|(before, after)| {
+                [
+                    after.count_total - before.count_total,
+                    after.bytes_total - before.bytes_total,
+                ]
+            }),
+        }
+    }
+
+    pub(super) fn record(
+        &mut self,
+        operation: Operation,
+        floor: Terms,
+        elapsed: Duration,
+        observation: Observation,
+    ) -> Result {
+        let row = self.rows.entry(operation).or_insert_with(|| Row {
+            terms: floor,
+            raw_ns: Vec::new(),
+            work: Sample::new(operation),
+            coordinator_allocations: Vec::new(),
+        });
+        row.raw_ns.push(ns(elapsed));
+        row.work.record(observation.work, &self.recovery)?;
+        row.coordinator_allocations
+            .push(observation.coordinator_allocations);
+        Ok(())
+    }
+
+    pub(super) fn finish(mut self, floors: &super::calibrate::Floors) -> Result<(bool, Point)> {
         let mut complete = true;
+        let mut point = Point {
+            agents: u64::try_from(self.agents)?,
+            samples: Vec::with_capacity(CORE_OPERATIONS.len()),
+            // Original physical retained-resource observers are required.
+            idle: Idle::default(),
+        };
         for operation in CORE_OPERATIONS {
-            let Some((terms, raw_ns)) = self.rows.remove(operation) else {
+            let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {
-                    "actors.wake" => {
+                    Operation::ActorWake => {
                         "Runtime::wake reports queue admission; completed delivery needs its original producer event"
                     }
-                    "workers.cold" | "workers.warm" => {
+                    Operation::WorkerCold | Operation::WorkerWarm => {
                         "native Worker execution producer is absent from this composition"
                     }
                     _ => "the operation adapter did not supply observations",
                 };
                 emit(serde_json::json!({
-                    "schema": 1, "kind": "refused", "operation": operation, "agents": self.agents,
+                    "schema": 1, "kind": "refused", "operation": operation.name(), "agents": self.agents,
                     "reason": reason,
-                    "recovery": "supply the original execution/completion producer and rerun local_hotpath",
+                    "recovery": self.recovery,
                 }))?;
                 continue;
             };
+            let Row {
+                terms,
+                raw_ns,
+                work,
+                coordinator_allocations,
+            } = row;
             let quantiles = Quantiles::new(&mut raw_ns.clone())?;
             let floor_ns = floors.compose(terms);
             emit(serde_json::json!({
-                "schema": 1, "kind": "operation", "operation": operation,
+                "schema": 1, "kind": "operation", "operation": operation.name(),
                 "agents": self.agents, "active": 1, "quantiles": quantiles,
                 "floor": terms, "floor_ns": floor_ns,
                 "p50_ratio": quantiles.p50_ns / floor_ns,
@@ -153,11 +211,18 @@ impl Measurements {
                 "p50_pass": quantiles.p50_ns <= floor_ns * 1.5,
                 "p99_pass": quantiles.p99_ns <= floor_ns * 3.0,
                 "raw_ns": raw_ns,
+                "work_observations": work.observations,
+                "work": acyclic_test_support::scale::METRICS.iter().zip(&work.work).map(|(metric, counter)| {
+                    (*metric, serde_json::json!({"total": counter.total.to_string(), "maximum": counter.maximum, "missing": counter.missing}))
+                }).collect::<BTreeMap<_, _>>(),
+                "coordinator_allocations_scope": "current thread only; excluded from qualification",
+                "coordinator_allocations_count_and_bytes": coordinator_allocations,
             }))?;
+            point.samples.push(work);
         }
         if !self.rows.is_empty() {
             return Err("unknown core operation in measurement report".into());
         }
-        Ok(complete)
+        Ok((complete, point))
     }
 }

@@ -32,7 +32,7 @@ dirty in-place flush, cross-thread rendezvous delivery, an uncontended call,
 1 KiB copy and BLAKE3 throughput, and a warm 1 KiB read. A separate new-file,
 write, flush and directory measurement distinguishes publication from an
 in-place barrier. Setup composes actual agent actors, inbox subtrees and volumes
-in bounded batches at populations of 1 and 100,000; it is excluded from timing.
+in bounded batches at populations of 1, 1,000 and 100,000; it is excluded from timing.
 The workload explicitly admits this population rather than using the provider's
 default capacity ceilings. Population roots execute no model turns.
 
@@ -53,3 +53,22 @@ delivery; append durability completes concurrently in its own interval.
 Missing original execution or completion producers emit explicit
 refusal rows instead of fabricated quantiles; a report with refusals is
 incomplete.
+
+The same operation intervals supply the shared `acyclic_test_support::scale`
+work report. Each metric retains its exact sum, maximum and missing-observation
+count. Comparisons use completed observations rather than resident population
+as the denominator, so fixed sample counts cannot hide a population scan.
+Qualification requires every requested operation at all three populations,
+complete original-work coverage, flat mean and maximum cost, flat retained
+bytes per idle agent, and no additional per-agent threads or timers.
+
+The public provider ledger counts control calls at that boundary; it does not
+infer syscalls or transport requests. Current-thread allocation diagnostics
+exclude native workers and therefore do not qualify allocation coverage.
+Concurrent append/follow work remains unobserved until it can be attributed to
+its original operation. Unobserved physical syscalls, locks, I/O, allocations,
+visits and idle resources stay missing, and make counting qualification fail.
+Run the deterministic observer controls with
+`cargo test --locked -p acyclic-test-support scale::tests`. They execute an
+injected scan, real per-agent threads, virtual timer registrations and a lost
+event producer; these controls validate the observer, not production liveness.
