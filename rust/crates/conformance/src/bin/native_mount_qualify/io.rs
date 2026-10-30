@@ -120,85 +120,187 @@ fn verify_projected_seed(mount: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
-pub(super) fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
-    let executable = std::env::current_exe()?;
-    let mut children = Vec::with_capacity(count);
-    for index in 0..count {
-        let child = spawn_captured_child(
-            Command::new(&executable)
-                .arg("--parallel-io-child")
-                .arg(mount)
-                .arg(index.to_string())
-                .arg(count.to_string()),
-        );
-        match child {
-            Ok(child) => children.push(Some(child)),
-            Err(error) => {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(
-                    format!("parallel I/O child {index} did not start: {error}{cleanup}").into(),
-                );
-            }
-        }
+const PUBLISHED: &[u8] = b"acyclic-parallel-published\n";
+const RELEASE: u8 = b'!';
+
+struct ParallelOutput;
+
+impl acyclic_native_runtime::CaptureHandler for ParallelOutput {
+    fn check(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut remaining = count;
-    while remaining != 0 {
-        for index in 0..children.len() {
-            let Some(child) = children.get_mut(index).and_then(Option::as_mut) else {
-                continue;
-            };
-            if captured_child_output_exceeds_limit(child)? {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes{cleanup}"
-                )
-                .into());
-            }
-            let Some(status) = child.process.try_wait(None)? else {
-                continue;
-            };
-            let mut child = children
-                .get_mut(index)
-                .and_then(Option::take)
-                .ok_or("parallel child disappeared")?;
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            remaining -= 1;
-            if !output.status.success() {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} failed ({}): {}{}{cleanup}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-                .into());
-            }
-        }
-        if remaining != 0 && Instant::now() >= deadline {
-            let cleanup = terminate_captured_children(&mut children);
-            return Err(format!("parallel I/O children exceeded 30 seconds{cleanup}").into());
-        }
-        std::thread::sleep(Duration::from_millis(10));
+
+    fn observe(
+        &mut self,
+        _chunk: acyclic_native_runtime::ProcessOutput<'_>,
+    ) -> std::io::Result<acyclic_native_runtime::ProcessInput> {
+        Ok(acyclic_native_runtime::ProcessInput::default())
     }
-    Ok(())
 }
 
-fn terminate_captured_children(children: &mut [Option<CapturedChild>]) -> String {
-    let mut failures = Vec::new();
-    for (index, child) in children.iter_mut().enumerate() {
-        let Some(mut child) = child.take() else {
-            continue;
+/// Publication and exit share the original native pipe/capture owner.
+pub(super) struct ParallelChild {
+    output: Option<acyclic_native_runtime::ProcessCaptureStream<ParallelOutput>>,
+    stdin: Option<std::process::ChildStdin>,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    status: Option<std::process::ExitStatus>,
+}
+
+impl ParallelChild {
+    pub(super) fn spawn(command: &mut Command) -> Result<Self, Failure> {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut process = ProcessTree::spawn(command)?;
+        let stdin = process.take_stdin();
+        let output = process.stream_capture(
+            &acyclic_native_runtime::TaskSpawner::current(),
+            acyclic_native_runtime::CaptureSchedule::Unbounded,
+            usize::MAX,
+            None,
+            ParallelOutput,
+        );
+        Ok(Self {
+            output: Some(output),
+            stdin,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: None,
+        })
+    }
+
+    async fn receive(&mut self) -> std::io::Result<bool> {
+        let Some(output) = self.output.as_mut() else {
+            return Ok(false);
         };
-        if let Err(error) = child.process.terminate(None) {
-            failures.push(format!("child {index}: {error}"));
+        if let Some(chunk) = output.recv().await {
+            self.stdout.extend(chunk.stdout);
+            self.stderr.extend(chunk.stderr);
+            return Ok(true);
+        }
+        let completed = self
+            .output
+            .take()
+            .ok_or_else(|| std::io::Error::other("parallel capture owner disappeared"))?
+            .finish()
+            .await?;
+        self.status = Some(completed.result.map_err(std::io::Error::other)?.status);
+        Ok(false)
+    }
+
+    pub(super) async fn published(&mut self) -> Result<(), Failure> {
+        let mut scanned = 0;
+        loop {
+            if self.stdout[scanned..]
+                .windows(PUBLISHED.len())
+                .any(|bytes| bytes == PUBLISHED)
+            {
+                return Ok(());
+            }
+            scanned = self.stdout.len().saturating_sub(PUBLISHED.len() - 1);
+            if !self.receive().await? {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    format!(
+                        "parallel child exited {:?} before publication: {}{}",
+                        self.status,
+                        String::from_utf8_lossy(&self.stdout),
+                        String::from_utf8_lossy(&self.stderr),
+                    ),
+                )
+                .into());
+            }
         }
     }
-    if failures.is_empty() {
-        String::new()
-    } else {
-        format!("; cleanup failed: {}", failures.join(", "))
+
+    pub(super) fn release(&mut self) -> Result<(), Failure> {
+        self.stdin
+            .take()
+            .ok_or("parallel child input was already closed")?
+            .write_all(&[RELEASE])?;
+        Ok(())
     }
+
+    pub(super) async fn finish(mut self) -> Result<std::process::Output, Failure> {
+        self.stdin.take();
+        while self.receive().await? {}
+        Ok(std::process::Output {
+            status: self
+                .status
+                .ok_or("parallel capture omitted its exit status")?,
+            stdout: self.stdout,
+            stderr: self.stderr,
+        })
+    }
+
+    async fn stop(mut self) -> Result<(), Failure> {
+        self.stdin.take();
+        if let Some(output) = self.output.take() {
+            let outcome = output.finish().await?;
+            if let Err(failure) = outcome.result
+                && !failure.cleanup_completed
+            {
+                return Err(failure.into());
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) async fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
+    let executable = std::env::current_exe()?;
+    let mut children = Vec::with_capacity(count);
+    let result = async {
+        for index in 0..count {
+            children.push(Some(ParallelChild::spawn(
+                Command::new(&executable)
+                    .arg("--parallel-io-child")
+                    .arg(mount)
+                    .arg(index.to_string())
+                    .arg(count.to_string()),
+            )?));
+        }
+        for child in children.iter_mut().flatten() {
+            child.published().await?;
+        }
+        // Each receipt follows its own completed rename. No child lists until
+        // every producer has published; the pipe also reports parent loss.
+        for child in children.iter_mut().flatten() {
+            child.release()?;
+        }
+        for (index, child) in children.iter_mut().enumerate() {
+            let output = child
+                .take()
+                .ok_or("parallel child disappeared")?
+                .finish()
+                .await?;
+            if !output.status.success() {
+                return Err(format!(
+                    "parallel I/O child {index} failed ({}): {}{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                )
+                .into());
+            }
+        }
+        Ok::<_, Failure>(())
+    }
+    .await;
+    if let Err(error) = result {
+        let mut failures = vec![error.to_string()];
+        for (index, child) in children.into_iter().enumerate() {
+            if let Some(child) = child
+                && let Err(cleanup) = child.stop().await
+            {
+                failures.push(format!("parallel child {index} cleanup failed: {cleanup}"));
+            }
+        }
+        return Err(failures.join("; ").into());
+    }
+    Ok(())
 }
 
 pub(super) fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Result<(), Failure> {
@@ -217,62 +319,42 @@ pub(super) fn parallel_io_child(mount: &Path, index: usize, count: usize) -> Res
         .map_err(|error| format!("parallel client {index} write own file: {error}"))?;
     fs::rename(&staged, directory.join(format!("client-{index}.txt")))
         .map_err(|error| format!("parallel client {index} publish own file: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        let entries = retry_nfs_directory_listing(deadline, || {
-            fs::read_dir(&directory).and_then(Iterator::collect::<Result<Vec<_>, _>>)
-        })
-        .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
-        if entries.len() == count {
-            break;
-        }
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "parallel client {index} observed {} of {count} peers",
-                entries.len()
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(PUBLISHED)?;
+    stdout.flush()?;
+    drop(stdout);
+    let mut release = [0];
+    std::io::stdin()
+        .lock()
+        .read_exact(&mut release)
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("parallel client {index} publication release failed: {error}"),
             )
-            .into());
-        }
-        std::thread::sleep(Duration::from_millis(25));
+        })?;
+    if release != [RELEASE] {
+        return Err("parallel client received an invalid publication release".into());
+    }
+    let entries = fs::read_dir(&directory)
+        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
+        .map_err(|error| format!("parallel client {index} list directory: {error}"))?;
+    if entries.len() != count {
+        return Err(format!(
+            "parallel client {index} observed {} of {count} published peers",
+            entries.len(),
+        )
+        .into());
     }
     for peer in 0..count {
         let path = directory.join(format!("client-{peer}.txt"));
         let expected = format!("client-{peer}");
-        if fs::metadata(&path)
-            .map_err(|error| format!("parallel client {index} stat peer {peer}: {error}"))?
-            .len()
-            != u64::try_from(expected.len())?
-            || fs::read(&path)
-                .map_err(|error| format!("parallel client {index} read peer {peer}: {error}"))?
-                != expected.as_bytes()
+        if fs::read(&path)
+            .map_err(|error| format!("parallel client {index} read peer {peer}: {error}"))?
+            != expected.as_bytes()
         {
             return Err(format!("parallel client {index} saw incoherent peer {peer}").into());
         }
     }
     Ok(())
-}
-
-pub(super) fn retry_nfs_directory_listing<T>(
-    deadline: Instant,
-    mut list: impl FnMut() -> std::io::Result<T>,
-) -> std::io::Result<T> {
-    loop {
-        match list() {
-            Ok(entries) => return Ok(entries),
-            Err(error) if retryable_nfs_directory_error(&error) && Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(25));
-                if Instant::now() >= deadline {
-                    return Err(error);
-                }
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-pub(super) fn retryable_nfs_directory_error(error: &std::io::Error) -> bool {
-    const MACOS_EIO: i32 = 5;
-    error.kind() == std::io::ErrorKind::StaleNetworkFileHandle
-        // macOS NFS also reports a concurrently invalidated directory page as EIO.
-        || (cfg!(target_os = "macos") && error.raw_os_error() == Some(MACOS_EIO))
 }
