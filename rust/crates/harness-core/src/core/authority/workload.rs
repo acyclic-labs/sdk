@@ -287,7 +287,7 @@ pub(super) fn issue(
     if let Some(io) = work.as_deref() {
         io.check_cancellation()?;
     }
-    let timestamp = now();
+    let timestamp = issuer.runtime.public.now();
     let name = resource(&issuer.audience)?;
     let capability = signer(
         &issuer.id,

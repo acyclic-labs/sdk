@@ -122,8 +122,30 @@ fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Re
 
 #[test]
 fn authenticated_scope_keeps_the_half_open_live_validity_interval() -> Result<()> {
-    let (issuer, verifier, scope, _volume) = fixture()?;
-    let timestamp = workload::now();
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    };
+    struct Clock(AtomicU64);
+    impl acyclic_stream::UnixMillisClock for Clock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+    let timestamp = 1000;
+    let clock = Arc::new(Clock(AtomicU64::new(timestamp * 1000)));
+    let issuer = AuthorityRoot::with_clock(
+        "original-clock",
+        [106; 32],
+        Authority {
+            kind: AggregateKind::Task,
+            id: "original-clock".into(),
+        },
+        clock.clone(),
+    );
+    let capabilities = Capabilities::new(["read"]);
+    let scope = issuer.bootstrap_scope("root", &capabilities, None, &mut None)?;
+    let verifier = issuer.verifier(&mut None)?;
     let bounded = scope.with_workload_expiry(
         timestamp + 60,
         &issuer.public_workload_trust()?,
@@ -131,10 +153,39 @@ fn authenticated_scope_keeps_the_half_open_live_validity_interval() -> Result<()
         timestamp,
     )?;
     let authenticated = verifier.authenticate_scope(&bounded, &mut None)?;
-    assert!(authenticated.check_at(timestamp, &mut None).is_ok());
-    assert!(authenticated.check_at(timestamp + 59, &mut None).is_ok());
-    assert!(authenticated.check_at(timestamp + 60, &mut None).is_err());
-    assert!(authenticated.check_at(0, &mut None).is_err());
+    let copied = authenticated.clone();
+    let delegated = issuer
+        .issuer(&mut None)?
+        .issue(&bounded, "child", &capabilities)?;
+    verifier.verify(&delegated.clone().seal(&verifier)?, &mut None)?;
+    let (_owner, closed) = futures::channel::oneshot::channel::<()>();
+    let context = acyclic_auth::operation::Context::from_stopped((timestamp + 60) * 1000, async {
+        let _ = closed.await;
+        acyclic_auth::operation::Stopped::Cancelled
+    });
+    let admitted = issuer.admit(bounded.clone(), context.clone())?;
+    for seconds in [timestamp, timestamp + 59] {
+        clock.0.store(seconds * 1000, Ordering::SeqCst);
+        authenticated.recheck(&mut None)?;
+        copied.recheck(&mut None)?;
+        admitted.check()?;
+    }
+    for seconds in [timestamp + 60, 0] {
+        clock.0.store(seconds * 1000, Ordering::SeqCst);
+        assert!(authenticated.recheck(&mut None).is_err());
+        assert!(copied.recheck(&mut None).is_err());
+        assert!(admitted.check().is_err());
+        assert!(issuer.admit(bounded.clone(), context.clone()).is_err());
+        assert!(
+            issuer
+                .issuer(&mut None)?
+                .issue(&bounded, "late", &capabilities)
+                .is_err()
+        );
+        assert!(verifier.verify(&delegated, &mut None).is_err());
+        // Negative control: retaining the admission's old timestamp resurrects it.
+        authenticated.check_at(timestamp, &mut None)?;
+    }
     Ok(())
 }
 

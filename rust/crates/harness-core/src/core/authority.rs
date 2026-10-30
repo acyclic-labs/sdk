@@ -203,7 +203,7 @@ impl Scope {
             verifier,
             &verifier.audience,
             &self,
-            workload::now(),
+            verifier.public.now(),
             &mut None,
         )?;
         if !capability.is_sealed() {
@@ -338,7 +338,7 @@ impl AuthorityIssuer {
             capabilities,
             trust.as_ref(),
             &self.verifier.audience,
-            workload::now(),
+            self.verifier.public.now(),
         )
     }
 }
@@ -360,9 +360,31 @@ impl AuthorityRoot {
     /// Creates an issuer from host-managed key material.
     #[must_use]
     pub fn new(id: impl Into<String>, key: [u8; 32], audience: Authority) -> Self {
-        let id = id.into();
+        Self::create(id.into(), key, audience, None)
+    }
+
+    /// Creates host custody with its original trusted wall clock. Issuance,
+    /// delegation, verifier clones and retained authority checks share this
+    /// owner. The clock cannot be replaced after publication or supplied by a
+    /// guest request. Milliseconds are evaluated as Unix seconds by Auth.
+    #[must_use]
+    pub fn with_clock(
+        id: impl Into<String>,
+        key: [u8; 32],
+        audience: Authority,
+        clock: std::sync::Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Self {
+        Self::create(id.into(), key, audience, Some(clock))
+    }
+
+    fn create(
+        id: String,
+        key: [u8; 32],
+        audience: Authority,
+        clock: Option<std::sync::Arc<dyn acyclic_stream::UnixMillisClock>>,
+    ) -> Self {
         Self {
-            runtime: std::sync::Arc::new(runtime_signing::RuntimeSigner::new(&id, key)),
+            runtime: std::sync::Arc::new(runtime_signing::RuntimeSigner::new(&id, key, clock)),
             id,
             audience,
         }
@@ -512,7 +534,7 @@ impl AuthorityRoot {
             &self.verifier(work)?,
             &self.audience,
             parent,
-            workload::now(),
+            self.runtime.public.now(),
             work,
         )?;
         self.issue_bound(
