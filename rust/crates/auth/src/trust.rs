@@ -98,3 +98,9 @@ pub trait ChangeSource {
     /// Register the next real owner publication or producer loss.
     fn changed(&self) -> Changed;
 }
+
+/// Trust that announces its own publications: one owner answers both the
+/// current authority and when it changed, so a consumer can never pair a
+/// trust value with another owner's notifications. [`Follower`] is one.
+pub trait Live: Trust + ChangeSource {}
+impl<T: Trust + ChangeSource + ?Sized> Live for T {}

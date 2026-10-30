@@ -411,6 +411,38 @@ impl Follower {
         }
     }
 
+    /// `account`'s current trust as a self-contained [`Snapshot`], for an owner
+    /// that hands trust to an isolated guest along with its own publications.
+    ///
+    /// # Errors
+    /// The same refusals as serving the account's trust.
+    pub fn snapshot(&self, account: &str) -> Result<super::Snapshot, VerifyError> {
+        let (environment, environment_keys) = {
+            let current = self
+                .environment
+                .read()
+                .map_err(|_| VerifyError::Unavailable)?;
+            (current.name.clone(), current.keys.to_vec())
+        };
+        self.with_account(account, |keyring, revocations| {
+            let (keys, blocks, floor) = revocations.revoked();
+            super::Snapshot {
+                environment,
+                environment_keys,
+                account: account.into(),
+                issuer_keys: keyring.root.to_vec(),
+                minimum_key_epoch: keyring.minimum_key_epoch.max(floor),
+                revoked_key_ids: keyring.revoked_keys.iter().chain(keys).cloned().collect(),
+                revoked_block_ids: keyring
+                    .revoked_blocks
+                    .keys()
+                    .chain(blocks)
+                    .copied()
+                    .collect(),
+            }
+        })
+    }
+
     fn with_account<T>(
         &self,
         id: &str,

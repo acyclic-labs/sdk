@@ -118,6 +118,48 @@ impl Platform {
     }
 }
 
+/// The host's admitted trust and its publications: one owner, the platform,
+/// supplies both, so the guest's verifier can never pair them across owners.
+struct PlatformTrust {
+    snapshot: acyclic_auth::trust::Snapshot,
+    platform: Arc<Platform>,
+}
+
+impl acyclic_auth::verify::Trust for PlatformTrust {
+    fn environment_keys(
+        &self,
+        environment: &str,
+    ) -> std::result::Result<acyclic_auth::verify::Keys<'_>, acyclic_auth::verify::VerifyError>
+    {
+        acyclic_auth::verify::Trust::environment_keys(&self.snapshot, environment)
+    }
+    fn account(
+        &self,
+        account: &str,
+    ) -> std::result::Result<
+        acyclic_auth::verify::AccountState<'_>,
+        acyclic_auth::verify::VerifyError,
+    > {
+        acyclic_auth::verify::Trust::account(&self.snapshot, account)
+    }
+    fn revoked(
+        &self,
+        account: &str,
+        check: acyclic_auth::verify::RevocationCheck<'_>,
+    ) -> std::result::Result<bool, acyclic_auth::verify::VerifyError> {
+        acyclic_auth::verify::Trust::revoked(&self.snapshot, account, check)
+    }
+}
+
+impl acyclic_auth::trust::ChangeSource for PlatformTrust {
+    fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
+        self.platform.check_open()
+    }
+    fn changed(&self) -> acyclic_auth::trust::Changed {
+        self.platform.changed()
+    }
+}
+
 impl acyclic_auth::trust::ChangeSource for Platform {
     fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
         match self
@@ -284,24 +326,22 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
         checkpoint: field("checkpoint")?.dyn_into()?,
         owner,
     });
+    let trust = Arc::new(PlatformTrust {
+        snapshot: admission.trust,
+        platform: platform.clone(),
+    });
     let verifier = crate::core::AuthorityVerifier::from_public(
         admission.issuer,
         admission.audience,
-        admission.trust,
+        trust,
         admission.checkpoint_key.try_into().map_err(|_| {
             JsValue::from_str("public checkpoint key must contain exactly 32 bytes")
         })?,
-        platform.clone(),
     )
     .map_err(js_error)?;
-    let authority = crate::core::AdmittedAuthority::from_platform(
-        verifier,
-        admission.scope,
-        context,
-        platform.clone(),
-        platform,
-    )
-    .map_err(js_error)?;
+    let authority =
+        crate::core::AdmittedAuthority::from_platform(verifier, admission.scope, context, platform)
+            .map_err(js_error)?;
     Ok(WasmAgentAuthority {
         issuer: crate::core::RuntimeAuthority::admitted(authority, admission.operation),
         caller,

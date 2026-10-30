@@ -227,7 +227,6 @@ fn forwarded(
         root.audience.clone(),
         root.public_workload_trust()?,
         root.verifier(&mut None)?.public_checkpoint_key(),
-        root.trust_changes(),
     )?;
     Ok((
         AdmittedAuthority::from_platform(
@@ -235,7 +234,6 @@ fn forwarded(
             source.native.public_scope()?,
             context,
             source.clone(),
-            root.trust_changes(),
         )?,
         source,
         native_owner,
@@ -255,7 +253,6 @@ fn platform_boundary_refuses_append_secrets_and_exports_only_sealed_evidence() -
                 caller.clone(),
                 context,
                 source.clone(),
-                root.trust_changes(),
             ),
             Err(Error::Unauthorized(_))
         ));
@@ -814,14 +811,12 @@ fn exact_child_revocation_refuses_retained_access_with_an_older_guest_snapshot()
             root.audience.clone(),
             root.public_workload_trust()?,
             root.verifier(&mut None)?.public_checkpoint_key(),
-            root.trust_changes(),
         )?;
         let port = AdmittedAuthority::from_platform(
             snapshot.clone(),
             port.public_scope()?,
             context,
             source.clone(),
-            root.trust_changes(),
         )?;
         let runtime = RuntimeAuthority::admitted(port, OperationId::from_bytes([194; 16]));
         let child = runtime

@@ -15,7 +15,7 @@ pub(super) struct Visibility {
 impl Visibility {
     fn permits(
         &self,
-        capability: &dyn Admission,
+        capability: &acyclic_auth::verify::VerifiedCapability,
         action: &'static str,
         path: &StreamPath,
     ) -> Result<bool, StreamError> {
@@ -44,9 +44,11 @@ impl Visibility {
             if let (Some(record), Some(relative)) = (child.tail_record.take(), tail_stream) {
                 let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
                 if self.permits(&*capability, "streams/follow", &target)? {
-                    child.tail_record = capability
-                        .follow_filter(wire::SessionFilter::default())?
-                        .project(record)?;
+                    child.tail_record = crate::FollowFilter::authorized(
+                        wire::SessionFilter::default(),
+                        &capability,
+                    )?
+                    .project(record)?;
                 }
             }
             children.push(child);
@@ -91,9 +93,10 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
         Box::pin(async move {
             let mut view = provider.heads(request.clone()).await?;
             view.validate_for(&request)?;
-            let filter = authorization
-                .current()?
-                .follow_filter(wire::SessionFilter::default())?;
+            let filter = crate::FollowFilter::authorized(
+                wire::SessionFilter::default(),
+                &authorization.current()?,
+            )?;
             for head in view.heads.iter().flatten() {
                 if let Some(record) = &head.last {
                     if filter.project(record.clone())? != Some(record.clone()) {

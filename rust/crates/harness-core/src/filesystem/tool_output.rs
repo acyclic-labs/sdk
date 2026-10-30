@@ -2,7 +2,10 @@
 //! tool output, `tools/` on its private volume.
 use super::*;
 use crate::core::AuthorityRoot;
-use acyclic_auth::verify::VerifyError;
+use acyclic_auth::{
+    trust::{ChangeSource, Follower},
+    verify::VerifyError,
+};
 use acyclic_stream::UnixMillisClock;
 use acyclic_stream::session::{Authority, AuthorityState, TrustSnapshot};
 
@@ -122,22 +125,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     }
 }
 
-/// The local runtime's public trust, read on every admission at the harness's
-/// clock. A revocation advances the trust revision, so the session
-/// revalidates each open follow and ends those the revoked credential no
-/// longer authorizes.
-/// The trust every credential `issuer` signs is verified against, at
-/// `clock`'s time, following `issuer`'s revocations.
-#[must_use]
+/// The trust every credential `issuer` signs is verified against: its
+/// runtime's trust follower, read on every admission at `clock`'s time
+/// protected by the follower. Each published change, such as a revocation,
+/// makes the session revalidate every open follow and end those the revoked
+/// credential no longer authorizes; losing the follower fences them all.
+///
+/// # Errors
+/// When `issuer`'s runtime trust is unavailable.
 pub fn session_trust(
     issuer: &AuthorityRoot,
     clock: Arc<dyn UnixMillisClock>,
-) -> Arc<dyn AuthorityState> {
-    Arc::new(LocalTrust {
-        root: issuer.clone(),
-        revisions: issuer.trust_revisions(),
+) -> Result<Arc<dyn AuthorityState>> {
+    Ok(Arc::new(LocalTrust {
+        trust: issuer.public_workload_trust()?,
         clock,
-    })
+    }))
 }
 
 /// The session authority admitting every credential `issuer` signs, under
@@ -145,22 +148,24 @@ pub fn session_trust(
 /// verifies its clients' credentials against.
 ///
 /// # Errors
-/// When `issuer`'s audience is not a session resource.
+/// When `issuer`'s runtime trust is unavailable or its audience is not a
+/// session resource.
 pub fn session_authority(
     issuer: &AuthorityRoot,
     clock: Arc<dyn UnixMillisClock>,
 ) -> Result<Authority> {
     Authority::new(
-        session_trust(issuer, clock),
+        session_trust(issuer, clock)?,
         issuer.audience_resource()?,
         None,
     )
     .map_err(|error| Error::Invalid(format!("session audience: {error}")))
 }
 
+/// The runtime's trust follower, both its trust and its publications, and
+/// the harness's clock.
 struct LocalTrust {
-    root: AuthorityRoot,
-    revisions: tokio::sync::watch::Receiver<u64>,
+    trust: Arc<Follower>,
     clock: Arc<dyn UnixMillisClock>,
 }
 
@@ -170,29 +175,14 @@ fn seconds(clock: &dyn UnixMillisClock) -> u64 {
 
 impl AuthorityState for LocalTrust {
     fn snapshot(&self) -> std::result::Result<TrustSnapshot, VerifyError> {
-        let (trust, revision) = self
-            .root
-            .public_trust_revision()
-            .map_err(|_| VerifyError::Trust)?;
         Ok(TrustSnapshot {
-            trust,
-            now_unix_seconds: seconds(self.clock.as_ref()),
-            revision,
+            trust: self.trust.clone(),
+            now_unix_seconds: self.trust.protected_now(seconds(self.clock.as_ref())),
         })
     }
 
-    fn changed(&self, revision: u64) -> acyclic_stream::BoxProviderFuture<'_, ()> {
-        let mut revisions = self.revisions.clone();
-        Box::pin(async move {
-            // A closed watch means the runtime is gone; nothing changes again.
-            if revisions
-                .wait_for(|current| *current != revision)
-                .await
-                .is_err()
-            {
-                futures::future::pending::<()>().await;
-            }
-        })
+    fn changes(&self) -> &dyn ChangeSource {
+        &*self.trust
     }
 
     /// Completes once the harness's clock reaches `unix_seconds`. The wait is

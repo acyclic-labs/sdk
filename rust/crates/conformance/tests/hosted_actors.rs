@@ -108,13 +108,6 @@ impl server::Verifier for CredentialGate {
         server::Verifier::caller(&server::KeyFileVerifier, custody, owner)
     }
 
-    fn session(
-        &self,
-        custody: &server::Custody<'_>,
-    ) -> acyclic_harness::Result<Arc<acyclic_stream::session::Authority>> {
-        server::Verifier::session(&server::KeyFileVerifier, custody)
-    }
-
     fn observation<'a>(
         &'a self,
         root: server::RootCredential<'a>,

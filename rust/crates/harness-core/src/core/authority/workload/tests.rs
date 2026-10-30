@@ -180,20 +180,14 @@ fn alternating_live_scopes_share_certificate_authentication_and_recheck_authorit
     let mut forged = first.clone();
     *forged.workload.last_mut().unwrap() ^= 1;
     assert!(verifier.verify(&forged, &mut None).is_err());
-    std::sync::Arc::make_mut(&mut *verifier.public.trust.write().map_err(unauthorized)?)
-        .minimum_key_epoch = 2;
+    // A published epoch floor retires every key certified below it; the
+    // runtime re-certifies at the new epoch.
+    issuer.raise_minimum_epoch(2)?;
     for scope in [&first, &second] {
         assert!(verifier.verify(scope, &mut None).is_err());
     }
-    std::sync::Arc::make_mut(&mut *verifier.public.trust.write().map_err(unauthorized)?)
-        .minimum_key_epoch = 1;
-    for scope in [&first, &second] {
-        verifier.verify(scope, &mut None)?;
-    }
-    issuer.revoke_workload(&root)?;
-    for scope in [&first, &second] {
-        assert!(verifier.verify(scope, &mut None).is_err());
-    }
+    let fresh = issuer.bootstrap_scope("fresh", &Capabilities::new(["read"]), None, &mut None)?;
+    verifier.verify(&fresh, &mut None)?;
     Ok(())
 }
 
@@ -253,12 +247,6 @@ fn retained_authentication_rechecks_exact_claims_current_trust_time_and_audience
         )
         .is_err()
     );
-    std::sync::Arc::make_mut(&mut *verifier.public.trust.write().map_err(unauthorized)?)
-        .minimum_key_epoch = 2;
-    assert!(verifier.verify(&scope, &mut None).is_err());
-    std::sync::Arc::make_mut(&mut *verifier.public.trust.write().map_err(unauthorized)?)
-        .minimum_key_epoch = 1;
-    verifier.verify(&scope, &mut None)?;
     issuer.revoke_workload(&scope)?;
     assert!(verifier.verify(&scope, &mut None).is_err());
     // A saved successful decision would incorrectly accept the same retained proof.

@@ -2,7 +2,11 @@
 use super::*;
 use crate::runtime::Executor;
 use crate::session::{Authority, AuthorityState, TrustSnapshot};
-use acyclic_auth::{trust::Snapshot, verify::VerifyError};
+use acyclic_auth::{
+    trust::{ChangeSource, Changed, Snapshot, SourceClosed},
+    verify::VerifyError,
+};
+use futures::channel::oneshot;
 use std::sync::{Arc, Mutex};
 
 #[derive(Deserialize)]
@@ -29,33 +33,51 @@ impl From<PublicTrust> for Snapshot {
         }
     }
 }
+/// The owner's current public trust and the sessions waiting for its next
+/// update. Dropping the owner resolves every wait as [`SourceClosed`].
 struct State {
-    current: Mutex<(Arc<Snapshot>, u64)>,
-    changed: tokio::sync::Notify,
+    current: Mutex<Arc<Snapshot>>,
+    waiters: Mutex<Vec<oneshot::Sender<()>>>,
+}
+impl State {
+    /// Wakes every registered wait; the new trust is already current.
+    fn publish(&self) {
+        let waiters = self
+            .waiters
+            .lock()
+            .map(|mut waiters| std::mem::take(&mut *waiters))
+            .unwrap_or_default();
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+    }
+}
+impl ChangeSource for State {
+    fn check_open(&self) -> Result<(), SourceClosed> {
+        Ok(())
+    }
+    fn changed(&self) -> Changed {
+        let (sender, receiver) = oneshot::channel();
+        // A wait that cannot register resolves closed, never unchanged.
+        if let Ok(mut waiters) = self.waiters.lock() {
+            if waiters.len() == waiters.capacity() {
+                waiters.retain(|waiter| !waiter.is_canceled());
+            }
+            waiters.push(sender);
+        }
+        Box::pin(async move { receiver.await.map_err(|_| SourceClosed) })
+    }
 }
 impl AuthorityState for State {
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError> {
         let current = self.current.lock().map_err(|_| VerifyError::Trust)?;
         Ok(TrustSnapshot {
-            trust: current.0.clone(),
+            trust: current.clone(),
             now_unix_seconds: (Date::now() / 1000.0) as u64,
-            revision: current.1,
         })
     }
-    fn changed(&self, revision: u64) -> crate::BoxProviderFuture<'_, ()> {
-        Box::pin(async move {
-            let notified = self.changed.notified();
-            futures::pin_mut!(notified);
-            notified.as_mut().enable();
-            if self
-                .current
-                .lock()
-                .map_or(true, |current| current.1 != revision)
-            {
-                return;
-            }
-            notified.await;
-        })
+    fn changes(&self) -> &dyn ChangeSource {
+        self
     }
     fn expires_at(&self, unix_seconds: u64) -> crate::BoxProviderFuture<'_, ()> {
         let milliseconds = (unix_seconds as f64 * 1000.0 - Date::now()).max(0.0);
@@ -89,8 +111,8 @@ impl WasmSessionAuthority {
     ) -> Result<Self, JsValue> {
         let snapshot = parse(public_trust)?;
         let state = Arc::new(State {
-            current: Mutex::new((Arc::new(snapshot), 0)),
-            changed: tokio::sync::Notify::new(),
+            current: Mutex::new(Arc::new(snapshot)),
+            waiters: Mutex::default(),
         });
         let authority =
             Arc::new(Authority::new(state.clone(), audience, holder).map_err(js_error)?);
@@ -106,24 +128,17 @@ impl WasmSessionAuthority {
                 .current
                 .lock()
                 .map_err(|_| js_error(StreamError::Unavailable))?;
-            if current.0.environment != next.environment
-                || current.0.account != next.account
-                || current.0.minimum_key_epoch > next.minimum_key_epoch
-                || !current.0.revoked_key_ids.is_subset(&next.revoked_key_ids)
-                || !current
-                    .0
-                    .revoked_block_ids
-                    .is_subset(&next.revoked_block_ids)
+            if current.environment != next.environment
+                || current.account != next.account
+                || current.minimum_key_epoch > next.minimum_key_epoch
+                || !current.revoked_key_ids.is_subset(&next.revoked_key_ids)
+                || !current.revoked_block_ids.is_subset(&next.revoked_block_ids)
             {
                 return Err(js_error(StreamError::AccessDenied));
             }
-            let revision = current
-                .1
-                .checked_add(1)
-                .ok_or_else(|| js_error(StreamError::Capacity))?;
-            *current = (Arc::new(next), revision);
+            *current = Arc::new(next);
         }
-        self.state.changed.notify_waiters();
+        self.state.publish();
         Ok(())
     }
 }

@@ -64,7 +64,7 @@ impl RuntimeAuthority {
     pub(crate) fn trust_changes(&self) -> Arc<dyn acyclic_auth::trust::ChangeSource> {
         match &self.custody {
             Custody::Native(root) => root.trust_changes(),
-            Custody::Platform { authority, .. } => authority.caller.verifier.public.changes.clone(),
+            Custody::Platform { authority, .. } => authority.caller.verifier.public.trust.clone(),
         }
     }
 

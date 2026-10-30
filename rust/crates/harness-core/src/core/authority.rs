@@ -326,17 +326,10 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: &Capabilities,
     ) -> Result<Scope> {
-        let trust = self
-            .verifier
-            .public
-            .trust
-            .read()
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?
-            .clone();
         parent.attenuate_workload(
             id,
             capabilities,
-            trust.as_ref(),
+            &*self.verifier.public.trust,
             &self.verifier.audience,
             self.verifier.public.now(),
         )
@@ -431,43 +424,21 @@ impl AuthorityRoot {
         Ok(verifier)
     }
 
-    /// Public local account anchors. Callers must authenticate keyring updates
-    /// independently before using a changed snapshot for workload verification.
-    pub fn public_workload_trust(&self) -> Result<acyclic_auth::trust::Snapshot> {
-        self.runtime
-            .public
-            .trust
-            .read()
-            .map(|trust| (**trust).clone())
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))
+    /// This runtime's public trust: the Follower its local Issuer publishes
+    /// every keyring and revocation to, and the source of their changes.
+    pub fn public_workload_trust(&self) -> Result<std::sync::Arc<acyclic_auth::trust::Follower>> {
+        Ok(self.runtime.trust.clone())
     }
 
-    /// The public trust with its revision, read together: a revocation
-    /// publishes its revision while it holds the trust exclusively.
-    pub fn public_trust_revision(
-        &self,
-    ) -> Result<(std::sync::Arc<acyclic_auth::trust::Snapshot>, u64)> {
-        let trust = self
-            .runtime
-            .public
-            .trust
-            .read()
-            .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
-        Ok((
-            std::sync::Arc::clone(&trust),
-            *self.runtime.revision.borrow(),
-        ))
-    }
-
-    /// Announces each change of the public trust, such as a revocation.
+    /// The trusted time this runtime admits and issues at.
     #[must_use]
-    pub fn trust_revisions(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.runtime.revision.subscribe()
+    pub fn trusted_now(&self) -> u64 {
+        self.runtime.public.now()
     }
 
     /// Original authenticated trust event owner, without signing custody.
     pub fn trust_changes(&self) -> std::sync::Arc<dyn acyclic_auth::trust::ChangeSource> {
-        self.runtime.public.changes.clone()
+        self.runtime.trust.clone()
     }
 
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
@@ -476,6 +447,16 @@ impl AuthorityRoot {
     /// ancestor revocations, audience, claims and expiry still have to validate.
     pub fn revoke_workload(&self, scope: &Scope) -> Result<()> {
         workload::revoke(self, scope)
+    }
+
+    /// Publishes a keyring retiring every key certified below `epoch`.
+    #[cfg(test)]
+    pub(crate) fn raise_minimum_epoch(&self, epoch: u64) -> Result<()> {
+        self.runtime.keys()?.raise_minimum_epoch(
+            &self.runtime.trust,
+            epoch,
+            self.runtime.public.now(),
+        )
     }
 
     /// Establishes a root scope at the trusted runtime bootstrap boundary.
@@ -664,10 +645,7 @@ impl PartialEq for AuthorityVerifier {
             && self.audience == other.audience
             && self.public.metadata_key == other.public.metadata_key
             && (std::sync::Arc::ptr_eq(&self.public, &other.public)
-                || match (self.public.trust.read(), other.public.trust.read()) {
-                    (Ok(left), Ok(right)) => *left == *right,
-                    _ => false,
-                })
+                || std::sync::Arc::ptr_eq(&self.public.trust, &other.public.trust))
     }
 }
 impl Eq for AuthorityVerifier {}

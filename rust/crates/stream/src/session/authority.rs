@@ -5,27 +5,30 @@ pub mod testing;
 use super::*;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
-    verify::{Trust, VerifyError},
+    trust::{ChangeSource, Changed, SourceClosed},
+    verify::{self, Trust, VerifiedCapability, VerifyError},
 };
+use futures::FutureExt as _;
 
-/// One authenticated, current public trust view and its trusted clock.
+/// One authenticated, current public trust view and its protected clock.
 /// No issuer or workload signing secret belongs in this object.
 pub struct TrustSnapshot {
     /// Immutable keyring/revocation view; missing or stale state must fail closed.
     pub trust: Arc<dyn Trust + Send + Sync>,
-    /// Current UTC Unix seconds supplied by the runtime.
+    /// Protected current UTC Unix seconds: never earlier than any time the
+    /// trust owner has returned or published.
     pub now_unix_seconds: u64,
-    /// Monotonic public trust revision used by push observation.
-    pub revision: u64,
 }
 
 /// Runtime-owned public trust feed. Waiting must be push driven, including
 /// expiry; callers must never implement this with periodic trust polling.
 pub trait AuthorityState: crate::ProviderPlatform {
-    /// Captures current authenticated public state and time.
+    /// Captures current authenticated public trust and the protected time.
     fn snapshot(&self) -> Result<TrustSnapshot, VerifyError>;
-    /// Completes when authenticated trust changes from the observed revision.
-    fn changed(&self, revision: u64) -> crate::BoxProviderFuture<'_, ()>;
+    /// The owner's trust publications. A registered change resolves only
+    /// once [`Self::snapshot`] reads the published trust, and with
+    /// [`SourceClosed`] when the owner is lost.
+    fn changes(&self) -> &dyn ChangeSource;
     /// Completes at the absolute UTC deadline, independently of record credit.
     fn expires_at(&self, unix_seconds: u64) -> crate::BoxProviderFuture<'_, ()>;
 }
@@ -34,7 +37,6 @@ pub trait AuthorityState: crate::ProviderPlatform {
 /// The runtime supplies public trust; the host never receives a root signer.
 pub struct Authority {
     pub(super) state: Arc<dyn AuthorityState>,
-    verifier: Arc<dyn CredentialVerifier>,
     pub(super) audience: String,
     pub(super) holder: Option<String>,
 }
@@ -68,21 +70,8 @@ impl From<VerifyError> for Rejection {
         }
     }
 }
-type Credential = Result<Arc<dyn Admission>, Rejection>;
+type Credential = Result<Arc<VerifiedCapability>, Rejection>;
 
-/// A credential its verifier is still deciding, for one slot. The session
-/// keeps serving its channels and enforcing their trust while it waits.
-pub(super) struct Verifying {
-    pub(super) slot: u32,
-    length: usize,
-    pub(super) verdict: futures::future::BoxFuture<'static, Credential>,
-}
-
-impl Verifying {
-    pub(super) const fn length(&self) -> usize {
-        self.length
-    }
-}
 impl Slots {
     /// The credential bytes held once `slot` holds `length` of them.
     fn credential_bytes(&self, slot: u32, length: usize) -> Result<usize, StreamError> {
@@ -135,9 +124,9 @@ pub(super) fn stream_resource(path: Option<&StreamPath>) -> String {
     )
 }
 impl Authority {
-    /// Binds a canonical authenticated audience and presenting account,
-    /// verifying credentials as this SDK's capability envelope
-    /// ([`CapabilityVerifier`]).
+    /// Binds a canonical authenticated audience and presenting account.
+    /// Credentials are this SDK's signed capability envelope, verified
+    /// against `state`'s current trust at its protected time.
     ///
     /// # Errors
     /// When `audience` is not a resource or `holder` is empty.
@@ -153,51 +142,26 @@ impl Authority {
         }
         Ok(Self {
             state,
-            verifier: Arc::new(CapabilityVerifier),
             audience,
             holder,
         })
     }
-
-    /// Verifies every credential a client presents through `verifier`
-    /// instead: the one place this session verifies credentials. Calls,
-    /// reads and follows are admitted from what it returns, under the same
-    /// slots, renewal, expiry, revocation and credit as the stock envelope.
-    #[must_use]
-    pub fn verified_by(mut self, verifier: Arc<dyn CredentialVerifier>) -> Self {
-        self.verifier = verifier;
-        self
-    }
     pub(super) fn snapshot(&self) -> Result<TrustSnapshot, Rejection> {
         self.state.snapshot().map_err(Into::into)
     }
-    /// Verifies `bytes` and registers the result in `slot`.
-    pub(super) async fn register(
+    /// The one place a session credential is verified: `bytes` as a signed
+    /// capability envelope under the current trust, registered in `slot`
+    /// under a new revision, within the slot and credential byte bounds.
+    /// Empty `bytes` clear the slot. Every call, read and follow
+    /// authorization is built from the registered capability and rechecked
+    /// against the current trust on every change.
+    pub(super) fn register(
         &self,
         slots: &mut Slots,
         slot: u32,
         bytes: &[u8],
         maximum: usize,
     ) -> Result<(), StreamError> {
-        match self.verifying(slots, slot, Bytes::copy_from_slice(bytes), maximum)? {
-            Some(verifying) => {
-                let verdict = verifying.verdict.await;
-                self.settle(slots, verifying.slot, verifying.length, verdict, maximum)
-            }
-            None => Ok(()),
-        }
-    }
-
-    /// Starts verifying `bytes` for `slot`, within the slot and credential
-    /// byte bounds; empty `bytes` clear the slot at once. The verdict owns
-    /// what it reads, so the session need not wait on it.
-    pub(super) fn verifying(
-        &self,
-        slots: &mut Slots,
-        slot: u32,
-        bytes: Bytes,
-        maximum: usize,
-    ) -> Result<Option<Verifying>, StreamError> {
         if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
             return Err(StreamError::Capacity);
         }
@@ -205,33 +169,13 @@ impl Authority {
         if bytes.is_empty() {
             slots.entries.remove(&slot);
             slots.credential_bytes = credential_bytes;
-            return Ok(None);
+            return Ok(());
         }
-        let length = bytes.len();
-        let verifier = Arc::clone(&self.verifier);
-        let snapshot = self.snapshot();
-        Ok(Some(Verifying {
-            slot,
-            length,
-            verdict: Box::pin(async move {
-                match snapshot {
-                    Ok(snapshot) => verifier.verify(&bytes, &snapshot).await.map_err(Into::into),
-                    Err(rejection) => Err(rejection),
-                }
-            }),
-        }))
-    }
-
-    /// Registers `credential`, `slot`'s verdict, under a new revision.
-    pub(super) fn settle(
-        &self,
-        slots: &mut Slots,
-        slot: u32,
-        length: usize,
-        credential: Credential,
-        maximum: usize,
-    ) -> Result<(), StreamError> {
-        let credential_bytes = slots.credential_bytes(slot, length)?;
+        let credential: Credential = self.snapshot().and_then(|snapshot| {
+            verify::verify(bytes, snapshot.trust.as_ref(), snapshot.now_unix_seconds)
+                .map(Arc::new)
+                .map_err(Into::into)
+        });
         let revision = slots
             .next_revision
             .checked_add(1)
@@ -239,12 +183,14 @@ impl Authority {
         slots.next_revision = revision;
         if let Ok(capability) = &credential {
             slots.expiries.push(std::cmp::Reverse((
-                capability.expires_at_unix_seconds(),
+                capability.effective().expires_at_unix_seconds(),
                 revision,
                 slot,
             )));
         }
-        slots.entries.insert(slot, (revision, length, credential));
+        slots
+            .entries
+            .insert(slot, (revision, bytes.len(), credential));
         slots.credential_bytes = credential_bytes;
         let expiry_capacity = maximum.saturating_mul(2);
         if slots.expiries.len() > expiry_capacity {
@@ -252,8 +198,12 @@ impl Authority {
                 .entries
                 .iter()
                 .filter_map(|(slot, (revision, _, credential))| {
-                    credential.as_ref().ok().map(|cap| {
-                        std::cmp::Reverse((cap.expires_at_unix_seconds(), *revision, *slot))
+                    credential.as_ref().ok().map(|capability| {
+                        std::cmp::Reverse((
+                            capability.effective().expires_at_unix_seconds(),
+                            *revision,
+                            *slot,
+                        ))
                     })
                 })
                 .collect();
@@ -299,7 +249,7 @@ impl Authority {
     /// Admits `action` on one stream resource for an already admitted credential.
     pub(super) fn permits(
         &self,
-        capability: &dyn Admission,
+        capability: &VerifiedCapability,
         action: &'static str,
         resource: &str,
         channels: usize,
@@ -315,7 +265,7 @@ impl Authority {
     /// `scoped` follows a product resource through its owner's authorization.
     fn check(
         &self,
-        capability: &dyn Admission,
+        capability: &VerifiedCapability,
         target: Target<'_>,
         scoped: bool,
         channels: usize,
@@ -386,8 +336,7 @@ impl Authority {
             .2
             .as_ref()
             .map_err(|error| *error)?;
-        capability
-            .follow_filter(binding.requested.clone())
+        crate::FollowFilter::authorized(binding.requested.clone(), capability)
             .map_err(|_| Rejection::Filter)
     }
     pub(super) fn bind(
@@ -607,13 +556,37 @@ impl Authority {
             slots.expiries.pop();
         }
     }
-    pub(super) async fn changed(&self, revision: u64, deadline: Option<u64>) {
-        let changed = self.state.changed(revision);
-        if let Some(deadline) = deadline {
-            let expiry = self.state.expires_at(deadline);
-            let _ = future::select(changed, expiry).await;
-        } else {
-            changed.await;
+    /// Registers the next trust change, before the caller checks authority.
+    /// `None` while the trust owner is lost: nothing is admitted then, and
+    /// the session registers again once the owner is back.
+    pub(super) fn register_change(&self) -> Option<Changed> {
+        let changes = self.state.changes();
+        changes.check_open().ok()?;
+        Some(changes.changed())
+    }
+    /// Waits for the registered trust change, consuming it, or for the
+    /// credential expiry at `deadline`, which yields `None`.
+    pub(super) async fn changed(
+        &self,
+        registration: &mut Option<Changed>,
+        deadline: Option<u64>,
+    ) -> Option<Result<(), SourceClosed>> {
+        let changed = std::pin::pin!(async move {
+            let Some(changed) = registration.as_mut() else {
+                return future::pending::<Result<(), SourceClosed>>().await;
+            };
+            let result = changed.await;
+            *registration = None;
+            result
+        });
+        match deadline {
+            Some(deadline) => {
+                match future::select(changed, self.state.expires_at(deadline)).await {
+                    future::Either::Left((result, _)) => Some(result),
+                    future::Either::Right(((), _)) => None,
+                }
+            }
+            None => Some(changed.await),
         }
     }
 }
@@ -650,12 +623,12 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             .ok_or(Rejection::Forbidden)?;
         self.authority.validate(&self.slots, binding, count)
     }
+    /// Rechecks every channel bound to `slot`, or every channel, against
+    /// the current trust, after registering the next change so none is missed.
     pub(super) fn revalidate(&mut self, slot: Option<u32>) -> Result<(), StreamError> {
-        let snapshot = self
-            .authority
-            .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
-        self.trust_revision = snapshot.revision;
+        if self.trust_changed.is_none() {
+            self.trust_changed = self.authority.register_change();
+        }
         let count = self.channels.len();
         let denied = self
             .channels
@@ -685,16 +658,64 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         self.deadline = self.authority.deadline(&mut self.slots);
         Ok(())
     }
+    /// The trust owner is lost, so no trust can be read: every bound channel
+    /// closes as unavailable, and the session registers again.
+    fn fence(&mut self) -> Result<(), StreamError> {
+        let bound = self
+            .channels
+            .iter()
+            .filter(|(_, channel)| channel.binding.is_some())
+            .map(|(id, channel)| wire::SessionChannel {
+                channel_id: *id,
+                generation: channel.generation,
+            })
+            .collect::<Vec<_>>();
+        for identity in bound {
+            self.close_authority(identity, Rejection::Unavailable)?;
+        }
+        self.trust_changed = self.authority.register_change();
+        self.deadline = self.authority.deadline(&mut self.slots);
+        Ok(())
+    }
+    /// Acts on what [`Authority::changed`] waited for.
+    pub(super) fn trust_event(
+        &mut self,
+        event: Option<Result<(), SourceClosed>>,
+    ) -> Result<(), StreamError> {
+        match event {
+            Some(Err(SourceClosed)) => self.fence(),
+            Some(Ok(())) | None => self.revalidate(None),
+        }
+    }
+    /// Applies a trust change or credential expiry that happened since the
+    /// session last looked: one look at the registered change, never a wait.
     pub(super) fn fence_changed(&mut self) -> Result<(), StreamError> {
-        let snapshot = self
+        let Some(changed) = self.trust_changed.as_mut() else {
+            // Lost earlier: register and recheck once the owner is back.
+            if self.authority.state.changes().check_open().is_ok() {
+                return self.revalidate(None);
+            }
+            return self.expire();
+        };
+        match changed.now_or_never() {
+            Some(event) => {
+                self.trust_changed = None;
+                self.trust_event(Some(event))
+            }
+            None => self.expire(),
+        }
+    }
+    /// Rechecks every channel once the earliest credential expiry has passed.
+    fn expire(&mut self) -> Result<(), StreamError> {
+        let Some(deadline) = self.deadline else {
+            return Ok(());
+        };
+        let now = self
             .authority
             .snapshot()
-            .map_err(|_| StreamError::AccessDenied)?;
-        if snapshot.revision != self.trust_revision
-            || self
-                .deadline
-                .is_some_and(|deadline| snapshot.now_unix_seconds >= deadline)
-        {
+            .map_err(|_| StreamError::AccessDenied)?
+            .now_unix_seconds;
+        if now >= deadline {
             self.revalidate(None)?;
         }
         Ok(())

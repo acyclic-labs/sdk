@@ -46,6 +46,7 @@ fn certification(leaf: &SigningKey) -> Certification<'_> {
             roles: vec![],
             attributes: vec![],
         },
+        parent_revocation_ids: vec![],
     }
 }
 

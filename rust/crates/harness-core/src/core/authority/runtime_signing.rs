@@ -5,9 +5,12 @@ use std::sync::{Arc, Weak};
 
 pub(super) struct RuntimeSigner {
     metadata: SigningKey,
-    pub(super) workload: workload::RuntimeKeys,
+    // None when genesis failed: every issuance then fails closed.
+    workload: Option<std::sync::Mutex<workload::RuntimeKeys>>,
+    /// The Follower this runtime's Issuer publishes to; the same value is the
+    /// public trust every verifier of this runtime reads.
+    pub(super) trust: Arc<acyclic_auth::trust::Follower>,
     pub(super) public: Arc<PublicAuthority>,
-    pub(super) revision: tokio::sync::watch::Sender<u64>,
 }
 
 #[cfg(test)]
@@ -31,32 +34,46 @@ impl RuntimeSigner {
             "acyclic.harness.metadata.v1",
             &seed[..],
         ));
-        let workload = workload::RuntimeKeys::new(&seed);
-        let (revision, revisions) = tokio::sync::watch::channel(0);
+        let issuer = workload::issuer(&seed);
+        let trust = Arc::new(acyclic_auth::trust::Follower::new(
+            workload::ENVIRONMENT,
+            issuer.anchor(),
+        ));
         let public = Arc::new(PublicAuthority {
-            trust: std::sync::RwLock::new(Arc::new(workload::trust(id, &workload))),
+            trust: trust.clone(),
             metadata_key: metadata.verifying_key().to_bytes(),
             workload: Default::default(),
-            changes: Arc::new(NativeTrustChanges(revisions)),
             clock,
         });
+        let workload = workload::RuntimeKeys::genesis(id, issuer, &seed, &trust, public.now())
+            .ok()
+            .map(std::sync::Mutex::new);
         Self {
             metadata,
             workload,
+            trust,
             public,
-            revision,
         }
+    }
+
+    /// Exclusive signing custody for one issuance or publication.
+    pub(super) fn keys(&self) -> Result<std::sync::MutexGuard<'_, workload::RuntimeKeys>> {
+        self.workload
+            .as_ref()
+            .ok_or_else(|| Error::Unauthorized("runtime trust genesis failed".into()))?
+            .lock()
+            .map_err(|_| Error::Storage("runtime signing custody poisoned".into()))
     }
 }
 
 pub(super) struct PublicAuthority {
-    pub(super) trust: std::sync::RwLock<Arc<acyclic_auth::trust::Snapshot>>,
+    /// Public trust and its publications, from one owner.
+    pub(super) trust: Arc<dyn acyclic_auth::trust::Live>,
     pub(super) metadata_key: [u8; 32],
     // One immutable workload and the canonical certificate verifier. Switching
     // scopes retires the old workload without reauthenticating identical roots.
     // Admission decisions are never retained.
     pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
-    pub(super) changes: Arc<dyn acyclic_auth::trust::ChangeSource>,
     pub(super) clock: Option<Arc<dyn acyclic_stream::UnixMillisClock>>,
 }
 
@@ -65,26 +82,6 @@ impl PublicAuthority {
         self.clock
             .as_ref()
             .map_or_else(workload::now, |clock| clock.now_unix_millis() / 1000)
-    }
-}
-
-struct NativeTrustChanges(tokio::sync::watch::Receiver<u64>);
-impl acyclic_auth::trust::ChangeSource for NativeTrustChanges {
-    fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
-        self.0
-            .has_changed()
-            .map(|_| ())
-            .map_err(|_| acyclic_auth::trust::SourceClosed)
-    }
-    fn changed(&self) -> acyclic_auth::trust::Changed {
-        let mut receiver = self.0.clone();
-        receiver.borrow_and_update();
-        Box::pin(async move {
-            receiver
-                .changed()
-                .await
-                .map_err(|_| acyclic_auth::trust::SourceClosed)
-        })
     }
 }
 
@@ -207,7 +204,6 @@ mod tests {
             runtime.audience.clone(),
             runtime.public_workload_trust()?,
             verifier.public_checkpoint_key(),
-            runtime.trust_changes(),
         )?;
         public.verify(&scope, &mut None)?;
         let proof = verifier.canonical_proof(b"test-checkpoint", &42u64, &mut None)?;

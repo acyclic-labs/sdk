@@ -183,6 +183,17 @@ impl RevocationState {
         }
     }
 
+    /// Revoked key identities, blocks and the epoch floor, for export.
+    pub(crate) fn revoked(
+        &self,
+    ) -> (
+        impl Iterator<Item = &String>,
+        impl Iterator<Item = &BlockId>,
+        u64,
+    ) {
+        (self.keys.keys(), self.blocks.keys(), self.minimum_key_epoch)
+    }
+
     /// Latest accepted publication time.
     pub(crate) const fn published_at(&self) -> u64 {
         self.published_at

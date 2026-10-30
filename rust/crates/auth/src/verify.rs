@@ -147,6 +147,18 @@ pub trait Trust {
     fn revoked(&self, account: &str, check: RevocationCheck<'_>) -> Result<bool, VerifyError>;
 }
 
+impl<T: Trust + ?Sized> Trust for std::sync::Arc<T> {
+    fn environment_keys(&self, environment: &str) -> Result<Keys<'_>, VerifyError> {
+        (**self).environment_keys(environment)
+    }
+    fn account(&self, account: &str) -> Result<AccountState<'_>, VerifyError> {
+        (**self).account(account)
+    }
+    fn revoked(&self, account: &str, check: RevocationCheck<'_>) -> Result<bool, VerifyError> {
+        (**self).revoked(account, check)
+    }
+}
+
 enum Proof {
     Append(SigningKey),
     Sealed([u8; 64]),

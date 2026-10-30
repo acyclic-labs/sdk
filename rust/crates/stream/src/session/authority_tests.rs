@@ -7,23 +7,41 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+/// Published trust and clock: trust is swapped before each publication or
+/// the owner's loss resolves a registered change.
 struct State {
     trust: RwLock<Arc<signed::Snapshot>>,
     clock: AtomicU64,
-    revision: tokio::sync::watch::Sender<u64>,
+    published: tokio::sync::watch::Sender<Result<(), SourceClosed>>,
 }
 impl State {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             trust: RwLock::new(Arc::new(signed::Snapshot::default())),
             clock: AtomicU64::new(signed::NOW),
-            revision: tokio::sync::watch::channel(0).0,
+            published: tokio::sync::watch::channel(Ok(())).0,
         })
     }
     fn publish(&self, trust: signed::Snapshot, now: u64) {
         *self.trust.write().unwrap() = Arc::new(trust);
         self.clock.store(now, Ordering::SeqCst);
-        self.revision.send_modify(|revision| *revision += 1);
+        self.published.send_replace(Ok(()));
+    }
+    /// The trust owner is lost.
+    fn lose(&self) {
+        self.published.send_replace(Err(SourceClosed));
+    }
+}
+impl ChangeSource for State {
+    fn check_open(&self) -> Result<(), SourceClosed> {
+        *self.published.borrow()
+    }
+    fn changed(&self) -> Changed {
+        let mut published = self.published.subscribe();
+        Box::pin(async move {
+            published.changed().await.map_err(|_| SourceClosed)?;
+            *published.borrow_and_update()
+        })
     }
 }
 impl AuthorityState for State {
@@ -31,25 +49,16 @@ impl AuthorityState for State {
         Ok(TrustSnapshot {
             trust: self.trust.read().map_err(|_| VerifyError::Trust)?.clone(),
             now_unix_seconds: self.clock.load(Ordering::SeqCst),
-            revision: *self.revision.borrow(),
         })
     }
-    fn changed(&self, revision: u64) -> crate::BoxProviderFuture<'_, ()> {
-        let mut changed = self.revision.subscribe();
-        Box::pin(async move {
-            while *changed.borrow_and_update() == revision {
-                if changed.changed().await.is_err() {
-                    break;
-                }
-            }
-        })
+    fn changes(&self) -> &dyn ChangeSource {
+        self
     }
     fn expires_at(&self, deadline: u64) -> crate::BoxProviderFuture<'_, ()> {
-        let mut changed = self.revision.subscribe();
+        let mut published = self.published.subscribe();
         Box::pin(async move {
             while self.clock.load(Ordering::SeqCst) < deadline {
-                let _ = changed.borrow_and_update();
-                if changed.changed().await.is_err() {
+                if published.changed().await.is_err() {
                     break;
                 }
             }
@@ -96,8 +105,8 @@ fn bind(
     )
 }
 
-#[tokio::test]
-async fn revision_only_bindings_recheck_credential_context_without_resource_access() {
+#[test]
+fn revision_only_bindings_recheck_credential_context_without_resource_access() {
     let state = State::new();
     let auth = Arc::new(authority(state.clone()));
     let mut slots = Slots::default();
@@ -126,7 +135,7 @@ async fn revision_only_bindings_recheck_credential_context_without_resource_acce
             }),
         });
     });
-    auth.register(&mut slots, 0, &bytes, 2).await.unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let request = crate::HeadsRequest {
         retained: Default::default(),
         durable_through: None,
@@ -185,7 +194,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(Rejection::Forbidden)
     ));
     let bytes = token("allowed", |_| {});
-    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     assert!(bind(&auth, &slots, "allowed/child").is_ok());
     assert!(matches!(
         bind(&auth, &slots, "allowed-other"),
@@ -196,14 +205,14 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(Rejection::Forbidden)
     ));
     assert_eq!(
-        futures::executor::block_on(auth.register(&mut slots, 2, &bytes, 2)),
+        auth.register(&mut slots, 2, &bytes, 2),
         Err(StreamError::Capacity)
     );
     let mut forged = bytes.clone();
     if let Some(byte) = forged.get_mut(20) {
         *byte ^= 1;
     }
-    futures::executor::block_on(auth.register(&mut slots, 0, &forged, 2)).unwrap();
+    auth.register(&mut slots, 0, &forged, 2).unwrap();
     assert!(matches!(
         bind(&auth, &slots, "allowed"),
         Err(Rejection::Forbidden)
@@ -218,7 +227,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
             account: Some("other".into()),
         }),
     ] {
-        futures::executor::block_on(auth.register(
+        auth.register(
             &mut slots,
             0,
             &token("allowed", |block| {
@@ -227,11 +236,11 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
                 }];
             }),
             2,
-        ))
+        )
         .unwrap();
         assert!(bind(&auth, &slots, "allowed").is_err());
     }
-    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     state.publish(signed::Snapshot::default(), 1000);
     assert_eq!(
@@ -245,10 +254,11 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let auth = authority(state.clone());
     let mut slots = Slots::default();
     let bytes = token("allowed", |_| {});
-    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
-    let revision = auth.snapshot().unwrap().revision;
-    let changed = auth.changed(revision, auth.deadline(&mut slots));
+    let mut registration = auth.register_change();
+    let deadline = auth.deadline(&mut slots);
+    let changed = auth.changed(&mut registration, deadline);
     futures::pin_mut!(changed);
     assert!(futures::poll!(changed.as_mut()).is_pending());
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
@@ -259,13 +269,13 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
         },
         signed::NOW,
     );
-    changed.await;
+    assert_eq!(changed.await, Some(Ok(())));
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Revoked)
     );
     state.publish(signed::Snapshot::default(), signed::NOW);
-    futures::executor::block_on(auth.register(&mut slots, 0, &[], 2)).unwrap();
+    auth.register(&mut slots, 0, &[], 2).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -284,7 +294,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
             }),
         }];
     });
-    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let (mut binding, filter) = bind(&auth, &slots, "allowed").unwrap();
     let headers = |author: &'static str| {
         crate::RecordHeaders::new(
@@ -317,7 +327,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
     assert!(child_filter.matches(&headers("issuer")));
     assert!(!child_filter.matches(&headers("child")));
     let plain = token("allowed", |_| {});
-    futures::executor::block_on(auth.register(&mut slots, 0, &plain, 2)).unwrap();
+    auth.register(&mut slots, 0, &plain, 2).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -340,7 +350,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
 async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
     use crate::{AppendRequest, MemoryStream};
     for queued in [false, true] {
-        for reason in ["revoked", "credential_expired", "rotation", "drop"] {
+        for reason in ["revoked", "credential_expired", "rotation", "drop", "lost"] {
             let state = State::new();
             let provider = Arc::new(MemoryStream::default());
             let path = StreamPath::new("allowed/events").unwrap();
@@ -408,14 +418,13 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
             let Some(Body::Closed(closed)) = closed.into_wire().body else {
                 panic!("disclosed data after {reason}, queued={queued}");
             };
-            assert_eq!(
-                closed.code,
-                if matches!(reason, "rotation" | "drop") {
-                    "forbidden"
-                } else {
-                    reason
-                }
-            );
+            // A lost trust owner fences every channel: no trust can be read.
+            let expected = match reason {
+                "rotation" | "drop" => "forbidden",
+                "lost" => "unavailable",
+                reason => reason,
+            };
+            assert_eq!(closed.code, expected);
             sender
                 .unbounded_send(Ok(frame(
                     1,
@@ -454,6 +463,7 @@ fn invalidate_session(reason: &str, state: &State, bytes: &[u8], sender: &LiveSe
             );
         }
         "credential_expired" => state.publish(signed::Snapshot::default(), 1000),
+        "lost" => state.lose(),
         _ => {
             let replacement = if reason == "drop" {
                 vec![]
@@ -554,7 +564,7 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
     let bytes = fs_token("fs:/volume/public", |_| {});
-    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+    auth.register(&mut slots, 0, &bytes, 2).unwrap();
     let (_, filter, context) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
@@ -614,13 +624,8 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
 fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    futures::executor::block_on(auth.register(
-        &mut slots,
-        0,
-        &fs_token("fs:/volume/public/", |_| {}),
-        2,
-    ))
-    .unwrap();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public/", |_| {}), 2)
+        .unwrap();
     let (_, filter, context) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
@@ -638,7 +643,7 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
         let auth = Arc::new(authority(state.clone()));
         let mut slots = Slots::default();
         let bytes = fs_token("fs:/volume/public", |_| {});
-        futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+        auth.register(&mut slots, 0, &bytes, 2).unwrap();
         let (_, _, context) = auth
             .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
             .unwrap();
@@ -695,18 +700,13 @@ fn filesystem_context_borrows_its_resource_and_rechecks_current_authority() {
     }
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    futures::executor::block_on(auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2))
+    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2)
         .unwrap();
     let (mut binding, _, _) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
-    futures::executor::block_on(auth.register(
-        &mut slots,
-        0,
-        &fs_token("fs:/volume/public", |_| {}),
-        2,
-    ))
-    .unwrap();
+    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2)
+        .unwrap();
     assert!(
         matches!(
             auth.validate(&slots, &mut binding, 1),
@@ -740,210 +740,10 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
             });
         }),
     ] {
-        futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
+        auth.register(&mut slots, 0, &bytes, 2).unwrap();
         assert!(
             auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
                 .is_err()
         );
     }
-}
-
-/// A gateway's own credential format, `gateway:<principal>:<actor>`: not
-/// this SDK's capability envelope. Like a keyring- or database-backed
-/// verifier, it awaits before it decides, and `gateway-down:` stands for its
-/// dependency being unreachable.
-struct Gateway {
-    verified: AtomicU64,
-}
-
-/// What the gateway admits: invoking one actor, until its expiry.
-struct GatewayAdmission {
-    principal: Principal,
-    grants: GrantSet,
-    actor: String,
-    expires: u64,
-}
-
-impl CredentialVerifier for Gateway {
-    fn verify<'a>(
-        &'a self,
-        credential: &'a [u8],
-        _: &'a TrustSnapshot,
-    ) -> futures::future::BoxFuture<'a, Result<Arc<dyn Admission>, VerifyError>> {
-        Box::pin(self.admit(credential))
-    }
-}
-
-impl Gateway {
-    async fn admit(&self, credential: &[u8]) -> Result<Arc<dyn Admission>, VerifyError> {
-        self.verified.fetch_add(1, Ordering::SeqCst);
-        // The verdict waits on a dependency: the session is suspended here,
-        // holding no slot.
-        tokio::task::yield_now().await;
-        let text = std::str::from_utf8(credential).map_err(|_| VerifyError::Malformed)?;
-        if text.starts_with("gateway-down:") {
-            return Err(VerifyError::Unavailable);
-        }
-        let mut parts = text.splitn(3, ':');
-        let (Some("gateway"), Some(id), Some(actor)) = (parts.next(), parts.next(), parts.next())
-        else {
-            return Err(VerifyError::Malformed);
-        };
-        Ok(Arc::new(GatewayAdmission {
-            principal: Principal {
-                kind: PrincipalKind::User,
-                id: id.into(),
-                lineage: vec![],
-                groups: vec![],
-                roles: vec![],
-                attributes: vec![],
-            },
-            grants: GrantSet {
-                grants: vec![Grant {
-                    kind: GrantKind::Resource(ResourceGrant {
-                        resource: ResourcePattern {
-                            name: actor.into(),
-                            prefix: false,
-                        },
-                        actions: vec!["actors/invoke".into()],
-                    }),
-                }],
-            },
-            actor: actor.into(),
-            expires: signed::NOW + 60,
-        }))
-    }
-}
-
-impl Admission for GatewayAdmission {
-    fn principal(&self) -> &Principal {
-        &self.principal
-    }
-
-    fn expires_at_unix_seconds(&self) -> u64 {
-        self.expires
-    }
-
-    fn grants(&self) -> Box<dyn Iterator<Item = &GrantSet> + '_> {
-        Box::new(std::iter::once(&self.grants))
-    }
-
-    fn authorize(
-        &self,
-        _: &(dyn acyclic_auth::verify::Trust + Send + Sync),
-        request: &Request<'_>,
-        policy: PolicyDecision,
-        scope: acyclic_auth::authority::Scope,
-    ) -> Result<(), VerifyError> {
-        let admitted = matches!(
-            (scope, &request.target),
-            (acyclic_auth::authority::Scope::Exact, Target::Resource { action: "actors/invoke", resource })
-                if *resource == self.actor
-        );
-        if request.now_unix_seconds >= self.expires {
-            return Err(VerifyError::Time);
-        }
-        if admitted && policy == PolicyDecision::Allow {
-            Ok(())
-        } else {
-            Err(VerifyError::Malformed)
-        }
-    }
-
-    fn follow_filter(
-        &self,
-        requested: wire::SessionFilter,
-    ) -> Result<crate::FollowFilter, StreamError> {
-        crate::FollowFilter::new(requested)
-    }
-}
-
-#[tokio::test]
-async fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authority() {
-    let state = State::new();
-    let gateway = Arc::new(Gateway {
-        verified: AtomicU64::new(0),
-    });
-    let auth = Arc::new(authority(state.clone()).verified_by(gateway.clone()));
-    let mut slots = Slots::default();
-    // The stock envelope is not this session's format: the host's verifier
-    // alone admits credentials.
-    auth.register(&mut slots, 1, &token("agents", |_| {}), 4)
-        .await
-        .unwrap();
-    assert!(
-        auth.bind_call(&slots, 1, "actors:/agents/server".into(), 1)
-            .is_err()
-    );
-    auth.register(&mut slots, 0, b"gateway:alice:actors:/agents/server", 4)
-        .await
-        .unwrap();
-    assert_eq!(gateway.verified.load(Ordering::SeqCst), 2);
-    // An unreachable dependency admits nothing, and refuses retryably: not
-    // as a verdict on the credential.
-    auth.register(
-        &mut slots,
-        2,
-        b"gateway-down:alice:actors:/agents/server",
-        4,
-    )
-    .await
-    .unwrap();
-    let refused = auth
-        .bind_call(&slots, 2, "actors:/agents/server".into(), 1)
-        .err();
-    assert_eq!(refused, Some(Rejection::Unavailable));
-    assert_eq!(
-        StreamError::from_session_close(Rejection::Unavailable.code()),
-        StreamError::Unavailable
-    );
-    let (_, call) = auth
-        .bind_call(&slots, 0, "actors:/agents/server".into(), 1)
-        .unwrap();
-    assert_eq!(call.principal().unwrap().id, "alice");
-    let attributes = RecordAttributes::try_new(vec![]).unwrap();
-    assert!(
-        call.authorize(
-            "actors:/agents/server",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        )
-        .is_ok()
-    );
-    assert!(
-        call.authorize(
-            "actors:/agents/server",
-            &[],
-            &attributes,
-            PolicyDecision::Deny
-        )
-        .is_err()
-    );
-    // It names one actor and admits no follow.
-    assert!(
-        auth.bind_call(&slots, 0, "actors:/agents/other".into(), 1)
-            .is_err()
-    );
-    assert!(
-        auth.bind(
-            &slots,
-            0,
-            &StreamPath::new("agents/server").unwrap(),
-            Default::default(),
-            1
-        )
-        .is_err()
-    );
-    // Its expiry closes the call like any credential's.
-    state.publish(signed::Snapshot::default(), signed::NOW + 60);
-    assert!(
-        call.authorize(
-            "actors:/agents/server",
-            &[],
-            &attributes,
-            PolicyDecision::Allow
-        )
-        .is_err()
-    );
 }

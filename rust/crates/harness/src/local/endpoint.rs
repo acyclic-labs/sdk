@@ -104,8 +104,9 @@ impl Connection {
     #[cfg(feature = "grpc")]
     pub async fn connect(options: &acyclic_harness_client::ConnectionOptions) -> Result<Self> {
         use acyclic_harness_client::EndpointTransport;
-        // Opaque to the client: the endpoint's verifier alone reads it.
-        let credential = options.credential().as_bytes().to_vec();
+        let credential = options
+            .session_credential()
+            .map_err(|_| Error::Unauthorized("credential is not a capability".into()))?;
         let client = match options.transport() {
             EndpointTransport::Tls => {
                 acyclic_stream::grpc::Client::connect_eager(
