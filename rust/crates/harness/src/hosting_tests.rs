@@ -395,8 +395,17 @@ async fn session_reads_committed_tool_output_without_local_storage_features() ->
             ContentAccess::default(),
         )?
         .await?;
+    assert!(matches!(
+        PreparedCommand::new(&AgentCommand::Read {
+            agent: root.clone(),
+            target: ReadTarget::ToolOutput {
+                path: "../outside".into(),
+            },
+            offset: 0,
+        }),
+        Err(acyclic_harness_client::CommandError::Invalid)
+    ));
     for (agent, path) in [
-        (root.clone(), "../outside"),
         (root.clone(), "tools/missing"),
         (root.clone(), "notes/private"),
         (AgentPath::root(&AgentId::from_bytes([9; 16])), path),
