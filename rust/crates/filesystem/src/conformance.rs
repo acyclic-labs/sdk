@@ -7,7 +7,7 @@ use crate::{
     Fs, Generation, IdempotencyKey, TransactionCommit, WorkBudget, WorkspaceError,
 };
 use acyclic_stream::{
-    ProviderPlatform, StreamProvider, UnixMillisClock as _,
+    ProviderPlatform, StreamProvider,
     testing::{Counted, RequestLedger, Requests},
 };
 use bytes::Bytes;
@@ -271,7 +271,7 @@ pub async fn verify<B: Backend + ?Sized>(backend: &B) -> Result<(), Failure> {
 pub struct Measurement {
     /// Exact 4-KiB reads completed.
     pub reads: usize,
-    /// Elapsed time at millisecond resolution.
+    /// Monotonic elapsed time through the final checked read.
     pub elapsed: std::time::Duration,
     /// Dispatch classes over both storage providers in the measured interval.
     pub requests: Requests,
@@ -302,9 +302,7 @@ async fn workload<B: Backend + ?Sized>(backend: &B, rounds: usize) -> Result<Mea
         return Err(Failure::Invariant("benchmark warmup changed payload"));
     }
     let ledger = backend.requests();
-    let before = ledger.requests();
-    let clock = acyclic_stream::SystemUnixMillisClock;
-    let started = clock.now_unix_millis();
+    let sample = ledger.start_sample();
     for _ in 0..rounds {
         let before = ledger.requests();
         let actual = value(
@@ -320,10 +318,11 @@ async fn workload<B: Backend + ?Sized>(backend: &B, rounds: usize) -> Result<Mea
             return Err(Failure::Invariant("benchmark read changed exact payload"));
         }
     }
+    let sample = sample.finish();
     Ok(Measurement {
         reads: rounds,
-        elapsed: std::time::Duration::from_millis(clock.now_unix_millis().saturating_sub(started)),
-        requests: ledger.requests().since(before),
+        elapsed: sample.elapsed,
+        requests: sample.requests,
     })
 }
 

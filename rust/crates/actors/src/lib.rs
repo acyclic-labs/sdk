@@ -32,8 +32,6 @@ pub mod local;
 pub mod namespace;
 /// Reusable fenced reservations over the actor's original checkpoint/alarm.
 pub mod reservation;
-/// Shared durable timer records, derived from the harness timer stream format.
-pub mod timers;
 
 /// Native gRPC client for the canonical Actors v1 service.
 #[cfg(not(target_arch = "wasm32"))]

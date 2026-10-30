@@ -4,19 +4,19 @@
   "status": "in_progress_not_a_full_stack_guarantee",
   "generated_at": "2026-10-26T10:16:10.168772+00:00",
   "source_base": "b7333953cbd5d3b31adc05cf2f0851f049f6c16a",
-  "worktree": "Q:\\worktrees\\verify-hst-history",
+  "worktree": "[private-metadata-removed]",
   "branch": "fix/verify-hst-history",
-  "historical_inventory": "Q:/lanes/verify/inventory.json",
-  "specification": "Q:/lanes/redesign/api/verify.md",
+  "historical_inventory": "[private-path-removed]",
+  "specification": "[private-path-removed]",
   "cloud_review": {
-    "path": "Q:/lanes/redesign/cloud-review/verify.md",
+    "path": "[private-path-removed]",
     "cloud_source_pin": "a80dd0b8d96a5af569a14fd05df01277ffdfee5a",
     "state": "source_review_resolved_proofs_pending"
   },
   "resolved_design_decisions": {
     "sources": [
-      "Q:/lanes/redesign/streams.review2.md",
-      "Q:/lanes/redesign/fs.review1.md"
+      "[private-path-removed]",
+      "[private-path-removed]"
     ],
     "domain": "one versioned persistent namespace root per account tree; agent subtree and its volume authorities share domain; O(S) cross-domain serializable composition; never cross-cell",
     "successful_keys": "namespace lifetime; retained with committed history reachable from live forks; never expired then replayed fresh",
@@ -28,12 +28,12 @@
     {
       "file": "rust/crates/stream/src/conformance/wave1.rs",
       "line": 308,
-      "sha256": "1ef1c8a6d2b7d92db05397f6d418eb3d1d2ff13d9fa8d28011b03457214cd8c3"
+      "sha256": "acbf1a1231924eee83fdc260e074961b06dfe7785a370ac6fc6ace27105546e7"
     },
     {
       "file": "rust/crates/stream/src/conformance/wave1.rs",
       "line": 319,
-      "sha256": "1ef1c8a6d2b7d92db05397f6d418eb3d1d2ff13d9fa8d28011b03457214cd8c3"
+      "sha256": "acbf1a1231924eee83fdc260e074961b06dfe7785a370ac6fc6ace27105546e7"
     }
   ],
   "hst_reporting": {
@@ -230,7 +230,7 @@
         "sha256": "835835b64eae00cea06f2517ea83b78e70d8f0afd2467acb91c2f21d44b11288"
       },
       {
-        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/gate-speed-to-verify-20261026T031900Z.md",
+        "file": "scripts/tests/fixtures/proof-policy/source-review-20261026/coordination/source-ownership-20261026T031900Z.md",
         "line": 1,
         "sha256": "86610f06bcd949bf6dcdb17ff025b946e27644d1eca3bffd9b5d29141ae3218f"
       },
@@ -247,7 +247,7 @@
       {
         "file": ".github/workflows/static.yml",
         "line": 24,
-        "sha256": "8fc89b47adb1884e77b6d5ddf2bf36dd900be8db4d935270ff5f4bb7480c397e"
+        "sha256": "a49fc130c654bda41456985ae08e82cc2cb9524f323cea0cf0e6bc18d568b84f"
       },
       {
         "file": "docs/proofs/streams-checkpoint.md",
@@ -257,12 +257,12 @@
       {
         "file": "docs/proofs/fs-publication-observations.json",
         "line": 2,
-        "sha256": "a7c9f1626fcf8aaf07686bd171b66e7f6e9dd956b654f80114b23721fa3cb0c0"
+        "sha256": "148445c78f3c46f972d0ac59b8aa0f10d5e6c7d668e9bb974d82779129f46022"
       },
       {
         "file": "scripts/proof_fixture_paths.py",
         "line": 13,
-        "sha256": "d6e4c149436a73ec077dee2b7e2eea21bb731271d0cae513838ee5b7fb184803"
+        "sha256": "8383d23383d301236873b3bc483615031874beff355e26ffbd11eb79674451d7"
       },
       {
         "file": "scripts/proof_export_join.py",
@@ -307,7 +307,7 @@
         {
           "file": "scripts/test-wave1-inventory.py",
           "line": 30,
-          "sha256": "f7a6a116de2d82c2bb7ff29628a2f434d8d16b1ce6861ba3f2561b9c63399bd2"
+          "sha256": "f4b84a4aa3ca4e1b6d8be8567158e9373bea7db3432e3cf289fdf93589965d29"
         }
       ],
       "tests_run": 0,
@@ -339,7 +339,7 @@
     "ci_policy_tests": {
       "status": "suspended_by_user_compile_only_policy",
       "path": ".github/workflows/static.yml",
-      "owner_authorization": "SPEED OVER GREEN in Q:/lanes/lane-ownership-rule.md supersedes gate-speed-to-verify-20261026T031900Z.md",
+      "owner_authorization": "SPEED OVER GREEN in [private-path-removed] supersedes source-ownership-20261026T031900Z.md",
       "strict_source_delta_enforced": false,
       "complete_qualification_enforced": false,
       "policy_suites": [
@@ -378,14 +378,14 @@
       "production_modifications": "none; only conformance module wiring/example and new proof files",
       "build_slot_base_tree": "b846e07d51e295efe09db0e8240050ee0eff80fe",
       "build_slot_content_digest": "9cf9bd2a73c950b402f76c5aeebe327472c9a4d8ed4291bd8d8147699fbacea8",
-      "command": "build-slot --remote cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
+      "command": "cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
       "log": "evidence/wave1/tests-20261026T005441Z.log",
       "log_sha256": "2ca450245045443fb4e2db651362d3da8ca95bb45febf334532e97ad735b9761",
       "executed_oracle_sources": [
         {
           "path": "evidence/wave1/wave1-keys-source-9cf.rs",
           "sha256": "fcdb6c1abc598c7cd70e15f12300042f1db416a0f45d2a324dd01701ab826f70",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "scripts/tests/fixtures/proof-policy/wave1-keys-source-9cf.rs"
         }
       ],
@@ -422,20 +422,20 @@
       "production_modifications": "none; only conformance module wiring/example and new proof files",
       "build_slot_base_tree": "b846e07d51e295efe09db0e8240050ee0eff80fe",
       "build_slot_content_digest": "cd2a84990299355da319d0e5677a0573167b2a93ecc8fdb80fe28d01f3cc3914",
-      "command": "build-slot --remote cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
+      "command": "cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1",
       "log": "evidence/wave1/tests-20261026T010305Z.log",
       "log_sha256": "8985f3ad66068465d7b4615d7cc1a0fa0e19de987b60ad0c60947dc07e7e1f97",
       "executed_oracle_sources": [
         {
           "path": "evidence/wave1/wave1-streams-source-cd2.rs",
           "sha256": "6c0e95007d4d2c39c596da84eaf248dab1727cd3166d34da8773d05b8ae97f30",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "scripts/tests/fixtures/proof-policy/wave1-streams-source-cd2.rs"
         },
         {
           "path": "evidence/wave1/wave1-fork-source-cd2.rs",
           "sha256": "3e6f5a64552f6f514c7a27845c5b4b9b430feaa58661b7e3ffceccc4ce680bbe",
-          "provenance": "copied executed oracle; SHA compared to actual BB2 job source using sha256sum",
+          "provenance": "copied executed oracle; SHA compared to actual Linux job source using sha256sum",
           "repo_path": "scripts/tests/fixtures/proof-policy/wave1-fork-source-cd2.rs"
         }
       ],
@@ -509,7 +509,7 @@
   },
   "cleanliness": {
     "tool": "clippy",
-    "command": "build-slot --remote cargo clippy --locked -p acyclic-stream --no-deps --features http,local --test wave1_coverage --example wave1-conformance --message-format=json",
+    "command": "cargo clippy --locked -p acyclic-stream --no-deps --features http,local --test wave1_coverage --example wave1-conformance --message-format=json",
     "source_log": "evidence/wave1/coverage-clippy-20261026T023104Z.log",
     "source_log_sha256": "10f7156bb157073075e8b68b8c8b6270152130543c856a151825636491bcac13",
     "result": "compilation_pass_existing_warnings_remain",
@@ -575,7 +575,7 @@
     ],
     "repo_capture": "scripts/tests/fixtures/proof-policy/coverage-clippy-20261026T023104Z.jsonl",
     "capture_sha256": "ea7e26b7948d692f41865b84671e073d3f654301f4f768b2f3319ea116c6eaf9",
-    "capture_provenance": "exact BUILD_SLOT_TREE/compiler-message/build-finished lines selected from captured real BB2 output; dependency artifact chatter omitted"
+    "capture_provenance": "exact source-tree/compiler-message/build-finished lines selected from captured real Linux output; dependency artifact chatter omitted"
   },
   "obligations": [
     {
@@ -1174,12 +1174,12 @@
         {
           "file": "rust/crates/stream/src/conformance/wave1/fork.rs",
           "line": 255,
-          "sha256": "f6b5aa0c8f33941ed14b9d2bac1bb39db7cc3524301fb1bf94c1970f1a664cc8"
+          "sha256": "6b30ce4bff5fd077104d17f9a44115e59752ae8a09fa988b0ed56724202ddab6"
         },
         {
           "file": "rust/crates/stream/src/conformance/wave1/fork.rs",
           "line": 294,
-          "sha256": "f6b5aa0c8f33941ed14b9d2bac1bb39db7cc3524301fb1bf94c1970f1a664cc8"
+          "sha256": "6b30ce4bff5fd077104d17f9a44115e59752ae8a09fa988b0ed56724202ddab6"
         },
         {
           "file": "scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs",
@@ -1280,14 +1280,14 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
           "line": 440,
-          "sha256": "1ef1c8a6d2b7d92db05397f6d418eb3d1d2ff13d9fa8d28011b03457214cd8c3"
+          "sha256": "acbf1a1231924eee83fdc260e074961b06dfe7785a370ac6fc6ace27105546e7"
         }
       ],
       "modes": {
@@ -1333,14 +1333,14 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
           "line": 339,
-          "sha256": "1ef1c8a6d2b7d92db05397f6d418eb3d1d2ff13d9fa8d28011b03457214cd8c3"
+          "sha256": "acbf1a1231924eee83fdc260e074961b06dfe7785a370ac6fc6ace27105546e7"
         }
       ],
       "modes": {
@@ -1386,14 +1386,14 @@
       ],
       "required_hooks_or_decisions": [
         "new canonical implementation for positive pass",
-        "hosted runner/credentials in isolated bb2 service"
+        "hosted runner/credentials in isolated Linux service"
       ],
       "implementation_state": "signed_3a348_draft1522_partial_391_native_loom_and_3a_bun_observed_full_provenance_modes_pending",
       "source": [
         {
           "file": "rust/crates/stream/src/conformance/wave1.rs",
           "line": 401,
-          "sha256": "1ef1c8a6d2b7d92db05397f6d418eb3d1d2ff13d9fa8d28011b03457214cd8c3"
+          "sha256": "acbf1a1231924eee83fdc260e074961b06dfe7785a370ac6fc6ace27105546e7"
         }
       ],
       "modes": {

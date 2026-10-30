@@ -185,7 +185,7 @@ def check_hst_reporting(reference):
         require(run["exit"] == 1 and 0 < run["seconds"] < 10 and run["argv"][0] == load("runner-compile-executable.json")["path"], "HST endpoint refusal executable/runtime differs")
     require("step=require_hst_qualification" in (base / "endpoint-unqualified.err").read_text() and "step=read_environment" not in (base / "endpoint-unqualified.err").read_text(), "HST endpoint must refuse before provider setup")
     require(not (base / "endpoint-invalid-option.out").read_bytes() and "step=parse_hst_requirement" in (base / "endpoint-invalid-option.err").read_text(), "HST invalid option must fail typed before work")
-    require(admission["build_slot_tree"] == load("job.json")["build_slot_tree"] and admission["build_slot_tree"] in (base / "build-slot.log").read_text(), "HST reporting exact job identity differs")
+    require(admission["build_slot_tree"] == load("job.json")["build_slot_tree"] and admission["build_slot_tree"] in (base / "compiler-capture.log").read_text(), "HST reporting exact job identity differs")
     require(producer["positive_proofs"] == producer["complete_hst_exports"] == 0 and producer["selected"] == admission["selected_rust_tests"] == 3 and admission["endpoint_unqualified_rows"] == 12 and 0 < producer["seconds"] < 570, "HST reporting scope/selection/job budget differs")
 
 

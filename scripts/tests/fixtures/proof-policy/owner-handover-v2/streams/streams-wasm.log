@@ -46,7 +46,7 @@ warning: failed to parse serde attribute
   | 
   = note: ts-rs failed to parse this attribute. It will be ignored.
     Finished `dev` profile [optimized + debuginfo] target(s) in 9.39s
-     Running `/home/var/targets/cx-streams/debug/examples/actors-http-routes /mnt/bb/cx/wt/cx-streams/typescript/packages/actors/src/generated/actors-service.ts`
+     Running `[private-path-removed] /mnt/bb/cx/wt/cx-streams/typescript/packages/actors/src/generated/actors-service.ts`
 warning: function `new_identity_bytes` is never used
    --> rust/crates/stream/src/lib/stream.rs:165:4
     |

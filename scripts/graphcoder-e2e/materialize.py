@@ -130,8 +130,10 @@ def materialize(archive, expected_sha256, inventory, parent, identity=None):
     archive, parent = Path(archive), Path(parent).resolve(strict=True)
     if not parent.is_dir() or not inventory or not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
         raise ValueError("archive, inventory and owned parent are required")
-    if os.name == "nt" and not parent.is_relative_to(Path("D:/lane-scratch").resolve()):
-        raise ValueError("Windows materialization belongs under D:/lane-scratch")
+    if os.name == "nt":
+        scratch = os.environ.get("E2E_SCRATCH_ROOT")
+        if not scratch or not Path(scratch).is_absolute() or not parent.is_relative_to(Path(scratch).resolve(strict=True)):
+            raise ValueError("STEP_FAILED materialization-root; recovery: set E2E_SCRATCH_ROOT to the absolute owned parent before materializing")
     for name, row in inventory.items():
         member_path(name)
         if (set(row) != {"sha256", "bytes"} or type(row["bytes"]) is not int

@@ -1,4 +1,4 @@
-bb2run: streams at 172dbae63c (snapshot of 2446d21206 + worktree)
+[private-metadata-removed]: streams at 172dbae63c (snapshot of 2446d21206 + worktree)
 CARGO_TARGET_PRUNE {"beforeAllocatedBytes":9917931520,"afterAllocatedBytes":9917931520,"beforeApparentBytes":9857929712,"afterApparentBytes":9857929706,"incrementalUnits":1,"ageUnits":0,"capUnits":0,"elapsedSeconds":0.37877919499999996}
 diff -u rust/crates/stream/proto/stream/v1/session.proto.orig rust/crates/stream/proto/stream/v1/session.proto
 --- rust/crates/stream/proto/stream/v1/session.proto.orig	2026-10-26 02:53:05.097781160 +0000

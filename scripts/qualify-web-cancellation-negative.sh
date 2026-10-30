@@ -13,9 +13,9 @@ old='fn cancellable_on_drop(&self) -> bool {\n        true\n    }'
 assert s.count(old)==1
 p.write_text(s.replace(old,old.replace('true','false')))
 PY
-cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
-python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
-source .bb-sessions-binaries.env
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
+source .sessions-binaries.env
 for name in pty-search-cancel-resume held-fetch; do
  python3 - "$SESSIONS_GRAPHCODER_BINARY" "$SESSIONS_MOCK_BINARY" "$proof" "$name" <<'PY'
 import os,pathlib,re,subprocess,sys,time
@@ -36,9 +36,9 @@ PY
 done
 restore
 trap - EXIT
-cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .bb-sessions-shipping.jsonl
-python3 scripts/graphcoder-binaries.py .bb-sessions-shipping.jsonl > .bb-sessions-binaries.env
-source .bb-sessions-binaries.env
+cargo build --locked -p graphcoder -p harness-mock-model --message-format=json-render-diagnostics > .sessions-shipping.jsonl
+python3 scripts/graphcoder-binaries.py .sessions-shipping.jsonl > .sessions-binaries.env
+source .sessions-binaries.env
 for name in pty-search-cancel-resume held-fetch; do
  if [ "$name" = held-fetch ]; then
   E2E_OUTPUT="$proof/restored-$name" node scripts/qualify-fetch-cancellation.mjs "$SESSIONS_GRAPHCODER_BINARY"

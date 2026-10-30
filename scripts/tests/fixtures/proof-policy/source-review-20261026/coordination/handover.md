@@ -1,13 +1,13 @@
 # AUTH / SECRETS handover: b-authority to rb-identity
 
-Recorded 2026-10-26 02:23Z. Sole SDK/Cloud owner is now **rb-identity**, per the user-directed topology change at 01:12:38Z. This supersedes status paragraphs in `Q:/lanes/b-authority-p1-security-20261026.md` and `Q:/lanes/b-authority-secrets-20261025.md`. No new implementation, build, PR, queue action or push started after processing retirement. All production work is signed and pushed. New owner worktree: `Q:/wt/rb-identity-sdk`, branch `rb/auth-security`, starting at b7333953cb.
+Recorded 2026-10-26 02:23Z. Sole SDK/Cloud owner is now **rb-identity**, per the user-directed topology change at 01:12:38Z. This supersedes status paragraphs in  and . No new implementation, build, PR, queue action or push started after processing retirement. All production work is signed and pushed. New owner worktree: , branch `rb/auth-security`, starting at b7333953cb.
 
 ## Branches and PRs
 
 | Work | Worktree / branch | Signed pushed head | State observed 02:20Z |
 | --- | --- | --- | --- |
-| P1 predecessor [#1520](https://github.com/acyclic-labs/sdk/pull/1520) | `Q:/wt/b-authority-p1-security`; `codex/b-authority-p1-security` | `3b6b467cbd379eeb7779c8f644a10ee0839a6f39` | OPEN, ready, **not queued**, unfrozen; two new unresolved findings |
-| Secrets predecessor [#1510](https://github.com/acyclic-labs/sdk/pull/1510) | `Q:/wt/b-authority-secrets`; `codex/b-authority-secrets-6547` | `ca1b93bbe580cd8d8f4a2d48ecd09775b29fcea5` | OPEN, ready, **not queued**, unfrozen; one unresolved transport finding |
+| P1 predecessor [#1520](https://github.com/acyclic-labs/sdk/pull/1520) | ; `codex/b-authority-p1-security` | `3b6b467cbd379eeb7779c8f644a10ee0839a6f39` | OPEN, ready, **not queued**, unfrozen; two new unresolved findings |
+| Secrets predecessor [#1510](https://github.com/acyclic-labs/sdk/pull/1510) | ; `codex/b-authority-secrets-6547` | `ca1b93bbe580cd8d8f4a2d48ecd09775b29fcea5` | OPEN, ready, **not queued**, unfrozen; one unresolved transport finding |
 | A6 redesign | No b-authority implementation branch, PR or API sketch | None | **Not started**; #1520 is P1, not A6 |
 
 Both tracked worktrees are clean, upstream equals HEAD, and signature status is G. Untracked `.bb-p1-*` / `.bb-secrets-*` are scripts/artifacts, not missing production changes; do not bulk-add them. P1 commits: `65e31baeaf47814cd1e91c7fb9518f5aa9bacdf4` implementation; `b7844dbe9caf152665d3e62700821ffecf409f7d` independent locks; `3b6b467cbd379eeb7779c8f644a10ee0839a6f39` precise denial assertion and fixture diagnostics. Base last inspected: `b7333953cbd5d3b31adc05cf2f0851f049f6c16a`. Recheck origin/main before integration.
@@ -39,57 +39,57 @@ Queue observation: pending1508,1515; active1495,1504,1508,1512; held-pending and
 - **Secrets request budget:**01:01:54 ownership steer directs choosing the existing consistent product design. Adopt identity's existing30s whole-request deadline (`plugin/identity/src/lib.rs:421`) in the lowest shared auth request-budget/transport layer, consumed by identity and secrets. Cover headers and success body, preserve redaction; deterministic stalled-peer proofs under controlled clock, not a watchdog/retry/skip/raised limit as acceptance. **Decided here, not implemented.** #1510 thread still says awaiting clarification and is stale; owner updates on fix.
 - Missing/replaced custody must never regenerate identity. Preserve source descriptor/durability guards; Pi consumes same module, not another key store.
 - #1520 ~237 files are mostly mechanical root rename; large additional diff is13 Cargo locks. It is a legacy P1 predecessor, not A6. Current main already has Ed25519 chains, `VerifiedScope`, `AccessView`, `NativeMountAuthority`; audit8438 site counts are historical, not current inventory.
-- #1520 body source `D:/lane-scratch/b-authority/p1-pr-body.md` still labels final checks in-progress and overstates complete P1 closure in its lead. Update around two open findings/final receipts before queue. No macOS execution, hosted qualification, full-workspace runtime or three-OS closure claimed.
-- A6 sketch `Q:/lanes/redesign/api/b-authority.md` and Cloud review `Q:/lanes/redesign/cloud-review/b-authority.md` absent when inspected. No signed A6 source/proof PR. No supportable merge date; next measurable checkpoint is adoption plus closure of two P1 review findings with exact-source receipts.
+- #1520 body source `[private-metadata-removed]` still labels final checks in-progress and overstates complete P1 closure in its lead. Update around two open findings/final receipts before queue. No macOS execution, hosted qualification, full-workspace runtime or three-OS closure claimed.
+- A6 sketch  and Cloud review  absent when inspected. No signed A6 source/proof PR. No supportable merge date; next measurable checkpoint is adoption plus closure of two P1 review findings with exact-source receipts.
 
 ## Proof and build receipts
 
-All Cargo compilation through `pwsh -NoProfile -File Q:/lanes/bs.ps1 ...` on bb2/job-owned targets; no local Cargo/direct SSH Cargo/root targets. Windows runs bb2-built MSVC via canonical runner. Named runtime groups under10s. **Some combined jobs exceed the subsequently delivered10min rule; receipts do not prove compliance. Future affected-crate, pre-admitted warm-cache jobs must finish under600s.** No identical reruns or broad builds for scheduling.
+All Cargo compilation through `...` on Linux/job-owned targets; no local Cargo/direct SSH Cargo/root targets. Windows runs Linux-built MSVC via canonical runner. Named runtime groups under10s. **Some combined jobs exceed the subsequently delivered10min rule; receipts do not prove compliance. Future affected-crate, pre-admitted warm-cache jobs must finish under600s.** No identical reruns or broad builds for scheduling.
 
-Evidence: `D:/lane-scratch/b-authority/p1-qualification.json`, `p1-record-qualification.py`, `p1-clippy-comparison.json`, `p1-lock-inventory.json`. WSL Ubuntu log root `/home/var/log/buildbox/`.
+Evidence: `[private-metadata-removed]`, `p1-record-qualification.py`, `p1-clippy-comparison.json`, `p1-lock-inventory.json`. WSL Ubuntu log root .
 
 | Job / log basename | Evidence |
 | --- | --- |
-| 1792978133399-10956-39d468e3 / `1792978117010-10956-f9c9fc78.log` | keychain1/0.19s; signatures2/0s; Git22/2.22s; authority21/0.01s; Git views6/0.72s; lineage4/0s; host family1/0s; mount1/0.01s; local owner18/3.65s. Then FAILED overly narrow checkout assertion; whole job not green. |
-| 1792978929645-16665-5898cee2 / `1792978893894-16665-d6a86f80.log` | final Git22/1.00s; reducer properties8/4.46s; harness Clippy |
-| 1792978552339-14412-e361bcb0 / `1792978537333-14412-e766e8b4.log` | nine-package all-feature/all-target Linux Clippy, strict Windows GNU native-runtime Clippy |
-| 1792978581643-14515-fc50961b / `1792978553447-14515-e4f8f20e.log` | same-selection b733 lint baseline: candidate4331 vs4330; only new doc backticks corrected/final delta checked. Not a clean -D warnings claim. |
-| 1792978220112-11735-fffd921c / `1792978190902-11735-ec5f334e.log` | actual wasm32 compilation auth-wasm/core/harness/providers, not browser execution |
-| 1792978238090-11977-da3cc736 / `1792978218771-11977-3580c64d.log` | MSVC build and actual Windows keychain1/0.01s, runner0.438s |
-| 1792979447141-24619-2558497b / `1792979423090-24619-3282ffb4.log` | standalone auth fuzz all-feature/all-target Clippy, generated13 locks |
-| 1792979742007-26521-b5647121 / `1792979708460-26521-8965a215.log` |13 locked offline admissions; old-lock negative0.089s; providers standalone fuzz Clippy |
-| 1792980185747-28988-920cbe34 / `1792980152687-28988-32a80023.log` | final log complete: Linux keychain1/0.08s; corrected Bash1/0.01s; plugin current-policy/exact-workspace1/0.05s; downstream final Finished dev, no compile error. Start02:03:26Z, final log02:18:37Z ~15m12, OVER new job budget. Exec session63839 gone, terminal return object unavailable; do not invent exit receipt. |
+|  / `.log` | keychain1/0.19s; signatures2/0s; Git22/2.22s; authority21/0.01s; Git views6/0.72s; lineage4/0s; host family1/0s; mount1/0.01s; local owner18/3.65s. Then FAILED overly narrow checkout assertion; whole job not green. |
+|  / `.log` | final Git22/1.00s; reducer properties8/4.46s; harness Clippy |
+|  / `.log` | nine-package all-feature/all-target Linux Clippy, strict Windows GNU native-runtime Clippy |
+|  / `.log` | same-selection b733 lint baseline: candidate4331 vs4330; only new doc backticks corrected/final delta checked. Not a clean -D warnings claim. |
+|  / `.log` | actual wasm32 compilation auth-wasm/core/harness/providers, not browser execution |
+|  / `.log` | MSVC build and actual Windows keychain1/0.01s, runner0.438s |
+|  / `.log` | standalone auth fuzz all-feature/all-target Clippy, generated13 locks |
+|  / `.log` |13 locked offline admissions; old-lock negative0.089s; providers standalone fuzz Clippy |
+|  / `.log` | final log complete: Linux keychain1/0.08s; corrected Bash1/0.01s; plugin current-policy/exact-workspace1/0.05s; downstream final Finished dev, no compile error. Start02:03:26Z, final log02:18:37Z ~15m12, OVER new job budget. Exec session63839 gone, terminal return object unavailable; do not invent exit receipt. |
 
-Windows artifacts `D:/lane-scratch/b-authority-p1-security/win-test/cd6b4a5ac8e7/`, EXE SHA256 `fc7d5e45d5186f465028ace801e1c77008e1a78cab54141b59ec13adf957ac67`.
+Windows artifacts `[private-metadata-removed]`, EXE SHA256 `fc7d5e45d5186f465028ace801e1c77008e1a78cab54141b59ec13adf957ac67`.
 
 3b6 corrected test precision, not product policy: directory-only legacy task first refuses child selection with `Unauthorized("child workspace has no original owner")`. Test now asserts precise denial and independently proves raw legacy mount refusal. Typed cases still demand policy-boundary denial; arbitrary error cannot satisfy.
 
-Commands below are retained evidence selections, not requests for identical reruns. Execute new changed-source selections only via bs.ps1:
+Commands below are retained evidence selections, not requests for identical reruns. Execute new changed-source selections only via the shell:
 
 ```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/with-owner-keychain.sh cargo test --locked -p acyclic-harness --all-features --lib raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/with-owner-keychain.sh cargo test --locked -p acyclic-plugin --all-features --bin acyclic host_managed_routes_bind_current_policy_and_exact_workspace
-pwsh -NoProfile -File Q:/lanes/bs.ps1 cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,test-support --test git_executor
-pwsh -NoProfile -File Q:/lanes/bs.ps1 cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,test-support --lib core::tests::authority_reducer_properties
-pwsh -NoProfile -File Q:/lanes/bs.ps1 cargo check --locked -p acyclic-harness -p acyclic-harness-providers -p acyclic-harness-fuzz -p acyclic-plugin -p acyclic-conformance --all-features --all-targets
-bash Q:/lanes/win-test.sh acyclic-native-runtime --all-features --lib signing_key::tests
+bash scripts/with-owner-keychain.sh cargo test --locked -p acyclic-harness --all-features --lib raw_checkout_commands_reject_restrictive_policy_and_caller_ceiling
+bash scripts/with-owner-keychain.sh cargo test --locked -p acyclic-plugin --all-features --bin acyclic host_managed_routes_bind_current_policy_and_exact_workspace
+cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,test-support --test git_executor
+cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,test-support --lib core::tests::authority_reducer_properties
+cargo check --locked -p acyclic-harness -p acyclic-harness-providers -p acyclic-harness-fuzz -p acyclic-plugin -p acyclic-conformance --all-features --all-targets
+bash  acyclic-native-runtime --all-features --lib signing_key::tests
 ```
 
 Linux lint command: `cargo clippy --locked --keep-going -p acyclic-auth -p acyclic-native-runtime -p acyclic-fs -p acyclic-harness-core -p acyclic-harness -p acyclic-harness-providers -p acyclic-harness-fuzz -p acyclic-plugin -p acyclic-conformance --all-targets --all-features --message-format=short -- --cap-lints warn`. Windows GNU: `RUSTFLAGS= CARGO_ENCODED_RUSTFLAGS= cargo clippy --locked --target x86_64-pc-windows-gnu -p acyclic-native-runtime --all-targets --all-features --message-format=short`.
 
-Lock archive recovered read-only from successful producer after base64 interleaving corrupted first transport, no identical rerun: `/mnt/bb/wt-sdk/b-authority-p1-security-7299a50e.2-1792979447141-24619-2558497b`; local `D:/lane-scratch/b-authority/p1-independent-locks.tar.gz`, SHA256 `272cdb8e02dd3cb76a8ecc04716d066cf1ea4e16e889e9ce12dbc3a59163c719`. All members validated before import.
+Lock archive recovered read-only from successful producer after base64 interleaving corrupted first transport, no identical rerun: `${TMPDIR:-/tmp}/wt-sdk/b-authority-p1-security-7299a50e.2-`; local `[private-metadata-removed]`, SHA256 `272cdb8e02dd3cb76a8ecc04716d066cf1ea4e16e889e9ce12dbc3a59163c719`. All members validated before import.
 
-#1510 prior auth109/identity50/WASM-TS-descriptor/downstream proofs in `Q:/lanes/b-authority-secrets-20261025.md`. Final deletion positive/actual-old negative log `1792973736932-158090-3f9e4966.log`; terminal script failed log grep because rg absent, changed to grep. Successful rustfmt/auth lint follow-up `1792973816791-171783-a88f4b23.log`. No test closes transport silence yet.
+#1510 prior auth109/identity50/WASM-TS-descriptor/downstream proofs in . Final deletion positive/actual-old negative log`; terminal script failed log grep because rg absent, changed to grep. Successful rustfmt/auth lint follow-up `.log`. No test closes transport silence yet.
 
 ## A6 remaining scope and coordination
 
 One grant/trie decision; verified parent chain with path/ops/expiry/revision; verify-once scope; sole keychain issuer bootstrap; exhaustive shared typed errors; one sensitive refresh interceptor; audit stream; commit/mount/facade/S3/tools enforcement and revision/lease cache fences. Delete actual current duplicates, historical36 checks/43 verifications; per-event harness MAC removal is user-directed. None of complete A6 integration is delivered by P1. Public provider-generic conformance plus arbitrary endpoint/env credentials runner required. Read `redesign/common.md`, `design-audit/REDESIGN.md`, `auth.md` and current Cloud objections.
 
-- **main-green:** existing VerifiedScope/compact TrustEvidence reused in signed unpublished517b809cb2/ec236e1d5c, no PR at dispatch. Owns core FS content_verifier, parent/*, project_workspaces, summary_fork, conversation volumes adapter. Preserve fresh trust/time/cancel/original allocation. Recursive1024 forks10.028s exceeds10s. Profile7.213s/100 samples27 leaf Curve/Ed25519; inclusive verify_record18/verify_trusted11/record7 overlap. Per-record signer/cert construction at core/authority/workload/admission.rs:23, workload.rs:108; receipt/event/reducer/fork verification repeated. Centralize via A6 preserving historical admission vs live time/revocation. Receipts `Q:/lanes/main-green-parent-1024-proof-20261026.json`, `D:/lane-scratch/main-green/post-cache-20261025/parent-profile.json`.
-- **sessions:** delete TS grant/identity/byte authorization copy `typescript/packages/harness/src/task-context.ts:98–119` through canonical Rust runtime/content_read.rs:431 and conversation/private_read.rs:5. Keep contracts.verifyFileBytes descriptor verifier. Different internal/.system handling. Prove grants, owner/provider, retained generation, internal/escape paths, exact bounds through Rust/native/browser/installed TS plus old/bypass controls. `Q:/lanes/sessions-private-read-duplication-20261025.md`; no extra bridge/reducer/TaskVolume dependency.
-- **streams:** Fork includes entire subtree except exclusions: ForkRequest.exclude5, ForkMutation.exclude5, CommittedFork.exclude6; RelativePath canonical nonempty StreamPath. Cover all included descendants AND destination/protected/excluded paths; exact-root grant cannot authorize subtree, no descendant enumeration or capability inheritance. Real commit fence checks revision/lease movement. `Q:/lanes/redesign/api/streams.md`.
-- **verify:** `Q:/lanes/redesign/verify-to-b-authority.md`: canonical Scope/Grant/AccessError, precedence and expiry (`now < expires` unless contract says otherwise), pure production hooks, signed source. Kani bounded production subset/decision; trie vs independent segment/grant properties; real fence loom/DST. Controls unchecked parent, textual prefix, wider ops/expiry, dropped revision/stale scope. Exhaustive mappings and explicit audit failure semantics. Historical39 auth -D warnings diagnostics are not green.
-- **e2e row11:** `agents::a_composition_wide_reader_cannot_read_a_childs_task`, harness/tests/e2e/agents.rs; fixes ab27375288595ea1d490055d71bf655b69c91539 /8f15cf3fa837bb4021698b601716086831d4c721; control agents::reader_control_rejects_unrelated_failures. Historical Linux5.21s, b733 wide line7446 positive exist; current production/Cargo/EXE all3OS, actual-old adapter negatives and per-row<10s joins still absent. `Q:/lanes/main-green-original-debts-index-20261026.json`/.md. Full main pass not closure; no build commissioned for handover.
+- **main-green:** existing VerifiedScope/compact TrustEvidence reused in signed unpublished517b809cb2/ec236e1d5c, no PR at dispatch. Owns core FS content_verifier, parent/*, project_workspaces, summary_fork, conversation volumes adapter. Preserve fresh trust/time/cancel/original allocation. Recursive1024 forks10.028s exceeds10s. Profile7.213s/100 samples27 leaf Curve/Ed25519; inclusive verify_record18/verify_trusted11/record7 overlap. Per-record signer/cert construction at core/authority/workload/admission.rs:23, workload.rs:108; receipt/event/reducer/fork verification repeated. Centralize via A6 preserving historical admission vs live time/revocation. Receipts , `[private-metadata-removed]`.
+- **sessions:** delete TS grant/identity/byte authorization copy `typescript/packages/harness/src/task-context.ts:98–119` through canonical Rust runtime/content_read.rs:431 and conversation/private_read.rs:5. Keep contracts.verifyFileBytes descriptor verifier. Different internal/.system handling. Prove grants, owner/provider, retained generation, internal/escape paths, exact bounds through Rust/native/browser/installed TS plus old/bypass controls. ; no extra bridge/reducer/TaskVolume dependency.
+- **streams:** Fork includes entire subtree except exclusions: ForkRequest.exclude5, ForkMutation.exclude5, CommittedFork.exclude6; RelativePath canonical nonempty StreamPath. Cover all included descendants AND destination/protected/excluded paths; exact-root grant cannot authorize subtree, no descendant enumeration or capability inheritance. Real commit fence checks revision/lease movement. .
+- **verify:** : canonical Scope/Grant/AccessError, precedence and expiry (`now < expires` unless contract says otherwise), pure production hooks, signed source. Kani bounded production subset/decision; trie vs independent segment/grant properties; real fence loom/DST. Controls unchecked parent, textual prefix, wider ops/expiry, dropped revision/stale scope. Exhaustive mappings and explicit audit failure semantics. Historical39 auth -D warnings diagnostics are not green.
+- **e2e row11:** `agents::a_composition_wide_reader_cannot_read_a_childs_task`, harness/tests/e2e/agents.rs; fixes ab27375288595ea1d490055d71bf655b69c91539 /8f15cf3fa837bb4021698b601716086831d4c721; control agents::reader_control_rejects_unrelated_failures. Historical Linux5.21s, b733 wide line7446 positive exist; current production/Cargo/EXE all3OS, actual-old adapter negatives and per-row<10s joins still absent. /.md. Full main pass not closure; no build commissioned for handover.
 - **efficiency:** report source/proof/merged outcome, dependencies and measurable checkpoint; new owner owns schedule, no speculative A6 merge date.
 
 ## Next five actions for rb-identity

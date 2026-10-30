@@ -9,9 +9,7 @@
 //
 // Usage: check-feature-matrix.mjs [WORKERS] [--each-feature] [--list]
 //        [--windows-msvc] [--package=NAME ...]
-// The merge gate runs the three sets per crate on every PR and adds each
-// feature alone on main (gate-checks.sh --each-feature); the policy
-// qualification lane runs every set.
+// Use --each-feature for isolated feature checks.
 // Every extra worker uses its own target directory, so Cargo's build lock never
 // serializes them; the compiler cache still deduplicates their dependencies.
 import { spawn } from "node:child_process";
@@ -39,8 +37,7 @@ export function enabled(item, features) {
 }
 
 /** The Cargo argument sets for one package from its `cargo metadata` entry.
- *  The gate checks each crate once, alone, with --all-features (2026-10-26
- *  bb2 compute policy). Only the explicit full matrix (eachFeature) adds the
+ *  The default checks each crate once, alone, with --all-features. Only the explicit full matrix (eachFeature) adds the
  *  no-default, default and single-feature selections; sets that enable exactly
  *  the same features and optional dependencies compile the same code, so each
  *  is checked once. */
@@ -91,6 +88,15 @@ export function windowsCommands(args) {
   return ["--lib", "--all-targets"].map(target => [...base, target, ...args.slice(5)]);
 }
 
+export function selectFeaturePackages(items, selected) {
+  const names = new Set(items.map(item => item.name));
+  const missing = selected.filter(name => !names.has(name));
+  if (items.length === 0 || missing.length > 0) {
+    throw new Error(`STEP_FAILED feature-selection: ${items.length === 0 ? "empty package inventory" : `unknown packages ${JSON.stringify(missing)}`}; recovery: node scripts/check-feature-matrix.mjs --list`);
+  }
+  return items.filter(item => !selected.length || selected.includes(item.name));
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
@@ -102,7 +108,7 @@ async function main() {
   // already proves the order lists each exactly once).
   const eachFeature = args.includes("--each-feature");
   const items = [...metadata().values()];
-  const sets = items.filter(item => !selected.length || selected.includes(item.name)).flatMap(item => featureSets(item, eachFeature)
+  const sets = selectFeaturePackages(items, selected).flatMap(item => featureSets(item, eachFeature)
     .map(args => ({ name: item.name, args })));
   if (list) {
     for (const { args } of sets) for (const command of windows ? windowsCommands(args) : linuxCommands(args)) console.log(`cargo ${command.join(" ")}`);
@@ -115,8 +121,8 @@ async function main() {
   async function worker(index) {
     const env = workerEnv(index);
     if (windows) {
-      if (!process.env.GATE_XWIN_CACHE_ROOT) throw new Error("Windows matrix requires with-xwin-cache.py");
-      env.XWIN_CACHE_DIR = join(process.env.GATE_XWIN_CACHE_ROOT, `worker-${index}`);
+      const cacheRoot = process.env.XWIN_CACHE_ROOT;
+      if (cacheRoot) env.XWIN_CACHE_DIR = join(cacheRoot, `worker-${index}`);
     }
     for (const set of queues[index]) {
       const checkStarted = Date.now();

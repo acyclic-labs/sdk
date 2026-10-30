@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "STEP actors-store-producer failed ($rc); recovery command: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-a4-store.sh" >&2; fi' EXIT
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then echo "STEP actors-store-producer failed ($rc); recovery command: bash .bb-a4-store.sh" >&2; fi' EXIT
 python3 - <<'PY'
 from pathlib import Path
 import hashlib,json,subprocess,tarfile,time
 prefix='.bb-a4-store-'
-recovery='pwsh -NoProfile -File Q:/lanes/bs.ps1 bash .bb-a4-store.sh'
+recovery='bash .bb-a4-store.sh'
 changed=['rust/crates/actors/Cargo.toml','rust/crates/actors/src/lib.rs','rust/crates/actors/src/guest.rs','rust/crates/actors/src/guest/handler.rs','rust/crates/actors/src/local.rs','rust/crates/actors/src/local/tests.rs']
 paths=set(filter(None,subprocess.check_output(['git','ls-files','-z']).decode().split('\0')))|set(changed)
 sources={p:hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in sorted(paths) if Path(p).is_file()}

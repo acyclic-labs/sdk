@@ -22,7 +22,7 @@ mod origin;
 
 /// Exact command for rerunning the endpoint suite with the same environment.
 pub const RECOVERY: &str =
-    "build-slot --remote cargo run -p acyclic-stream --features http --example wave1-conformance";
+    "cargo run -p acyclic-stream --features http --example wave1-conformance";
 
 /// Fixed histories; no provider-specific cases or in-memory fallback.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

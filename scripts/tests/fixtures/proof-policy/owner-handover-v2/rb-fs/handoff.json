@@ -62,11 +62,11 @@
   "sdk_adoption": {
     "head": "083f45f102e0d01e18b809ae83037e80be3ed960",
     "pr": "https://github.com/acyclic-labs/sdk/pull/1492",
-    "worktree": "Q:/wt/rb-fs-sdk",
+    "worktree": "[checkout-path-removed]",
     "branch": "rb-fs-a5",
     "bundle_sha256": "93fd2e5725b4507bca70fd6cf8fc987c4acd4ecfeb6a385d66c4807159b13e68",
     "regression_sha256": "836a1fcdbdc21a58a20df96f9d20131c3b24c3c477a0ffaccbac4d7c305ba20b",
-    "inherited_append_receipts": "Q:/lanes/live-pass/20261025-fs-concurrency-1492/segments-341-admission.json and segments-342-admission.json; no fresh-head claim",
+    "inherited_append_receipts": "[private-path-removed] and segments-342-admission.json; no fresh-head claim",
     "public_a5_suite": "absent",
     "known_failure": "canonical-root-154.log root-history regression; transferred uncommitted; no repaired-source claim",
     "local_signed_wip": "176c4cf951e9e80c8a2f6e2436e284defc94f441; signature G; transferred known-failing root regression only; not pushed or qualified"

@@ -1,5 +1,4 @@
 //! Signed filesystem delegation boundaries.
-acyclic_test_support::counting_allocator!();
 #[path = "filesystem_access_compilation.rs"]
 mod compilation;
 #[cfg(feature = "filesystem")]

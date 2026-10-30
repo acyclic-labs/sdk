@@ -1,5 +1,5 @@
 //! Independent timer admission invariants shared with the parser fuzzer.
-use acyclic_actors::timers::TimerRecord;
+use crate::timers::TimerRecord;
 
 /// Check record invariants without invoking production admission or codecs.
 pub fn check(record: &TimerRecord) {

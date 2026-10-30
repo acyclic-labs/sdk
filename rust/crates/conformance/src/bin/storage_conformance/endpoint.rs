@@ -80,7 +80,7 @@ fn checked<T>(
     step: &str,
     result: std::result::Result<T, impl std::fmt::Display>,
 ) -> Result<T> {
-    result.map_err(|error| format!("step=endpoint-{phase}-{step}: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh").into())
+    result.map_err(|error| format!("step=endpoint-{phase}-{step}: {error}; recovery: bash scripts/backends/storage-conformance.sh").into())
 }
 
 pub(super) async fn verify<P: acyclic_stream::NativeStreamProvider + 'static>(
@@ -216,7 +216,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                     policy: None,
                 },
             )
-            .await.map_err(|error| format!("step=endpoint-{phase}-create-root: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"))?
+            .await.map_err(|error| format!("step=endpoint-{phase}-create-root: {error}; recovery: bash scripts/backends/storage-conformance.sh"))?
             {
                 Serving::Served(server) => server,
                 Serving::Unknown(_) => return Err("endpoint root unexpectedly uncertain".into()),
@@ -268,7 +268,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
             Err(_) => {
                 let result = (&mut serving.0).await?;
                 return Err(format!(
-                        "step=endpoint-ready: server exited before readiness: {result:?}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"
+                        "step=endpoint-ready: server exited before readiness: {result:?}; recovery: bash scripts/backends/storage-conformance.sh"
                     ).into());
             }
         };
@@ -288,7 +288,7 @@ async fn verify_pair<P: acyclic_stream::NativeStreamProvider + 'static, Q: Blobs
                     }
                 }
             })
-            .await.map_err(|error| format!("step=endpoint-{phase}-turn-timeout: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"))?;
+            .await.map_err(|error| format!("step=endpoint-{phase}-turn-timeout: {error}; recovery: bash scripts/backends/storage-conformance.sh"))?;
             let entry = checked(phase, "follow-turn", entry)?;
             assert_eq!(
                 checked(phase, "read-turn", conversation.turn(&entry).await)?,

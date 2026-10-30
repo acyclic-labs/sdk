@@ -282,6 +282,7 @@ export class Spool {
   sequence = 0;
   #state = { open: true };
   #pending = new Set();
+  #reads = new Set();
   #listeners = new Set();
   #index = new Map();
   #waiting = new Map();
@@ -293,6 +294,7 @@ export class Spool {
   // Bytes of whole lines the transcript has finished writing. Writes finish
   // in order, so [0, completed) is always a run of complete lines.
   #completed = 0;
+  #position = 0;
   #broken;
   #blocked;
   constructor(stream, closed, { transcript, key, unique = false } = {}) {
@@ -341,9 +343,12 @@ export class Spool {
     }
     this.sequence++;
     let room = true;
+    let indexed = event;
     if (this.#file) {
       const file = this.#file;
       const bytes = Buffer.from(line + "\n");
+      const at = this.#position;
+      this.#position += bytes.length;
       this.#written = new Promise(resolve => {
         room = file.write(bytes, error => {
           // Only written bytes count; a failed write latches the cause.
@@ -351,18 +356,21 @@ export class Spool {
           resolve();
         });
       });
+      // The transcript already owns the payload. Keep only its exact range;
+      // a late keyed lookup reads that event after its original write finishes.
+      if (this.#path) indexed = { at, length: bytes.length, written: this.#written };
     }
     for (const key of this.#key?.(event) ?? []) {
       if (this.#index.has(key)) {
         if (this.#unique) { this.#settle(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
         continue;
       }
-      this.#index.set(key, event);
+      this.#index.set(key, indexed);
       for (const wait of this.#waiting.get(key) ?? []) wait.resolve(event);
       this.#waiting.delete(key);
     }
     for (const listener of this.#listeners) listener(event);
-    for (const wait of this.#pending) if (wait.match(event)) {
+    for (const wait of this.#pending) if (wait.match?.(event)) {
       this.#pending.delete(wait); wait.resolve(event);
     }
     return room;
@@ -371,13 +379,14 @@ export class Spool {
   // and the end of the spool.
   #break(error) {
     this.#broken ??= new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error);
+    for (const wait of this.#reads) wait.reject(this.#broken);
     this.#settle(this.#broken);
   }
   // The one transition out of open; later calls do nothing.
   #settle(cause) {
     if (!this.#state.open) return;
     this.#state = { open: false, cause };
-    const pending = [...this.#pending, ...[...this.#waiting.values()].flat()];
+    const pending = [...this.#pending, ...[...this.#waiting.values()].flatMap(waits => [...waits])];
     this.#pending.clear();
     this.#waiting.clear();
     for (const wait of pending) wait.reject(cause);
@@ -387,20 +396,58 @@ export class Spool {
     this.#file?.end();
   }
   fail(cause) { this.#settle(cause); }
+  #wait(waits, signal, match, start, cleanup) {
+    if (signal?.aborted) return Promise.reject(new SpoolEnded("cancelled", "wait cancelled", signal.reason));
+    return new Promise((resolve, reject) => {
+      let active = true;
+      const finish = (settle, value) => {
+        if (!active) return;
+        active = false;
+        waits.delete(wait); cleanup?.();
+        signal?.removeEventListener("abort", abort);
+        settle(value);
+      };
+      const wait = { match, resolve: value => finish(resolve, value), reject: error => finish(reject, error) };
+      const abort = () => wait.reject(new SpoolEnded("cancelled", "wait cancelled", signal.reason));
+      waits.add(wait);
+      signal?.addEventListener("abort", abort, { once: true });
+      start?.(wait);
+    });
+  }
   // The first event after this call that `match` accepts.
-  next(match) {
+  next(match, { signal } = {}) {
     if (this.ended) return Promise.reject(this.ended);
-    return new Promise((resolve, reject) => this.#pending.add({ match, resolve, reject }));
+    return this.#wait(this.#pending, signal, match);
   }
   // The first event recorded under `key`, earlier or later.
-  keyed(key) {
-    if (this.#index.has(key)) return Promise.resolve(this.#index.get(key));
+  keyed(key, { signal } = {}) {
+    if (signal?.aborted) return Promise.reject(new SpoolEnded("cancelled", "wait cancelled", signal.reason));
+    if (this.#index.has(key)) {
+      const indexed = this.#index.get(key);
+      if (!this.#path) return Promise.resolve(indexed);
+      return this.#wait(this.#reads, signal, undefined, wait => {
+        indexed.written.then(() => wait.resolve());
+      }).then(() => this.#read(indexed));
+    }
     if (this.ended) return Promise.reject(this.ended);
-    return new Promise((resolve, reject) => {
-      const waits = this.#waiting.get(key) ?? [];
-      waits.push({ resolve, reject });
-      this.#waiting.set(key, waits);
+    const waits = this.#waiting.get(key) ?? new Set();
+    this.#waiting.set(key, waits);
+    return this.#wait(waits, signal, undefined, undefined, () => {
+      if (waits.size === 0) this.#waiting.delete(key);
     });
+  }
+  #read({ at, length }) {
+    if (this.#broken) throw this.#broken;
+    const bytes = Buffer.allocUnsafe(length), fd = openSync(this.#path, "r");
+    try {
+      for (let read = 0; read < length;) {
+        const size = readSync(fd, bytes, read, length - read, at + read);
+        if (size === 0) throw new SpoolEnded("spool", `transcript ${this.#path} ends before indexed event at byte ${at}`, { at, length });
+        read += size;
+      }
+    } finally { closeSync(fd); }
+    try { return JSON.parse(bytes.toString("utf8")); }
+    catch (error) { throw new SpoolEnded("spool", `transcript ${this.#path} has an invalid indexed event at byte ${at}`, error); }
   }
   has(key) { return this.#index.has(key); }
   subscribe(listener) {

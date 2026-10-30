@@ -3,12 +3,12 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[4]
-source = root / "rust/crates/actors/src/timers.rs"
+source = root / "rust/crates/actors/tests/retired/timers.rs"
 original = source.read_text()
-check = "idempotency_key: Some(timer.fire_key_validated()?),"
+check = "idempotency_key: timer.fire_key_validated()?,"
 assert original.count(check) == 1, "update the production mutation"
 try:
-    source.write_text(original.replace(check, "idempotency_key: None,"))
+    source.write_text(original.replace(check, "idempotency_key: acyclic_stream::IdempotencyKey::unique(),"))
     result = subprocess.run(
         ["node", "scripts/qualify-mcp-loom.mjs", "--timer"], cwd=root,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

@@ -19,37 +19,8 @@ name = "agent-record-corpus"
 path = "examples/agent-record-corpus.rs"
 
 [[test]]
-name = "agent-model"
-path = "tests/agent_model.rs"
-
-[[test]]
-name = "platform-shell"
-path = "tests/platform_shell.rs"
-
-[[test]]
-name = "machine-workspace"
-path = "tests/machine_workspace.rs"
-required-features = ["filesystem-local", "native-execution", "machines"]
-
-[[test]]
-name = "target-lifecycle"
-path = "tests/target_lifecycle.rs"
-required-features = ["machines"]
-
-[[test]]
-name = "git_executor"
-path = "tests/git_executor.rs"
-required-features = ["filesystem-local", "native-execution"]
-
-[[test]]
-name = "mcp-loom"
-path = "tests/mcp_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "skill-materializer-loom"
-path = "tests/skill_materializer_loom.rs"
-required-features = ["model-checking"]
+name = "main"
+path = "tests/main.rs"
 
 [features]
 conformance = ["acyclic-stream/conformance"]

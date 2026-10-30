@@ -45,16 +45,16 @@ function qualifyGate(run) {
 }
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "mcp-loom", [...features, "--features", "model-checking"], run, {
-    env: loomEnvironment(), targetCfg: [],
+  return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
   });
 }
 
 export function qualifySkillMaterializerLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "skill-materializer-loom",
+  return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"], timeout: 9500,
-      filters: ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"],
+      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
     });
 }
 
@@ -88,22 +88,24 @@ export function qualifyNativeRegistryLoom(run = spawnSync) {
 }
 
 export function qualifyTimerLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "timer_loom", [
+  return qualifyLoom("acyclic-actors", "main", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
   ], run, {
-    env: loomEnvironment(), targetCfg: [],
+    env: loomEnvironment(), targetCfg: [], suites: [["timer_loom::", 2]],
   });
 }
 
 export function qualifyGuestLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+  return qualifyLoom("acyclic-actors", "main", [], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 4]],
+  });
 }
 
 export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness", "e2e-progress-model", features, run, {
+  return qualifyLoom("acyclic-harness", "main", features, run, {
     targetCfg: ["--", "--cfg", "loom"],
-    filters: ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "forgotten_cleanup_is_detected_on_the_real_registration",
-      "polling_wake_and_reporting_never_lose_runnability", "an_unobserved_wake_fails_the_same_runnability_oracle"],
+    filters: ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic", "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
+      "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability", "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"],
     timeout: 9500,
   });
 }
@@ -136,8 +138,8 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
 }
 
 export function qualifyFsBindingLoom(features = [], run = spawnSync) {
-  return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
-    targetCfg: ["--", "--cfg", "loom"],
+  return qualifyLoom("acyclic-fs", "main", features, run, {
+    targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
   });
 }
 
@@ -152,13 +154,13 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
 }
 
 export function qualifySessionFsLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-fs", "session_fs_model", [
+  return qualifyLoom("acyclic-fs", "main", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
     env: loomEnvironment(),
     targetCfg: [], timeout: 9500,
-    filters: ["change_resume_exhausts_append_registration_and_wakeup",
-      "change_resume_exhausts_independent_history_replacement"],
+    filters: ["session_fs_model::change_resume_exhausts_append_registration_and_wakeup",
+      "session_fs_model::change_resume_exhausts_independent_history_replacement"],
   });
 }
 

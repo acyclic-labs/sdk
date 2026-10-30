@@ -1,12 +1,11 @@
 [package]
+autotests = false
 name = "sdk-generation"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.98"
 publish = false
 default-run = "sdk-generation"
-
-[workspace]
 
 [dependencies]
 sdk-docs = { path = "../sdk-docs" }
@@ -37,3 +36,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
 model-checking = []
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
+
+# Retain the pinned documentation and generator dependency graph.
+[workspace]

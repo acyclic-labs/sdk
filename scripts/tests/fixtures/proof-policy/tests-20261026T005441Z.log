@@ -1,11 +1,11 @@
-[build-slot buildbox] 00:55:09 BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe 9cf9bd2a73c950b402f76c5aeebe327472c9a4d8ed4291bd8d8147699fbacea8 (client /mnt/q/worktrees/redesign-verify)
-[build-slot buildbox] 00:55:22 bb2: git b7333953cbd5 + diff 22433 B (3 new files), 5949 B sent, 7.1s; src wt-sdk/redesign-verify-f05f8f68.0-1792976109241-256147-1f981be7 target sdk/redesign-verify-f05f8f68; job 1792976109241-256147-1f981be7; cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1
+[local command Linux] 00:55:09 BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe 9cf9bd2a73c950b402f76c5aeebe327472c9a4d8ed4291bd8d8147699fbacea8 (client /mnt/q/worktrees/redesign-verify)
+[local command Linux] 00:55:22 Linux: git b7333953cbd5 + diff 22433 B (3 new files), 5949 B sent, 7.1s; src wt-sdk/redesign-verify-f05f8f68.0-[execution-id-removed] target sdk/redesign-verify-f05f8f68; job [execution-id-removed]; cargo test -p acyclic-stream --features local --test wave1_keys -- --nocapture --test-threads=1
 BB_DISK_FREE [{"path": "/", "free_percent": 19.977643364245722, "free_bytes": 20554616832}, {"path": "/mnt/bb", "free_percent": 26.71901676169903, "free_bytes": 440452874240}]
 GATE_HOME_GUARD {"mechanism": "private-read-only-mount", "real_home": "/home/var", "writable": false, "recursive": true, "private_proc": true}
-[buildbox] sccache startup: sccache: Starting the server...
+[Linux] sccache startup: sccache: Starting the server...
 sccache: Listening on address /mnt/bb/jobs/job-yo02kznn/sccache.sock
 BUILD_SLOT_TREE=b7333953cbd5d3b31adc05cf2f0851f049f6c16a b846e07d51e295efe09db0e8240050ee0eff80fe 9cf9bd2a73c950b402f76c5aeebe327472c9a4d8ed4291bd8d8147699fbacea8
-[buildbox] source clock: exact-content private targets
+[Linux] source clock: exact-content private targets
 BUILD_SLOT_EXEC={"exec_start":"2026-10-26T00:55:25.504Z","toolchain":{"rustc_vv_sha256":"778fbc643a806f0dd123c056e66201d7e8a56a61928ec0a33171be8d6c2d5a37","rustc_vv":"rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8\n","target":["x86_64-unknown-linux-gnu"],"probe_error":null}}
    Compiling proc-macro2 v1.0.107
    Compiling unicode-ident v1.0.26
@@ -279,4 +279,4 @@ failures:
 
 test result: FAILED. 0 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
-[build-slot buildbox] 00:56:00 rc=101 in 78.3s; log /home/var/log/buildbox/1792976081869-256147-e24b6ac0.log
+[local command Linux] 00:56:00 rc=101 in 78.3s; log [private-path-removed]

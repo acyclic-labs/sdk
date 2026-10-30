@@ -6,7 +6,7 @@ import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, quali
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
-const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
+const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
 test("filesystem policy qualification requires real cache and authority models in the gate", () => {
@@ -86,10 +86,10 @@ test("skill materializer qualification requires the production owner model and i
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
-        assert.ok(args.includes("skill-materializer-loom"));
-        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "skill-materializer-loom" } }) };
+        assert.ok(args.includes("main"));
+        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
-      assert.equal(args[0], ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"][models]);
+      assert.equal(args[0], ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"][models]);
       assert.equal(args[1], "--exact");
       assert.equal(options.timeout, 9500);
       return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
@@ -142,16 +142,16 @@ test("ownership qualification requires every dedicated real-lock model and compi
 });
 
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
-  const names = ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
-    "forgotten_cleanup_is_detected_on_the_real_registration",
-    "polling_wake_and_reporting_never_lose_runnability",
-    "an_unobserved_wake_fails_the_same_runnability_oracle"];
+  const names = ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
+    "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
+    "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability",
+    "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"];
   for (const missing of [null, 1, 2, 3, 4]) {
     let models = 0;
     const run = (command, args) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
-        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "e2e-progress-model"}})};
+        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "main"}})};
       }
       assert.equal(args[0], names[models++]);
       return {status: 0, stdout: summary(models === missing ? 0 : 1, 0, 1)};
@@ -185,9 +185,10 @@ test("fs Session qualification instruments real provider and Session locks and r
       if (command === "cargo") {
         assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("memory,session,acyclic-stream/local"));
-        assert.ok(args.includes("session_fs_model"));
-        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "session_fs_model" } }) };
+        assert.ok(args.includes("main"));
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
+      assert.match(args[0], /^session_fs_model::change_resume_exhausts_/);
       assert.equal(args[1], "--exact");
       assert.equal(options.timeout, 9500);
       models++;
@@ -230,8 +231,8 @@ test("qualification opts into the crate cfg only for the model build and execute
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "mcp-loom", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
+    ["model-binary", ["mcp_loom::"]],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   assertGateStep(["--all-features"]);
@@ -245,25 +246,25 @@ test("timer qualification instruments production Stream locks through the worksp
   const calls = [];
   qualifyTimerLoom((command, args, options) => {
     calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
-    const timer = { ...artifact, target: { name: "timer_loom" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(1) };
+    const timer = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(2, 0, 4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
-    ["model-binary", [], undefined],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
+    ["model-binary", ["timer_loom::"], undefined],
   ]);
 });
 
-test("guest qualification instruments only the guest target and runs its models", () => {
+test("guest qualification selects every guest model in the instrumented main target", () => {
   const calls = [];
-  qualifyGuestLoom((command, args) => {
-    calls.push([command, args]);
-    const guest = { ...artifact, target: { name: "guest_loom" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4) };
+  qualifyGuestLoom((command, args, options) => {
+    calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
+    const guest = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4, 0, 2) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "guest_loom", "--features", "model-checking", "--", "--cfg", "loom"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
+    ["model-binary", ["guest_loom::"], undefined],
   ]);
 });
 
@@ -285,16 +286,16 @@ test("qualification rejects failed builds and missing or ambiguous artifacts", (
 });
 
 
-test("filesystem qualification models the production mutex only in its dedicated target", () => {
+test("filesystem qualification selects every retained binding model in the unified target", () => {
   const calls = [];
   qualifyFsBindingLoom(["--all-features"], (command, args) => {
     calls.push([command, args]);
-    const fs = { ...artifact, target: { name: "native_binding_model" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(3) };
+    const fs = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(5, 0, 4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "main", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
+    ["model-binary", ["native_binding_model::"]],
   ]);
   assertGateStep(["--fs-binding", "--all-features"]);
 });

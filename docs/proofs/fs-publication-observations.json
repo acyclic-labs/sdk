@@ -1,7 +1,7 @@
 {
   "kind": "targeted_source_observation_not_wave1_qualification",
   "source_commit": "4b9723782c3b1ac64976b0ec0ec722fcabc36e04",
-  "external_receipt": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\receipt.json",
+  "external_receipt": "[private-metadata-removed]",
   "external_receipt_sha256": "116f1ab878d93c3a4612328a49652e5b14a5a2a8eca8048294d0a080bee779b3",
   "input_files_verified": 1529,
   "input_scope": "all tracked filesystem crate files plus root Cargo.toml/Cargo.lock and two captured producer files; not the full workspace/compiler dependency closure",
@@ -106,7 +106,7 @@
     "no DST/hosted/endpoint/deployment/macOS/Windows guarantee; canonical-root failure remains open"
   ],
   "rollout": {
-    "ledger": "Q:/lanes/rollout/LEDGER.md",
+    "ledger": "[private-path-removed]",
     "sdk_pr": 1492,
     "cloud_pr": 6652,
     "merged_sdk": null,
@@ -119,42 +119,42 @@
       "file": "rust/crates/filesystem/src/collection/tests.rs",
       "line": 30,
       "sha256": "f3a6c2aee720f4f5c044ee7a872acf9f8401bb4849436cf1fd132dfb7c49a518",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\collection\\tests.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     },
     {
       "file": "rust/crates/filesystem/src/collection/roots.rs",
       "line": 123,
       "sha256": "c9309c3e53b215bfb4dba8e614f400ea5ff0d38a6632cd07790c9fc7f2a5535b",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\collection\\roots.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     },
     {
       "file": "rust/crates/filesystem/src/distributed/tests.rs",
       "line": 19,
       "sha256": "b7761ef96d89684b0057375bf14f9544488459f6c0916e234a994b4ad937edbf",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\distributed\\tests.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     },
     {
       "file": "rust/crates/filesystem/src/distributed/native.rs",
       "line": 99,
       "sha256": "230ad762def86f340192ada26f63fc3e3172bdfcaa395f28e050de71b093653d",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\distributed\\native.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     },
     {
       "file": "rust/crates/filesystem/src/core_state/tests/log.rs",
       "line": 4,
       "sha256": "d10dc89ccaf684838354f65db4f8c8e1f1274507caff32772f0b7b25e6990f4e",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\core_state\\tests\\log.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     },
     {
       "file": "rust/crates/filesystem/src/core_state/records.rs",
       "line": 14,
       "sha256": "2a7449975ef54242ee625b131e43bf6b7632f22f0894f5fc73b9c820c2393688",
-      "capture": "Q:\\lanes\\verify\\evidence\\wave1\\fs-publication-4b972\\source\\rust\\crates\\filesystem\\src\\core_state\\records.rs",
+      "capture": "[private-metadata-removed]",
       "scope": "actual signed4b972 source; not current verify source tree"
     }
   ]

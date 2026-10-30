@@ -7,8 +7,6 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [dependencies]
 libfuzzer-sys = "0.4"
 toml = "=0.9.8"
@@ -38,3 +36,6 @@ path = "fuzz_targets/identity_record.rs"
 test = false
 doc = false
 bench = false
+
+# Retain the pinned documentation and generator dependency graph.
+[workspace]

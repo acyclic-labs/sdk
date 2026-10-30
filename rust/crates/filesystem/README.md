@@ -186,7 +186,7 @@ encoded-total admission, receipt identity, recovery without idempotency lookup,
 malformed framing and exact expiry retention. Compilation is not runtime proof.
 
 Cloud input is the coordinator-located draft
-`Q:/lanes/cloud/design-audit-v2/fs-scale-draft1.md`, SHA256
+, SHA256
 `980BA694CF42AABE595527F6EEB05EC10521BDF228E28A73ADA8AB3BC53CD4FF`.
 A final/superseding disposition remains pending. Subtree splitting and hot
 directory partitioning remain Streams capabilities.
@@ -217,7 +217,7 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --no-default-features --features browser,memory,conformance \
-  --target wasm32-unknown-unknown --test browser_commit public_conformance
+  --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
 ```
 
 The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and

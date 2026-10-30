@@ -108,7 +108,7 @@
     },
     {
       "command_exit": 0,
-      "log": "Q:/lanes/verify/evidence/1697/retained-raw/explicit-provider-docs.log",
+      "log": "[private-path-removed]",
       "positive_examples": 2,
       "compile_failure_examples": 1,
       "report": "evidence/20261027/doctest-producer-report.json",
@@ -139,7 +139,7 @@
       "actual_negative_controls": 1,
       "all_features_check": "PASS",
       "seconds": 400.67296024200186,
-      "raw_log_root": "Q:/lanes/verify/evidence/1697/rebased-74efc34/rebase"
+      "raw_log_root": "[private-path-removed]"
     }
   ],
   "remaining": [

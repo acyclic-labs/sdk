@@ -2,7 +2,7 @@
 
 rx-qualify -> rx-hostability, 2026-10-26. **Plan only; no execution receipt.**
 Reviewed cloud-review/streams.md and cloud-review/verify.md, current api/verify.md,
-and Q:/lanes/design-audit/REDESIGN.md. Cloud source inspected at main
+and  Cloud source inspected at main
 `da1c9ca3e27d8f6ed9dc2b93c78696ec94a99e1a`; review historical source pin is
 `a80dd0b8d96a5af569a14fd05df01277ffdfee5a`. These pins are not interchangeable.
 #6599 merged; #6648 is ready/frozen and is unrelated existing fault evidence,
@@ -84,7 +84,7 @@ can contribute deterministic scheduling, not hosted browser/GC receipts.
 | rb-fsio | Gate actual accepted Objects retention/publication and release/collector deletion, shared unsealed frame creation, BeginSeal/FinishSeal completion, source retirement, durable namespace/root holds and snapshot restore. Record reachable content IDs, durable holds, byte/hash verification, shared-byte accounting and deletion decisions. Drive real GC at an explicit committed retention cut/time: applied removals, no eligible unreferenced generations or due locations, empty reclaiming, physical absence and retained-root readability. Park on applied FinishReclaim/store changes between bounded passes; no graph-wide done event exists. Reuse shared SQLite writer/durability fault hooks for fsync-loss/torn-write/ENOSPC/crash. A fork read after source retirement must load retained bytes on a different host with empty caches. |
 | rb-identity | Supply actual covering subtree/deny/protected-path credentials and expiry/revision/lease invalidation using production Trust/Edge. Observe auth decision before effect publication and count forbidden descendant enumeration. Drive native session and canonical Edge WebSocket carrier, independent channel/session byte+frame credits, cancellation/drop and lease revocation/renewal. Existing Follows and session transport own bounds; no second follow protocol or public fault route. |
 
-Fault controls are private in-process test seams or a private isolated bb2
+Fault controls are private in-process test seams or a private isolated Linux
 supervisor controlling processes/network/storage. No deployed fault endpoint,
 env-mode switch or artificial public API. A pause is not a crash: after a crash,
 restore from copied durable bytes and kill outstanding work/old listeners; after
@@ -106,10 +106,10 @@ public results; do not substitute private state for public visibility assertions
    schedule choices from one seed; record seed and exact replay command. Each
    default case <=2s runtime, aggregate new seed sweep <=60s; suite well under
    SDK's 10s target where possible, compilation reported separately. Measure
-   wall and waited CPU on bb2; route cases that exceed 2s to qualification rather
+   wall and waited CPU on Linux; route cases that exceed 2s to qualification rather
    than enlarging waits or skipping assertions. Only existing events/scheduler
    steps order progress; watchdog timeout detects a stuck schedule, not readiness.
-2. **Bounded isolated qualification:** >=3 member local cell on bb2, retained
+2. **Bounded isolated qualification:** >=3 member local cell on Linux, retained
    stores across hosts, actual SDK transport + native/WebSocket sessions, held
    decisions/lost acknowledgments, kill/restart/restore, membership and leadership
    changes, GC/cold-cache reads, partitions/delay/reorder/duplicate and SQLite
@@ -189,7 +189,7 @@ rb-fsio's source-backed hostability-hooks.md provides the storage plan:
   source sealing/re-encoding, nodes visited and publish/retain calls. Count work,
   not merely elapsed latency. Reuse the shared production accounting harness.
 
-Source for this availability update: Q:/lanes/cloud/rb-fsio/hostability-hooks.md.
+Source for this availability update:
 
 rb-identity/hostability-response.md is now incorporated for HST-08/10/11:
 require covering source Read plus destination Fork/Commit at every conjunctive

@@ -1,7 +1,7 @@
 //! On-demand AgentHost workloads shared by native, guest and hosted adapters.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{AgentHost, AgentId, Delivered};
-use acyclic_stream::{UnixMillisClock as _, testing::Requests};
+use acyclic_stream::testing::Requests;
 use std::{sync::Arc, time::Duration};
 
 const DELIVERIES: usize = 64;
@@ -17,11 +17,12 @@ pub struct Measurement {
     pub registered_agents: usize,
     /// Ready registrations after the final global drain, required to be zero.
     pub ready_agents: usize,
-    /// Elapsed wall-clock time at millisecond resolution. A native performance
-    /// runner can additionally time the invocation with a monotonic clock.
+    /// Monotonic elapsed time through the final settled turn.
     pub elapsed: Duration,
     /// Calls at the public Stream dispatch boundary, including scheduler work.
     pub requests: Requests,
+    /// One send plus global drain per ordinal, excluding final history inspection.
+    pub turns: Vec<acyclic_stream::testing::Sample>,
 }
 
 /// Fresh populations used by the on-demand scale vector.
@@ -94,7 +95,7 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
     )?;
     // `storage` owns the durable domain until the final observation completes.
     let storage = backend.fresh().await?;
-    let provider = Arc::new(Observed::new(storage.open().await?));
+    let provider = Arc::new(Observed::counters(storage.open().await?));
     let host = vectors::host(backend, provider.clone())?;
     let active = host
         .create(&vectors::intent("bench-active")?, fixtures::adopted())
@@ -115,11 +116,11 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
 
     registrations(&host, expected_agents)?;
     let ledger = provider.requests.clone();
-    let before = ledger.requests();
-    let clock = acyclic_stream::SystemUnixMillisClock;
-    let started = clock.now_unix_millis();
+    let sample = ledger.start_sample();
     let mut expected = vec![b"warmup".to_vec()];
+    let mut turns = Vec::with_capacity(DELIVERIES);
     for index in 0..DELIVERIES {
+        let turn = ledger.start_sample();
         let id = format!("bench-turn-{index}");
         if !matches!(
             host.send(&active, &fixtures::sender(), &fixtures::request(&id)?)
@@ -132,10 +133,12 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
         // population scans in the scheduler under test.
         vectors::drain(&host).await?;
         registrations(&host, expected_agents)?;
+        turns.push(turn.finish());
         expected.push(id.into_bytes());
     }
-    let elapsed = Duration::from_millis(clock.now_unix_millis().saturating_sub(started));
-    let requests = ledger.requests().since(before);
+    let sample = sample.finish();
+    let elapsed = sample.elapsed;
+    let requests = sample.requests;
     if vectors::values(&*provider, active.conversation()?).await? != expected {
         return Err("agent benchmark lost, changed, reordered or duplicated a turn".into());
     }
@@ -155,6 +158,7 @@ async fn measure(backend: &dyn Backend, idle_agents: usize) -> Result<Measuremen
         ready_agents,
         elapsed,
         requests,
+        turns,
     })
 }
 
