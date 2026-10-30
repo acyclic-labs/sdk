@@ -82,34 +82,23 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
         });
         // Taking the state lock observes finish's pending result before its
         // condition-variable wait. No mount or caller-owned poll drives it.
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while owner.state().failure.is_empty() {
-            assert!(
-                Instant::now() < deadline,
-                "provider must retain pending work"
-            );
-            std::thread::yield_now();
-        }
+        drop(
+            owner
+                .changed
+                .wait_while(owner.state(), |state| state.failure.is_empty())
+                .unwrap_or_else(PoisonError::into_inner),
+        );
         release.send(())?;
         if !notify {
             // Negative control: the old noop waker completes the actual native
             // operation but leaves the provider and its resources asleep.
-            let deadline = Instant::now() + Duration::from_secs(1);
-            loop {
-                let mut state = owner.state();
-                state
-                    .control
-                    .poll_direct(&ProbeWork::Cleanup(&credit, None))?;
-                if state.control.direct.is_none() {
-                    break;
-                }
-                assert!(
-                    Instant::now() < deadline,
-                    "native completion must become observable"
-                );
-                drop(state);
-                std::thread::yield_now();
-            }
+            let task = owner
+                .state()
+                .control
+                .direct
+                .take()
+                .ok_or("retained detach completion missing")?;
+            task.retire()?;
             assert!(completion.try_recv().is_err());
             assert_ne!(
                 owner.pointer(),
@@ -119,7 +108,7 @@ fn accepted_retirement_wakes_its_owner_after_the_caller_leaves() -> TestResult {
             owner.retirement_wake.notify();
             owner.changed.notify_all();
         }
-        completion.recv_timeout(Duration::from_secs(1))?;
+        completion.recv()?;
         thread.join().map_err(|_| "retirement owner panicked")?;
         assert_eq!(owner.pointer(), 0);
         assert!(owner.state().resources.is_none());
@@ -348,6 +337,58 @@ fn pending_recovery_control_retires_after_its_original_invocation_is_cancelled()
 }
 
 #[test]
+fn cancelled_detach_retains_completion_and_reports_a_dropped_producer() -> TestResult {
+    for dropped in [false, true] {
+        let cancellation = crate::CancellationToken::new();
+        let original = work(crate::WorkBudget::UNBOUNDED, &cancellation)?;
+        let credit = original
+            .reserve_work(WorkCounters::UNCHARGED)?
+            .into_runtime_credit()?;
+        let (entered, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let task = acyclic_native_runtime::run_blocking_io(
+            move || -> std::io::Result<c_int> {
+                entered.send(()).map_err(std::io::Error::other)?;
+                blocked.recv().map_err(std::io::Error::other)?;
+                Ok(0)
+            },
+            Some((original.runtime_meter(), true)),
+        )?;
+        let mut control = DarwinRecoveryControl {
+            direct: Some(DirectDetach {
+                task,
+                credit,
+                started: false,
+                wake: std::sync::Weak::new(),
+            }),
+            ..Default::default()
+        };
+        control.poll_direct(&ProbeWork::Live(&original))?;
+        started.recv()?;
+        let caller_work = original.clone();
+        let caller = std::thread::spawn(move || {
+            let result = control.wait_direct(&ProbeWork::Live(&caller_work));
+            (control, result)
+        });
+        cancellation.cancel();
+        let (mut control, result) = caller.join().map_err(|_| "detach caller panicked")?;
+        assert_eq!(
+            callback_errno(&result.expect_err("caller was cancelled")),
+            libc::ECANCELED
+        );
+        assert!(control.controls_pending());
+        if !dropped {
+            release.send(())?;
+        }
+        drop(release);
+        let result = control.retire_controls(&original);
+        assert_eq!(result.is_err(), dropped);
+        assert!(!control.controls_pending());
+    }
+    Ok(())
+}
+
+#[test]
 fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> TestResult {
     let original = work(
         crate::WorkBudget::UNBOUNDED,
@@ -356,7 +397,7 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
     let (release, blocked) = std::sync::mpsc::channel::<()>();
     let task = acyclic_native_runtime::run_blocking_io(
         move || -> std::io::Result<c_int> {
-            let _ = blocked.recv_timeout(Duration::from_secs(1));
+            let _ = blocked.recv();
             panic!("actual detach panic")
         },
         Some((original.runtime_meter(), true)),
@@ -379,14 +420,7 @@ fn pending_detach_can_finish_with_its_actual_panic_without_a_wait_token() -> Tes
         std::task::Poll::Pending
     ));
     drop(release);
-    let deadline = Instant::now() + Duration::from_secs(3);
-    let error = loop {
-        if let std::task::Poll::Ready(result) = detach.poll(&ProbeWork::Cleanup(&credit, None))? {
-            break result.expect_err("original panic");
-        }
-        assert!(Instant::now() < deadline, "detach completes");
-        std::thread::yield_now();
-    };
+    let error = detach.retire().expect_err("original panic");
     let NativeMountError::DriverPanicked { panic, .. } = error else {
         panic!("lost actual detach panic")
     };
@@ -428,7 +462,11 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
     );
     assert!(session.unmount.context().is_err());
     assert!(session.namespace_detach_confirmed());
-    session.thread = Some(std::thread::spawn(|| 7));
+    let provider = Arc::clone(&session.unmount);
+    session.thread = Some(std::thread::spawn(move || {
+        let _exit = DriverExit(&provider);
+        7
+    }));
     session
         .unmount
         .provider_exited
@@ -444,6 +482,49 @@ fn stop_before_provider_birth_releases_the_session() -> TestResult {
         session
             .stop(&crate::native_mount::NativeSessionStopWork::Meter(&work))?
             .is_empty()
+    );
+    assert!(session.thread.is_none());
+    Ok(())
+}
+
+#[test]
+fn provider_unwind_publishes_shutdown_before_joining_its_original_panic() -> TestResult {
+    let temporary = tempfile::tempdir()?;
+    let original = work(
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )?;
+    let resources = sdk(temporary.path(), &original)?;
+    let provider = Arc::clone(&resources);
+    let (entered, started) = std::sync::mpsc::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let mut session = DarwinMountSession {
+        handler_failure: Arc::clone(&resources.context()?.handler_failure),
+        unmount: resources,
+        thread: Some(std::thread::spawn(move || {
+            let _exit = DriverExit(&provider);
+            let _ = entered.send(());
+            let _ = blocked.recv();
+            std::panic::resume_unwind(Box::new("provider disappeared"));
+        })),
+        loop_finished_before_teardown: None,
+        loop_result: None,
+        native_root_identity: None,
+    };
+    started.recv()?;
+    drop(release);
+    let mut failures = session.stop(&crate::native_mount::NativeSessionStopWork::Meter(
+        &original,
+    ))?;
+    let Some(NativeMountError::DriverPanicked { panic, .. }) = failures.take() else {
+        return Err("provider panic was not retained".into());
+    };
+    assert_eq!(
+        panic
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .downcast_ref::<&str>(),
+        Some(&"provider disappeared")
     );
     assert!(session.thread.is_none());
     Ok(())

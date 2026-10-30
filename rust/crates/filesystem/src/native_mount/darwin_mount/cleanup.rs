@@ -90,7 +90,7 @@ impl DirectDetach {
         }
     }
 
-    fn retire(self) -> Result<(), NativeMountError> {
+    pub(super) fn retire(self) -> Result<(), NativeMountError> {
         let Self { task, credit, .. } = self;
         // The runtime owns the completion wake and its birth allocation. A
         // cancelled invocation cannot revoke retirement of an already started
@@ -113,16 +113,6 @@ impl std::task::Wake for DriverSessionResources {
         self.retirement_wake.notify();
         self.changed.notify_all();
     }
-}
-
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "The assertion bounds the computed visit count before conversion."
-)]
-pub(super) const fn control_visits(timeout: Duration, interval: Duration) -> u64 {
-    let visits = timeout.as_nanos().div_ceil(interval.as_nanos()) + 1;
-    assert!(visits <= u64::MAX as u128);
-    visits as u64
 }
 
 impl DarwinRecoveryControl {
@@ -188,18 +178,44 @@ impl DarwinRecoveryControl {
         Ok(())
     }
 
-    fn wait_direct(&mut self, work: &ProbeWork<'_>) -> Result<(), NativeMountError> {
-        let deadline = Instant::now() + DIRECT_UNMOUNT_TIMEOUT;
-        while self.direct.is_some() {
-            self.poll_direct(work)?;
-            if self.direct.is_none() {
-                break;
+    pub(super) fn wait_direct(&mut self, work: &ProbeWork<'_>) -> Result<(), NativeMountError> {
+        work.check()?;
+        let Some(task) = &mut self.direct else {
+            return Ok(());
+        };
+        let cancellation = match work {
+            ProbeWork::Live(original) => Some(original.cancellation_wait()?),
+            ProbeWork::Cleanup(_, wait) => wait.map(|wait| wait.cancelled()),
+        };
+        task.started = true;
+        // Borrow the completion: cancelling this caller leaves the accepted
+        // native operation in its original custody for physical retirement.
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            task.task.wait_interruptible(async {
+                match cancellation {
+                    Some(cancellation) => cancellation.await,
+                    None => std::future::pending().await,
+                }
+            })
+        }));
+        let completed = match result {
+            Ok(Ok(None)) => {
+                // Replace the departing caller's waker with the retained
+                // retirement owner before returning cancellation.
+                let credit = Arc::clone(&task.credit);
+                let completed = task.poll(&ProbeWork::Cleanup(&credit, None))?;
+                if let Poll::Ready(result) = completed {
+                    self.direct = None;
+                    result?;
+                }
+                return Err(crate::DemandError::Cancelled.into());
             }
-            if Instant::now() >= deadline {
-                return Err(NativeMountError::ControlPending);
-            }
-            work.read()?;
-            std::thread::sleep(STOP_POLL_INTERVAL);
+            Ok(Ok(Some(result))) => Ok(Ok(result)),
+            Ok(Err(error)) => Ok(Err(error)),
+            Err(panic) => Err(panic),
+        };
+        if let Some(task) = self.direct.take() {
+            DirectDetach::completed(&task.credit, completed)?;
         }
         Ok(())
     }

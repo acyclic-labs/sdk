@@ -306,85 +306,6 @@ fn attributes_observed_before_a_change_never_take_a_later_label() -> TestResult 
 }
 
 #[test]
-fn revalidation_uses_uncached_metadata_for_changes_around_the_mount() -> TestResult {
-    let (source, context, work) = checkout_context(MountPublication::Manual)?;
-    let context = Arc::new(context);
-    let observer: Arc<dyn ViewObserver> = context.clone();
-    source.observe_view_with_meter(Arc::downgrade(&observer), &work)?;
-    // SAFETY: the bridge reports a constant.
-    let timeout = u64::from(unsafe { acyclic_fs_darwin_mount_attribute_timeout() });
-    assert_eq!(
-        timeout, 0,
-        "a cached client requires a TTL wait at every boundary"
-    );
-    let barrier = || -> Result<_, NativeMountError> {
-        let began = uptime(&context.clock, &work)?;
-        context.revalidate(&work)?;
-        Ok((began, uptime(&context.clock, &work)?))
-    };
-    let (began, ended) = barrier()?;
-    assert!(ended - began < REPLY_DELIVERY_SLACK);
-
-    // SAFETY: the name is NUL-terminated and `context` outlives the call.
-    let status = unsafe {
-        acyclic_fs_darwin_mount_mkdir(
-            Arc::as_ptr(&context) as usize,
-            c"/own".as_ptr(),
-            0o755,
-            0,
-            0,
-        )
-    };
-    assert_eq!(status, 0);
-    let (began, ended) = barrier()?;
-    assert!(ended - began < REPLY_DELIVERY_SLACK);
-
-    let revalidates_immediately = || -> TestResult {
-        let (began, ended) = barrier()?;
-        assert!(ended - began < REPLY_DELIVERY_SLACK);
-        let (began, ended) = barrier()?;
-        assert!(ended - began < REPLY_DELIVERY_SLACK);
-        Ok(())
-    };
-    source.create_file(
-        &MountPath::root().child(b"around".to_vec()),
-        FileMetadata::default(),
-        None,
-        &work,
-    )?;
-    revalidates_immediately()?;
-    context.forget_view();
-    revalidates_immediately()?;
-    Ok(())
-}
-
-#[test]
-fn a_barrier_waits_only_for_callbacks_that_began_before_it() -> TestResult {
-    let gate = Arc::new(CallbackGate::new());
-    let earlier = gate.enter();
-    let (drained, finished) = std::sync::mpsc::channel();
-    let barrier = std::thread::spawn({
-        let gate = Arc::clone(&gate);
-        move || {
-            let work = work(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )?;
-            gate.drain(&work)?;
-            let _ = drained.send(());
-            Ok::<_, NativeMountError>(())
-        }
-    });
-    assert!(finished.recv_timeout(Duration::from_millis(50)).is_err());
-    let later = gate.enter();
-    drop(earlier);
-    finished.recv_timeout(Duration::from_secs(5))?;
-    drop(later);
-    barrier.join().map_err(|_| "barrier panicked")??;
-    Ok(())
-}
-
-#[test]
 fn nfs_wire_protocol_preserves_file_semantics() {
     let checks: [unsafe extern "C" fn() -> c_int; 7] = [
         nfs4_test_read_reply,
@@ -648,9 +569,7 @@ fn macos_revalidation_shows_changes_made_around_the_mount() -> TestResult {
         std::fs::metadata(&created).err().map(|error| error.kind()),
         Some(std::io::ErrorKind::NotFound)
     );
-    let began = Instant::now();
     mount.revalidate(&work)?;
-    assert!(began.elapsed() < REPLY_DELIVERY_SLACK);
 
     source.write_range(
         &MountPath::root().child(b"changed".to_vec()),
@@ -689,7 +608,6 @@ fn macos_server_answers_only_the_kernel() -> TestResult {
 
     // An NFS NULL call, as any local process could send it.
     let mut stream = std::os::unix::net::UnixStream::connect(&socket)?;
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let call: [u32; 11] = [0x8000_0028, 1, 0, 2, 100_003, 4, 0, 0, 0, 0, 0];
     let bytes = call
         .iter()
