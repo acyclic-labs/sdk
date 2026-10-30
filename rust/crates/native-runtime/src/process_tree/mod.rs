@@ -998,14 +998,6 @@ impl ProcessTree {
         }
     }
 
-    /// Arms one wait on the direct child's exit, waking by `deadline`.
-    #[cfg(all(unix, test))]
-    fn arm_exit(&mut self, deadline: Instant) -> io::Result<events::Wait> {
-        self.prepare_exit_source()?;
-        let exit = self.exit_source()?;
-        events::arm(exit.as_slice(), Some(deadline))
-    }
-
     /// Terminates containment and reaps the direct child.
     pub fn terminate(&mut self, meter: Option<&dyn crate::NativeReadMeter>) -> io::Result<()> {
         if meter.is_some() {
@@ -1125,6 +1117,7 @@ impl ProcessTree {
     }
 
     /// Requests graceful Unix group termination, then performs mandatory tree cleanup after direct-child exit or `grace`.
+    /// After forced termination, waits on the original process exit without an additional deadline.
     pub fn terminate_after(&mut self, grace: Duration) -> io::Result<ExitStatus> {
         let operation = obs::span!(
             INFO,
@@ -1143,7 +1136,7 @@ impl ProcessTree {
                     Ok(status) => status,
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {
                         self.terminate_descendants()?;
-                        self.wait(Duration::from_secs(5))?
+                        self.wait_exit(None)?
                     }
                     Err(error) => {
                         self.terminate(None)?;
