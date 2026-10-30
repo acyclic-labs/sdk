@@ -559,4 +559,31 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn a_blocked_session_follow_is_a_reported_wait_until_its_record_arrives() -> TestResult {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
+    let report = || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut output = Vec::new();
+        waits.report(&mut output)?;
+        Ok(String::from_utf8(output)?)
+    };
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "waits", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
+    let mut follow = fixture
+        .client()?
+        .follow(crate::FollowRequest::new(StreamPath::new("waits")?, 1))
+        .map_ok(crate::records_only)
+        .await?;
+    assert!(futures::poll!(follow.next()).is_pending());
+    assert!(report()?.contains("waiting: session-follow "));
+    append(&provider, "waits", 1).await?;
+    assert_eq!(next(&mut follow).await?.sequence, 1);
+    assert!(!report()?.contains("waiting: session-follow "));
+    Ok(())
+}
+
 mod tenk;

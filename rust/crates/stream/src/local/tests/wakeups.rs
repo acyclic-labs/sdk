@@ -161,3 +161,31 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn a_follow_at_its_tail_is_a_reported_wait_until_its_record_arrives()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
+    let report = || -> Result<String, Box<dyn std::error::Error>> {
+        let mut output = Vec::new();
+        waits.report(&mut output)?;
+        Ok(String::from_utf8(output)?)
+    };
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let path = StreamPath::new("agents/report/data")?;
+    append(&provider, path.clone()).await?;
+    let mut follow = provider
+        .follow(crate::FollowRequest::new(path.clone(), 1))
+        .map_ok(crate::records_only)
+        .await?;
+    probe(follow.as_mut());
+    assert_eq!(report()?.matches("waiting: stream-follow ").count(), 1);
+    append(&provider, path).await?;
+    assert!(matches!(follow.next().await, Some(Ok(_))));
+    assert_eq!(report()?, "");
+    Ok(())
+}
