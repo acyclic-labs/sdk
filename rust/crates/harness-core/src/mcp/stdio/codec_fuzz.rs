@@ -53,17 +53,8 @@ pub fn check(input: &[u8]) {
     }
 }
 
-/// Use the actual request and line writers for the transcript seed.
+/// Capture the client's actual first write. Successful response transcripts
+/// must be captured from a running server, rather than assembled here.
 pub fn seed() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let request = request();
-    let initialized = serde_json::json!({
-        "jsonrpc": "2.0", "id": request.initialization,
-        "result": { "protocolVersion": crate::mcp::PROTOCOL_VERSION,
-            "serverInfo": { "name": "capture", "version": "1" }, "capabilities": {} }
-    });
-    let result =
-        serde_json::json!({ "jsonrpc": "2.0", "id": request.operation, "result": { "tools": [] } });
-    let mut bytes = codec::encode_line(&initialized, usize::MAX, None)?.0;
-    bytes.extend_from_slice(&codec::encode_line(&result, usize::MAX, None)?.0);
-    Ok(bytes)
+    Ok(request().exchange(None)?.1)
 }

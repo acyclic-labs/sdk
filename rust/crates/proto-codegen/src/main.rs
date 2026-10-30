@@ -9,7 +9,10 @@ mod service;
 
 fn main() -> io::Result<()> {
     run().map_err(|error| {
-        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+        let quote = |value: &str| {
+            let escaped = value.replace('\'', if cfg!(windows) { "''" } else { "'\\''" });
+            format!("'{escaped}'")
+        };
         let args = std::env::args().skip(1).collect::<Vec<_>>();
         let step = args.first().map_or("mode selection", String::as_str);
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");

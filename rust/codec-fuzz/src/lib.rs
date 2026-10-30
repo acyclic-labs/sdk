@@ -49,6 +49,24 @@ fn check<T: Message + Default>(bytes: &[u8]) {
     }
 }
 
+fn check_semantic<W, S>(bytes: &[u8])
+where
+    W: Message + Default + From<S>,
+    S: TryFrom<W> + Clone + std::fmt::Debug + PartialEq,
+    S::Error: std::fmt::Debug,
+{
+    check::<W>(bytes);
+    if let Ok(wire) = W::decode(bytes)
+        && let Ok(value) = S::try_from(wire)
+    {
+        let encoded = W::from(value.clone()).encode_to_vec();
+        assert_eq!(
+            S::try_from(W::decode(encoded.as_slice()).unwrap()).unwrap(),
+            value
+        );
+    }
+}
+
 fn seed<T: Message + Default>() -> Vec<u8> {
     T::default().encode_to_vec()
 }
@@ -171,6 +189,30 @@ pub fn auth(bytes: &[u8]) {
         assert_eq!(BlockProto::from(value).encode_to_vec(), bytes);
     }
     if let Ok(value) = authority::decode_capability(bytes) {
+        for version in [0, 2, u32::MAX] {
+            let mut refused = CapabilityProto::from(value.clone());
+            refused.version = version;
+            // Removing every block also makes the body semantically invalid:
+            // the version must decide admission before block or signature work.
+            for without_blocks in [false, true] {
+                if without_blocks {
+                    refused.blocks.clear();
+                }
+                let encoded = refused.encode_to_vec();
+                assert_eq!(
+                    authority::decode_capability(&encoded),
+                    Err(acyclic_auth::Error::UnsupportedVersion(version))
+                );
+                assert!(matches!(
+                    acyclic_auth::verify::verify(
+                        &encoded,
+                        &acyclic_auth::testing::Snapshot::default(),
+                        acyclic_auth::testing::NOW,
+                    ),
+                    Err(acyclic_auth::verify::VerifyError::Version(found)) if found == version
+                ));
+            }
+        }
         assert_eq!(
             authority::decode_capability(&CapabilityProto::from(value.clone()).encode_to_vec()),
             Ok(value)
@@ -178,6 +220,20 @@ pub fn auth(bytes: &[u8]) {
     }
     if let Ok(value) = authority::decode_caveat(bytes) {
         assert_eq!(CaveatProto::from(value).encode_to_vec(), bytes);
+    }
+    if let Ok(value) = RecordAttributes::decode(bytes) {
+        assert_eq!(
+            RecordAttributesProto::from(value.clone()).encode_to_vec(),
+            bytes
+        );
+        if let Some(first) = value.as_slice().first() {
+            let mut duplicate = value.as_slice().to_vec();
+            duplicate.push(first.clone());
+            assert_eq!(
+                RecordAttributes::try_new(duplicate),
+                Err(acyclic_auth::Error::Invalid)
+            );
+        }
     }
     if let Ok(value) = GrantSetProto::decode(bytes) {
         if let Ok(grants) = GrantSet::try_from(value) {

@@ -24,9 +24,17 @@ fn messages(
             name.to_upper_camel_case(),
             if auth { "Proto" } else { "" }
         );
+        let check = if auth {
+            format!(
+                "check_semantic::<{ty}, {rust}::{}>",
+                name.to_upper_camel_case()
+            )
+        } else {
+            format!("check::<{ty}>")
+        };
         writeln!(
             output,
-            "Decoder {{ name: \"{package}.{name}\", family: {family}, check: check::<{ty}>, seed: seed::<{ty}> }},"
+            "Decoder {{ name: \"{package}.{name}\", family: {family}, check: {check}, seed: seed::<{ty}> }},"
         )?;
         messages(
             output,
