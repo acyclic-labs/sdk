@@ -1,5 +1,6 @@
 use super::*;
 use crate::foundation::{Digest, VolumeId};
+use crate::kernel::KernelAccounting;
 use crate::kernel::{
     AttributeClass, AttributeEntry, BlobChild, BlobChunkRef, BlobPage, Extent, ExtentChild,
     FileKind, FileMetadata, InlineFileData, NameEncoding,
