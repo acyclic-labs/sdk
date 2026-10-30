@@ -566,7 +566,8 @@ fn live_session(
         0,
         0,
         Body::Hello(wire::SessionHello {
-            version: 1,
+            interest: None,
+            version: crate::session::VERSION,
             client_id: Bytes::from_static(b"authority-control"),
             destination_node: "node".into(),
             receive_bytes: 1_000_000,

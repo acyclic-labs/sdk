@@ -36,8 +36,6 @@ pub(crate) mod parking_model;
 mod snapshot;
 #[cfg(all(feature = "test-support", feature = "local"))]
 pub(crate) use snapshot::check_codec as check_snapshot_codec;
-#[cfg(feature = "local")]
-pub(crate) use snapshot::RestoreError;
 
 use crate::{
     AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildrenPage,

@@ -222,7 +222,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
         }],
     )
     .unwrap();
-    assert_eq!(validate(b"", &stale), Err(StreamError::InvalidArgument));
+    assert_eq!(validate(b"", &stale), Err(StreamError::Unsupported));
 }
 
 #[cfg(not(target_arch = "wasm32"))]

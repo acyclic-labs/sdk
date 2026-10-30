@@ -8,6 +8,7 @@ fn messages(
     rust: &str,
     entries: &[prost_types::DescriptorProto],
     auth: bool,
+    family: usize,
 ) -> Result<(), std::fmt::Error> {
     for entry in entries {
         if entry
@@ -25,7 +26,7 @@ fn messages(
         );
         writeln!(
             output,
-            "Decoder {{ name: \"{package}.{name}\", check: check::<{ty}>, seed: seed::<{ty}> }},"
+            "Decoder {{ name: \"{package}.{name}\", family: {family}, check: check::<{ty}>, seed: seed::<{ty}> }},"
         )?;
         messages(
             output,
@@ -33,6 +34,7 @@ fn messages(
             &format!("{rust}::{}", name.to_snake_case()),
             &entry.nested_type,
             auth,
+            family,
         )?;
     }
     Ok(())
@@ -71,7 +73,8 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
         ("stream", "acyclic.stream.v1", "acyclic_stream::wire", false),
     ];
     let mut table = String::from("pub static DECODERS: &[Decoder] = &[\n");
-    for (family, package, rust, auth) in families {
+    let mut descriptors = String::from("static DESCRIPTORS: &[&[u8]] = &[\n");
+    for (index, (family, package, rust, auth)) in families.into_iter().enumerate() {
         let (_, _, protos) = acyclic_proto_build::FAMILIES
             .iter()
             .find(|entry| entry.0 == family)
@@ -79,15 +82,21 @@ fn generate() -> Result<(), Box<dyn std::error::Error>> {
         let manifest = root.join("../crates").join(family);
         let descriptor = out.join(format!("{family}.bin"));
         acyclic_proto_build::descriptor(&manifest, protos, &descriptor)?;
+        writeln!(
+            descriptors,
+            "include_bytes!(concat!(env!(\"OUT_DIR\"), \"/{family}.bin\")),"
+        )?;
         for proto in *protos {
             println!("cargo:rerun-if-changed={}", manifest.join(proto).display());
         }
         let set = prost_types::FileDescriptorSet::decode(std::fs::read(descriptor)?.as_slice())?;
         for file in set.file.iter().filter(|file| file.package() == package) {
-            messages(&mut table, package, rust, &file.message_type, auth)?;
+            messages(&mut table, package, rust, &file.message_type, auth, index)?;
         }
     }
     table.push_str("];\n");
+    descriptors.push_str("];\n");
+    table.push_str(&descriptors);
     std::fs::write(out.join("decoders.rs"), table)?;
     println!("cargo:rerun-if-changed=../../compatibility/proto");
     Ok(())

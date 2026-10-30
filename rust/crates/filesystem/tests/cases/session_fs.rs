@@ -244,7 +244,8 @@ impl Connection {
         sender.unbounded_send(Ok(frame(
             0,
             Body::Hello(wire::SessionHello {
-                version: 1,
+                interest: None,
+                version: acyclic_stream::session::VERSION,
                 credentials: vec![credential(&granted_resource).into()],
                 client_id: Bytes::from_static(b"fs-test"),
                 destination_node: "local".into(),

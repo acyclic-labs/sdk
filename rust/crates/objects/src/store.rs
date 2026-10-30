@@ -51,7 +51,7 @@
 //! stalled past that grace fails its commit; no commit references a lost
 //! blob. An index key of a holder that crashed before committing pins its
 //! child; it never refuses wrongly in the unsafe direction.
-use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
+use crate::blob::{Envelope, corrupt, decode_batch, decode_incarnation, encode_batch, invalid};
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
     MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
@@ -177,18 +177,9 @@ impl Issued {
     }
 }
 
-/// An account's stored incarnation: 16 incarnation bytes, then the last
-/// claimed run, both big-endian.
+/// An account's versioned incarnation and last claimed run, both big-endian.
 fn incarnation_record(incarnation: u128, run: u64) -> OwnedBytes {
-    [incarnation.to_be_bytes().as_slice(), &run.to_be_bytes()]
-        .concat()
-        .into()
-}
-
-fn decode_incarnation(record: &[u8]) -> Result<(u128, u64), Error> {
-    let (incarnation, run) = record.split_first_chunk::<16>().ok_or_else(corrupt)?;
-    let run: [u8; 8] = run.try_into().map_err(|_| corrupt())?;
-    Ok((u128::from_be_bytes(*incarnation), u64::from_be_bytes(run)))
+    crate::blob::encode_incarnation(incarnation, run).into()
 }
 
 impl<M: Medium> Store<M> {
@@ -565,7 +556,9 @@ impl<M: Medium> Account<M> {
             // A torn, unflushed claim issued no durable authority. Replace
             // its original provider version once, so a competing repair remains fenced.
             None => (u128::from_be_bytes(version()?), 1),
-            Some(Err(_)) if self.medium.volatile() => (u128::from_be_bytes(version()?), 1),
+            Some(Err(error)) if error.code == ErrorCode::Corrupt && self.medium.volatile() => {
+                (u128::from_be_bytes(version()?), 1)
+            }
             Some(Err(error)) => return Err(error),
         };
         let claimed = incarnation_record(incarnation, run);
@@ -1718,15 +1711,19 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     .map_err(medium)?;
                 let fence = match observed
                     .as_ref()
-                    .map(|observed| <[u8; 8]>::try_from(observed.bytes.as_ref()))
+                    .map(|observed| crate::blob::decode_epoch(observed.bytes.as_ref()))
                 {
-                    Some(Ok(bytes)) => u64::from_be_bytes(bytes),
-                    Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
+                    Some(Ok(epoch)) => epoch,
+                    Some(Err(error))
+                        if error.code != ErrorCode::Corrupt || !self.medium.volatile() =>
+                    {
+                        return Err(error);
+                    }
                     // Torn by a crash, or never claimed.
                     Some(Err(_)) | None => 0,
                 };
                 let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
-                let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
+                let advanced = OwnedBytes::from(crate::blob::encode_epoch(epoch));
                 // One collector wins each epoch, across processes.
                 let claimed = match observed {
                     Some(observed) => self
@@ -1741,15 +1738,6 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     Ok(false) => return Err(ErrorCode::Conflict.into()),
                     Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
                     Err(error) => return Err(medium(error)),
-                }
-                // Revisions and admissions of the earlier put protocol fence nothing.
-                for prefix in ["g/", "a/"] {
-                    let mut pages = self.pages(format!("{}{prefix}", self.prefix));
-                    while let Some(page) = pages.next().await? {
-                        for (key, _) in page {
-                            self.medium.remove(&key).await.map_err(medium)?;
-                        }
-                    }
                 }
                 let mut collection = Collection {
                     epoch,

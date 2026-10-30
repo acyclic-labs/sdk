@@ -60,8 +60,9 @@ fuzz_target!(|input: &[u8]| {
     }
     let hello = wire::SessionFrame {
         body: Some(wire::session_frame::Body::Hello(wire::SessionHello {
+            interest: None,
             credentials: vec![session::testing::credential()],
-            version: 1,
+            version: acyclic_stream::session::VERSION,
             client_id: Bytes::from_static(b"fuzz"),
             destination_node: "node".into(),
             receive_bytes: 1024,

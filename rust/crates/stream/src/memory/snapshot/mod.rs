@@ -8,7 +8,7 @@ use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation,
 use prost::Message as _;
 use std::collections::HashMap;
 use std::sync::Arc;
-const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V1\0";
+const MAGIC: &[u8] = b"ACYCLIC-STREAM-STATE-V2\0";
 const NODE_BATCH: u8 = 0;
 const NODE_PREFIX: u8 = 1;
 const RETAINS_REPLAY: u8 = 1;
@@ -38,29 +38,8 @@ impl Snapshot {
     }
 }
 
-pub(crate) enum RestoreError {
-    State(StreamError),
-    PreRevision,
-}
-
-impl From<StreamError> for RestoreError {
-    fn from(error: StreamError) -> Self {
-        Self::State(error)
-    }
-}
-
-#[cfg(any(test, loom))]
-impl RestoreError {
-    fn stream(self) -> StreamError {
-        match self {
-            Self::State(error) => error,
-            Self::PreRevision => StreamError::InvalidArgument,
-        }
-    }
-}
-
-fn invalid() -> RestoreError {
-    RestoreError::State(StreamError::InvalidArgument)
+fn invalid() -> StreamError {
+    StreamError::InvalidArgument
 }
 
 #[cfg(feature = "test-support")]
@@ -86,12 +65,10 @@ impl MemoryStream {
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
     #[cfg(any(test, loom))]
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
-        self.restore_state(encoded)
-            .await
-            .map_err(RestoreError::stream)
+        self.restore_state(encoded).await
     }
 
-    pub(crate) async fn restore_state(&self, encoded: &[u8]) -> Result<(), RestoreError> {
+    pub(crate) async fn restore_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
         let decoded = decode(encoded)?;
         if self
             .limits
@@ -118,7 +95,7 @@ impl MemoryStream {
                 .idempotency_results
                 .is_some_and(|limit| decoded.replay_count() > limit)
         {
-            return Err(StreamError::Capacity.into());
+            return Err(StreamError::Capacity);
         }
         let _publication = self.publication.lock().await;
         #[cfg(loom)]
@@ -277,8 +254,12 @@ impl Snapshot {
     }
 }
 
-fn decode(encoded: &[u8]) -> Result<State, RestoreError> {
-    let mut input = Input(encoded.strip_prefix(MAGIC).ok_or_else(invalid)?);
+fn decode(encoded: &[u8]) -> Result<State, StreamError> {
+    let mut input = Input(crate::persistence::header(
+        encoded,
+        b"ACYCLIC-STREAM-STATE-V",
+        b"2\0",
+    )?);
     let (decision, time, hierarchy) = preamble(&mut input).ok_or_else(invalid)?;
     let mut state = State::default();
     decode_retained(&mut input, &mut state)?;
@@ -408,7 +389,7 @@ fn retained_fact_bound() -> Option<usize> {
         .checked_add(128)
 }
 
-fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), RestoreError> {
+fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), StreamError> {
     for _ in 0..input.len().ok_or_else(invalid)? {
         let flags = input.u8().ok_or_else(invalid)?;
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
@@ -421,24 +402,16 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Resto
                 input.bytes().ok_or_else(invalid)?,
                 retained_fact_bound().ok_or_else(invalid)?,
             )?;
-            use crate::wire::{append_response, idempotency_observation::Outcome};
-            let pre_revision = match &wire.outcome {
-                Some(Outcome::Append(response)) => matches!(&response.outcome,
-                    Some(append_response::Outcome::Committed(receipt)) if receipt.revision.is_none()),
-                Some(Outcome::Fork(receipt)) => receipt.revision.is_none(),
-                _ => false,
-            };
-            if pre_revision {
-                return Err(RestoreError::PreRevision);
-            }
             Some(crate::persistence::observation_from_wire(wire)?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
-            Some(crate::persistence::decode_envelope(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
+            Some(crate::persistence::envelope_from_wire(
+                crate::persistence::decode::<crate::wire::CommittedEnvelope>(
+                    input.bytes().ok_or_else(invalid)?,
+                    retained_fact_bound().ok_or_else(invalid)?,
+                )?,
             )?)
         };
         restore_retained(state, observation, envelope).ok_or_else(invalid)?;
