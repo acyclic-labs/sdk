@@ -1,20 +1,6 @@
-//! The one owner of every provider exchange's waits. Each send through a resolved model, the
-//! model request, its token count and a credential refresh alike, goes through [`Bounded`], so
-//! no exchange can wait without a deadline:
-//! - a total deadline from the send to the body's end;
-//! - an idle deadline on the body, so a silent stream fails even while the total runs.
-//!
-//! Both are measured on the transport's monotonic clock ([`HttpTransport::now`]) on every poll.
-//! The platform timer is only a wake-up source, never the measure: a late, early or starved
-//! timer cannot extend a deadline, because the next poll compares the clock with it. Both fail
-//! as a typed [`ModelTransportFailure::Timeout`], which redelivery treats like any retryable
-//! failure: redelivered only while no output has escaped.
-//!
-//! A deadline is the longest tolerated wait: it expires once the clock passes it.
-//!
-//! [`timer`] is the one place this crate creates a platform timer, deadline wake-ups and retry
-//! backoffs alike; on the native ledger it admits the timer before it exists.
-//! `scripts/qualify-provider-stream.sh` rejects any other timer construction in the crate.
+//! Caller-selected request deadlines share one event from send through body completion.
+//! Requests without a deadline use the original transport directly. Model redelivery
+//! backoff and explicit request expiry use the same platform timer adapter.
 use crate::{HttpRequest, HttpResponse, HttpTransport, TimeoutSpec};
 use acyclic_harness_core::{Error, ModelTransportFailure, Result};
 use acyclic_stream::{BoxProviderFuture, BoxProviderStream};
@@ -34,53 +20,60 @@ type Work = acyclic_fs::NativeMaterializationWork;
 #[cfg(target_arch = "wasm32")]
 type Work = ();
 
-/// A transport whose every exchange is bounded by `timeouts`.
+/// Applies the caller-selected deadline to each request.
 pub(crate) struct Bounded {
     inner: Arc<dyn HttpTransport>,
-    timeouts: TimeoutSpec,
+    total_ms: u64,
 }
 
 impl Bounded {
-    pub(crate) fn new(inner: Arc<dyn HttpTransport>, timeouts: TimeoutSpec) -> Arc<Self> {
-        Arc::new(Self { inner, timeouts })
+    pub(crate) fn new(
+        inner: Arc<dyn HttpTransport>,
+        timeouts: TimeoutSpec,
+    ) -> Arc<dyn HttpTransport> {
+        match timeouts.total_ms {
+            Some(total_ms) => Arc::new(Self { inner, total_ms }),
+            None => inner,
+        }
     }
 
-    /// Runs `send` within the total deadline and returns its response with the deadlines the
-    /// body inherits.
-    async fn exchange(
+    /// Starts the deadline once; the response body retains that same event.
+    async fn exchange<F: Future<Output = Result<HttpResponse>>>(
         &self,
-        send: impl Future<Output = Result<HttpResponse>>,
+        send: impl FnOnce() -> Result<F>,
         work: Option<&Work>,
-    ) -> Result<(HttpResponse, Deadlines)> {
-        let mut deadlines = Deadlines::start(self.inner.clone(), self.timeouts, work.is_some());
-        let mut send = pin!(send);
+    ) -> Result<(HttpResponse, Deadline)> {
+        let mut deadline = Deadline::start(self.inner.clone(), self.total_ms, work.is_some());
+        let mut send = pin!(async { send()?.await });
         let response = futures::future::poll_fn(|context| {
             // The deadline is checked before the producer, so readiness never bypasses it.
-            if let Some(expired) = deadlines.expired(false) {
-                return Poll::Ready(Err(deadlines.timeout(expired)));
+            if deadline.expired() {
+                return Poll::Ready(Err(deadline.timeout()));
             }
             if let Poll::Ready(response) = send.as_mut().poll(context) {
-                return Poll::Ready(response);
+                return Poll::Ready(if deadline.expired() {
+                    Err(deadline.timeout())
+                } else {
+                    response
+                });
             }
-            match deadlines.poll_wake(context, false, work) {
-                Poll::Ready(Ok(expired)) => Poll::Ready(Err(deadlines.timeout(expired))),
+            match deadline.poll_wake(context, work) {
+                Poll::Ready(Ok(())) => Poll::Ready(Err(deadline.timeout())),
                 Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
                 Poll::Pending => Poll::Pending,
             }
         })
         .await?;
-        // Silence is measured from the headers.
-        deadlines.progress = deadlines.transport.now();
-        deadlines.wake = None;
-        Ok((response, deadlines))
+        Ok((response, deadline))
     }
 }
 
 impl HttpTransport for Bounded {
     fn send(&self, request: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
         Box::pin(async move {
-            let (mut response, deadlines) = self.exchange(self.inner.send(request), None).await?;
-            response.body = Box::pin(Guarded::new(response.body, deadlines));
+            let (mut response, deadline) =
+                self.exchange(|| Ok(self.inner.send(request)), None).await?;
+            response.body = Box::pin(Guarded::new(response.body, deadline));
             Ok(response)
         })
     }
@@ -113,9 +106,13 @@ impl HttpTransport for Bounded {
         request: HttpRequest,
         work: &'a Work,
     ) -> Result<acyclic_harness_core::NativeFutureBundle<'a, HttpResponse>> {
-        let send = self.inner.send_with_native_work(request, work)?;
         acyclic_harness_core::NativeFutureBundle::new(work, || async move {
-            let (mut response, deadlines) = self.exchange(send, Some(work)).await?;
+            let (mut response, deadline) = self
+                .exchange(
+                    || self.inner.send_with_native_work(request, work),
+                    Some(work),
+                )
+                .await?;
             // The guard is funded on the original ledger before it exists, and its custody
             // funds the body's wake-up timers.
             let custody = work.claim(
@@ -123,7 +120,7 @@ impl HttpTransport for Bounded {
                 1,
                 acyclic_fs::WorkCounters::UNCHARGED,
             )?;
-            let mut guarded = Guarded::new(response.body, deadlines);
+            let mut guarded = Guarded::new(response.body, deadline);
             guarded.custody = Some(custody);
             response.body = Box::pin(guarded);
             Ok(response)
@@ -131,26 +128,13 @@ impl HttpTransport for Bounded {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Expired {
-    Idle,
-    Total,
-}
-
-/// The typed timeout of an expired deadline, rendered like every other transport failure.
-fn timeout(native: bool, expired: Expired, timeouts: TimeoutSpec) -> Error {
-    match expired {
-        Expired::Idle => crate::transport_failure(
-            native,
-            ModelTransportFailure::Timeout,
-            format_args!("no response bytes for {} ms", timeouts.idle_ms),
-        ),
-        Expired::Total => crate::transport_failure(
-            native,
-            ModelTransportFailure::Timeout,
-            format_args!("exchange exceeded {} ms", timeouts.total_ms),
-        ),
-    }
+/// The typed failure of an explicitly selected request deadline.
+fn timeout(native: bool, total_ms: u64) -> Error {
+    crate::transport_failure(
+        native,
+        ModelTransportFailure::Timeout,
+        format_args!("exchange exceeded {total_ms} ms"),
+    )
 }
 
 /// A platform timer: portable, or admitted on the native ledger.
@@ -189,115 +173,91 @@ pub(crate) fn timer(
     Ok(Wake::Portable(transport.delay(wait)))
 }
 
-/// One exchange's deadlines on the transport's clock.
-struct Deadlines {
+/// One request's fixed deadline on the transport's monotonic clock.
+struct Deadline {
     transport: Arc<dyn HttpTransport>,
-    timeouts: TimeoutSpec,
+    total_ms: u64,
     native: bool,
-    /// When the exchange must have ended.
-    total: Duration,
-    /// The last progress: the headers, then each chunk.
-    progress: Duration,
+    due: Duration,
     wake: Option<Wake>,
 }
 
-impl Deadlines {
-    fn start(transport: Arc<dyn HttpTransport>, timeouts: TimeoutSpec, native: bool) -> Self {
-        let now = transport.now();
+impl Deadline {
+    fn start(transport: Arc<dyn HttpTransport>, total_ms: u64, native: bool) -> Self {
         Self {
-            total: now.saturating_add(Duration::from_millis(timeouts.total_ms.into())),
-            progress: now,
+            due: transport
+                .now()
+                .saturating_add(Duration::from_millis(total_ms)),
             transport,
-            timeouts,
+            total_ms,
             native,
             wake: None,
         }
     }
 
-    fn idle_at(&self) -> Duration {
-        self.progress
-            .saturating_add(Duration::from_millis(self.timeouts.idle_ms.into()))
+    fn expired(&self) -> bool {
+        self.transport.now() >= self.due
     }
 
-    /// The deadline the clock has passed, if any; `idle` only once the body is being read.
-    fn expired(&self, idle: bool) -> Option<Expired> {
+    fn timeout(&self) -> Error {
+        timeout(self.native, self.total_ms)
+    }
+
+    /// Arms one event, retained across headers and every body chunk. A broken
+    /// platform timer returns an error rather than starting a readiness recheck.
+    fn poll_wake(&mut self, context: &mut Context<'_>, work: Option<&Work>) -> Poll<Result<()>> {
         let now = self.transport.now();
-        if now > self.total {
-            Some(Expired::Total)
-        } else if idle && now > self.idle_at() {
-            Some(Expired::Idle)
-        } else {
-            None
+        if now >= self.due {
+            self.wake = None;
+            return Poll::Ready(Ok(()));
         }
-    }
-
-    fn timeout(&self, expired: Expired) -> Error {
-        timeout(self.native, expired, self.timeouts)
-    }
-
-    /// Waits for a deadline: wakes on the timer, then measures on the clock. A timer that fires
-    /// before the clock reaches the deadline is re-armed for the rest; one that keeps firing
-    /// early yields instead of spinning.
-    fn poll_wake(
-        &mut self,
-        context: &mut Context<'_>,
-        idle: bool,
-        work: Option<&Work>,
-    ) -> Poll<Result<Expired>> {
-        for _ in 0..2 {
-            if let Some(expired) = self.expired(idle) {
+        let wake = match &mut self.wake {
+            Some(wake) => wake,
+            slot @ None => slot.insert(timer(
+                self.transport.as_ref(),
+                self.due.saturating_sub(now),
+                work,
+            )?),
+        };
+        match wake.poll_unpin(context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(result) => {
                 self.wake = None;
-                return Poll::Ready(Ok(expired));
-            }
-            if self.wake.is_none() {
-                let due = if idle {
-                    self.total.min(self.idle_at())
+                result?;
+                if self.expired() {
+                    Poll::Ready(Ok(()))
                 } else {
-                    self.total
-                };
-                // Wake past the deadline, since at the deadline itself it has not expired: a
-                // whole millisecond past, so a timer or clock of millisecond granularity, which
-                // may drop the fraction, still passes it rather than re-arming forever.
-                let wait = due.saturating_sub(self.transport.now()) + Duration::from_millis(1);
-                self.wake = Some(timer(self.transport.as_ref(), wait, work)?);
-            }
-            match self.wake.as_mut().map(|wake| wake.poll_unpin(context)) {
-                Some(Poll::Pending) | None => return Poll::Pending,
-                Some(Poll::Ready(result)) => {
-                    self.wake = None;
-                    result?;
+                    Poll::Ready(Err(crate::invalid(
+                        "request deadline timer completed before expiry",
+                    )))
                 }
             }
         }
-        context.waker().wake_by_ref();
-        Poll::Pending
     }
 }
 
-/// A response body under both deadlines.
+/// A response body retaining the request's original deadline event.
 struct Guarded {
-    body: BoxProviderStream<'static, Result<Bytes>>,
-    deadlines: Deadlines,
-    ended: bool,
+    body: Option<BoxProviderStream<'static, Result<Bytes>>>,
+    deadline: Deadline,
     /// Native-ledger custody of this guard's own allocation, whose ledger funds its timers.
     #[cfg(not(target_arch = "wasm32"))]
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl Guarded {
-    fn new(body: BoxProviderStream<'static, Result<Bytes>>, deadlines: Deadlines) -> Self {
+    fn new(body: BoxProviderStream<'static, Result<Bytes>>, deadline: Deadline) -> Self {
         Self {
-            body,
-            deadlines,
-            ended: false,
+            body: Some(body),
+            deadline,
             #[cfg(not(target_arch = "wasm32"))]
             custody: None,
         }
     }
 
     fn end(&mut self, item: Result<Bytes>) -> Poll<Option<Result<Bytes>>> {
-        self.ended = true;
-        self.deadlines.wake = None;
+        self.body = None;
+        self.deadline.wake = None;
         Poll::Ready(Some(item))
     }
 }
@@ -307,22 +267,27 @@ impl Stream for Guarded {
 
     fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        if this.ended {
+        if this.body.is_none() {
             return Poll::Ready(None);
         }
-        // Measure both deadlines before polling the producer. A late or starved timer must
-        // not let a newly ready chunk (or EOF) erase the silence that already expired.
-        if let Some(expired) = this.deadlines.expired(true) {
-            let error = this.deadlines.timeout(expired);
+        // The original deadline precedes ready bytes and EOF even if the timer
+        // driver has not yet delivered its wake.
+        if this.deadline.expired() {
+            let error = this.deadline.timeout();
             return this.end(Err(error));
         }
-        if let Poll::Ready(item) = this.body.poll_next_unpin(context) {
-            if matches!(&item, Some(Ok(bytes)) if !bytes.is_empty()) {
-                this.deadlines.progress = this.deadlines.transport.now();
+        if let Poll::Ready(item) = this
+            .body
+            .as_mut()
+            .expect("live response body")
+            .poll_next_unpin(context)
+        {
+            if this.deadline.expired() {
+                return this.end(Err(this.deadline.timeout()));
             }
-            if item.is_none() {
-                this.ended = true;
-                this.deadlines.wake = None;
+            if !matches!(&item, Some(Ok(_))) {
+                this.body = None;
+                this.deadline.wake = None;
             }
             return Poll::Ready(item);
         }
@@ -333,9 +298,9 @@ impl Stream for Guarded {
             .map(acyclic_fs::NativeAllocation::work);
         #[cfg(target_arch = "wasm32")]
         let work = None;
-        match this.deadlines.poll_wake(context, true, work) {
-            Poll::Ready(Ok(expired)) => {
-                let error = this.deadlines.timeout(expired);
+        match this.deadline.poll_wake(context, work) {
+            Poll::Ready(Ok(())) => {
+                let error = this.deadline.timeout();
                 this.end(Err(error))
             }
             Poll::Ready(Err(error)) => this.end(Err(error)),

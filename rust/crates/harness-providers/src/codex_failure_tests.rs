@@ -1,6 +1,7 @@
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkCounters};
 use acyclic_harness_core::{Error, ModelTransportFailure, NativeFutureBundle, wire::ErrorCode};
+use futures::FutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn work() -> NativeMaterializationWork {
@@ -11,7 +12,11 @@ fn work() -> NativeMaterializationWork {
     .unwrap_or_else(|_| panic!("fixture work"))
 }
 
-struct FailingTransport(ModelTransportFailure, AtomicUsize);
+struct FailingTransport(
+    ModelTransportFailure,
+    AtomicUsize,
+    futures::future::Shared<futures::channel::oneshot::Receiver<()>>,
+);
 
 impl HttpTransport for FailingTransport {
     fn send(&self, _: HttpRequest) -> BoxProviderFuture<'_, Result<HttpResponse>> {
@@ -30,9 +35,11 @@ impl HttpTransport for FailingTransport {
     ) -> Result<NativeFutureBundle<'a, HttpResponse>> {
         NativeFutureBundle::new(work, || async move {
             self.1.fetch_add(1, Ordering::SeqCst);
-            // Let the second bearer queue on the real refresh owner before it settles.
-            tokio::task::yield_now().await;
-            Err(crate::transport_failure(true, self.0, "endpoint failure"))
+            let failure = match self.2.clone().await {
+                Ok(()) => self.0,
+                Err(_) => ModelTransportFailure::Interrupted,
+            };
+            Err(crate::transport_failure(true, failure, "endpoint failure"))
         })
     }
 }
@@ -45,21 +52,43 @@ async fn native_refresh_failure_keeps_its_class_for_every_queued_caller() -> Res
         ModelTransportFailure::Interrupted,
         ModelTransportFailure::Tls,
     ] {
-        for native_follower in [false, true] {
+        for (native_follower, producer_lost) in [(false, false), (true, false), (true, true)] {
             let (_root, login, _) = fixture(&jwt(0), 200)?;
             let fresh = login.fresh();
-            let transport = FailingTransport(failure, AtomicUsize::new(0));
+            let (release, completion) = futures::channel::oneshot::channel();
+            let transport = FailingTransport(failure, AtomicUsize::new(0), completion.shared());
             let leader_work = work();
             let follower_work = work();
             {
                 let mut leader = leader_work.claim(0, 0, WorkCounters::UNCHARGED)?;
                 let mut follower = follower_work.claim(0, 0, WorkCounters::UNCHARGED)?;
-                let (left, right) = futures::join!(
-                    login.bearer(&transport, None, Some(&mut leader)),
-                    fresh.bearer(&transport, None, native_follower.then_some(&mut follower)),
-                );
+                let mut left = std::pin::pin!(login.bearer(&transport, None, Some(&mut leader)));
+                let mut right = std::pin::pin!(fresh.bearer(
+                    &transport,
+                    None,
+                    native_follower.then_some(&mut follower)
+                ));
+                assert!(left.as_mut().now_or_never().is_none());
+                assert!(right.as_mut().now_or_never().is_none());
+                assert_eq!(transport.1.load(Ordering::SeqCst), 1);
+                if producer_lost {
+                    drop(release);
+                } else {
+                    release
+                        .send(())
+                        .expect("response is held by the refresh owner");
+                }
+                let (left, right) = futures::join!(left, right);
                 let left = left.unwrap_err();
                 let right = right.unwrap_err();
+                let expected = if producer_lost {
+                    ModelTransportFailure::Interrupted
+                } else {
+                    failure
+                };
+                assert!(
+                    matches!(&left, Error::ModelUnavailable { failure, .. } if *failure == expected)
+                );
                 assert_eq!(left.code(), right.code(), "{failure:?}");
                 assert_eq!(left.to_string(), right.to_string(), "{failure:?}");
                 // A transport failure is the provider's, so it settles the task instead of stranding it.
