@@ -249,7 +249,11 @@ mod tests {
         let saved = br#"{"spawn":{"brief":"review the diff","intent":"first"}}"#;
         assert_eq!(
             files
-                .create(&format!("{}/0000000001-a.json", old.directory), saved, 4096)
+                .create(
+                    &format!("{}/0000000001-a.json", old.directory),
+                    saved,
+                    Some(4096),
+                )
                 .await?,
             None
         );
