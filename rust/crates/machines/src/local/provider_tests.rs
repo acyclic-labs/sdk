@@ -335,16 +335,129 @@ async fn idle_suspended_machine_wakes_for_exec_and_attached_devices_only_detach(
         enrolled(foreign).await,
         Err(ProviderError::Invalid(_))
     ));
+    let mut matching = CreateMachine::new(
+        IdempotencyKey::new(),
+        None,
+        attached.contract.network_policy_digest,
+    );
+    matching.suspension = SuspensionPolicy::Manual;
     let local = enrolled(attached).await?;
+    // Every lifecycle intent passes the one admission, so even requests that
+    // match the enrolled contract exactly are refused on an attached device.
     for refused in [
+        local.create(matching).await,
+        local
+            .set_suspension_policy(device, SuspensionPolicy::Manual, IdempotencyKey::new())
+            .await,
         local.suspend(device, IdempotencyKey::new()).await,
         local.wake(device, IdempotencyKey::new()).await,
     ] {
         assert!(matches!(refused, Err(ProviderError::Unsupported(_))));
     }
+
+    // Detach stops exactly the commands this binding dispatched. A process the
+    // device runs outside the binding keeps running and exits on its own.
+    let mut bystander = std::process::Command::new(std::env::current_exe()?)
+        .args(["--exact", "local::tests::child", "--nocapture"])
+        .env("ACYCLIC_TEST_MACHINE_PROCESS", "input")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let mut output = local.exec(device, child()).await?;
+    assert!(matches!(output.next().await, Some(Ok(ExecOutput::Data(_)))));
     assert_eq!(
         local.destroy_machine(device, IdempotencyKey::new()).await?,
         MutationOutcome::MachineDestroyed(device)
+    );
+    let mut stopped = false;
+    while let Some(frame) = output.next().await {
+        if let ExecOutput::Stopped(stop) = frame? {
+            stopped = stop.cleanup_completed;
+        }
+    }
+    assert!(stopped);
+    assert!(bystander.try_wait()?.is_none());
+    std::io::Write::write_all(
+        bystander.stdin.as_mut().ok_or("bystander stdin")?,
+        &[0, 255, 7, 0],
+    )?;
+    assert_eq!(bystander.wait()?.code(), Some(9));
+    Ok(())
+}
+
+/// The implicit wake is the provider's transition, not its caller's: an exec
+/// whose deadline ends mid-wake leaves the wake to complete, and the next exec
+/// runs instead of finding the Machine stranded in Waking.
+#[tokio::test(start_paused = true)]
+async fn deadline_during_implicit_wake_never_strands_the_machine()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct GatedWake {
+        gate: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait]
+    impl crate::provider::admitted::NativeMachine for GatedWake {
+        async fn exec(
+            &self,
+            _: ExecCommand,
+            _: std::time::Instant,
+        ) -> Result<ExecStream, ProviderError> {
+            Ok(Box::pin(futures::stream::iter([Ok(ExecOutput::ExitCode(
+                0,
+            ))])))
+        }
+        async fn read(
+            &self,
+            _: FileAccess,
+            _: u32,
+            _: &crate::provider::deadline::GuestDeadline,
+        ) -> Result<FileRead, ProviderError> {
+            Err(ProviderError::Unsupported("no files".into()))
+        }
+        async fn write(
+            &self,
+            _: FileAccess,
+            _: Vec<u8>,
+            _: bool,
+            _: &crate::provider::deadline::GuestDeadline,
+        ) -> Result<FileWrite, ProviderError> {
+            Err(ProviderError::Unsupported("no files".into()))
+        }
+        async fn stop(&self) -> Result<(), ProviderError> {
+            Ok(())
+        }
+        async fn wake(&self) -> Result<(), ProviderError> {
+            self.gate.notified().await;
+            Ok(())
+        }
+    }
+    let machine = MachineId::new();
+    let mut observation = enrollment(machine);
+    observation.contract.suspension = SuspensionPolicy::AfterIdle(Duration::from_secs(3_600));
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let local = crate::provider::admitted::AdmittedMachine::open(
+        GatedWake { gate: gate.clone() },
+        observation,
+        Arc::new(MemoryStream::default()),
+        StreamPath::new(format!("machine-tests/{machine}"))?,
+    )
+    .await?;
+    local.suspend(machine, IdempotencyKey::new()).await?;
+    let command = |timeout| ExecCommand::new(vec!["noop".into()], timeout);
+    // The physical wake is held, so this caller's deadline passes mid-wake.
+    assert!(matches!(
+        local.exec(machine, command(50)?).await,
+        Err(ProviderError::CommandIndeterminate(_))
+    ));
+    gate.notify_one();
+    let mut output = local.exec(machine, command(60_000)?).await?;
+    assert!(matches!(
+        output.next().await,
+        Some(Ok(ExecOutput::ExitCode(0)))
+    ));
+    assert_eq!(
+        local.inspect_machine(machine).await?.state,
+        MachineState::Running
     );
     Ok(())
 }

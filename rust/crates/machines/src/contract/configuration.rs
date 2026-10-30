@@ -170,8 +170,10 @@ impl MachineContract {
 pub enum LifecycleClass {
     /// The provider creates, suspends, wakes, checkpoints, forks and destroys it.
     Provisioned,
-    /// A device its owner attached. Only exec, guest IO and observation apply;
-    /// [`MachinesProvider::destroy_machine`] detaches it without touching the device.
+    /// A device its owner attached. Only exec, guest IO and observation apply.
+    /// [`MachinesProvider::destroy_machine`] detaches it: commands dispatched
+    /// through this Machine binding are stopped, because their authority ends
+    /// with the binding, and nothing else on the device is touched.
     Attached,
 }
 

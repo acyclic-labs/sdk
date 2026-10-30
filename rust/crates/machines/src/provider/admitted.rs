@@ -38,6 +38,8 @@ pub(crate) struct AdmittedMachine<B> {
     journal: Journal,
     /// Present only under an AfterIdle policy, which enrollment fixes.
     idle: Option<(Duration, watch::Sender<Activity>)>,
+    /// This shared provider, so a transition it starts outlives its caller.
+    this: Weak<Self>,
 }
 
 type Admitted<'a> = MutexGuard<'a, (MachineObservation, Option<IdempotencyKey>)>;
@@ -85,7 +87,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         observation: MachineObservation,
         streams: Arc<dyn StreamProvider>,
         root: StreamPath,
-    ) -> Result<Self, ProviderError> {
+    ) -> Result<Arc<Self>, ProviderError> {
         let journal = Journal::new(streams, root, observation.id);
         let observation = journal.enroll(observation).await?;
         if observation.state != MachineState::Running {
@@ -97,18 +99,17 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             }
             _ => None,
         };
-        Ok(Self {
+        // The provider is shared from birth, so the transitions it owns (an
+        // implicit wake, an idle suspension) can outlive any one caller. Its
+        // AfterIdle producer is one parked task per Machine, woken only by its
+        // own activity or idle deadline.
+        let machine = Arc::new_cyclic(|this| Self {
             backend,
             observation: Mutex::new((observation, None)),
             journal,
             idle,
-        })
-    }
-
-    /// Shares the provider and starts its AfterIdle producer: one parked task
-    /// per Machine, woken only by its own activity or idle deadline.
-    pub(crate) fn start(self) -> Arc<Self> {
-        let machine = Arc::new(self);
+            this: this.clone(),
+        });
         if let Some((idle, activity)) = &machine.idle {
             let id = machine.journal.machine_id();
             tokio::spawn(suspend_when_idle(
@@ -118,39 +119,62 @@ impl<B: NativeMachine> AdmittedMachine<B> {
                 activity.subscribe(),
             ));
         }
-        machine
+        Ok(machine)
     }
 
     fn busy(&self) -> Option<Busy> {
         self.idle.as_ref().map(|(_, activity)| Busy::new(activity))
     }
 
-    /// Admits guest work on a running incarnation. An idle-suspended Machine is
-    /// woken first, under the caller's lock wait and deadline; nothing else is.
-    async fn running(&self, machine: MachineId) -> Result<(), ProviderError> {
+    /// The one lifecycle admission. Every keyed lifecycle intent, explicit or
+    /// implicit, takes the incarnation lock here; an attached device admits
+    /// only its detach.
+    async fn admit(&self, intent: &Intent<'_>) -> Result<Admitted<'_>, ProviderError> {
         let admitted = self.observation.lock().await;
-        Self::select(&admitted.0, machine)?;
-        let (state, wakes) = (admitted.0.state, admitted.0.contract.wakes_on_demand());
-        match state {
-            MachineState::Running => return Ok(()),
-            MachineState::Suspended if wakes => {
-                let key = self.journal.implicit_key(b"wake").await?;
-                self.change_locked(admitted, machine, key, MachineState::Running)
-                    .await?;
-                if self.observation.lock().await.0.state == MachineState::Running {
-                    return Ok(());
-                }
-            }
-            _ => {}
+        if !matches!(intent, Intent::Destroy(_)) {
+            admitted.0.contract.provisioned()?;
+        }
+        Ok(admitted)
+    }
+
+    /// Admits guest work on a running incarnation. An idle-suspended Machine is
+    /// woken first. The wake is the provider's own transition: it runs to
+    /// completion even when the caller's deadline ends its wait.
+    async fn running(&self, machine: MachineId) -> Result<(), ProviderError> {
+        let (state, wakes) = {
+            let admitted = self.observation.lock().await;
+            Self::select(&admitted.0, machine)?;
+            (admitted.0.state, admitted.0.contract.wakes_on_demand())
+        };
+        if state == MachineState::Suspended && wakes {
+            let owner = self.this.upgrade().ok_or(ProviderError::Unavailable)?;
+            tokio::spawn(async move { owner.wake_idle(machine).await })
+                .await
+                .map_err(|_| ProviderError::Unavailable)??;
+        }
+        if self.observation.lock().await.0.state == MachineState::Running {
+            return Ok(());
         }
         Err(ProviderError::Conflict(
             "Machine is not running; recovery: wake the original incarnation first".into(),
         ))
     }
 
+    /// Wakes an idle-suspended Machine, unless another caller already did.
+    async fn wake_idle(&self, machine: MachineId) -> Result<(), ProviderError> {
+        let admitted = self.admit(&Intent::Wake(machine)).await?;
+        if admitted.0.state != MachineState::Suspended || !admitted.0.contract.wakes_on_demand() {
+            return Ok(());
+        }
+        let key = self.journal.implicit_key(b"wake").await?;
+        self.change_locked(admitted, machine, key, MachineState::Running)
+            .await
+            .map(drop)
+    }
+
     /// Suspends after idle without guest work, unless work began since quiet.
     async fn suspend_idle(&self, machine: MachineId, quiet: u64) -> Result<(), ProviderError> {
-        let admitted = self.observation.lock().await;
+        let admitted = self.admit(&Intent::Suspend(machine)).await?;
         let current = self.idle.as_ref().map(|(_, activity)| *activity.borrow());
         if admitted.0.state != MachineState::Running
             || current.is_none_or(|value| value.busy != 0 || value.epoch != quiet)
@@ -177,10 +201,17 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         key: IdempotencyKey,
         target: MachineState,
     ) -> Result<MutationOutcome, ProviderError> {
-        let admission = self.observation.lock().await;
-        if target != MachineState::Destroyed {
-            admission.0.contract.provisioned()?;
-        }
+        let intent = match target {
+            MachineState::Suspended => Intent::Suspend(machine),
+            MachineState::Running => Intent::Wake(machine),
+            MachineState::Destroyed => Intent::Destroy(machine),
+            _ => {
+                return Err(ProviderError::Invalid(
+                    "unknown native transition; recovery: use suspend, wake or destroy".into(),
+                ));
+            }
+        };
+        let admission = self.admit(&intent).await?;
         let outcome = self.change_locked(admission, machine, key, target).await?;
         // An explicit wake restarts the idle deadline, exactly like guest work.
         if let (MachineState::Running, Some((_, activity))) = (target, &self.idle) {
@@ -404,7 +435,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         })
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Create(&request)).await?;
+        let (value, _) = &*admitted;
         let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
         // The local factory enrolls an existing workspace. It never fabricates
         // another filesystem view or an immutable image capture.
@@ -448,7 +480,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         volume: wire::selection::VolumeRef,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Attach(machine, &volume)).await?;
+        let (value, _) = &*admitted;
         Self::select(value, machine)?;
         if value.contract.selected_volume_ref.as_ref() != Some(&volume) {
             return Err(unsupported("replace the admitted selected volume"));
@@ -500,7 +533,8 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let (value, _) = &*self.observation.lock().await;
+        let admitted = self.admit(&Intent::Policy(machine, policy)).await?;
+        let (value, _) = &*admitted;
         Self::select(value, machine)?;
         if policy != value.contract.suspension {
             return Err(unsupported("install an automatic suspension producer"));

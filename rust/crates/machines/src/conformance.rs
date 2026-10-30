@@ -3,7 +3,7 @@
 use crate::{
     Capability, CompatibilityPolicy, CreateMachine, ExecCommand, IdempotencyKey, Image,
     LifecycleClass, MachineId, MachineObservation, MachineState, MachinesProvider, MutationOutcome,
-    OperationPhase, ProviderError, SuspensionPolicy,
+    OperatingSystem, OperationPhase, Platform, ProviderError, Shell, SuspensionPolicy,
 };
 use acyclic_stream::testing::{Counted, RequestLedger, Requests};
 use futures::StreamExt as _;
@@ -125,7 +125,9 @@ pub async fn verify_attached(backend: &dyn AttachedBackend) -> Result<(), String
         return Err("a closed device connection is not observed as Offline".into());
     }
     let woken = provider.wake(device.id, key(0x55)?).await;
-    let executed = provider.exec(device.id, probe()?).await;
+    let executed = provider
+        .exec(device.id, probe(device.contract.platform)?)
+        .await;
     if !matches!(woken, Err(ProviderError::Unavailable))
         || !matches!(executed, Err(ProviderError::Unavailable))
     {
@@ -158,14 +160,30 @@ async fn state(
         .map_err(|error| error.to_string())
 }
 
-fn probe() -> Result<ExecCommand, String> {
-    ExecCommand::new(vec!["true".into()], 60_000).map_err(|error| error.to_string())
+/// A no-op in the Machine's own declared shell, so the suite runs on every
+/// enrolled platform without a fixture-supplied command.
+fn probe(platform: Platform) -> Result<ExecCommand, String> {
+    let argv: &[&str] = match (platform.shell, platform.os) {
+        (Shell::Bash, _) => &["bash", "-c", ":"],
+        (Shell::PowerShell, OperatingSystem::Windows) => {
+            &["powershell", "-NoProfile", "-Command", "exit 0"]
+        }
+        (Shell::PowerShell, _) => &["pwsh", "-NoProfile", "-Command", "exit 0"],
+    };
+    ExecCommand::new(argv.iter().map(|value| (*value).into()).collect(), 60_000)
+        .map_err(|error| error.to_string())
 }
 
 /// Admits one exec and consumes its whole result. A provider without a guest
 /// operating system still performs admission, then reports Unsupported.
-async fn exec_admitted(provider: &dyn MachinesProvider, machine: MachineId) -> Result<(), String> {
-    match provider.exec(machine, probe()?).await {
+async fn exec_admitted(
+    provider: &dyn MachinesProvider,
+    machine: &MachineObservation,
+) -> Result<(), String> {
+    match provider
+        .exec(machine.id, probe(machine.contract.platform)?)
+        .await
+    {
         Ok(mut output) => {
             while let Some(frame) = output.next().await {
                 frame.map_err(|error| error.to_string())?;
@@ -196,7 +214,7 @@ async fn exec_wakes(
         .suspend(machine.id, key(0x08)?)
         .await
         .map_err(|error| error.to_string())?;
-    exec_admitted(provider, machine.id).await?;
+    exec_admitted(provider, machine).await?;
     if state(provider, machine.id).await? != MachineState::Running {
         return Err("exec did not wake an idle-suspended Machine".into());
     }
@@ -214,7 +232,9 @@ async fn exec_wakes(
         .await
         .map_err(|error| error.to_string())?;
     // Refusal is a definite answer: never uncertainty, and never a missing guest.
-    let refused = provider.exec(manual.id, probe()?).await;
+    let refused = provider
+        .exec(manual.id, probe(manual.contract.platform)?)
+        .await;
     if !matches!(
         refused,
         Err(ProviderError::Conflict(_) | ProviderError::Rejected(_))

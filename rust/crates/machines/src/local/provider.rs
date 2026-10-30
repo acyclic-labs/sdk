@@ -21,8 +21,8 @@ mod tests;
 /// The contract's platform must be this host's. A provisioned enrollment may
 /// suspend after idle: suspension then stops its process generation, and the
 /// next exec or file operation starts a fresh one within its own deadline. An
-/// attached enrollment is the owner's device: destroy detaches it, and nothing
-/// suspends it.
+/// attached enrollment is the owner's device: destroy detaches it, stopping
+/// only the commands this binding dispatched, and nothing suspends it.
 pub async fn provider(
     observation: MachineObservation,
     options: LocalOptions,
@@ -51,11 +51,7 @@ pub async fn provider(
         machine: LocalMachine::new(observation.id, options)?,
         generation: std::sync::Mutex::new(Generation::new()?),
     };
-    Ok(
-        AdmittedMachine::open(backend, observation, streams, journal)
-            .await?
-            .start(),
-    )
+    Ok(AdmittedMachine::open(backend, observation, streams, journal).await?)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

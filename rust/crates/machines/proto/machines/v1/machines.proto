@@ -150,8 +150,10 @@ enum LifecycleClass {
   LIFECYCLE_CLASS_PROVISIONED = 1;
   // A device its owner attached. Only Exec, guest IO and observation apply:
   // Checkpoint, ForkMachine, Suspend, Wake and SetSuspensionPolicy are
-  // UNIMPLEMENTED, Create never yields one, and DestroyMachine detaches the
-  // device without touching it. Its suspension is manual and it never expires.
+  // UNIMPLEMENTED, and Create never yields one. DestroyMachine detaches it: it
+  // stops the commands dispatched through this Machine binding, whose authority
+  // ends with the binding, and touches nothing else on the device. Its
+  // suspension is manual and it never expires.
   LIFECYCLE_CLASS_ATTACHED = 2;
 }
 message QualifyImageRequest {

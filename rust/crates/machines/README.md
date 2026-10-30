@@ -41,8 +41,9 @@ Every `MachineContract` states its `Platform` (OS, architecture, device kind,
 shell and path style) and its `LifecycleClass`. A `Provisioned` Machine is one
 the provider creates and owns. An `Attached` Machine is an existing device the
 provider only reaches: create, checkpoint, fork, suspend, wake and suspension
-policy changes return `Unsupported`, and destroy detaches it without touching the
-device. An unreachable attached device reports `MachineState::Offline`; wake and
+policy changes return `Unsupported`. Destroy detaches it: it stops the commands
+dispatched through that Machine binding, whose authority ends with the binding,
+and touches nothing else on the device. An unreachable attached device reports `MachineState::Offline`; wake and
 exec on it return `Unavailable`.
 
 Exec, read and write on a provisioned Machine suspended under
