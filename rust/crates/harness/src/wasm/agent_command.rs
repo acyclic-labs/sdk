@@ -66,7 +66,7 @@ export interface WasmAgentSessionError extends Error {
 "#;
 
 pub(super) fn binding(encoded: &Uint8Array) -> Result<AgentBinding, JsValue> {
-    let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |length| {
         if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
             Err(command_error(CommandError::Capacity))
         } else {
@@ -253,7 +253,7 @@ impl WasmAgentCommand {
     /// Rust codec stages it in parts.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |_| Ok(()))?;
+        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |_| Ok(()))?;
         let command = PreparedCommand::from_bytes(bytes).map_err(command_error)?;
         Ok(Self { command })
     }
@@ -275,7 +275,7 @@ impl WasmAgentCommand {
     /// result throws the shared typed error with its owned protobuf request.
     #[wasm_bindgen(unchecked_return_type = "AgentReply")]
     pub fn reply(&self, encoded: &Uint8Array) -> Result<JsValue, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |length| {
             if length > MAX_AGENT_REPLY_BYTES as u64 {
                 Err(command_error(CommandError::Capacity))
             } else {

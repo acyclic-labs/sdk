@@ -32,7 +32,6 @@ use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
-mod bytes;
 mod cancel;
 mod content;
 use content::*;

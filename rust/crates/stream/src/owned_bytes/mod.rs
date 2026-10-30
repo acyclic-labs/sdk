@@ -10,6 +10,8 @@ use std::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 use std::{io, sync::Arc};
+#[cfg(all(feature = "js-bytes", target_arch = "wasm32"))]
+pub mod javascript;
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared;
 mod sealed;

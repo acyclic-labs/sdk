@@ -19,17 +19,6 @@ impl WasmAgentAuthority {
         .map_err(|error| js_error(crate::Error::Invalid(error.to_string())))
     }
 
-    pub(super) fn admission(&self) -> Result<crate::filesystem::TurnAdmission, JsValue> {
-        let (audience, scope) = self
-            .issuer
-            .caller()
-            .ok_or_else(|| JsValue::from_str("platform admission is required"))?;
-        Ok(crate::filesystem::TurnAdmission::Admitted {
-            audience: audience.clone(),
-            scope: scope.clone(),
-        })
-    }
-
     fn verifier(&self) -> Result<crate::core::AuthorityVerifier, JsValue> {
         self.issuer.verifier(&mut None).map_err(js_error)
     }

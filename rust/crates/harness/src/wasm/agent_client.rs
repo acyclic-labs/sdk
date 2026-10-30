@@ -120,7 +120,7 @@ impl WasmAgentClient {
     /// Tool-output follows share this observer's bounded fold and next().
     #[wasm_bindgen(js_name = openResource)]
     pub fn open_resource(&self, encoded: &js_sys::Uint8Array) -> Result<(), JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
+        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(encoded, |length| {
             if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
                 Err(error(
                     "client_subscription_capacity",
@@ -270,7 +270,7 @@ impl WasmAgentClient {
             let encoded = value
                 .dyn_into::<js_sys::Uint8Array>()
                 .map_err(|_| error("invalid_subscription", "expected encoded subscription"))?;
-            let (bytes, ()) = super::bytes::snapshot(&encoded, |length| {
+            let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&encoded, |length| {
                 if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
                     Err(error(
                         "client_subscription_capacity",

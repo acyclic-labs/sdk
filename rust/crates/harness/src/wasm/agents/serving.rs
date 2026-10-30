@@ -565,7 +565,7 @@ impl WasmAgentServer {
 }
 
 fn snapshot(view: &js_sys::Uint8Array) -> std::result::Result<Vec<u8>, JsValue> {
-    let (bytes, ()) = super::super::bytes::snapshot(view, |length| {
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(view, |length| {
         if length > acyclic_stream::MAX_COMMAND_BYTES as u64 {
             Err(stream_error(StreamError::Capacity))
         } else {

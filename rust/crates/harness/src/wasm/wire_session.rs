@@ -73,7 +73,7 @@ fn session_error(cause: WireSessionError) -> JsValue {
 }
 
 fn command_bytes(view: &Uint8Array, capacity_code: &str) -> Result<Vec<u8>, JsValue> {
-    let (bytes, ()) = super::bytes::snapshot(view, |count| {
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(view, |count| {
         if count > acyclic_stream::MAX_COMMAND_BYTES as u64 {
             Err(error(capacity_code))
         } else {

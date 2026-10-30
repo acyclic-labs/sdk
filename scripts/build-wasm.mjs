@@ -18,7 +18,7 @@ const assertByteSnapshotBoundary = (file, source) => {
     .replaceAll(".map(|digest| digest.to_vec())", "")
     .replace(/(canonical_json_digest\([^;]+?)\.to_vec\(\)/g, "$1");
   if (/\.\s*(?:to_vec|copy_to|copy_to_uninit|raw_copy_to_ptr)\s*\(|Uint8Array::new\s*\(/.test(rustOwned)) {
-    throw new Error(`${file}: copy caller arrays through wasm/bytes.rs`);
+    throw new Error(`${file}: copy caller arrays through acyclic_stream::javascript_bytes::snapshot`);
   }
 };
 const checkByteSnapshotBoundary = directory => {

@@ -174,7 +174,7 @@ pub(super) fn call(
             }
             .map_err(rejected)?;
             let view: Uint8Array = value.dyn_into().map_err(rejected)?;
-            super::super::bytes::snapshot(&view, |_| Ok(()))
+            acyclic_stream::javascript_bytes::snapshot(&view, |_| Ok(()))
                 .map(|(bytes, ())| bytes)
                 .map_err(rejected)
         })

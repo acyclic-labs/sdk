@@ -345,7 +345,7 @@ pub fn verify_artifact_json(
     input: &str,
     environment: &str,
     entry: &str,
-    artifact: &[u8],
+    artifact: &js_sys::Uint8Array,
     paths: Vec<String>,
     files: Vec<js_sys::Uint8Array>,
 ) -> Result<(), wasm_bindgen::JsValue> {
@@ -357,11 +357,16 @@ pub fn verify_artifact_json(
             &ManifestError::invalid("assets", "undeclared-asset").to_string(),
         ));
     }
+    let (artifact, ()) = acyclic_stream::javascript_bytes::snapshot(artifact, |_| Ok(()))?;
     let files: Vec<(String, Vec<u8>)> = paths
         .into_iter()
-        .zip(files.into_iter().map(|file| file.to_vec()))
-        .collect();
-    verify_artifact(&manifest, environment, entry, artifact, &files)
+        .zip(files)
+        .map(|(path, file)| {
+            let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&file, |_| Ok(()))?;
+            Ok((path, bytes))
+        })
+        .collect::<Result<_, wasm_bindgen::JsValue>>()?;
+    verify_artifact(&manifest, environment, entry, &artifact, &files)
         .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
 

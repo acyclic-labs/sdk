@@ -62,7 +62,7 @@ pub fn frame_instructions(
     let source = crate::model::InstructionSource::with_identity(&file, &source);
     let mut remaining = maximum;
     source.reserve(&mut remaining, None).map_err(js_error)?;
-    let (bytes, ()) = super::bytes::snapshot(bytes, |length| {
+    let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(bytes, |length| {
         if length != file.descriptor().byte_length() {
             return Err(JsValue::from_str(
                 "instruction body length differs from its source",
@@ -162,7 +162,7 @@ impl BrowserReader {
         let bytes: Uint8Array = value
             .dyn_into()
             .map_err(|_| Error::Storage("context reader requires Uint8Array".into()))?;
-        let (bytes, ()) = super::bytes::snapshot(&bytes, |length| {
+        let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(&bytes, |length| {
             if length > maximum_bytes {
                 return Err(JsValue::from_str("context reader exceeded byte bound"));
             }
