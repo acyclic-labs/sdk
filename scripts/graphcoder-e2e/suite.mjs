@@ -14,10 +14,13 @@ export class CaseDeadline extends Error {
   }
 }
 
-export async function withOwnedCase({ processes, prepare, run, onPhase }) {
+// `origin` is the performance.now() instant the budget began; a suite process
+// whose own start opens the envelope passes 0, so module load and preparation
+// spend the same ten seconds the outer owner measures.
+export async function withOwnedCase({ processes, prepare, run, onPhase, origin }) {
   assert.ok(processes && typeof processes.close === "function" && typeof run === "function",
     "owned-case step=admit failed; recovery command: call withOwnedCase({processes,run}) with the caller's process scope");
-  const entered = performance.now();
+  const entered = origin ?? performance.now();
   let started, preparationSeconds = 0, phaseFailure, activePhase = prepare ? "preparation" : "run";
   const phase = (name, outcome) => {
     try { onPhase?.({ phase: name, outcome, seconds: (performance.now() - entered) / 1000 }); }
@@ -37,7 +40,7 @@ export async function withOwnedCase({ processes, prepare, run, onPhase }) {
     expired = true;
     phase(activePhase, "deadline");
     close().catch(() => {}); // The original physical owner is joined below.
-  }, 9000);
+  }, origin === undefined ? 9000 : origin + 9000 - performance.now());
   try {
     let prepared;
     if (prepare) {

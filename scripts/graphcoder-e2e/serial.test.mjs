@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition, collectPartitions,acceptanceBinding } from "./serial.mjs";
+import { collect, runSuites, partition, collectPartitions,acceptanceBinding, variants } from "./serial.mjs";
 import {mkdtemp,mkdir,readFile,writeFile,rename,rm} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -79,11 +79,18 @@ test("Windows starts the next case only after the previous case has exited", asy
 
 test("serial qualification requires every OS case, volume variant, exit and bounded suite", () => {
   const cases = [{ id: "case", ntfs: true }], coverage = { pass: true };
-  const receipts = [{ code: 0, report: { platform: "win32", selected: ["case"], qualification: false,
-    coverage, seconds: 0.2, limit_seconds: 10,
-    results: ["case", "case-ntfs"].map(id => ({ case: id, platform: "win32", status: "pass" })) } }];
+  assert.deepEqual(variants(cases, "win32").map(test => test.id), ["case", "case-ntfs"]);
+  assert.deepEqual(variants(cases, "linux").map(test => test.id), ["case"]);
+  // Each filesystem variant is its own suite and so owns its own envelope.
+  const receipts = ["case", "case-ntfs"].map(id => ({ code: 0, report: { platform: "win32", selected: [id],
+    qualification: false, coverage, seconds: 0.2, limit_seconds: 10,
+    results: [{ case: id, platform: "win32", status: "pass" }] } }));
   assert.equal(collect(cases, receipts, "win32", coverage).pass, true);
-  assert.throws(() => collect(cases, [], "win32", coverage), /every case/);
+  assert.throws(() => collect(cases, [], "win32", coverage), /every case variant/);
+  const shared = structuredClone(receipts[0]);
+  shared.report.results.push({ case: "case-ntfs", platform: "win32", status: "pass" });
+  assert.throws(() => collect(cases, [shared], "win32", coverage), /every case variant/,
+    "variants sharing one suite envelope cannot qualify");
   for (const edit of [report => report.results.pop(), report => report.results.push(report.results[0]),
     report => report.platform = "linux", report => report.selected = [],
     report => report.qualification = true, report => report.coverage = { pass: false },
