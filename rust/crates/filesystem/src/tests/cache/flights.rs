@@ -234,3 +234,70 @@ async fn dropped_leaders_release_flights_and_retry_without_a_stale_identity()
     assert_eq!(reads.load(Ordering::Acquire), 2);
     Ok(())
 }
+
+#[tokio::test]
+async fn cancelled_followers_return_capacity_without_retaining_their_wakers()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Woken;
+    impl std::task::Wake for Woken {
+        fn wake(self: Arc<Self>) {}
+    }
+    let inner = MemoryObjectStore::default();
+    let cancellation = CancellationToken::new();
+    let (identity, bytes) = object(b"one-original-read");
+    object_work!(inner, put(identity, bytes.clone()), B, &cancellation).await?;
+    let (release, gate) = futures::channel::oneshot::channel();
+    let reads = Arc::new(AtomicUsize::new(0));
+    let cached = CachedObjectStore::new(
+        GatedStore {
+            inner: Arc::new(inner),
+            gate: futures::FutureExt::shared(gate),
+            reads: reads.clone(),
+        },
+        ObjectCacheOptions {
+            maximum_waiters_per_object: 1,
+            ..options(4, 64)
+        },
+    )?;
+    let mut leader = Box::pin(object_work!(cached, read(identity, 17), B, &cancellation));
+    assert!(futures::poll!(leader.as_mut()).is_pending());
+    for cancel in [false, true, false] {
+        let follower_cancellation = CancellationToken::new();
+        let observer = Arc::new(Woken);
+        let waker = Waker::from(observer.clone());
+        let mut follower = Box::pin(object_work!(
+            cached,
+            read(identity, 17),
+            B,
+            &follower_cancellation
+        ));
+        assert!(
+            follower
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        if cancel {
+            follower_cancellation.cancel();
+            let Poll::Ready(Err(failure)) =
+                follower.as_mut().poll(&mut Context::from_waker(&waker))
+            else {
+                return Err("cancelled follower did not finish at its cancellation event".into());
+            };
+            assert!(matches!(failure.error, ObjectStoreError::Cancelled));
+        }
+        drop(follower);
+        drop(waker);
+        // Dropping the consumer is the settle event. A stale waker would keep
+        // its owner alive and make the next reader exhaust capacity one.
+        assert_eq!(Arc::strong_count(&observer), 1);
+        assert_eq!(reads.load(Ordering::Acquire), 1);
+    }
+    release
+        .send(())
+        .map_err(|_| "original producer disappeared")?;
+    assert_eq!(leader.await?.value.bytes, bytes);
+    assert_eq!(reads.load(Ordering::Acquire), 1);
+    assert_eq!(cached.stats()?.in_flight, 0);
+    Ok(())
+}

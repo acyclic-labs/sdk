@@ -183,13 +183,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
                         .await
                 }
                 ReadPlan::Follower(flight) => {
-                    let bytes = wait_for_flight(
-                        &flight,
-                        work.cancellation,
-                        #[cfg(not(target_arch = "wasm32"))]
-                        work.original,
-                    )
-                    .await;
+                    let bytes = wait_for_flight(&flight, work.cancellation).await;
                     self.record_coalesced()?;
                     shared_read(bytes?, maximum_bytes)
                 }
