@@ -578,6 +578,117 @@ mod tests {
     }
 
     #[test]
+    fn reply_keeps_the_original_request_and_exact_goal_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use acyclic_harness_core::{
+            AgentId, OperationId,
+            agent::{ConversationEntry, GOAL_INTENT, Sender},
+            conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+            resources::ProviderRef,
+        };
+        let agent = AgentPath::root(&AgentId::from_bytes([1; 16]));
+        let run = OperationId::from_bytes([2; 16]);
+        let file = FileRef::new(
+            VolumeRef::new(
+                ProviderRef::new("test".into(), "filesystem".into(), "1".into(), &mut None)?,
+                "scratch".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                &mut None,
+            )?,
+            "output.json".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"done", "application/json", &mut None)?,
+            "output".into(),
+            &mut None,
+        )?;
+        let origin = ConversationEntry {
+            inbox: 1,
+            input: TurnInput::Message {
+                from: Sender::User {
+                    principal: "user".into(),
+                },
+                id: IntentId::try_from("prompt")?,
+                body: Box::new(file.clone()),
+                attachments: None,
+            },
+            output: file.clone(),
+            outcome: Default::default(),
+            goal: Some(run),
+        };
+        let terminal = ConversationEntry {
+            inbox: 3,
+            input: TurnInput::Message {
+                from: Sender::Agent {
+                    path: agent.clone(),
+                },
+                id: IntentId::try_from(format!("{GOAL_INTENT}{run}:2"))?,
+                body: Box::new(file),
+                attachments: None,
+            },
+            ..origin.clone()
+        };
+        let command = AgentCommand::Reply {
+            agent: agent.clone(),
+            id: IntentId::try_from("prompt")?,
+            inbox: 1,
+        };
+        let encode = |entry, origin| {
+            encode_agent_reply(
+                &Ok(AgentReply::Reply {
+                    reply: Reply::Answered {
+                        sequence: 2,
+                        entry,
+                        origin,
+                    },
+                }),
+                &command,
+            )
+        };
+        let bytes = encode(terminal.clone(), Some(Box::new(origin.clone())))?;
+        assert!(
+            matches!(decode_agent_reply(&bytes, &command)?, Ok(AgentReply::Reply {
+            reply: Reply::Answered { entry, origin: Some(origin), .. }
+        }) if entry.inbox == 3 && origin.inbox == 1)
+        );
+        // The first settlement cannot masquerade as terminal, nor can a
+        // foreign goal or sender replace the authenticated self-continuation.
+        assert!(matches!(
+            encode(origin.clone(), None),
+            Err(CommandError::Invalid)
+        ));
+        let mut foreign = terminal.clone();
+        foreign.goal = Some(OperationId::from_bytes([3; 16]));
+        assert!(matches!(
+            encode(foreign, Some(Box::new(origin.clone()))),
+            Err(CommandError::Invalid)
+        ));
+        let mut foreign = terminal;
+        let TurnInput::Message { from, .. } = &mut foreign.input else {
+            return Err("terminal input is not a message".into());
+        };
+        *from = Sender::User {
+            principal: "user".into(),
+        };
+        assert!(matches!(
+            encode(foreign, Some(Box::new(origin.clone()))),
+            Err(CommandError::Invalid)
+        ));
+        let ordinary = ConversationEntry {
+            goal: None,
+            ..origin
+        };
+        let bytes = encode(ordinary, None)?;
+        assert!(matches!(
+            decode_agent_reply(&bytes, &command)?,
+            Ok(AgentReply::Reply {
+                reply: Reply::Answered { origin: None, .. }
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn failed_export_does_not_consume_uncertain_custody() -> Result<(), Box<dyn std::error::Error>>
     {
         let mut original = request()?;

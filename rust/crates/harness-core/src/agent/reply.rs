@@ -11,7 +11,7 @@
 //! entry through the one reference committed with that entry; no output is copied.
 
 use super::{AgentRecord as _, AgentState, ConversationEntry, Error, IntentId, TurnInput};
-use acyclic_stream::{ReadRequest, StreamPath, StreamProvider};
+use acyclic_stream::{ReadRequest, StreamPath};
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 

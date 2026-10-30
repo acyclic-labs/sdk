@@ -78,7 +78,7 @@ pub(super) struct Completed {
 impl super::AgentRecord for Completed {}
 
 pub(super) fn result(agent: &super::AgentPath, run: OperationId) -> Result<StreamPath, Error> {
-    StreamPath::try_from(format!("{}/goals/{run}", agent.as_str()))
+    StreamPath::new(format!("{}/goals/{run}", agent.as_str()))
         .map_err(|_| Error::Path("invalid goal result path"))
 }
 
