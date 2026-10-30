@@ -18,7 +18,9 @@ pub trait ObjectSealer: acyclic_stream::ProviderPlatform {
 
     /// Validates the association and bounds its stored representation.
     /// Reject unsealed references when this composition requires sealing.
-    /// This admission runs before any bytes are published.
+    /// This admission runs before any bytes are published. The plaintext bound
+    /// may be `u64::MAX`; clamp representation overhead to the representable
+    /// byte count rather than rejecting a bound larger than the actual object.
     fn stored_limit(&self, id: ObjectId, plaintext_limit: u64) -> Result<u64, ObjectStoreError>;
 
     /// Authenticates the seal against every association field and returns plaintext.

@@ -1,7 +1,7 @@
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 use super::*;
 
-/// Bounded self-contained local backend options.
+/// Self-contained local backend options.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalOptions {
@@ -11,22 +11,22 @@ pub struct LocalOptions {
     pub stream: acyclic_stream::LocalStreamLimits,
     /// Durable immutable Objects provider options.
     pub objects: acyclic_objects::local::LocalObjectsLimits,
-    /// Largest immutable object admitted.
-    pub maximum_object_bytes: u64,
+    /// Optional caller-selected immutable-object admission limit.
+    pub maximum_object_bytes: Option<u64>,
     /// Bounded disposable immutable-object accelerator shared by every handle.
     pub object_cache: crate::cache::ObjectCacheOptions,
 }
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 impl LocalOptions {
-    /// Creates local options with the SDK's bounded backend defaults.
+    /// Creates local options without a whole-object admission limit.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             root: root.into(),
             stream: acyclic_stream::LocalStreamLimits::default(),
             objects: acyclic_objects::local::LocalObjectsLimits::default(),
-            maximum_object_bytes: 64 * 1024 * 1024,
+            maximum_object_bytes: None,
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
     }

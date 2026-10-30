@@ -11,7 +11,7 @@ fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let provider = MemoryObjects::memory();
-    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(maximum)
+    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(Some(maximum))
 }
 
 #[tokio::test]
@@ -495,5 +495,59 @@ async fn writes_hash_each_body_once() -> Result<(), Box<dyn std::error::Error>> 
         .await
         .map_err(ObjectStoreError::LogicalObjects)?;
     once(hashed() - before, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_policy_and_unbounded_read_maxima_preserve_real_object_results()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::initialize_test_native_io();
+    let cancel = CancellationToken::new();
+    let provider = Arc::new(MemoryObjects::memory());
+    let limited = LogicalObjectStore::new(provider.clone()).with_object_limit(Some(4))?;
+    let objects = [
+        HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"first")),
+        HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"second")),
+    ];
+    let mut work = AuthorityWork::new(BUDGET, &cancel);
+    assert!(matches!(
+        limited.put_many_hashed(&objects, &mut work).await,
+        Err(ObjectStoreError::TooLarge { .. })
+    ));
+    assert_eq!(work.spent().backend_write_operations, 0);
+    let unlimited = limited.with_object_limit(None)?;
+    let mut work = AuthorityWork::new(BUDGET, &cancel);
+    unlimited.put_many_hashed(&objects, &mut work).await?;
+    assert_eq!(work.spent().backend_write_operations, 1);
+    let requests = objects.each_ref().map(|object| ObjectReadRequest {
+        object_id: object.object_id(),
+        maximum_bytes: u64::MAX,
+    });
+    // Adding upper bounds can overflow even though the actual bodies fit.
+    // Each original read then uses only the caller's remaining work credit.
+    let mut work = AuthorityWork::new(BUDGET, &cancel);
+    let (values, _allocation) = unlimited.read_many(&requests, &mut work).await?;
+    assert_eq!(work.spent().backend_read_operations, 2);
+    for (value, object) in values.iter().zip(&objects) {
+        assert_eq!(value.bytes, *object.bytes());
+    }
+    assert_eq!(values.len(), objects.len());
+    assert_eq!(work.spent().object_bytes_read, 11);
+    work.spent().verify(BUDGET)?;
+    let mut work = AuthorityWork::new(BUDGET, &cancel);
+    assert!(matches!(
+        unlimited
+            .read(
+                objects
+                    .first()
+                    .ok_or("missing original object")?
+                    .object_id(),
+                4,
+                &mut work
+            )
+            .await,
+        Err(ObjectStoreError::LogicalObjects(_)) | Err(ObjectStoreError::TooLarge { .. })
+    ));
     Ok(())
 }

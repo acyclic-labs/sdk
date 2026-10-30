@@ -49,7 +49,7 @@ async fn scenario(share_narrowed_cache: bool) -> Result<bool, Box<dyn std::error
         assert_eq!(result.value, Some(value));
     }
     assert!(store.decoded.stats()?.decoded_hits > 0);
-    let mut narrowed = store.clone().with_object_limit(1)?;
+    let mut narrowed = store.clone().with_object_limit(Some(1))?;
     if share_narrowed_cache {
         narrowed.decoded = store.decoded.clone();
     }

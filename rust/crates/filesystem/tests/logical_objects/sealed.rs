@@ -2,7 +2,7 @@ use super::*;
 use acyclic_fs::kernel::{
     FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot, TreePage,
 };
-use acyclic_fs::{AuthorityWork, ObjectSealer, WorkCounters, WorkError};
+use acyclic_fs::{AuthorityWork, ObjectSealer, WorkCounters};
 use acyclic_fs::{
     Digest, FileId, GenerationId, HashedObject, NativeMaterializationWork, ObjectKind, WorkBudget,
 };
@@ -50,7 +50,7 @@ impl ObjectSealer for Envelope {
     }
     fn stored_limit(&self, id: ObjectId, maximum: u64) -> Result<u64, ObjectStoreError> {
         id.storage.ok_or(ObjectStoreError::Corrupt)?;
-        maximum.checked_add(81).ok_or(WorkError::Overflow.into())
+        Ok(maximum.saturating_add(81))
     }
     fn open(
         &self,
@@ -181,24 +181,13 @@ async fn sealing_preserves_each_registered_roots_retention()
     for _ in 0..3 {
         provider.collect().await?;
     }
-    assert_eq!(
-        second
-            .read(id, payload.len() as u64, &mut work)
-            .await?
-            .bytes,
-        payload
-    );
+    assert_eq!(second.read(id, u64::MAX, &mut work).await?.bytes, payload);
     // The second root is the only remaining retention of the physical locator.
     provider.release(&b).await?;
     for _ in 0..3 {
         provider.collect().await?;
     }
-    assert!(
-        second
-            .read(id, payload.len() as u64, &mut work)
-            .await
-            .is_err()
-    );
+    assert!(second.read(id, u64::MAX, &mut work).await.is_err());
     Ok(())
 }
 
