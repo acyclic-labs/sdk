@@ -398,10 +398,10 @@ proptest! {
             let mut baseline_cursor = BaselineCursor::at(start);
             baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
             let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
-            let pinned = PinnedHistory { root: snapshot.history, tail: snapshot.tail };
+            let mut pinned = PinnedHistory::new(snapshot.history, snapshot.tail);
             let mut after = start;
             let mut actual = Vec::new();
-            while let Some(window) = crate::pages::PageSource::next_page(&pinned, after, budget).await.unwrap() {
+            while let Some(window) = crate::pages::PageSource::next_page(&mut pinned, after, budget).await.unwrap() {
                 prop_assert!(window.end - window.start <= budget as usize);
                 for record in &window.records.records[window.start..window.end] {
                     prop_assert_eq!(record.sequence, after);
@@ -416,10 +416,19 @@ proptest! {
     }
 }
 
+/// What following a chain cost: history nodes visited, pages that sought from
+/// the root, the longest retained path and the peak live allocation.
+#[derive(Debug)]
+struct FollowCost {
+    visits: usize,
+    seeks: usize,
+    path: usize,
+    bytes: u64,
+}
+
 /// Follows the tip of a fork chain from zero, where every hop appended one
-/// record. Returns the records' (value, origin) pairs and the peak live
-/// allocation while following.
-fn follow_chain(depth: usize) -> (Vec<(u64, String)>, u64) {
+/// record. Returns the records' (value, origin) pairs and the follow's cost.
+fn follow_chain(depth: usize) -> (Vec<(u64, String)>, FollowCost) {
     let provider = MemoryStream::new(MemoryLimits::default());
     let hop = |index: usize| StreamPath::new(format!("chain/{index}")).unwrap();
     futures::executor::block_on(async {
@@ -451,6 +460,9 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, u64) {
     let tip = state.paths.get(&hop(depth - 1)).unwrap();
     let mut cursor = HistoryCursor::at(0);
     let mut records = Vec::with_capacity(depth);
+    for counter in [&HISTORY_VISITS, &HISTORY_SEEKS, &HISTORY_PATH_PEAK] {
+        counter.with(|count| count.set(0));
+    }
     let allocations = acyclic_test_support::measure(|| {
         cursor.sync(tip.history.as_ref(), tip.tail);
         while let Some(record) = futures::FutureExt::now_or_never(cursor.next_record())
@@ -468,21 +480,48 @@ fn follow_chain(depth: usize) -> (Vec<(u64, String)>, u64) {
         .into_iter()
         .map(|(value, origin)| (value, origin.to_string()))
         .collect();
-    (records, allocations.bytes_max)
+    let cost = FollowCost {
+        visits: HISTORY_VISITS.with(std::cell::Cell::get),
+        seeks: HISTORY_SEEKS.with(std::cell::Cell::get),
+        path: HISTORY_PATH_PEAK.with(std::cell::Cell::get),
+        bytes: allocations.bytes_max,
+    };
+    (records, cost)
 }
 
 #[test]
-fn a_deep_fork_chain_follows_each_origin_in_bounded_memory() {
+fn a_deep_fork_chain_follows_each_origin_with_flat_work_per_record() {
     let mut per_depth = Vec::new();
     for depth in [2_000, 20_000] {
-        let (records, peak) = follow_chain(depth);
+        let (records, cost) = follow_chain(depth);
         assert_eq!(records.len(), depth);
         for (sequence, (value, origin)) in records.iter().enumerate() {
             assert_eq!(*value, sequence as u64);
             assert_eq!(*origin, format!("chain/{sequence}"));
         }
-        per_depth.push(peak);
+        println!("fork chain depth={depth} {cost:?}");
+        // One seek from the tip; the chain holds a batch and a fork cut per
+        // record, each visited once more or less, plus that seek's path.
+        let nodes = 2 * depth;
+        let levels = nodes.ilog2() as usize + 1;
+        assert!(
+            cost.visits <= 2 * nodes + 8 * levels,
+            "{} visits for {depth} records",
+            cost.visits
+        );
+        assert_eq!(cost.seeks, 1, "a page restarted from the root");
+        // Skew-binary links reach any ancestor in about 2 log2 n steps.
+        assert!(
+            cost.path <= 2 * levels + 8,
+            "path {} at depth {depth}",
+            cost.path
+        );
+        per_depth.push(cost);
     }
-    // The follow holds one page however deep the chain is.
-    assert_eq!(per_depth[0], per_depth[1], "follow memory grew with depth");
+    // Memory grows only by the retained path, logarithmic in depth.
+    let entry = std::mem::size_of::<(Arc<History>, u64)>() as u64;
+    assert!(
+        per_depth[1].bytes <= per_depth[0].bytes + 2 * entry * per_depth[1].path as u64,
+        "follow memory grew with depth: {per_depth:?}"
+    );
 }

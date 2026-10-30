@@ -212,10 +212,10 @@ async fn jumps_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestRe
 }
 
 #[tokio::test]
-async fn deriving_a_jump_admits_each_ancestor_before_examining_it() -> TestResult<()> {
+async fn deriving_a_jump_is_constant_work_admitted_before_any_read() -> TestResult<()> {
     let provider = MemoryStream::default();
     let path = path("indexed/admission")?;
-    for _ in 0..16 {
+    for _ in 0..15 {
         append_batch(&provider, &path, vec![Bytes::from_static(b"value")]).await?;
     }
     let state = provider.state.read().await;
@@ -227,47 +227,32 @@ async fn deriving_a_jump_admits_each_ancestor_before_examining_it() -> TestResul
     let references = Arc::strong_count(root);
     let mut visits = 0;
     HISTORY_METADATA_READS.with(|count| count.set(0));
-    let jump = HistoryJump::new(Some(root), 16, || {
-        let reads = HISTORY_METADATA_READS.with(|count| count.replace(0));
-        // The first admission must precede every metadata read. Afterwards
-        // only the node admitted on the preceding call may be inspected:
-        // its ordinal once, plus the initial parent ordinal on the first hop.
-        let allowed = match visits {
-            0 => 0,
-            1 => 2,
-            _ => 1,
-        };
-        assert!(
-            reads <= allowed,
-            "unadmitted history metadata: {reads} > {allowed}"
+    let jump = HistoryJump::new(Some(root), 15, || {
+        assert_eq!(
+            HISTORY_METADATA_READS.with(std::cell::Cell::get),
+            0,
+            "history metadata read before admission"
         );
         visits += 1;
         Ok(())
     })?;
-    assert!(visits > 1);
-    assert_eq!(jump.ordinal, 16);
+    // One admission and three link reads, at any depth: the parent's, its
+    // jump's and that jump's target's.
+    assert_eq!(visits, 1);
+    assert!(HISTORY_METADATA_READS.with(std::cell::Cell::get) <= 3);
+    // Depths 0..=14 hold two equal 7-deep spans, so depth 15 skips to 0.
+    assert_eq!(jump.depth, 15);
     assert_eq!(
-        jump.target.as_ref().map(|target| target.jump().ordinal),
+        jump.target.as_ref().map(|target| target.jump().depth),
         Some(0)
     );
     drop(jump);
-    for admitted in 0..visits {
-        let mut remaining = admitted;
-        HISTORY_METADATA_READS.with(|count| count.set(0));
-        let refused = HistoryJump::new(Some(root), 16, || {
-            if remaining == 0 {
-                return Err(StreamError::Capacity);
-            }
-            remaining -= 1;
-            Ok(())
-        });
-        assert!(matches!(refused, Err(StreamError::Capacity)));
-        if admitted == 0 {
-            assert_eq!(HISTORY_METADATA_READS.with(std::cell::Cell::get), 0);
-        }
-        assert_eq!(Arc::strong_count(root), references);
-    }
+    HISTORY_METADATA_READS.with(|count| count.set(0));
+    let refused = HistoryJump::new(Some(root), 15, || Err(StreamError::Capacity));
+    assert!(matches!(refused, Err(StreamError::Capacity)));
+    assert_eq!(HISTORY_METADATA_READS.with(std::cell::Cell::get), 0);
+    assert_eq!(Arc::strong_count(root), references);
     drop(state);
-    assert_eq!(provider.tail(path).await?, 16);
+    assert_eq!(provider.tail(path).await?, 15);
     Ok(())
 }

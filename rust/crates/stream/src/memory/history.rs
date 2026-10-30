@@ -19,12 +19,17 @@ enum History {
     },
 }
 
-/// One funded link per node skips a power-of-two ancestry range. Its minimum
-/// boundary proves that skipping cannot cross an append or fork cut required
-/// by this read. The link is derived state and is rebuilt with the history.
+/// One funded link per node, to an ancestor chosen as in a skew-binary
+/// random-access list: the parent, or the parent's jump's jump when the
+/// parent's two jumps span equal depths. Built in O(1), these links reach
+/// any ancestor in at most about 2 log2 n steps, so a seek from the newest
+/// node is O(log n). Its minimum boundary proves that skipping cannot cross
+/// an append or fork cut required by this read. The link is derived state
+/// and is rebuilt with the history.
 struct HistoryJump {
     target: Option<Arc<History>>,
-    ordinal: u64,
+    /// Ancestors below this node.
+    depth: u64,
     minimum: u64,
 }
 
@@ -34,43 +39,33 @@ impl HistoryJump {
         boundary: u64,
         mut examine: impl FnMut() -> Result<(), StreamError>,
     ) -> Result<Self, StreamError> {
-        let Some(mut cursor) = parent else {
+        let Some(parent) = parent else {
             return Ok(Self {
                 target: None,
-                ordinal: 0,
+                depth: 0,
                 minimum: boundary,
             });
         };
         examine()?;
-        let ordinal = cursor
-            .jump()
-            .ordinal
-            .checked_add(1)
-            .ok_or(StreamError::Capacity)?;
-        let target = ordinal & (ordinal - 1);
-        let mut minimum = boundary;
-        loop {
-            minimum = minimum.min(cursor.boundary());
-            let jump = cursor.jump();
-            if jump.ordinal == target {
+        let up = parent.jump();
+        let depth = up.depth.checked_add(1).ok_or(StreamError::Capacity)?;
+        if let Some(middle) = up.target.as_ref() {
+            let across = middle.jump();
+            if let Some(target) = across.target.as_ref()
+                && up.depth - across.depth == across.depth - target.jump().depth
+            {
                 return Ok(Self {
-                    target: Some(Arc::clone(cursor)),
-                    ordinal,
-                    minimum,
+                    target: Some(Arc::clone(target)),
+                    depth,
+                    minimum: boundary.min(up.minimum).min(across.minimum),
                 });
             }
-            if let Some(next) = jump
-                .target
-                .as_ref()
-                .filter(|_| (jump.ordinal & (jump.ordinal - 1)) >= target)
-            {
-                minimum = minimum.min(jump.minimum);
-                cursor = next;
-            } else {
-                cursor = cursor.parent().ok_or(StreamError::Unavailable)?;
-            }
-            examine()?;
         }
+        Ok(Self {
+            target: Some(Arc::clone(parent)),
+            depth,
+            minimum: boundary.min(parent.boundary()),
+        })
     }
 }
 
@@ -214,15 +209,60 @@ std::thread_local! { static HISTORY_VISITS: std::cell::Cell<usize> = const { std
 #[cfg(test)]
 std::thread_local! { static HISTORY_METADATA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+/// Pages that started from the root instead of a retained path.
+#[cfg(test)]
+std::thread_local! { static HISTORY_SEEKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// The longest retained path, in nodes.
+#[cfg(test)]
+std::thread_local! { static HISTORY_PATH_PEAK: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 /// Immutable page source, shared by lazy reads and follows. A page may end at
 /// a batch or inherited cut before exhausting the caller's record budget.
+///
+/// The source keeps the nodes its last page walked through, each with the
+/// ceiling below which it and everything older is visible. Each one is a valid
+/// start for any later position under its ceiling, so a page at or after the
+/// last resumes from the deepest one still above it: only the first page, or
+/// one before the last, seeks from the root in O(log n). Moving forward never
+/// visits a node twice, so later pages cost O(1) amortised.
 struct PinnedHistory {
     root: Option<Arc<History>>,
     tail: u64,
+    /// The nodes from the root to the last page's node, ceilings non-increasing.
+    path: Vec<(Arc<History>, u64)>,
+    /// The position the path was walked for.
+    at: u64,
 }
 impl PinnedHistory {
+    fn new(root: Option<Arc<History>>, tail: u64) -> Self {
+        Self {
+            root,
+            tail,
+            path: Vec::new(),
+            at: 0,
+        }
+    }
+
+    /// Pins `appended`, whose history extends this one's: every retained node
+    /// stays a valid start under its ceiling, so the path carries over.
+    fn appended(&mut self, root: Option<Arc<History>>, tail: u64) -> Self {
+        Self {
+            root,
+            tail,
+            path: std::mem::take(&mut self.path),
+            at: self.at,
+        }
+    }
+
+    fn retain(&mut self, node: Arc<History>, ceiling: u64) {
+        self.path.push((node, ceiling));
+        #[cfg(test)]
+        HISTORY_PATH_PEAK.with(|peak| peak.set(peak.get().max(self.path.len())));
+    }
+
     fn page<E>(
-        &self,
+        &mut self,
         after: u64,
         budget: u32,
         mut examine: impl FnMut() -> Result<(), E>,
@@ -230,8 +270,26 @@ impl PinnedHistory {
         if budget == 0 || after >= self.tail {
             return Ok(None);
         }
-        let mut node = self.root.as_ref();
-        let mut ceiling = self.tail;
+        if after < self.at {
+            self.path.clear();
+        }
+        self.at = after;
+        // A node whose ceiling is at or below `after` holds nothing it reads.
+        while self
+            .path
+            .last()
+            .is_some_and(|(_, ceiling)| *ceiling <= after)
+        {
+            self.path.pop();
+        }
+        let (mut node, mut ceiling) = match self.path.pop() {
+            Some((node, ceiling)) => (Some(node), ceiling),
+            None => {
+                #[cfg(test)]
+                HISTORY_SEEKS.with(|count| count.set(count.get() + 1));
+                (self.root.clone(), self.tail)
+            }
+        };
         while let Some(current) = node {
             examine()?;
             #[cfg(test)]
@@ -239,27 +297,30 @@ impl PinnedHistory {
             if after >= ceiling {
                 return Ok(None);
             }
-            if let History::Batch { records, .. } = current.as_ref() {
-                if records
+            if let History::Batch { records, .. } = current.as_ref()
+                && records
                     .records
                     .first()
                     .is_some_and(|first| first.sequence <= after)
-                {
-                    return Ok(history_window(
-                        Arc::clone(records),
-                        ceiling.min(after.saturating_add(u64::from(budget))),
-                        after,
-                    ));
-                }
+            {
+                let window = history_window(
+                    Arc::clone(records),
+                    ceiling.min(after.saturating_add(u64::from(budget))),
+                    after,
+                );
+                self.retain(current, ceiling);
+                return Ok(window);
             }
             let jump = current.jump();
-            if let Some(target) = jump.target.as_ref().filter(|_| jump.minimum > after) {
-                ceiling = ceiling.min(jump.minimum);
-                node = Some(target);
+            let next = if let Some(target) = jump.target.as_ref().filter(|_| jump.minimum > after) {
+                Some((Arc::clone(target), ceiling.min(jump.minimum)))
             } else {
-                ceiling = ceiling.min(current.boundary());
-                node = current.parent();
-            }
+                current
+                    .parent()
+                    .map(|parent| (Arc::clone(parent), ceiling.min(current.boundary())))
+            };
+            self.retain(current, ceiling);
+            (node, ceiling) = next.map_or((None, ceiling), |(node, ceiling)| (Some(node), ceiling));
         }
         Ok(None)
     }
@@ -268,7 +329,11 @@ impl PinnedHistory {
 impl crate::pages::PageSource for PinnedHistory {
     type Page = HistoryWindow;
 
-    async fn next_page(&self, after: u64, budget: u32) -> Result<Option<Self::Page>, StreamError> {
+    async fn next_page(
+        &mut self,
+        after: u64,
+        budget: u32,
+    ) -> Result<Option<Self::Page>, StreamError> {
         self.page(after, budget, || Ok(()))
     }
 }
