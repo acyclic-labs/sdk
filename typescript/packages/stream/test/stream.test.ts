@@ -1034,6 +1034,17 @@ describe("website Stream contract", () => {
     expect(requestBody).toEqual({ expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] }] });
   });
 
+  test("HTTP responses have no implicit logical total", async () => {
+    const memory = new MemoryStreamProvider();
+    await memory.append("events", [new Uint8Array([1])]);
+    // The original provider's valid tail reply crosses the former wire-body
+    // fallback without manufacturing logical history or malformed fields.
+    const padding = " ".repeat(8 * 1024 * 1024 + 1);
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
+      new Response(padding + JSON.stringify({ tail: (await memory.tail("events")).toString() })) });
+    expect(await provider.tail("events")).toBe(1n);
+  });
+
   test("cancels oversized streaming transport responses at the configured bound", async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
