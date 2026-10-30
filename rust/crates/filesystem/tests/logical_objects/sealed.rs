@@ -557,9 +557,17 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
     // without duplicating its identity derivation or admitting any plain child
     // into the sealed volume under test. Both use the default namespace/name.
     let bootstrap = Fs::memory();
-    let workspace = bootstrap
-        .create_workspace("sealed-changed-paths", &original, &cancellation)
+    let initial = bootstrap
+        .create_workspace_with_operation::<_, (), WorkspaceError>(
+            "sealed-changed-paths",
+            VolumeInitialization::new(VolumeConfig::portable(Lifecycle::Ephemeral), None),
+            OperationId::new(),
+            &original,
+            &cancellation,
+            None,
+        )
         .await?;
+    let workspace = initial.workspace();
     let checkout = workspace
         .checkout(
             GenerationSelector::Head,
@@ -569,7 +577,7 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
         )
         .await?;
     let lineage = checkout.root().root_file_id;
-    drop((checkout, workspace, bootstrap));
+    drop((checkout, workspace, initial, bootstrap));
     let writer_origin = GenerationId::new(Digest::from_bytes([52; 32]));
     let fs = Fs::new(
         Arc::clone(&authority),
