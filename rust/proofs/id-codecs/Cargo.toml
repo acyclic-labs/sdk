@@ -1,0 +1,15 @@
+[package]
+name = "acyclic-id-codec-proofs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-fs = { path = "../../crates/filesystem", default-features = false }
+acyclic-objects = { path = "../../crates/objects", default-features = false }
+acyclic-stream = { path = "../../crates/stream", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

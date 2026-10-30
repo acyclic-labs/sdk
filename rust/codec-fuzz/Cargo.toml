@@ -1,0 +1,72 @@
+[package]
+name = "acyclic-codec-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+acyclic-actors = { path = "../crates/actors" }
+acyclic-auth = { path = "../crates/auth", features = ["test-support"] }
+acyclic-fs = { path = "../crates/filesystem", default-features = false }
+acyclic-fs-wire = { path = "../crates/filesystem-wire" }
+acyclic-inference = { path = "../crates/inference", default-features = false }
+acyclic-machines = { path = "../crates/machines", default-features = false }
+acyclic-objects = { path = "../crates/objects", default-features = false, features = ["test-support"] }
+acyclic-stream = { path = "../crates/stream", default-features = false, features = ["test-support", "local"] }
+libfuzzer-sys = "0.4"
+futures = "0.3.31"
+prost = "0.14.4"
+sha2 = "0.11.0"
+
+[build-dependencies]
+acyclic-proto-build = { path = "../../compatibility" }
+heck = "0.5"
+prost = "0.14.4"
+prost-types = "0.14.4"
+
+[[bin]]
+name = "protobuf"
+path = "fuzz_targets/protobuf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session_frames"
+path = "fuzz_targets/session_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stream_persistence"
+path = "fuzz_targets/stream_persistence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "object_persistence"
+path = "fuzz_targets/object_persistence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ids"
+path = "fuzz_targets/ids.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "auth"
+path = "fuzz_targets/auth.rs"
+test = false
+doc = false
+bench = false
