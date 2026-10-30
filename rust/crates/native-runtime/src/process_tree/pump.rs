@@ -395,7 +395,7 @@ impl<'a> Pump<'a> {
         let wake_at = self.wake_at();
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
-        {
+        let wait = {
             use std::os::fd::AsFd as _;
             if self.status.is_none() {
                 tree.prepare_exit_source()?;
@@ -431,10 +431,10 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, wake_at)
-        }
+            events::arm(&sources, wake_at)?
+        };
         #[cfg(windows)]
-        {
+        let wait = {
             let mut sources = Vec::with_capacity(4);
             let [stdout, stderr] = &self.readers;
             if self.stdout.is_some()
@@ -468,8 +468,15 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, wake_at)
+            events::arm(&sources, wake_at)?
+        };
+        // Report the original registration only after every source is armed.
+        // Failed setup or owner loss drops the sender with the original tree.
+        #[cfg(all(test, feature = "test-support", not(loom)))]
+        if let Some(armed) = tree.capture_armed.take() {
+            let _ = armed.send(());
         }
+        Ok(wait)
     }
 
     /// Returns unread pipes to the tree so its cleanup releases them.

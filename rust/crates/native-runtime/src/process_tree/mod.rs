@@ -119,6 +119,9 @@ pub struct ProcessTree {
     /// The process-event hub every wait of this tree arms, held from before
     /// its child is created.
     _events: events::Events,
+    // Original first-arm completion, retained by this tree through failed setup.
+    #[cfg(all(test, feature = "test-support", not(loom)))]
+    capture_armed: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// One armed wait on a process tree's retained pipes and direct child, served

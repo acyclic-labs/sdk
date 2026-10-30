@@ -273,6 +273,8 @@ pub(super) fn spawn_controlled(
             writer: Writer,
             queued_stdin: None,
             _events: events,
+            #[cfg(all(test, feature = "test-support", not(loom)))]
+            capture_armed: None,
         });
         Ok(())
     })
@@ -392,6 +394,8 @@ pub(super) fn spawn_closed_with_arguments(
             writer: Writer,
             queued_stdin: None,
             _events: events,
+            #[cfg(all(test, feature = "test-support", not(loom)))]
+            capture_armed: None,
         });
         owner.spawn_resources = retained;
     }
@@ -508,6 +512,8 @@ impl SpawnObjects {
                         writer: Writer,
                         queued_stdin: None,
                         _events: events,
+                        #[cfg(all(test, feature = "test-support", not(loom)))]
+                        capture_armed: None,
                     });
                 }
                 spawn_status(status)

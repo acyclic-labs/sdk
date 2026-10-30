@@ -185,9 +185,10 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 }
 
 /// Runs a trusted host command with closed stdin and bounded captured output.
+/// The caller selects its capture schedule, including an unbounded OS wait.
 pub fn process_output(
     command: &mut std::process::Command,
-    timeout: std::time::Duration,
+    schedule: impl Into<CaptureSchedule>,
     max_bytes: usize,
 ) -> io::Result<std::process::Output> {
     command
@@ -196,7 +197,7 @@ pub fn process_output(
         .stderr(std::process::Stdio::piped());
     ProcessTree::spawn(command)?
         .wait_with_output(
-            timeout,
+            schedule,
             max_bytes,
             None,
             || Ok(()),

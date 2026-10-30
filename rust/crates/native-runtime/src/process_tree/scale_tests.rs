@@ -101,17 +101,6 @@ fn runtime() -> io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread().build()
 }
 
-/// Drives `runtime` until `ready` holds or `limit` passes.
-fn drive(runtime: &tokio::runtime::Runtime, limit: Duration, ready: impl Fn() -> bool) {
-    let deadline = Instant::now() + limit;
-    runtime.block_on(async {
-        while !ready() && Instant::now() < deadline {
-            tokio::task::yield_now().await;
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
-    });
-}
-
 #[test]
 fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     if passed_in_exclusive_process(OUTSTANDING)? {
@@ -124,12 +113,11 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     // baseline already holds every thread a capture needs.
     let warm = blocked()?;
     drop(warm.release);
-    let outcome = runtime.block_on(warm.tree.capture(
-        CaptureSchedule::new(Duration::from_secs(30)),
-        0,
-        None,
-        Quiet,
-    ))?;
+    let outcome =
+        runtime.block_on(
+            warm.tree
+                .capture(CaptureSchedule::Unbounded, 0, None, Quiet),
+        )?;
     assert!(outcome.result.is_ok_and(|output| output.status.success()));
     let baseline = threads()?;
     let count = children()?;
@@ -138,29 +126,31 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
         "{count} children cannot exceed the {pool}-thread pool"
     );
     let done = Arc::new(AtomicUsize::new(0));
-    let mut releases = Vec::with_capacity(count);
     let mut tasks = Vec::with_capacity(count);
+    let mut releases = Vec::with_capacity(count);
+    let mut armed = Vec::with_capacity(count);
     for _ in 0..count {
-        let Blocked { tree, release } = blocked()?;
+        let Blocked { mut tree, release } = blocked()?;
         releases.push(release);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        tree.capture_armed = Some(sender);
+        armed.push(receiver);
         let done = Arc::clone(&done);
         tasks.push(runtime.spawn(async move {
             let outcome = tree
-                .capture(
-                    CaptureSchedule::new(Duration::from_secs(60)),
-                    0,
-                    None,
-                    Quiet,
-                )
+                .capture(CaptureSchedule::Unbounded, 0, None, Quiet)
                 .await;
             done.fetch_add(1, Ordering::AcqRel);
             outcome
         }));
     }
-    // Every capture reaches its wait: one turn each on the pool, then none.
-    drive(&runtime, Duration::from_secs(30), || {
-        events::armed_waits() >= count
-    });
+    // Each receipt belongs to its original capture's first complete native
+    // registration. Failure or loss of that producer closes its own receipt.
+    for receiver in armed {
+        runtime
+            .block_on(receiver)
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "capture lost before arming"))?;
+    }
     assert_eq!(
         events::armed_waits(),
         count,
@@ -174,24 +164,37 @@ fn outstanding_waits_hold_no_thread_per_child() -> io::Result<()> {
     );
     // Only the last child is released, behind every other outstanding wait.
     let last = releases.pop().ok_or(io::ErrorKind::InvalidInput)?;
+    let last_task = tasks.pop().ok_or(io::ErrorKind::InvalidInput)?;
     drop(last);
-    drive(&runtime, Duration::from_secs(30), || {
-        done.load(Ordering::Acquire) >= 1
-    });
+    let outcome = runtime.block_on(last_task).map_err(io::Error::other)??;
+    assert!(outcome.result.is_ok_and(|output| output.status.success()));
     assert_eq!(
         done.load(Ordering::Acquire),
         1,
-        "the released wait finished"
+        "only the released wait finished"
     );
     drop(releases);
-    drive(&runtime, Duration::from_secs(60), || {
-        done.load(Ordering::Acquire) >= count
-    });
     for task in tasks {
         let outcome = runtime.block_on(task).map_err(io::Error::other)??;
         assert!(outcome.result.is_ok_and(|output| output.status.success()));
     }
+    assert_eq!(done.load(Ordering::Acquire), count);
     assert_eq!(events::armed_waits(), 0);
+    Ok(())
+}
+
+/// An unstarted capture owns the receipt producer as well as the actual tree.
+/// Cancellation must close that receipt after cleaning up the same child.
+#[test]
+fn cancelled_capture_closes_its_unissued_arm_receipt() -> io::Result<()> {
+    let runtime = runtime()?;
+    let Blocked { mut tree, release } = blocked()?;
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    tree.capture_armed = Some(sender);
+    let capture = tree.capture(CaptureSchedule::Unbounded, 0, None, Quiet);
+    drop(capture);
+    assert!(runtime.block_on(receiver).is_err());
+    drop(release);
     Ok(())
 }
 
@@ -207,36 +210,73 @@ fn a_thread_per_wait_starves_the_bounded_pool() -> io::Result<()> {
     crate::initialize_native_io_services()?;
     let pool = crate::workers(&crate::BLOCKING_WORKERS, false)?.exclusive_threads();
     let runtime = runtime()?;
-    let done = Arc::new(AtomicUsize::new(0));
-    let mut releases = Vec::with_capacity(pool + 1);
-    let mut tasks = Vec::with_capacity(pool + 1);
-    for _ in 0..=pool {
+    // Release writers drop before completions if an assertion unwinds.
+    let mut tasks = Vec::with_capacity(pool);
+    let mut releases = Vec::with_capacity(pool);
+    for _ in 0..pool {
         let Blocked { mut tree, release } = blocked()?;
         releases.push(release);
-        let done = Arc::clone(&done);
-        tasks.push(runtime.spawn(async move {
-            let status =
-                crate::run_blocking_io(move || tree.wait(Duration::from_secs(60)), None)?.await?;
-            done.fetch_add(1, Ordering::AcqRel);
-            status
-        }));
+        let (entered, mut entry) = tokio::sync::oneshot::channel();
+        let mut task = crate::run_blocking_io(
+            move || {
+                let _ = entered.send(());
+                tree.wait_exit(None)
+            },
+            None,
+        )?;
+        runtime.block_on(std::future::poll_fn(|context| {
+            use std::future::Future as _;
+            use std::pin::Pin;
+            use std::task::Poll;
+            if let Poll::Ready(result) = Pin::new(&mut task).poll(context) {
+                return Poll::Ready(Err(io::Error::other(format!(
+                    "blocked wait ended before its release: {result:?}"
+                ))));
+            }
+            Pin::new(&mut entry).poll(context).map(|result| {
+                result.map_err(|_| {
+                    io::Error::new(io::ErrorKind::BrokenPipe, "wait worker lost before entry")
+                })
+            })
+        }))?;
+        tasks.push(task);
     }
-    let last = releases.pop().ok_or(io::ErrorKind::InvalidInput)?;
-    drop(last);
-    drive(&runtime, Duration::from_secs(2), || {
-        done.load(Ordering::Acquire) >= 1
-    });
-    assert_eq!(
-        done.load(Ordering::Acquire),
-        0,
-        "a released child's wait finished although {pool} blocked waits hold every worker"
+    // Each worker has entered its original wait. Only this last child exits;
+    // its native exit event proves it is ready before the absence assertion.
+    let Blocked { mut tree, release } = blocked()?;
+    let exited = tree.readiness()?;
+    let (entered, mut entry) = tokio::sync::oneshot::channel();
+    let mut last = crate::run_blocking_io(
+        move || {
+            let _ = entered.send(());
+            tree.wait_exit(None)
+        },
+        None,
+    )?;
+    runtime.block_on(std::future::poll_fn(|context| {
+        use std::future::Future as _;
+        use std::task::Poll;
+        assert!(std::pin::Pin::new(&mut last).poll(context).is_pending());
+        Poll::Ready(())
+    }));
+    drop(release);
+    runtime.block_on(exited);
+    assert!(
+        matches!(
+            entry.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "the queued wait entered while every worker was occupied"
     );
+    // Removing the original pipe owners releases every worker and the queued
+    // wait. The same completions must all succeed, without a second submission.
     drop(releases);
-    drive(&runtime, Duration::from_secs(60), || {
-        done.load(Ordering::Acquire) > pool
-    });
     for task in tasks {
-        assert!(runtime.block_on(task).map_err(io::Error::other)??.success());
+        assert!(runtime.block_on(task)??.success());
     }
+    assert!(runtime.block_on(last)??.success());
+    runtime
+        .block_on(entry)
+        .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "queued wait lost before entry"))?;
     Ok(())
 }
