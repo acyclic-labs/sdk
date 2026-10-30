@@ -15,7 +15,7 @@ pub(super) fn command_error(machine: MachineId, value: &tonic::Status) -> Provid
 pub(super) fn command_stream_error(
     machine: MachineId,
     exited: bool,
-    value: &tonic::Status,
+    _value: &tonic::Status,
 ) -> ProviderError {
     if exited {
         ProviderError::Rejected("exec stream failed after its terminal result".into())

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fmt,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, Weak},
     time::{Duration, Instant},
 };
 use tokio::sync::watch;
@@ -210,12 +210,21 @@ impl Series {
 
 impl Sink for Metrics {
     fn record(&self, sample: &Sample<'_>) {
-        self.series(sample.metadata.name(), sample.rpc)
-            .complete(sample);
+        let series = {
+            let names = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            names
+                .find(sample.metadata.name(), sample.rpc)
+                .and_then(|node| node.series.clone())
+        };
+        if let Some(series) = series {
+            series.complete(sample);
+        }
     }
 }
 
 /// Queryable operation metrics owned by an attached subscriber, with no history.
+/// Only selected series are retained. The last query releases the series; a
+/// later query starts a new cohort, even if the operation ran in between.
 #[derive(Clone, Default)]
 pub struct Metrics(Arc<Mutex<Names>>);
 
@@ -230,20 +239,21 @@ struct Names {
 }
 
 impl Metrics {
-    /// Select a single static operation name. Only this series is observed.
+    /// Select a single static operation name. Only selected series are retained.
     ///
     /// Register the query before running the operation to include its first
-    /// completion. This does not install a subscriber or enable tracing.
+    /// completion. Concurrent queries share the cohort until the last query is
+    /// dropped. This does not install a subscriber or enable tracing.
     pub fn query(&self, operation: &str) -> Query {
-        Query(self.series(operation, None).0.subscribe())
+        self.selected(operation, None)
     }
 
     /// Select an RPC method from a shared static span factory.
     pub fn query_rpc(&self, operation: &str, rpc: &str) -> Query {
-        Query(self.series(operation, Some(rpc)).0.subscribe())
+        self.selected(operation, Some(rpc))
     }
 
-    fn series(&self, operation: &str, rpc: Option<&str>) -> Arc<Series> {
+    fn selected(&self, operation: &str, rpc: Option<&str>) -> Query {
         let mut names = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let mut node = &mut *names;
         node = node.select(operation);
@@ -252,7 +262,7 @@ impl Metrics {
             // alone aliases None with Some("") and embedded delimiters.
             node = node.methods.get_or_insert_with(Box::default).select(rpc);
         }
-        Arc::clone(node.series.get_or_insert_with(|| {
+        let series = node.series.get_or_insert_with(|| {
             Arc::new(Series(
                 watch::channel(Snapshot {
                     operation: operation.to_owned(),
@@ -262,11 +272,31 @@ impl Metrics {
                 })
                 .0,
             ))
-        }))
+        });
+        Query {
+            receiver: series.0.subscribe(),
+            producer: Arc::downgrade(&self.0),
+            operation: operation.to_owned(),
+            rpc: rpc.map(str::to_owned),
+        }
     }
 }
 
 impl Names {
+    fn find(&self, operation: &str, rpc: Option<&str>) -> Option<&Self> {
+        let mut node = self;
+        for byte in operation.bytes() {
+            node = node.children.get(&byte)?;
+        }
+        if let Some(rpc) = rpc {
+            node = node.methods.as_deref()?;
+            for byte in rpc.bytes() {
+                node = node.children.get(&byte)?;
+            }
+        }
+        Some(node)
+    }
+
     fn select(&mut self, name: &str) -> &mut Self {
         let mut node = self;
         for byte in name.bytes() {
@@ -275,6 +305,51 @@ impl Names {
             node = node.children.entry(byte).or_default();
         }
         node
+    }
+
+    fn empty(&self) -> bool {
+        self.children.is_empty() && self.series.is_none() && self.methods.is_none()
+    }
+
+    // An ownership zipper prunes only the selected key. No recursion, scan or
+    // key-depth limit, including when an operator supplies a long query name.
+    fn edit(&mut self, name: &str, edit: impl FnOnce(&mut Self)) {
+        let mut node = std::mem::take(self);
+        let mut parents = Vec::new();
+        let mut found = true;
+        for byte in name.bytes() {
+            let Some(child) = node.children.remove(&byte) else {
+                found = false;
+                break;
+            };
+            parents.push((node, byte));
+            node = child;
+        }
+        if found {
+            edit(&mut node);
+        }
+        for (mut parent, byte) in parents.into_iter().rev() {
+            if !node.empty() {
+                parent.children.insert(byte, node);
+            }
+            node = parent;
+        }
+        *self = node;
+    }
+}
+
+impl Drop for Names {
+    fn drop(&mut self) {
+        let mut pending: Vec<_> = std::mem::take(&mut self.children).into_values().collect();
+        if let Some(methods) = self.methods.take() {
+            pending.push(*methods);
+        }
+        while let Some(mut node) = pending.pop() {
+            pending.extend(std::mem::take(&mut node.children).into_values());
+            if let Some(methods) = node.methods.take() {
+                pending.push(*methods);
+            }
+        }
     }
 }
 
@@ -291,10 +366,11 @@ mod tests {
     fn selected_series_cost_is_independent_of_unrelated_series() {
         let metrics = Metrics::default();
         let query = metrics.query("acyclic.selected");
+        let mut unrelated = Vec::new();
         let mut previous = 0;
         for population in [1, 1_000, 100_000] {
             for index in previous..population {
-                let _ = metrics.query(&format!("acyclic.unrelated.{index}"));
+                unrelated.push(metrics.query(&format!("acyclic.unrelated.{index}")));
             }
             previous = population;
             INDEX_VISITS.set(0);
@@ -307,14 +383,53 @@ mod tests {
         fn full_visit(names: &Names) -> usize {
             1 + names.children.values().map(full_visit).sum::<usize>()
         }
+        {
+            let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
+            assert!(full_visit(&names) > "acyclic.selected".len());
+        }
+        drop(unrelated);
         let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(full_visit(&names) > "acyclic.selected".len());
+        assert_eq!(full_visit(&names), "acyclic.selected".len() + 1);
     }
 }
 
 /// A live query waits on the selected operation's completion event.
 /// Dropping the subscriber and metrics producer ends the wait with [`QueryError`].
-pub struct Query(watch::Receiver<Snapshot>);
+pub struct Query {
+    receiver: watch::Receiver<Snapshot>,
+    producer: Weak<Mutex<Names>>,
+    operation: String,
+    rpc: Option<String>,
+}
+
+impl Drop for Query {
+    fn drop(&mut self) {
+        let Some(producer) = self.producer.upgrade() else {
+            return;
+        };
+        let mut names = producer.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(series) = names
+            .find(&self.operation, self.rpc.as_deref())
+            .and_then(|node| node.series.as_ref())
+        else {
+            return;
+        };
+        if series.0.receiver_count() != 1 {
+            return;
+        }
+        names.edit(&self.operation, |node| match &self.rpc {
+            Some(rpc) => {
+                if let Some(methods) = &mut node.methods {
+                    methods.edit(rpc, |node| node.series = None);
+                    if methods.empty() {
+                        node.methods = None;
+                    }
+                }
+            }
+            None => node.series = None,
+        });
+    }
+}
 
 /// The selected telemetry producer was dropped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,13 +445,13 @@ impl std::error::Error for QueryError {}
 impl Query {
     /// The current bounded projection, without consuming a completion event.
     pub fn snapshot(&self) -> Snapshot {
-        self.0.borrow().clone()
+        self.receiver.borrow().clone()
     }
 
     /// Waits for a selected completion, or returns a typed producer-closed error.
     pub async fn changed(&mut self) -> Result<Snapshot, QueryError> {
-        self.0.changed().await.map_err(|_| QueryError)?;
-        Ok(self.0.borrow_and_update().clone())
+        self.receiver.changed().await.map_err(|_| QueryError)?;
+        Ok(self.receiver.borrow_and_update().clone())
     }
 }
 

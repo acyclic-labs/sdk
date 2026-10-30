@@ -17,11 +17,14 @@ static metadata, RPC method, elapsed duration and disposition. It does not time
 or reconstruct completion. Sinks must not wait for I/O. A tuple of sinks shares
 one lifecycle traversal.
 
-`Metrics` stores counts and a base-two nanosecond histogram per operation and RPC
-method, without operation history or resource labels. Its byte radix lookup is
+`Metrics` stores counts and a base-two nanosecond histogram for each selected
+operation and RPC method, without operation history or resource labels. Its byte radix lookup is
 bounded by the selected operation name, independently of other series. A query
 subscribes only to the selected series. Its `changed` future waits on the
-completion watch and returns `QueryError` when its producer closes.
+completion watch and returns `QueryError` when its producer closes. Register the
+query before the cohort begins. Concurrent queries share that cohort; dropping
+the last query releases the series and its index path. A later query starts an
+empty cohort. An unselected operation creates no series.
 
 SLOs are ordinary, authorized files in a volume, for example
 `observability/slos/append.json`:
