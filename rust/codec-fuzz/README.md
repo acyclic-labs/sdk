@@ -263,6 +263,15 @@ while removing append authority. Three additional actual sealing/attenuation
 writer outputs require positive readmission before capture; capture and runtime
 execution remain pending. Signing keys are deterministic SDK test keys.
 
+Both protobuf syntax targets also reach historical admission's actual nested
+workload/receipt authentication. Normalization preserves the warmed result;
+malformed nested bytes, future-time context and original-block revocation
+refuse. Retained request authorization agrees with fresh authorization.
+Two actual `RuntimeAdmission::record` producers use deterministic SDK test keys
+and require their original payload to admit while foreign payload, action,
+resource and audience refuse. Their four binary/JSON inputs await capture,
+shared goldens and execution. Authentication alone grants no request authority.
+
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.
