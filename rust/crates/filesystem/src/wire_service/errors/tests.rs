@@ -250,8 +250,6 @@ cases! {
     fs_unsupported_checkout: fs(FsError::UnsupportedCheckout) => FailedPrecondition;
     fs_live_authority: fs(FsError::LiveRequiresSerializedAuthority) => FailedPrecondition;
     fs_exclusive_writer: fs(FsError::ExclusiveWriterConflict { actual: crate::Head::genesis(crate::Epoch::GENESIS) }) => Aborted;
-    fs_live_attempts: fs(FsError::ZeroLiveRetryLimit) => InvalidArgument;
-    fs_live_retry: fs(FsError::LiveRetry(LiveRetryError::InvalidTransition)) => Internal;
     fs_pending_live: fs(FsError::PendingLiveMutation) => FailedPrecondition;
     fs_live_conflict: fs(FsError::LiveConflict { conflicts: Vec::new(), truncated: true }) => Aborted;
     fs_authority: authority(AuthorityStoreError::Missing) => NotFound;

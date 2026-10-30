@@ -103,7 +103,7 @@ pub struct BrowserTransactionResult {
 #[tsify(large_number_types_as_bigints)]
 pub struct BrowserLiveTransactionResult {
     #[tsify(
-        type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
+        type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
     )]
     pub(in crate::bindings) status: &'static str,
     #[tsify(type = "Uint8Array | undefined")]
