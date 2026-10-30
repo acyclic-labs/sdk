@@ -306,11 +306,15 @@ impl Names {
     fn find(&self, operation: &str, rpc: Option<&str>) -> Option<&Self> {
         let mut node = self;
         for byte in operation.bytes() {
+            #[cfg(test)]
+            INDEX_VISITS.set(INDEX_VISITS.get() + 1);
             node = node.children.get(&byte)?;
         }
         if let Some(rpc) = rpc {
             node = node.methods.as_deref()?;
             for byte in rpc.bytes() {
+                #[cfg(test)]
+                INDEX_VISITS.set(INDEX_VISITS.get() + 1);
                 node = node.children.get(&byte)?;
             }
         }
@@ -419,11 +423,15 @@ mod tests {
 
     #[test]
     fn selected_series_cost_is_independent_of_unrelated_series() {
+        use tracing_subscriber::prelude::*;
         let metrics = Metrics::default();
         let query = metrics.query("acyclic.selected");
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(Operations(metrics.clone())),
+        );
         let mut unrelated = Vec::new();
         let mut previous = 0;
-        for population in [1, 1_000, 100_000] {
+        for (sample, population) in [1, 1_000, 100_000].into_iter().enumerate() {
             for index in previous..population {
                 unrelated.push(metrics.query(&format!("acyclic.unrelated.{index}")));
             }
@@ -432,6 +440,15 @@ mod tests {
             let selected = metrics.query("acyclic.selected");
             assert_eq!(INDEX_VISITS.get(), "acyclic.selected".len());
             assert_eq!(query.snapshot(), selected.snapshot());
+            INDEX_VISITS.set(0);
+            tracing::dispatcher::with_default(&dispatch, || {
+                let span = tracing::info_span!("acyclic.selected", outcome = tracing::field::Empty);
+                record_outcome(&span, None);
+            });
+            assert_eq!(INDEX_VISITS.get(), "acyclic.selected".len());
+            let snapshot = query.snapshot();
+            assert_eq!(snapshot.ok, sample as u64 + 1);
+            assert_eq!(snapshot.latency_ns.iter().sum::<u64>(), snapshot.ok);
         }
         // A full namespace visit, formerly typical of snapshot collectors,
         // exceeds the same bound even though it returns the identical series.
