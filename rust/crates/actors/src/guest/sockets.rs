@@ -109,7 +109,6 @@ pub enum GuestSocketEvent {
 
 /// Typed event result, committed with state and the host's effect outbox.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(try_from = "UncheckedGuestEventResult")]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
@@ -122,14 +121,14 @@ pub enum GuestEventResult {
         #[ts(type = "Uint8Array")]
         payload: Bytes,
     },
-    /// Admit the pending `SocketOpen` with bounded attachment and tags.
+    /// Admit the pending `SocketOpen` with its attachment and tags.
     SocketAccept {
         /// Selected offered subprotocol.
         subprotocol: Option<String>,
-        /// Opaque checkpointed attachment (contract maximum 2 KiB).
+        /// Opaque checkpointed attachment.
         #[ts(type = "Uint8Array")]
         attachment: Bytes,
-        /// Checkpointed broadcast tags (at most ten, each at most 256 characters).
+        /// Checkpointed broadcast tags.
         tags: Vec<String>,
     },
     /// Reject the pending `SocketOpen` without installing a connection.
@@ -139,60 +138,4 @@ pub enum GuestEventResult {
         /// Rejection reason.
         reason: String,
     },
-}
-
-#[derive(Deserialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-enum UncheckedGuestEventResult {
-    Reply {
-        payload: Bytes,
-    },
-    SocketAccept {
-        subprotocol: Option<String>,
-        attachment: Bytes,
-        tags: Vec<String>,
-    },
-    SocketReject {
-        status: u16,
-        reason: String,
-    },
-}
-impl TryFrom<UncheckedGuestEventResult> for GuestEventResult {
-    type Error = super::GuestError;
-    fn try_from(value: UncheckedGuestEventResult) -> Result<Self, Self::Error> {
-        let result = match value {
-            UncheckedGuestEventResult::Reply { payload } => Self::Reply { payload },
-            UncheckedGuestEventResult::SocketAccept {
-                subprotocol,
-                attachment,
-                tags,
-            } => Self::SocketAccept {
-                subprotocol,
-                attachment,
-                tags,
-            },
-            UncheckedGuestEventResult::SocketReject { status, reason } => {
-                Self::SocketReject { status, reason }
-            }
-        };
-        result.validate()?;
-        Ok(result)
-    }
-}
-impl GuestEventResult {
-    /// Shared admission for typed results and the serialized guest boundary.
-    pub fn validate(&self) -> Result<(), super::GuestError> {
-        if let Self::SocketAccept {
-            attachment, tags, ..
-        } = self
-        {
-            super::validate_web_socket_tags(tags)?;
-            super::validate_web_socket_attachment(attachment)?;
-        }
-        Ok(())
-    }
 }

@@ -7,15 +7,6 @@ use std::{future::Future, sync::Arc};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
-/// Maximum retained tags on one hibernating socket.
-pub const WEB_SOCKET_TAG_COUNT: usize = 10;
-/// Maximum Unicode scalar values in one tag.
-pub const WEB_SOCKET_TAG_CHARACTERS: usize = 256;
-/// Maximum opaque socket attachment bytes.
-pub const WEB_SOCKET_ATTACHMENT_BYTES: usize = 2048;
-/// Maximum Unicode scalar values in either auto-response string.
-pub const WEB_SOCKET_AUTO_RESPONSE_CHARACTERS: usize = 2048;
-
 /// Durable alarm delivery metadata. Delivery retries are owned by the host.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", try_from = "RawAlarmInfo")]
@@ -67,39 +58,6 @@ pub struct WebSocketAutoResponse {
     pub request: String,
     /// Exact outgoing text frame.
     pub response: String,
-}
-/// Admit the CF hibernation tag contract before invoking the host.
-pub fn validate_web_socket_tags(tags: &[String]) -> Result<(), GuestError> {
-    if tags.len() > WEB_SOCKET_TAG_COUNT
-        || tags
-            .iter()
-            .any(|tag| tag.chars().count() > WEB_SOCKET_TAG_CHARACTERS)
-    {
-        return Err(GuestError::Handler(
-            "WebSocket tags exceed 10 tags or 256 characters".into(),
-        ));
-    }
-    Ok(())
-}
-/// Admit an attachment independently of its serialization format.
-pub fn validate_web_socket_attachment(bytes: &[u8]) -> Result<(), GuestError> {
-    if bytes.len() > WEB_SOCKET_ATTACHMENT_BYTES {
-        return Err(GuestError::Handler(
-            "WebSocket attachment exceeds 2048 bytes".into(),
-        ));
-    }
-    Ok(())
-}
-/// Admit the exact text pair the host may answer without activating the actor.
-pub fn validate_web_socket_auto_response(value: &WebSocketAutoResponse) -> Result<(), GuestError> {
-    if value.request.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
-        || value.response.chars().count() > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS
-    {
-        return Err(GuestError::Handler(
-            "WebSocket auto-response exceeds 2048 characters".into(),
-        ));
-    }
-    Ok(())
 }
 /// Scoped runtime effects; implementations must check the actor reference on every call.
 pub trait DurableHost: Send + Sync {
@@ -197,14 +155,10 @@ impl<H: DurableHost> DurableObjectState<H> {
         socket: &WebSocketId,
         tags: &[String],
     ) -> Result<(), GuestError> {
-        validate_web_socket_tags(tags)?;
         self.host.accept_web_socket(&self.reference, socket, tags)
     }
     /// Query retained sockets, optionally by exact tag.
     pub fn get_web_sockets(&self, tag: Option<&str>) -> Result<Vec<WebSocketId>, GuestError> {
-        if let Some(tag) = tag {
-            validate_web_socket_tags(&[tag.to_owned()])?;
-        }
         self.host.get_web_sockets(&self.reference, tag)
     }
     /// Send on a retained socket.
@@ -231,7 +185,6 @@ impl<H: DurableHost> DurableObjectState<H> {
         socket: &WebSocketId,
         value: Bytes,
     ) -> Result<(), GuestError> {
-        validate_web_socket_attachment(&value)?;
         self.host
             .serialize_attachment(&self.reference, socket, value)
     }
@@ -247,9 +200,6 @@ impl<H: DurableHost> DurableObjectState<H> {
         &self,
         value: Option<WebSocketAutoResponse>,
     ) -> Result<(), GuestError> {
-        if let Some(value) = &value {
-            validate_web_socket_auto_response(value)?;
-        }
         self.host
             .set_web_socket_auto_response(&self.reference, value)
     }
@@ -329,8 +279,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[test]
-    fn alarm_and_socket_bounds_reject_the_unvalidated_negative_controls() -> Result<(), GuestError>
-    {
+    fn alarm_metadata_rejects_contradictory_retry_state() -> Result<(), GuestError> {
         for retry_count in [0, 1, u32::MAX] {
             let info = AlarmInfo::new(retry_count);
             assert_eq!(
@@ -347,33 +296,26 @@ mod tests {
                 .is_err()
             );
         }
-        let tags = vec!["λ".repeat(256); 10];
-        validate_web_socket_tags(&tags)?;
-        assert!(validate_web_socket_tags(&vec![String::new(); 11]).is_err());
-        assert!(validate_web_socket_tags(&["λ".repeat(257)]).is_err());
-        let invalid = super::super::GuestEventResult::SocketAccept {
+        Ok(())
+    }
+    #[test]
+    fn guest_socket_metadata_round_trips_without_logical_caps() -> Result<(), GuestError> {
+        let result = super::super::GuestEventResult::SocketAccept {
             subprotocol: None,
-            attachment: Bytes::new(),
-            tags: vec![String::new(); 11],
+            attachment: Bytes::from(vec![7; 2049]),
+            tags: vec!["λ".repeat(257); 11],
         };
-        assert!(invalid.validate().is_err());
-        let raw = serde_json::to_value(&invalid).map_err(|e| GuestError::Encode(e.to_string()))?;
-        assert!(serde_json::from_value::<super::super::GuestEventResult>(raw).is_err());
-        validate_web_socket_attachment(&vec![0; 2048])?;
-        assert!(validate_web_socket_attachment(&vec![0; 2049]).is_err());
-        validate_web_socket_auto_response(&WebSocketAutoResponse {
-            request: "λ".repeat(2048),
-            response: "ok".into(),
-        })?;
-        assert!(
-            validate_web_socket_auto_response(&WebSocketAutoResponse {
-                request: String::new(),
-                response: "λ".repeat(2049)
-            })
-            .is_err()
-        );
-        // Negative control: the prior opaque Vec/String representation admits each rejected shape.
-        assert_eq!(vec![String::new(); 11].len(), 11);
+        let raw =
+            serde_json::to_value(&result).map_err(|error| GuestError::Encode(error.to_string()))?;
+        let restored: super::super::GuestEventResult = serde_json::from_value(raw.clone())
+            .map_err(|error| GuestError::Encode(error.to_string()))?;
+        assert_eq!(restored, result);
+        let mut malformed = raw;
+        let fields = malformed
+            .as_object_mut()
+            .ok_or_else(|| GuestError::Encode("socket result is not an object".into()))?;
+        fields.insert("tags".into(), serde_json::json!([null]));
+        assert!(serde_json::from_value::<super::super::GuestEventResult>(malformed).is_err());
         Ok(())
     }
     #[tokio::test]
