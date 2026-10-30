@@ -234,3 +234,11 @@ all file payloads/kinds, three name encodings and attribute classes, every
 metadata field, two-parent and filtered lineage, and plain/sealed references.
 Each producer requires actual decode/value agreement before capture; those
 outputs and controls await execution.
+
+Native publication evidence checks actual writer/decoder identity and retains
+the original request, root, manifest, permit and logical byte total. Exact
+byte/object ceilings admit; shorter bounds, a foreign protected hash and
+changed original content refuse. Trailing content with a fresh hash and
+old/unknown outer-version headers also refuse. These controls establish codec
+properties only; projected preparation is neither fresh closure proof nor
+native custody. Actual preparation capture and execution remain pending.

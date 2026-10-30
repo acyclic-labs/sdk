@@ -1,5 +1,6 @@
 //! Immutable filesystem decoders use their production admission and encoders.
 use acyclic_fs::{FsError, kernel::*};
+mod evidence;
 mod populated;
 
 #[derive(Debug)]
@@ -176,8 +177,7 @@ pub fn check(bytes: &[u8]) {
             },
         );
     }
-    let sha256: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(bytes).into();
-    let _ = decode_generation_publication_evidence(bytes, &sha256, u64::MAX, u64::MAX);
+    evidence::check(bytes);
 }
 
 /// Produce SDK encoder output; the capture executable records its provenance.
