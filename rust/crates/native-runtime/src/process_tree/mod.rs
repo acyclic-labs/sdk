@@ -4,13 +4,13 @@
 )]
 
 use crate::obs;
+#[cfg(unix)]
+use platform::Child;
 use std::io::{self, Read};
 use std::process::{ExitStatus, Output};
 
 mod command;
 pub use command::{ProcessCommand, ProcessStdio};
-#[cfg(unix)]
-use std::process::Child;
 #[cfg(windows)]
 mod windows_create;
 use std::time::{Duration, Instant};
@@ -55,6 +55,12 @@ pub use custody::{ProcessCustody, ProcessCustodyLease};
 mod storage;
 pub use storage::{ProcessDrain, ProcessTreeIo, ProcessTreeStorage};
 #[cfg(unix)]
+mod record;
+#[cfg(target_os = "linux")]
+mod runner;
+#[cfg(unix)]
+mod sys;
+#[cfg(target_vendor = "apple")]
 mod warden;
 
 /// The clock the capture deadline reads. Tests freeze it so that expiry is
@@ -239,13 +245,12 @@ impl ProcessTree {
         }
         #[cfg(unix)]
         {
-            let mut native = command.to_std()?;
             let directory =
                 process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                    custody.arm(&mut native)
+                    custody.directory()
                 })?;
-            let spawned = Self::spawn_metered(command, meter, retained, |_, slot| {
-                platform::spawn_controlled(&mut native, meter, slot)
+            let spawned = Self::spawn_metered(command, meter, retained, |command, slot| {
+                ProcessCustody::spawn(command, &directory, meter, slot)
             });
             if let Some(tree) = retained.as_mut()
                 && (tree.child.is_some() || tree.native_child.is_some())

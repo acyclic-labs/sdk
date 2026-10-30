@@ -77,7 +77,7 @@ fn an_exchange_fails_when_the_child_exits_before_taking_its_input() -> io::Resul
     let pid = tree
         .child
         .as_ref()
-        .map(std::process::Child::id)
+        .map(super::Child::id)
         .ok_or(io::ErrorKind::NotFound)?;
     let input = vec![b'x'; 1 << 20];
     let mut meter = crate::tests::ReadBudgetMeter::new(u64::MAX, u64::MAX);
