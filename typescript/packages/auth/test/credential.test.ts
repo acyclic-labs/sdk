@@ -122,6 +122,72 @@ test("source observation can invalidate a registered watch and recover from refu
   expect(next.changed.aborted).toBe(false);
 });
 
+test("notification detaches its admitted generation before reentrant subscriptions without copying subscribers", async () => {
+  for (const count of [1, 100, 1000]) for (const change of ["invalidate", "reject"] as const) {
+    let revision = "original";
+    let refreshes = 0;
+    const cache = new CredentialCache(async () => new CredentialSnapshot(`synthetic-${++refreshes}`, revision, 100),
+      () => ({ nowUnixSeconds: 1, revision }));
+    const lease = await cache.resolve();
+    const watches = Array.from({ length: count }, () => cache.watch());
+    const closed = cache.watch();
+    closed.close();
+    const signals = new Set(watches.map(watch => watch.changed));
+    let visited = 0;
+    let beforeFirstCallback = -1;
+    let refusedBeforeCallback = false;
+    let deliveries = 0;
+    let next: ReturnType<CredentialCache["watch"]> | undefined;
+    const delivered = deferred<void>();
+    watches[0]!.changed.addEventListener("abort", () => {
+      beforeFirstCallback = visited;
+      try { cache.check(lease); } catch { refusedBeforeCallback = true; }
+      next = cache.watch();
+      // Closing after admission cannot erase another member of that same
+      // notification, matching the original snapshot-delivery contract.
+      watches.at(-1)!.close();
+    }, { once: true });
+    for (const watch of watches) watch.changed.addEventListener("abort", () => {
+      if (++deliveries === count) delivered.resolve();
+    }, { once: true });
+
+    // Count actual Set iterator visits during the real cache notification.
+    // Restore before assertions or awaiting; no concurrent global mutation.
+    const iterate = Set.prototype[Symbol.iterator];
+    Set.prototype[Symbol.iterator] = function () {
+      const iterator = iterate.call(this);
+      const read = iterator.next.bind(iterator);
+      iterator.next = () => {
+        const item = read();
+        if (!item.done && item.value instanceof AbortController && signals.has(item.value.signal)) visited += 1;
+        return item;
+      };
+      return iterator;
+    };
+    try {
+      if (change === "invalidate") { revision = "changed"; cache.invalidate(); }
+      else cache.reject(lease);
+    } finally { Set.prototype[Symbol.iterator] = iterate; }
+
+    expect(beforeFirstCallback).toBe(1);
+    expect(visited).toBe(count);
+    expect(deliveries).toBe(count);
+    expect(refusedBeforeCallback).toBe(true);
+    expect(watches.every(watch => watch.changed.aborted)).toBe(true);
+    expect(closed.changed.aborted).toBe(false);
+    expect(next).toBeDefined();
+    expect(next!.validity.revision).toBe(revision);
+    expect(next!.changed.aborted).toBe(false);
+    // Synchronous custody assertions above make missing delivery fail before
+    // awaiting its original event; the event has no independent producer.
+    await delivered.promise;
+    cache.invalidate();
+    expect(next!.changed.aborted).toBe(true);
+    expect(deliveries).toBe(count);
+    expect(refreshes).toBe(1);
+  }
+});
+
 test("late rejection and dispatch after revision change preserve exact invalidation", async () => {
   let revision = "account/audience/1";
   let generation = 0;
