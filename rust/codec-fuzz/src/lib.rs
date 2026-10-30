@@ -7,7 +7,7 @@ mod semantic;
 /// Real service-writer outputs to capture under both protobuf syntax targets.
 pub fn semantic_seeds(
     streams: &[(String, Vec<u8>)],
-) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, acyclic_stream::StreamError> {
+) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     semantic::seeds(streams)
 }
 

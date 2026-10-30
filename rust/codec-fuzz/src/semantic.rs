@@ -1,6 +1,7 @@
 //! Service admission uses the production conversions after either wire syntax.
 use prost::Message;
 use std::fmt::Debug;
+mod actors;
 
 pub(super) fn project<W, S, E>(
     bytes: &[u8],
@@ -296,7 +297,7 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
 /// Reuse actual Stream writer output, including a contextual origin spelling.
 pub(super) fn seeds(
     streams: &[(String, Vec<u8>)],
-) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, acyclic_stream::StreamError> {
+) -> Result<Vec<(&'static str, &'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
     use acyclic_stream::{StreamPath, wire, wire_codec};
     let mut seeds = Vec::new();
     for (name, bytes) in streams {
@@ -355,5 +356,6 @@ pub(super) fn seeds(
             .encode_to_vec(),
         ));
     }
+    seeds.extend(actors::seeds()?);
     Ok(seeds)
 }
