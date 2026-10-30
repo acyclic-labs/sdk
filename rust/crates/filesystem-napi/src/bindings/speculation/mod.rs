@@ -454,8 +454,6 @@ pub(in crate::bindings) fn native_object_cache_options(
     let converted = ObjectCacheOptions {
         maximum_entries: options.maximum_entries.into_inner(),
         maximum_bytes: bigint_u64(&options.maximum_bytes, "maximumBytes")?,
-        maximum_in_flight: options.maximum_in_flight.into_inner(),
-        maximum_waiters_per_object: options.maximum_waiters_per_object.into_inner(),
     };
     drop(options);
     Ok(converted)

@@ -77,8 +77,6 @@ pub(in crate::bindings) fn work_json(work: &acyclic_fs::WorkCounters) -> Result<
 pub struct NativeObjectCacheOptions {
     pub maximum_entries: NapiU32,
     pub maximum_bytes: BigInt,
-    pub maximum_in_flight: NapiU32,
-    pub maximum_waiters_per_object: NapiU32,
 }
 
 /// One exact namespace component crossing the native binding boundary.

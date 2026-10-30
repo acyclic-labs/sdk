@@ -150,8 +150,6 @@ async fn transaction_results_preserve_commits_and_conflicting_rebases() -> Resul
     let cache = ObjectCacheOptions {
         maximum_entries: 8,
         maximum_bytes: 1024,
-        maximum_in_flight: 2,
-        maximum_waiters_per_object: 2,
     };
     let fs = browser_fs(
         memory_engine(1024, 64 * 1024 * 1024, cache)?,

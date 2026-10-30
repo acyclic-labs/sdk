@@ -92,40 +92,6 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
 }
 
 #[tokio::test]
-async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_io()
--> Result<(), Box<dyn std::error::Error>> {
-    let inner = MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let objects = [object(b"one"), object(b"two")];
-    for (object_id, bytes) in &objects {
-        (object_work!(inner, put(*object_id, bytes.clone()), B, &cancellation)).await?;
-    }
-    let (counting, scalar_reads, batch_reads) = counting_store(inner);
-    let cached = CachedObjectStore::new(
-        counting,
-        ObjectCacheOptions {
-            maximum_entries: 4,
-            maximum_bytes: 64,
-            maximum_in_flight: 1,
-            maximum_waiters_per_object: 1,
-        },
-    )?;
-    let requests = objects.map(|(object_id, bytes)| ObjectReadRequest {
-        object_id,
-        maximum_bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-    });
-    let failure = (object_work!(cached, read_many(&requests), B, &cancellation))
-        .await
-        .err()
-        .ok_or("over-capacity batch unexpectedly succeeded")?;
-    assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
-    assert_eq!(cached.stats()?.in_flight, 0);
-    assert_eq!(scalar_reads.load(Ordering::Acquire), 0);
-    assert_eq!(batch_reads.load(Ordering::Acquire), 0);
-    Ok(())
-}
-
-#[tokio::test]
 async fn fs_composition_consumes_the_cache_without_a_second_runtime_or_adapter()
 -> Result<(), Box<dyn std::error::Error>> {
     let inner = MemoryObjectStore::default();
