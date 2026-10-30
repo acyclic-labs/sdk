@@ -250,21 +250,33 @@ impl PostgresStream {
         command: WriteRequest,
         deadline: Option<u64>,
     ) -> Result<WriteOutcome, StreamError> {
-        let command = command.validated()?;
+        let span = match &command {
+            WriteRequest::Append(_) => crate::native::span!("acyclic.stream.append"),
+            WriteRequest::Fork(_) => crate::native::span!("acyclic.stream.fork"),
+            WriteRequest::Commit(_) => crate::native::span!("acyclic.stream.commit"),
+        };
+        let completion = acyclic_observability::Completion::new(&span);
+        let command = match command.validated() {
+            Ok(command) => command,
+            Err(error) => return completion.finish(Err(error), StreamError::code),
+        };
         let provider = self.clone();
         // This one exact publication retains custody through caller cancellation.
-        tokio::spawn(async move {
-            provider.check()?;
-            let mut replica = provider.inner.session.lock().await;
-            let result = replica.execute(command, deadline, PAGE).await;
-            if matches!(
-                result,
-                Err(StreamError::Unavailable | StreamError::InvalidResponse)
-            ) {
-                provider.fail();
-            }
-            result.map(|execution| execution.outcome)
-        })
+        tokio::spawn(span.scope(completion.observe_output(
+            async move {
+                provider.check()?;
+                let mut replica = provider.inner.session.lock().await;
+                let result = replica.execute(command, deadline, PAGE).await;
+                if matches!(
+                    result,
+                    Err(StreamError::Unavailable | StreamError::InvalidResponse)
+                ) {
+                    provider.fail();
+                }
+                result.map(|execution| execution.outcome)
+            },
+            |result| result.as_ref().err().map(StreamError::code),
+        )))
         .await
         .map_err(unavailable)?
     }
@@ -305,25 +317,39 @@ impl StreamProvider for PostgresStream {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.refresh().await?;
-        self.inner.core.inspect_idempotency(key).await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.inspect_idempotency",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.refresh().await?;
+                self.inner.core.inspect_idempotency_inner(key).await
+            }
+        )
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        request.validate()?;
-        self.check()?;
-        let revisions = &self.inner.core.revisions;
-        if !request.paths.is_empty()
-            || request.children.is_some()
-            || revisions
-                .floor(&request.at_least)?
-                .is_some_and(|floor| floor > revisions.current().index)
-        {
-            // Named observations refresh their snapshot. A covered revision
-            // wait needs no unrelated journal read or server clock request.
-            self.refresh().await?;
-        }
-        self.inner.core.revisions.wait(&request.at_least).await?;
-        self.inner.core.capture_heads(&request, true).await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.heads",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                request.validate()?;
+                self.check()?;
+                let revisions = &self.inner.core.revisions;
+                if !request.paths.is_empty()
+                    || request.children.is_some()
+                    || revisions
+                        .floor(&request.at_least)?
+                        .is_some_and(|floor| floor > revisions.current().index)
+                {
+                    // Named observations refresh their snapshot. A covered revision
+                    // wait needs no unrelated journal read or server clock request.
+                    self.refresh().await?;
+                }
+                self.inner.core.revisions.wait(&request.at_least).await?;
+                self.inner.core.capture_heads(&request, true).await
+            }
+        )
     }
 
     fn write(
@@ -341,26 +367,47 @@ impl StreamProvider for PostgresStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.refresh().await?;
-        self.inner.core.read(request).await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.refresh().await?;
+                self.inner.core.read_inner(request).await
+            }
+        )
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.check()?;
-        match self.inner.core.read_commit(id).await {
-            Err(StreamError::NotFound) => {}
-            result => return result,
-        }
-        // Success is immutable; only a missing envelope needs a fresh journal
-        // observation. A miss is never cached as an authoritative absence.
-        self.refresh().await?;
-        self.inner.core.read_commit(id).await
+        acyclic_observability::async_operation!(
+            "acyclic.stream.read_commit",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.check()?;
+                match self.inner.core.read_commit_inner(id).await {
+                    Err(StreamError::NotFound) => {}
+                    result => return result,
+                }
+                // Success is immutable; only a missing envelope needs a fresh journal
+                // observation. A miss is never cached as an authoritative absence.
+                self.refresh().await?;
+                self.inner.core.read_commit_inner(id).await
+            }
+        )
     }
     async fn follow(
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.refresh().await?;
-        Ok(self.guarded(self.inner.core.follow(request).await?))
+        acyclic_observability::async_operation!(
+            "acyclic.stream.follow",
+            StreamError::code,
+            acyclic_native_runtime::obs::OperationSpan::new,
+            async {
+                self.refresh().await?;
+                Ok(self.guarded(self.inner.core.follow_inner(request).await?))
+            }
+        )
     }
 }
 

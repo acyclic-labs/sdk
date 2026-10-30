@@ -1,4 +1,27 @@
 impl MemoryStream {
+    pub(crate) async fn follow_inner(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+            when_absent,
+            at_least,
+        } = request;
+        self.revisions.wait(&at_least).await?;
+        if progress {
+            self.progress_from(path, from, preceding, when_absent, filter)
+                .await
+        } else {
+            self.follow_from(path, from, preceding, when_absent, filter)
+                .await
+        }
+    }
+
     pub(crate) async fn heads_inner(
         &self,
         request: crate::HeadsRequest,
@@ -407,25 +430,7 @@ impl StreamProvider for MemoryStream {
             "acyclic.stream.follow",
             StreamError::code,
             acyclic_native_runtime::obs::OperationSpan::new,
-            async {
-                let crate::FollowRequest {
-                    path,
-                    from,
-                    preceding,
-                    filter,
-                    progress,
-                    when_absent,
-                    at_least,
-                } = request;
-                self.revisions.wait(&at_least).await?;
-                if progress {
-                    self.progress_from(path, from, preceding, when_absent, filter)
-                        .await
-                } else {
-                    self.follow_from(path, from, preceding, when_absent, filter)
-                        .await
-                }
-            }
+            self.follow_inner(request)
         )
     }
 
