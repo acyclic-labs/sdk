@@ -166,7 +166,7 @@ fn page_items<'a>(
 fn encode_binding_page<E: From<CanonicalDecodeError>>(
     page: &PageRef<'_, BindingFormat>,
     maximum_items: u32,
-    observe: &mut impl FnMut(EncodeWorkStep) -> Result<(), E>,
+    mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
     reserve: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
     observe(EncodeWorkStep::Check)?;

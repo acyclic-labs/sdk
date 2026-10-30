@@ -45,7 +45,7 @@ fn binding_pages_preserve_aliases_sealed_children_and_original_credit()
         .live_bytes();
     let (decoded, allocation) =
         super::super::file_read::decode_owned(&mut accounting, |observe| {
-            decode_binding_page(&bytes, DecodeLimits::default(), observe)
+            decode_binding_page(&bytes, DecodeLimits::default(), &mut |step| observe(step))
         })?;
     assert_eq!(decoded, leaf);
     let logical_bytes = accounting
