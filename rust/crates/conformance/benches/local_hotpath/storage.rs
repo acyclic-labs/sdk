@@ -6,11 +6,12 @@ use super::{
 };
 use acyclic_actors::{
     addressing::ActorReference,
+    guest::{AlarmChange, Checkpoint, CodecIdentity, Effect, Subscription, Transition, Trigger},
     local::{PreparedPublish, Snapshot, Store},
 };
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_objects::{Blobs, ByteRange, Digest, Head, Kind};
-use acyclic_stream::{AppendOutcome, Stream, StreamPath};
+use acyclic_stream::{AppendOutcome, CommitCondition, CommitMutation, Stream, StreamPath};
 use acyclic_test_support::scale::Operation;
 use bytes::Bytes;
 use futures::{TryStreamExt as _, task::AtomicWaker};
@@ -288,30 +289,163 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
     }
     let address = address.ok_or("no actor samples")?;
     let before = store.load(&address).await?;
-    store.claim(&before, 1, key("actor-claim")?).await?;
-    let claimed = store.load(&address).await?;
+    let claimed = store.claim(&before, 1, key("actor-claim")?).await?;
     if require_created(&claimed).is_ok() {
         return Err("actor creation oracle accepted a claimed epoch".into());
     }
     emit(
         serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real actor after placement claim", "result": "rejected"}),
     )?;
-    let mut state = store.bind_state(claimed, 1)?;
+
+    // Creation samples retain their empty-state oracle. This separate actor
+    // declares its input once and retains each confirmed publication cut.
+    let address = ActorReference::new(b"benchmark", b"measure", b"durable")?;
+    let inbox = Stream::new(
+        fixture.stream.clone(),
+        StreamPath::new("benchmark/actor-input")?,
+    );
+    let mut creation = PreparedPublish::foreign(key("durable-create")?);
+    for effect in store.create(
+        &address,
+        BTreeMap::from([(
+            "inbox".into(),
+            Subscription {
+                path: inbox.path().clone(),
+                cursor: 0,
+            },
+        )]),
+        None,
+    )? {
+        creation.join(effect)?;
+    }
+    store.submit(creation).await?;
+    let mut cut = store
+        .claim(&store.load(&address).await?, 1, key("durable-claim")?)
+        .await?;
     for index in 0..samples {
+        let sequence = u64::try_from(index)?;
         let payload = Bytes::from(vec![u8::try_from(index % 256)?; 128]);
-        let operation = key(format!("actor-write/{index}"))?;
-        // Warm-read setup is independent state publication, not the combined
-        // mutation/checkpoint/cursor operation required by the durable row.
-        state.transaction(|transaction| {
-            transaction.put("value".into(), payload.clone());
-            Ok(())
+        // Fresh original input plus activation share one conditional commit.
+        // Input publication and its finite read are outside the durable row.
+        let mut input = PreparedPublish::foreign(key(format!("actor-input/{index}"))?);
+        input.join(Effect {
+            conditions: vec![if index == 0 {
+                CommitCondition::Absent {
+                    path: inbox.path().clone(),
+                }
+            } else {
+                CommitCondition::Tail {
+                    path: inbox.path().clone(),
+                    expected: sequence,
+                }
+            }],
+            mutation: CommitMutation::Append {
+                path: inbox.path().clone(),
+                records: vec![payload.clone().into()],
+            },
         })?;
-        state.flush(operation).await?;
+        input.join(store.activation(&address))?;
+        store.submit(input).await?;
+        let mut records = inbox.read(sequence, 1).await?;
+        let original = records.try_next().await?.ok_or("actor input missing")?;
+        if original.sequence != sequence || records.try_next().await?.is_some() {
+            return Err("actor input finite range mismatch".into());
+        }
+        require_bytes(original.value.as_ref(), &payload)?;
+        let trigger = Trigger::Record {
+            subscription: "inbox".into(),
+            sequence,
+        };
+        let transition = || Transition {
+            response: None,
+            checkpoint: Checkpoint {
+                codec: CodecIdentity {
+                    name: "benchmark-bytes".into(),
+                    version: "1".into(),
+                },
+                bytes: Bytes::copy_from_slice(&payload),
+            },
+            alarm: AlarmChange::Keep,
+            effects: Vec::new(),
+            participant: None,
+        };
+        if index == 0 {
+            if require_actor_write(&cut, sequence, &payload).is_ok() {
+                return Err("combined publication oracle accepted the unconsumed cut".into());
+            }
+            let wrong = Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: sequence + 1,
+            };
+            let binding = store.bind_state(store.load(&address).await?, 1)?;
+            if !matches!(
+                binding.prepare_publish(
+                    &wrong,
+                    Some(&original),
+                    transition(),
+                    key("actor-wrong-input")?
+                ),
+                Err(acyclic_actors::local::Error::Invalid(
+                    "delivered record differs from its trigger"
+                ))
+            ) {
+                return Err("combined publication accepted another original input".into());
+            }
+            emit(
+                serde_json::json!({"schema": 1, "kind": "negative_control", "control": "combined Actor publication with unconsumed cut and mismatched real input", "result": "rejected"}),
+            )?;
+        }
+        let operation = key(format!("actor-write/{index}"))?;
+        let mut binding = store.bind_state(cut, 1)?;
+        let requests = fixture.requests.requests();
+        // Both 128-byte values are transferred into the one publication.
+        // Mutation, checkpoint construction and encoding are all timed.
+        cut = timed!(rows, Operation::ActorDurableWrite, commit(256), async {
+            binding.transaction(|state| {
+                state.put("value".into(), Bytes::copy_from_slice(&payload));
+                Ok(())
+            })?;
+            let prepared =
+                binding.prepare_publish(&trigger, Some(&original), transition(), operation)?;
+            store
+                .submit_retained(prepared)
+                .await?
+                .ok_or(acyclic_actors::local::Error::Invalid(
+                    "combined publication omitted retained state",
+                ))
+        })?;
+        let work = fixture.requests.requests().since(requests);
+        if work.data() != 1 || work.control() != 0 {
+            return Err(
+                "combined Actor publication requires one commit and no control requests".into(),
+            );
+        }
+        require_actor_write(&cut, sequence, &payload)?;
+        if store.load(&address).await?.state() != cut.state() {
+            return Err("confirmed Actor tuple differs from durable readback".into());
+        }
+        let mut binding = store.bind_state(cut, 1)?;
         // Cloning Bytes retains a handle; it does not copy the payload.
         let value = timed!(rows, Operation::ActorWarmRead, read(0), async {
-            state.transaction(|transaction| Ok(transaction.get("value").cloned()))
+            binding.transaction(|transaction| Ok(transaction.get("value").cloned()))
         })?;
         require_bytes(value.ok_or("actor metadata missing")?.as_ref(), &payload)?;
+        cut = binding.finish()?;
+    }
+    Ok(())
+}
+
+fn require_actor_write(snapshot: &Snapshot, sequence: u64, payload: &[u8]) -> Result {
+    let state = snapshot.state().ok_or("combined Actor state missing")?;
+    if state.cursor("inbox") != sequence.checked_add(1)
+        || state.checkpoint().map(|value| value.bytes.as_ref()) != Some(payload)
+        || state
+            .metadata()
+            .find(|(name, _)| *name == "value")
+            .map(|(_, value)| value.as_ref())
+            != Some(payload)
+    {
+        return Err("combined Actor metadata/checkpoint/cursor tuple mismatch".into());
     }
     Ok(())
 }

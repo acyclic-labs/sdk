@@ -179,9 +179,6 @@ impl Measurements {
             let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {
-                    Operation::ActorDurableWrite => {
-                        "independent state flush does not combine metadata with the original checkpoint and consumed input cursor"
-                    }
                     Operation::WorkerCold | Operation::WorkerWarm => {
                         "native Worker execution producer is absent from this composition"
                     }

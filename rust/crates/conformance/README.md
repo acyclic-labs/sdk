@@ -64,8 +64,13 @@ cancellation. A dropped scope must return typed producer loss, and a real
 entry checked against another input cursor must be rejected. Entry-prefix work
 counts remain missing because whole-drain work cannot be attributed to it.
 Warm Actor reads retain a `Bytes` handle and charge no payload-copy floor.
-Independent metadata flushes warm this read fixture but do not qualify the
-combined mutation/checkpoint/cursor durable-write row.
+The durable Actor row publishes a 128-byte metadata mutation, a 128-byte
+checkpoint and the original committed input cursor together, with preparation
+and encoding inside its interval. Input publication is excluded. Its floor
+charges 256 payload bytes and one barrier. The returned confirmed snapshot
+feeds warm reads and the next sample without a post-claim reload. Outside
+timing, exact tuple readback and one-commit/zero-control accounting are checked;
+controls reject the unconsumed cut and a mismatched original input.
 Follow parks at the tail before
 its append producer starts and measures notification-waker entry through record
 delivery; append durability completes concurrently in its own interval.
