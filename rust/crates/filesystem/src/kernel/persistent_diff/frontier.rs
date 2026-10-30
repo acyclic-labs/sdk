@@ -293,7 +293,7 @@ impl<F: Format> Side<F> {
 }
 
 /// One immutable pair frontier; no emitted prefix is read or searched again.
-pub(super) struct Cursor<F: Format> {
+pub(crate) struct Cursor<F: Format> {
     before: Side<F>,
     after: Side<F>,
     limits: DecodeLimits,
@@ -309,7 +309,7 @@ enum Step {
 }
 
 impl<F: Format> Cursor<F> {
-    pub(super) fn new(
+    pub(crate) fn new(
         before: Option<ObjectId>,
         after: Option<ObjectId>,
         limits: DecodeLimits,
@@ -452,12 +452,12 @@ impl<F: Format> Cursor<F> {
         }
     }
 
-    pub(super) async fn next<S: AsyncObjectStore>(
+    async fn advance<S: AsyncObjectStore>(
         &mut self,
         store: &S,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<Owned<ValueChange<F::Key, F::Value>>>, FsError> {
+    ) -> Result<Option<(bool, bool)>, FsError> {
         loop {
             cancellation.check()?;
             accounting.check()?;
@@ -477,8 +477,20 @@ impl<F: Format> Cursor<F> {
                     self.before.skip_value(accounting)?;
                     self.after.skip_value(accounting)?;
                 }
-                Step::Emit(before, after) => return self.emit(before, after, accounting).map(Some),
+                Step::Emit(before, after) => return Ok(Some((before, after))),
             }
+        }
+    }
+
+    pub(crate) async fn next<S: AsyncObjectStore>(
+        &mut self,
+        store: &S,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Owned<ValueChange<F::Key, F::Value>>>, FsError> {
+        match self.advance(store, accounting, cancellation).await? {
+            Some((before, after)) => self.emit(before, after, accounting).map(Some),
+            None => Ok(None),
         }
     }
 
@@ -538,9 +550,40 @@ impl<F: Format> Cursor<F> {
         Ok(result)
     }
 
-    pub(super) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         let before = self.before.retire(accounting);
         let after = self.after.retire(accounting);
         before.and(after)
+    }
+}
+
+/// A single immutable endpoint uses the same frontier without copying each
+/// value's key into a redundant diff row.
+pub(crate) struct Values<F: Format>(Cursor<F>);
+
+impl<F: Format> Values<F> {
+    pub(crate) fn new(
+        root: ObjectId,
+        limits: DecodeLimits,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        Cursor::new(None, Some(root), limits, accounting).map(Self)
+    }
+
+    pub(crate) async fn next<S: AsyncObjectStore>(
+        &mut self,
+        store: &S,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<Owned<F::Value>>, FsError> {
+        match self.0.advance(store, accounting, cancellation).await? {
+            Some((false, true)) => self.0.after.take_value(self.0.limits, accounting).map(Some),
+            None => Ok(None),
+            _ => Err(FsError::InvalidDiff),
+        }
+    }
+
+    pub(crate) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        self.0.retire(accounting)
     }
 }

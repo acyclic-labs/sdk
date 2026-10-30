@@ -29,7 +29,7 @@ pub(crate) struct Diff<K, V> {
 }
 
 mod frontier;
-use frontier::Cursor;
+pub(crate) use frontier::{Cursor, Values};
 
 type Changes<F> = Owned<
     Vec<

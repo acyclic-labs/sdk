@@ -12,6 +12,7 @@ mod checkpoint;
 pub(crate) mod closure;
 pub(crate) mod codec;
 mod content_eq;
+pub(crate) mod direct_paths;
 #[doc(hidden)]
 #[cfg(any(test, feature = "fuzzing"))]
 pub mod encoder_fuzz;
