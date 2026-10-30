@@ -14,6 +14,9 @@ keywords = ["streams", "events", "grpc"]
 categories = ["api-bindings", "data-structures"]
 build = "build.rs"
 
+[package.metadata.acyclic]
+consumer-features = [{ features = ["local"], target = "x86_64-unknown-linux-gnu" }]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 
