@@ -526,10 +526,8 @@ async fn device_denial_and_local_expiry_are_terminal() {
         expires_in: 60,
         interval: 1,
         verifier: "test-verifier".to_owned(),
-        upgrade: None,
-        agent_identity: None,
+        binding: LoginBinding::default(),
         reconcile_upgrade: false,
-        upgrade_tier: None,
     };
     assert_eq!(
         fake.identity
@@ -1130,7 +1128,7 @@ fn login_rejects_changed_agent_and_only_applies_the_signed_upgrade() {
     let before = fs::read(&store.path).expect("saved agent");
     assert_eq!(
         store
-            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .complete_login(endpoint, session("access", "refresh", 900), &device.binding)
             .err()
             .expect("agent added during approval")
             .code,
@@ -1148,19 +1146,19 @@ fn login_rejects_changed_agent_and_only_applies_the_signed_upgrade() {
             .tier,
         "agent"
     );
-    device.agent_identity = Some(("org".to_owned(), "key".to_owned()));
-    device.upgrade = Some(("other-org".to_owned(), "key".to_owned()));
+    device.binding.agent_identity = Some(("org".to_owned(), "key".to_owned()));
+    device.binding.upgrade = Some(("other-org".to_owned(), "key".to_owned()));
     assert_eq!(
         store
-            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .complete_login(endpoint, session("access", "refresh", 900), &device.binding)
             .err()
             .expect("mismatched agent")
             .code,
         "credentials_changed"
     );
-    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.binding.upgrade = Some(("org".to_owned(), "key".to_owned()));
     store
-        .complete_login(endpoint, session("access", "refresh", 900), &device)
+        .complete_login(endpoint, session("access", "refresh", 900), &device.binding)
         .expect("signed upgrade");
     assert_eq!(
         store
@@ -1198,7 +1196,11 @@ fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
                 .is_none()
         );
         store
-            .complete_login(endpoint, session("new-access", "new-refresh", 900), &device)
+            .complete_login(
+                endpoint,
+                session("new-access", "new-refresh", 900),
+                &device.binding,
+            )
             .expect("fresh login");
         assert_eq!(
             store.read(endpoint).expect("new session").refresh_token,
@@ -1219,7 +1221,7 @@ fn fresh_login_replaces_unusable_oauth_credentials_but_preserves_agent_keys() {
     );
     assert!(
         store
-            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .complete_login(endpoint, session("access", "refresh", 900), &device.binding)
             .is_err()
     );
     assert_eq!(fs::read(&path).expect("retained agent"), original);
@@ -1238,8 +1240,8 @@ async fn recovered_login_preserves_replacement_credentials() {
         serde_json::from_value(json!({"device_code": "device", "user_code": "code",
         "verification_uri": "https://example.test", "expires_in": 60}))
         .expect("device");
-    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
-    device.agent_identity = device.upgrade.clone();
+    device.binding.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.binding.agent_identity = device.binding.upgrade.clone();
     device.reconcile_upgrade = true;
     for replacement in [Some(("other-org", "key")), Some(("org", "other-key")), None] {
         let mut credentials = agent_credentials(&fake.identity.endpoint);
@@ -1289,8 +1291,8 @@ async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
         serde_json::from_value(json!({"device_code": "device", "user_code": "code",
         "verification_uri": "https://example.test", "expires_in": 60}))
         .expect("device");
-    device.upgrade = Some(("org".to_owned(), "key".to_owned()));
-    device.agent_identity = device.upgrade.clone();
+    device.binding.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.binding.agent_identity = device.binding.upgrade.clone();
     device.reconcile_upgrade = true;
     assert!(
         fake.identity
