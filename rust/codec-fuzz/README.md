@@ -204,6 +204,13 @@ is bounded by 113 bytes and allocates nothing. No decoder waits on an event;
 EOF is a typed framing result.
 
 The capture and replay executables report a failed step and a recovery command.
+The Harness target also reaches the public attachment-manifest decoder using a
+FileRef bound to each input, so mutation can reach JSON and semantic admission.
+Canonical bytes and the exact item count must survive; a changed count,
+shortened original content and added whitespace under a fresh descriptor
+refuse. Empty and populated SDK writer producers await capture. The funded
+reader and missing explicit format version remain in the shared inventory.
+
 Replay checks each captured length and SHA-256 before decoding; it never
 regenerates a differing baseline. A target or harness listed here does not
 establish that it has run. The inventory records remaining format coverage.

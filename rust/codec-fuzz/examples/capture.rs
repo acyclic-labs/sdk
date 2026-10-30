@@ -84,6 +84,22 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     for (message, variant, payload) in acyclic_codec_fuzz::semantic_seeds(&streams)? {
+        if message == "acyclic.harness.v2.ReferencedAttachments" && variant == "inline" {
+            use acyclic_harness_core::{conversation as c, wire};
+            let c::ReferencedAttachments::Inline { items } = c::ReferencedAttachments::try_from(
+                wire::ReferencedAttachments::decode(payload.as_slice())?,
+            )?
+            else {
+                return Err("inline attachment producer changed its representation".into());
+            };
+            save(
+                "harness_codecs",
+                "attachment-manifest",
+                &c::encode_attachment_manifest(&items)?,
+                "conversation::encode_attachment_manifest from positively admitted semantic_seeds inline attachments",
+                &mut manifest,
+            )?;
+        }
         for (name, bytes) in
             acyclic_codec_fuzz::inference_http::semantic_seeds(message, variant, &payload)?
         {
@@ -143,6 +159,13 @@ fn capture() -> Result<(), Box<dyn Error>> {
         )?;
     }
     capture_semantic(&mut manifest)?;
+    save(
+        "harness_codecs",
+        "attachment-manifest-empty",
+        &acyclic_harness_core::conversation::encode_attachment_manifest(&[])?,
+        "conversation::encode_attachment_manifest from an empty admitted attachment list",
+        &mut manifest,
+    )?;
     for (name, bytes) in acyclic_harness_core::agent::codec_fuzz::seeds()? {
         save(
             "harness_codecs",
