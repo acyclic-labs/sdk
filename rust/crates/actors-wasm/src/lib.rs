@@ -71,7 +71,7 @@ pub fn actor_id(
 ) -> Result<String, JsValue> {
     let value = nominal_string(value, "actor_id")?;
     domain::ActorId::new(value)
-        .map(|value| value.as_str().to_owned())
+        .map(String::from)
         .map_err(nominal_error)
 }
 
@@ -81,7 +81,7 @@ pub fn actor_namespace(
     #[wasm_bindgen(unchecked_param_type = "string")] value: &JsValue,
 ) -> Result<String, JsValue> {
     domain::ActorNamespace::new(nominal_string(value, "namespace")?)
-        .map(|v| v.as_str().to_owned())
+        .map(String::from)
         .map_err(nominal_error)
 }
 

@@ -106,7 +106,7 @@ fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
 #[napi(js_name = "ActorId")]
 pub fn actor_id(value: String) -> Result<String> {
     domain::ActorId::new(value)
-        .map(|value| value.as_str().to_owned())
+        .map(String::from)
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
@@ -114,7 +114,7 @@ pub fn actor_id(value: String) -> Result<String> {
 #[napi(js_name = "ActorNamespace")]
 pub fn actor_namespace(value: String) -> Result<String> {
     domain::ActorNamespace::new(value)
-        .map(|v| v.as_str().to_owned())
+        .map(String::from)
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
@@ -224,6 +224,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nominal_identity_admission_retains_owned_string_allocations() {
+        let constructors: [fn(String) -> Result<String>; 2] = [actor_id, actor_namespace];
+        for constructor in constructors {
+            let input = String::from("worker");
+            let allocation = input.as_ptr();
+            let output = constructor(input).expect("valid identity");
+            assert_eq!(output, "worker");
+            assert_eq!(output.as_ptr(), allocation);
+        }
+    }
 
     #[test]
     fn service_metadata_preserves_original_message_unknown_code_and_bytes() {
