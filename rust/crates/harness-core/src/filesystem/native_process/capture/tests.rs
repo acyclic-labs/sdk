@@ -177,7 +177,7 @@ mod simulation {
                                 tokio::runtime::Handle::try_current().is_ok(),
                                 "control future constructed outside its runtime"
                             );
-                            tokio::time::sleep(Duration::from_millis(3))
+                            acyclic_native_runtime::testing::boundary("capture:control")
                         });
                         assert!(tokio::runtime::Handle::try_current().is_err());
                     }
@@ -232,6 +232,12 @@ mod simulation {
             && ["native:submitted", "native:completed"]
                 .iter()
                 .all(|phase| observed.boundaries.contains(phase))
+            && observed
+                .boundaries
+                .iter()
+                .filter(|phase| **phase == "capture:control")
+                .count()
+                == 1
             && !observed.trace.iter().any(|event| event == "blocking:dispatch")
     }
 
