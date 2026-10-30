@@ -398,7 +398,16 @@ impl HostWorkspaceOwner {
             after = children.last().cloned();
             for id in children {
                 let child = state.path.child(&id).map_err(storage)?;
-                references.push(self.native.brief(&child).await?.reference);
+                let (_, session) = self.native.session(&child).await?;
+                let reference = session.reference.ok_or_else(|| {
+                    Error::Conflict("native child has no committed session reference".into())
+                })?;
+                if agents::child(&state.path, &reference)? != child {
+                    return Err(Error::Conflict(
+                        "native session reference names a different child".into(),
+                    ));
+                }
+                references.push(reference);
             }
         }
         Ok(json!({ "references": references }))
