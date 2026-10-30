@@ -1,10 +1,8 @@
 use super::*;
 use crate::materializer::NativeResourceCredit::WriteOperations;
 use crate::native_host::NativeHostWork as _;
+use crate::native_ownership::{HASHED_BYTES, NativeOwnershipReceipt, RECEIPT_BYTES};
 use std::os::windows::fs::FileExt as _;
-
-const MAGIC: &[u8; 16] = b"ACYPFSROOT000003";
-const RECEIPT_BYTES: usize = 124;
 
 impl MountDestinationGuard {
     /// Commit ownership before ProjFS can expose authored state. The receipt
@@ -24,21 +22,20 @@ impl MountDestinationGuard {
         let parent_identity = crate::native_host::directory_identity(parent, &mut &*original)?;
         let encoded = crate::WorkCounters {
             bytes_encoded: RECEIPT_BYTES as u64,
-            bytes_hashed: 92,
+            bytes_hashed: HASHED_BYTES as u64,
             ..crate::WorkCounters::UNCHARGED
         };
         original.admit(encoded)?;
         let (pid, started) = super::super::projfs::current_process_owner(original)?;
-        let mut bytes = [0; RECEIPT_BYTES];
-        bytes[..16].copy_from_slice(MAGIC);
-        bytes[16..32].copy_from_slice(&identity.to_bytes());
-        bytes[32..48].copy_from_slice(&fence_identity.to_bytes());
-        bytes[48..64].copy_from_slice(&parent_identity.to_bytes());
-        bytes[64..80].copy_from_slice(&volume.into_bytes());
-        bytes[80..84].copy_from_slice(&pid.to_le_bytes());
-        bytes[84..92].copy_from_slice(&started.to_le_bytes());
-        let checksum = blake3::hash(&bytes[..92]);
-        bytes[92..].copy_from_slice(checksum.as_bytes());
+        let bytes = NativeOwnershipReceipt {
+            root: identity,
+            fence: fence_identity,
+            parent: parent_identity,
+            volume,
+            pid,
+            started,
+        }
+        .encode();
         original.record_admitted(encoded)?;
         let mut offset = 0;
         while offset != bytes.len() {
@@ -70,69 +67,58 @@ impl MountDestinationGuard {
         let file = self.file.as_ref().ok_or(NativeMountError::ControlPending)?;
         let (fence_identity, length) =
             crate::native_host::file_identity_and_length(file, &mut &*original)?;
-        if length != RECEIPT_BYTES as u64 {
+        if length == 0 {
             return Ok(None);
         }
-        let parent = self
-            .parent_directory
-            .as_ref()
-            .ok_or(NativeMountError::InvalidDestination)?;
-        let parent_identity = crate::native_host::directory_identity(parent, &mut &*original)?;
+        // A nonempty wrong-length receipt still has to admit its version.
+        // Only its fixed header is needed to refuse it; no payload is hashed.
+        let read_length = if length == RECEIPT_BYTES as u64 {
+            RECEIPT_BYTES
+        } else {
+            usize::try_from(length.min(16)).expect("bounded receipt header")
+        };
         let mut bytes = [0; RECEIPT_BYTES];
         let mut offset = 0;
-        while offset != bytes.len() {
+        while offset != read_length {
             let read = (&mut &*original).attempt_io(
                 crate::WorkCounters {
                     backend_read_operations: 1,
-                    source_bytes_read: (bytes.len() - offset) as u64,
+                    source_bytes_read: (read_length - offset) as u64,
                     ..crate::WorkCounters::UNCHARGED
                 },
-                || file.seek_read(&mut bytes[offset..], offset as u64),
+                || file.seek_read(&mut bytes[offset..read_length], offset as u64),
             )?;
             if read == 0 {
                 return Ok(None);
             }
             offset += read;
         }
-        original.charge(crate::WorkCounters {
-            bytes_hashed: 92,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        if bytes[92..] != *blake3::hash(&bytes[..92]).as_bytes() {
-            return Ok(None);
-        }
+        let receipt = match NativeOwnershipReceipt::decode(&bytes[..read_length], || {
+            original.charge(crate::WorkCounters {
+                bytes_hashed: HASHED_BYTES as u64,
+                ..crate::WorkCounters::UNCHARGED
+            })
+        }) {
+            Ok(receipt) => receipt,
+            Err(crate::NativeTreeMaterializationError::InvalidLayout) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let parent = self
+            .parent_directory
+            .as_ref()
+            .ok_or(NativeMountError::InvalidDestination)?;
+        let parent_identity = crate::native_host::directory_identity(parent, &mut &*original)?;
         // Copying receipt bytes cannot substitute another physical lock file
         // or parent for the one held before provider activation.
-        if &bytes[..16] != MAGIC
-            || bytes[32..48] != fence_identity.to_bytes()
-            || bytes[48..64] != parent_identity.to_bytes()
-        {
+        if !receipt.binds(fence_identity, parent_identity) {
             return Ok(None);
         }
-        let mut identity = [0; 16];
-        identity.copy_from_slice(&bytes[16..32]);
-        let mut volume = [0; 16];
-        volume.copy_from_slice(&bytes[64..80]);
-        let mut pid = [0; 4];
-        pid.copy_from_slice(&bytes[80..84]);
-        let mut started = [0; 8];
-        started.copy_from_slice(&bytes[84..92]);
-        Ok(Some(RootOwnership {
-            root: crate::NativeRootIdentity::from_bytes(identity),
-            volume: crate::VolumeId::from_bytes(volume),
-            pid: u32::from_le_bytes(pid),
-            started: u64::from_le_bytes(started),
-        }))
+        Ok(Some(receipt))
     }
 }
 
 /// Evidence read from the original locked physical fence.
-pub(in crate::native_mount) struct RootOwnership {
-    pub root: crate::NativeRootIdentity,
-    pub volume: crate::VolumeId,
-    pub pid: u32,
-    pub started: u64,
-}
+pub(in crate::native_mount) type RootOwnership = NativeOwnershipReceipt;
 
 #[cfg(test)]
 impl MountDestinationGuard {

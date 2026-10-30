@@ -48,3 +48,17 @@ fingerprint bit, accepted-byte uniqueness, noncanonical absent fields, truncated
 current headers and unsupported versions without fields. They perform no IO,
 allocation or waits. They are separate from the ID proofs: a fingerprint is not
 an ObjectId. Their presence does not establish an executed proof.
+
+Two more filesystem harnesses cover the ownership receipt's actual fixed-field
+codec and admission path:
+
+```sh
+cargo kani -p acyclic-fs --harness native_ownership_fields_preserve_all_bits
+cargo kani -p acyclic-fs --harness native_ownership_version_refuses_before_payload_and_hash
+```
+
+They preserve all 76 field bytes and require both original physical identities;
+changing either identity refuses the binding. An unsupported version cannot
+require a payload or reach hashing. These harnesses do not prove BLAKE3; the
+separate production-codec fuzz oracle checks checksum corruption. These proof
+runs remain required before claiming their results.
