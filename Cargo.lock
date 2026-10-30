@@ -401,6 +401,7 @@ dependencies = [
 name = "acyclic-grpc-observability"
 version = "0.2.0"
 dependencies = [
+ "acyclic-native-runtime",
  "acyclic-observability",
  "futures",
  "http-body",

@@ -3,6 +3,7 @@
 //! Explicit trailer status is wire evidence even when Tonic uses header OK;
 //! trailers without status preserve a prior header status.
 
+use acyclic_native_runtime::obs::OperationSpan;
 use http_body::Body as _;
 use std::{
     pin::Pin,
@@ -13,7 +14,7 @@ use tonic::{
     body::Body,
     codegen::{BoxFuture, Bytes, Service, http},
 };
-use tracing::{Dispatch, Span};
+use tracing::Span;
 
 /// A channel whose call span closes exactly once at terminal status or cancellation.
 #[derive(Clone, Debug)]
@@ -41,20 +42,14 @@ where
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        let origin = Origin {
-            dispatch: tracing::dispatcher::get_default(Clone::clone),
-            caller: Span::current(),
-        };
         let span = (self.1)(
             request
                 .extensions()
                 .get::<tonic::GrpcMethod<'static>>()
                 .map(tonic::GrpcMethod::method),
         );
-        let future = origin.run(|| {
-            let _entered = span.enter();
-            self.0.call(request)
-        });
+        let origin = OperationSpan::new(span.clone());
+        let future = origin.in_scope(|| self.0.call(request));
         Box::pin(Observed {
             inner: Some(future),
             origin: Some(origin),
@@ -65,24 +60,12 @@ where
     }
 }
 
-struct Origin {
-    dispatch: Dispatch,
-    caller: Span,
-}
-impl Origin {
-    fn run<R>(&self, action: impl FnOnce() -> R) -> R {
-        let _dispatch = tracing::dispatcher::set_default(&self.dispatch);
-        let _caller = self.caller.enter();
-        action()
-    }
-}
-
 pin_project_lite::pin_project! {
     // One ownership mechanism for both the response future and its returned body.
     struct Observed<T> {
         #[pin]
         inner: Option<T>,
-        origin: Option<Origin>,
+        origin: Option<OperationSpan>,
         span: Option<Span>,
         http_status: http::StatusCode,
         header_code: Option<u8>,
@@ -91,11 +74,11 @@ pin_project_lite::pin_project! {
     impl<T> PinnedDrop for Observed<T> {
         fn drop(this: Pin<&mut Self>) {
             let mut this = this.project();
-            if let Some(Origin { dispatch, caller }) = this.origin.take() {
-                let _dispatch = tracing::dispatcher::set_default(&dispatch);
-                let _caller = caller.entered();
-                { let _entered = this.span.as_ref().map(Span::enter); this.inner.set(None); }
-                finish(this.span, Err("cancelled"));
+            if let Some(origin) = this.origin.take() {
+                origin.in_scope(|| {
+                    this.inner.set(None);
+                    finish(this.span, Err("cancelled"));
+                });
             }
         }
     }
@@ -107,12 +90,10 @@ pub fn observe_call<M>(
     span: Span,
     future: impl std::future::Future<Output = Result<tonic::Response<M>, Status>>,
 ) -> impl std::future::Future<Output = Result<tonic::Response<M>, Status>> {
+    let origin = OperationSpan::new(span.clone());
     Observed {
         inner: Some(future),
-        origin: Some(Origin {
-            dispatch: tracing::dispatcher::get_default(Clone::clone),
-            caller: Span::current(),
-        }),
+        origin: Some(origin),
         span: Some(span),
         http_status: http::StatusCode::OK,
         header_code: None,
@@ -121,12 +102,12 @@ pub fn observe_call<M>(
 
 // Static completion preserves one poll/drop mechanism for both boundary types.
 trait ObservedOutput: Sized {
-    fn complete(self, origin: &mut Option<Origin>, span: &mut Option<Span>) -> Self;
+    fn complete(self, origin: &mut Option<OperationSpan>, span: &mut Option<Span>) -> Self;
 }
 impl<M> ObservedOutput for Result<tonic::Response<M>, Status> {
-    fn complete(self, origin: &mut Option<Origin>, span: &mut Option<Span>) -> Self {
+    fn complete(self, origin: &mut Option<OperationSpan>, span: &mut Option<Span>) -> Self {
         if let Some(origin) = origin.as_ref() {
-            origin.run(|| {
+            origin.in_scope(|| {
                 finish(
                     span,
                     Ok(self.as_ref().map_or_else(|e| e.code() as u8, |_| 0)),
@@ -137,11 +118,11 @@ impl<M> ObservedOutput for Result<tonic::Response<M>, Status> {
     }
 }
 impl<E> ObservedOutput for Result<http::Response<Body>, E> {
-    fn complete(self, origin: &mut Option<Origin>, span: &mut Option<Span>) -> Self {
+    fn complete(self, origin: &mut Option<OperationSpan>, span: &mut Option<Span>) -> Self {
         match self {
             Err(error) => {
                 if let Some(origin) = origin.as_ref() {
-                    origin.run(|| finish(span, Err("transport")));
+                    origin.in_scope(|| finish(span, Err("transport")));
                 }
                 Err(error)
             }
@@ -155,7 +136,7 @@ impl<E> ObservedOutput for Result<http::Response<Body>, E> {
                 if (response.body().is_end_stream() || header_code.is_some_and(|code| code != 0))
                     && let Some(origin) = origin.as_ref()
                 {
-                    origin.run(|| {
+                    origin.in_scope(|| {
                         finish(span, Ok(header_code.unwrap_or_else(|| code(None, status))));
                     });
                 }
@@ -182,8 +163,7 @@ where
         let Some(origin) = this.origin.as_ref() else {
             return Poll::Pending;
         };
-        let result = origin.run(|| {
-            let _entered = this.span.as_ref().map(Span::enter);
+        let result = origin.in_scope(|| {
             let Some(inner) = this.inner.as_mut().as_pin_mut() else {
                 return Poll::Pending;
             };
@@ -206,9 +186,8 @@ impl http_body::Body for Observed<Body> {
         let Some(origin) = this.origin.as_ref() else {
             return Poll::Ready(None);
         };
-        origin.run(|| {
+        origin.in_scope(|| {
             let frame = {
-                let _entered = this.span.as_ref().map(Span::enter);
                 let Some(inner) = this.inner.as_mut().as_pin_mut() else {
                     return Poll::Ready(None);
                 };
