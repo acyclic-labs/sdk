@@ -38,12 +38,25 @@ pub fn finish<T, E>(
 /// Owns the terminal observation, independently of retained child span handles.
 /// Dropping unfinished work records `incomplete`; it never invents a failed
 /// result for an operation whose effect may already have been accepted.
-pub struct Completion(Option<Span>);
+pub struct Completion {
+    span: Option<Span>,
+    abandoned_error: Option<&'static str>,
+}
 
 impl Completion {
     /// Bind the observation to the explicitly owned operation span.
     pub fn new(span: &Span) -> Self {
-        Self(Some(span.clone()))
+        Self {
+            span: Some(span.clone()),
+            abandoned_error: None,
+        }
+    }
+
+    /// Classify abandonment as an error when the boundary owns cancellation
+    /// (for example, a read or RPC body). Accepted mutations use `incomplete`.
+    pub fn on_drop_error(mut self, kind: &'static str) -> Self {
+        self.abandoned_error = Some(kind);
+        self
     }
 
     /// Complete once and return the unchanged result, including uncertain errors.
@@ -52,7 +65,7 @@ impl Completion {
         result: Result<T, E>,
         kind: impl FnOnce(&E) -> &'static str,
     ) -> Result<T, E> {
-        if let Some(span) = self.0.take() {
+        if let Some(span) = self.span.take() {
             finish(&span, result, kind)
         } else {
             result
@@ -62,10 +75,15 @@ impl Completion {
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        if let Some(span) = &self.0
+        if let Some(span) = &self.span
             && !span.is_disabled()
         {
-            span.record("outcome", "incomplete");
+            match self.abandoned_error {
+                Some(kind) => record_outcome(span, Some(kind)),
+                None => {
+                    span.record("outcome", "incomplete");
+                }
+            }
         }
     }
 }

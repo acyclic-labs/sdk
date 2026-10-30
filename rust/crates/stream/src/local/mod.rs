@@ -155,8 +155,6 @@ mod port;
 
 include!("provider.rs");
 
-include!("read_observation.rs");
-
 include!("follow_state.rs");
 include!("follow.rs");
 include!("follow_progress.rs");

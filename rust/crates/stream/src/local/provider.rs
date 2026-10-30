@@ -166,12 +166,8 @@ impl StreamProvider for LocalStream {
             outcome = Empty,
             error.kind = Empty
         ));
-        let mut observation = ReadObservation {
-            span,
-            finished: false,
-        };
-        let result = observation
-            .span
+        let completion = acyclic_observability::Completion::new(&span).on_drop_error("cancelled");
+        let result = span
             .scope(async {
                 // Parks before any visibility guard, so no writer waits on a parked read.
                 self.inner
@@ -183,8 +179,7 @@ impl StreamProvider for LocalStream {
                     .await?
             })
             .await;
-        observation.finished = true;
-        obs::finish(&observation.span, result)
+        completion.finish(result, StreamError::code)
     }
 
     async fn follow(

@@ -21,6 +21,7 @@ acyclic-test-support = { path = "../test-support" }
 serde_json.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 tracing-subscriber.workspace = true
 
 [lints]

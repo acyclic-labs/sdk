@@ -976,6 +976,7 @@ dependencies = [
 name = "acyclic-observability"
 version = "0.2.0"
 dependencies = [
+ "acyclic-native-runtime",
  "acyclic-test-support",
  "futures",
  "serde",

@@ -51,24 +51,17 @@ impl StockExecution<'_> {
             );
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let operation = span.clone();
-                span.scope(async move {
-                    let result = self
-                        .cancellable_model_step(
-                            journal,
-                            input,
-                            step,
-                            prior_messages,
-                            purpose,
-                            phase,
-                        )
-                        .await
-                        .and_then(|events| completed_model_events(events, input.operation_id));
-                    operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
-                    if let Err(error) = &result {
-                        operation.record("error.kind", error.kind());
-                    }
-                    result
+                crate::obs::traced_future(span, async move {
+                    self.cancellable_model_step(
+                        journal,
+                        input,
+                        step,
+                        prior_messages,
+                        purpose,
+                        phase,
+                    )
+                    .await
+                    .and_then(|events| completed_model_events(events, input.operation_id))
                 })
             }
             #[cfg(target_arch = "wasm32")]
