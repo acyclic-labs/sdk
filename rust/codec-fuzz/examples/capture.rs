@@ -88,7 +88,7 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "protobuf",
             &name,
             &binary,
-            "SDK Stream wire_codec/Inference prost writers from semantic_seeds (first 8 bytes select type)",
+            "SDK Stream/Actors/Inference production wire writers from semantic_seeds (first 8 bytes select type)",
             &mut manifest,
         )?;
         let mut json = selector.to_vec();

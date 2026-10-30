@@ -76,6 +76,12 @@ Four Inference writer producers add a pending Run view and progress, terminal
 and exhausted-cursor events. Both syntax targets reach the watch controls;
 these eight additional inputs also await capture and shared golden admission.
 
+Twenty-five Actors producers use public semantic constructors and the generated
+wire encoder. They require positive semantic readmission before capture, covering
+both subscription-start variants, Actor and Worker deployment, binding and
+reference selections, requests and ordered invocation. Their fifty binary/JSON
+inputs await capture, shared golden admission and execution.
+
 `corpus/EXTERNAL.tsv` separately records exact output from published
 `@modelcontextprotocol/server-filesystem@2.1.0` and
 `@modelcontextprotocol/server-everything@2.1.0` processes. The stdio discovery
