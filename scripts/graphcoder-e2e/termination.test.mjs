@@ -182,3 +182,32 @@ test("closing the original scope joins its in-flight native pipe admission", { s
     assert.equal(settled, true, "scope closure must join the original pending admission");
   } finally { await rejected; await scope.close(); }
 });
+
+test("the selected Windows native producer acknowledges through the original parser and physical owner", { skip: process.platform !== "win32" }, async () => {
+  const selector = "obs::report_port::windows::tests::native_pipe_keeps_request_ack_and_producer_loss_on_the_selected_owner";
+  assert.ok(probe && isAbsolute(probe), "report-control step=admit failed; recovery command: set E2E_REPORT_TEST_BINARY to the emitted Windows native-runtime test executable");
+  for (const owned of [false, true]) for (const expired of [false, true]) {
+    const scope = new Processes();
+    const start = owned ? scope.startReportedOwned.bind(scope) : scope.startReported.bind(scope);
+    let physicallyClosed = false;
+    const running = await start(probe, ["--exact", selector, "--nocapture"], {
+      env: { ...process.env, ACYCLIC_REPORT_PIPE_CHILD: "ack" },
+    });
+    running.child.once("close", () => { physicallyClosed = true; });
+    try {
+      await ready(running);
+      await running.requestReport(expired ? 0 : Date.now() + 500);
+      const result = await running.closed;
+      await scope.close();
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.termination.report_outcome, expired ? "unsupported" : "empty");
+      assert.equal(result.termination.report_acknowledged, true);
+      assert.equal(result.termination.missing_wait_report, expired);
+      assert.match(result.termination.generation, /^[0-9a-f]{32}$/);
+      assert.match(result.termination.request_id, /^[0-9a-f]{32}$/);
+      assert.deepEqual(result.termination.stuck_on, []);
+      assert.equal(physicallyClosed, true, "acknowledgement cannot substitute for native close");
+      assert.equal(scope.children.size, 0);
+    } finally { await scope.close(); }
+  }
+});
