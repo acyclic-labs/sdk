@@ -153,6 +153,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_fs::materializer::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "materializer production witness and metadata image writers",
+            &mut manifest,
+        )?;
+    }
     save(
         "filesystem_codecs",
         "usn-checkpoint",

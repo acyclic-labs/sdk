@@ -329,6 +329,7 @@ fn every_native_materialization_category_keeps_its_wire_code() {
     use crate::NativeTreeMaterializationError as E;
     for (error, expected) in [
         (E::InvalidLayout, Code::DataLoss),
+        (E::UnsupportedFormat, Code::FailedPrecondition),
         (E::MissingEntry, Code::NotFound),
         (E::ExternalMutation, Code::Aborted),
         (E::UnexpectedBackup, Code::FailedPrecondition),
