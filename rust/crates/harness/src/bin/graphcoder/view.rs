@@ -458,6 +458,7 @@ pub async fn run(
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
     let mut diff_open = false;
     let mut diff_panel: Option<diff::DiffPanel> = None;
+    let diff_loading = [Line::raw("Loading…")];
     let mut diff_query = std::pin::pin!(None);
     let mut diff_credit = 0;
     // The message id and text of the prompt the host last refused.
@@ -497,9 +498,16 @@ pub async fn run(
                 status,
                 overlay: overlay.as_ref().map_or_else(
                     || {
-                        diff_panel
-                            .as_ref()
-                            .map_or(&approval_rows[..], |panel| &panel.lines[..])
+                        diff_panel.as_ref().map_or_else(
+                            || {
+                                if diff_open {
+                                    &diff_loading[..]
+                                } else {
+                                    &approval_rows[..]
+                                }
+                            },
+                            |panel| &panel.lines[..],
+                        )
                     },
                     |(_, lines)| &lines[..],
                 ),
