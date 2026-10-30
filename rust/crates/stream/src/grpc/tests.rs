@@ -17,18 +17,28 @@ pub(crate) enum TestClientError {
 }
 
 pub(crate) fn client<P: StreamProvider>(provider: P) -> Result<Client, TestClientError> {
+    client_with_interceptor(provider, Ok::<Request<()>, Status>)
+}
+
+fn client_with_interceptor<P, I>(provider: P, interceptor: I) -> Result<Client, TestClientError>
+where
+    P: StreamProvider,
+    I: tonic::service::Interceptor + Clone + Send + Sync + 'static,
+{
     let provider = Arc::new(provider);
     let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
         tower::service_fn(move |_| {
             let provider = Arc::clone(&provider);
+            let interceptor = interceptor.clone();
             async move {
                 let (client, server) = tokio::io::duplex(64 * 1024);
                 tokio::spawn(async move {
                     let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
                     let _ = tonic::transport::Server::builder()
-                        .add_service(StreamServiceServer::new(Service::new(Arc::clone(
-                            &provider,
-                        ))))
+                        .add_service(StreamServiceServer::with_interceptor(
+                            Service::new(Arc::clone(&provider)),
+                            interceptor,
+                        ))
                         .add_service(
                             wire::stream_session_service_server::StreamSessionServiceServer::new(
                                 crate::session::Service::new(
@@ -264,6 +274,7 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
 
 #[tokio::test]
 async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
+    use futures::FutureExt as _;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
     let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
@@ -283,8 +294,11 @@ async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
         Client::connect_eager("http://127.0.0.1:1", "fixture").await,
         Err(ConnectError::InsecureEndpoint)
     ));
-    let accepted = tokio::time::timeout(Duration::from_millis(100), listener.accept()).await;
-    assert!(accepted.is_err());
+    assert!(listener.accept().now_or_never().is_none());
+    // The same listener can observe a real connection immediately after the
+    // rejected configuration futures have settled.
+    let _peer = tokio::net::TcpStream::connect(listener.local_addr()?).await?;
+    let _accepted = listener.accept().await?;
     Ok(())
 }
 
@@ -311,9 +325,7 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         .follow(crate::FollowRequest::new(path, 0))
         .map_ok(crate::records_only)
         .await?;
-    let record = tokio::time::timeout(Duration::from_secs(1), records.next())
-        .await?
-        .ok_or("follow ended")??;
+    let record = records.next().await.ok_or("follow ended")??;
     assert_eq!(record.value.as_slice(), b"resumed");
     Ok(())
 }
@@ -326,18 +338,15 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
         deny: true,
         finite: false,
     })?;
-    let items = tokio::time::timeout(
-        Duration::from_secs(1),
-        transport
-            .follow(crate::FollowRequest::new(
-                StreamPath::new("accounts/events")?,
-                0,
-            ))
-            .map_ok(crate::records_only)
-            .await?
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    let items = transport
+        .follow(crate::FollowRequest::new(
+            StreamPath::new("accounts/events")?,
+            0,
+        ))
+        .map_ok(crate::records_only)
+        .await?
+        .collect::<Vec<_>>()
+        .await;
     assert_eq!(items, vec![Err(StreamError::AccessDenied)]);
     Ok(())
 }
@@ -361,8 +370,8 @@ async fn assert_unary_retry(error: Status, retry: bool) -> TestResult {
     Ok(())
 }
 
-#[tokio::test]
-async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> TestResult {
+/// Captured from Hyper's actual HTTP/2 dispatch after its driver disappears.
+pub(crate) async fn closed_transport() -> TestResult<Status> {
     let (client_io, _peer) = tokio::io::duplex(4096);
     let (mut sender, connection) = hyper::client::conn::http2::handshake(
         hyper_util::rt::TokioExecutor::new(),
@@ -376,9 +385,14 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
         .await
         .err()
         .ok_or("closed connection succeeded")?;
-    assert_unary_retry(Status::from_error(Box::new(error)), true).await?;
+    Ok(Status::from_error(Box::new(error)))
+}
+
+#[tokio::test]
+async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> TestResult {
+    assert_unary_retry(closed_transport().await?, true).await?;
     assert_unary_retry(Status::unknown("peer outcome unknown"), false).await?;
-    assert_unary_retry(Status::unavailable("restarting"), true).await?;
+    assert_unary_retry(Status::unavailable("restarting"), false).await?;
     assert_unary_retry(Status::cancelled("application cancellation"), false).await?;
     assert_unary_retry(Status::deadline_exceeded("caller deadline"), false).await?;
     assert_unary_retry(Status::permission_denied("denied"), false).await?;
@@ -401,6 +415,31 @@ async fn transport_loss_retries_the_same_request_but_peer_errors_do_not() -> Tes
     ] {
         assert!(!retryable(&error), "{error:?}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn application_unavailability_returns_without_retry_and_preserves_a_caller_resend()
+-> TestResult {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::clone(&attempts);
+    let client = client_with_interceptor(MemoryStream::default(), move |request: Request<()>| {
+        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(Status::unavailable("application refusal"))
+        } else {
+            Ok(request)
+        }
+    })?;
+    let key = IdempotencyKey::unique();
+    assert_eq!(
+        client.inspect_idempotency(key.clone()).await,
+        Err(StreamError::Unavailable)
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    // The same live server accepts the caller's next request. An automatic
+    // readiness retry would consume this response before returning the error.
+    assert_eq!(client.inspect_idempotency(key).await, Ok(None));
+    assert_eq!(attempts.load(Ordering::SeqCst), 2);
     Ok(())
 }
 
@@ -442,13 +481,15 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     use tracing::instrument::WithSubscriber as _;
     let captured = acyclic_grpc_observability::tests::Capture::default();
     let subscriber = retry_capture::dispatch(captured.clone());
+    let transport_error = closed_transport().await?;
+    let retry_code = (transport_error.code() as u64).to_string();
     async {
         let client = unconnected()?;
         let mut first = true;
         let response = client
             .unary((), |_, _| {
                 let result = if std::mem::take(&mut first) {
-                    Err(Status::unavailable("retry"))
+                    Err(transport_error.clone())
                 } else {
                     Ok(Response::new(()))
                 };
@@ -462,8 +503,9 @@ async fn retry_attempts_record_independent_spans() -> TestResult {
     .await?;
     let attempts = captured.all("acyclic.stream.grpc.call");
     assert_eq!(attempts.len(), 2);
-    for (attempt, (number, outcome, code)) in
-        attempts.iter().zip([("1", "err", "14"), ("2", "ok", "0")])
+    for (attempt, (number, outcome, code)) in attempts
+        .iter()
+        .zip([("1", "err", retry_code.as_str()), ("2", "ok", "0")])
     {
         for (field, expected) in [
             ("attempt", number),
@@ -547,15 +589,12 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
         })
         .await?;
     let client = client(provider)?;
-    let result = tokio::time::timeout(
-        Duration::from_secs(1),
-        client
-            .follow(crate::FollowRequest::new(path, 0))
-            .map_ok(crate::records_only)
-            .await?
-            .collect::<Vec<_>>(),
-    )
-    .await?;
+    let result = client
+        .follow(crate::FollowRequest::new(path, 0))
+        .map_ok(crate::records_only)
+        .await?
+        .collect::<Vec<_>>()
+        .await;
     assert_eq!(result.len(), 21);
     for (sequence, item) in result.iter().take(20).enumerate() {
         assert_eq!(
@@ -577,13 +616,14 @@ async fn concurrent_retry_captures_keep_their_own_dispatcher() -> TestResult {
     let second = acyclic_grpc_observability::tests::Capture::default();
     let capture = |captured: acyclic_grpc_observability::tests::Capture| async move {
         let subscriber = retry_capture::dispatch(captured);
+        let transport_error = closed_transport().await?;
         async {
             let client = unconnected()?;
             let mut first = true;
             let response = client
                 .unary((), |_, _| {
                     let result = if std::mem::take(&mut first) {
-                        Err(Status::unavailable("retry"))
+                        Err(transport_error.clone())
                     } else {
                         Ok(Response::new(()))
                     };
