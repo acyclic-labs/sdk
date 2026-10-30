@@ -249,11 +249,13 @@ impl Issuer {
         account: &str,
         spend_micros: u64,
         expires_at_unix_seconds: u64,
+        products: Vec<String>,
     ) -> Result<SignedAllowance, VerifyError> {
         let allowance = Allowance {
             account_id: account.into(),
             spend_micros,
             expires_at_unix_seconds,
+            products,
         };
         let signature = sign(
             &self.key,

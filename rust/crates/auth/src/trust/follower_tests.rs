@@ -413,7 +413,10 @@ fn forwarding_appends_one_audience_block_offline() {
 fn allowances_verify_offline_against_environment_keys() {
     let world = world();
     let trust = follower(&world);
-    let allowance = world.issuer.allowance("account", 500, NOW + 100).unwrap();
+    let allowance = world
+        .issuer
+        .allowance("account", 500, NOW + 100, vec![])
+        .unwrap();
     let capability = world
         .signer
         .mint(
@@ -430,7 +433,10 @@ fn allowances_verify_offline_against_environment_keys() {
     // Negative controls: a forged signature and another account refuse.
     let mut forged = allowance.clone();
     forged.allowance.spend_micros = 5_000;
-    let foreign = world.issuer.allowance("other", 500, NOW + 100).unwrap();
+    let foreign = world
+        .issuer
+        .allowance("other", 500, NOW + 100, vec![])
+        .unwrap();
     for caveat in [forged, foreign] {
         let minted = world.signer.mint(
             vec![Caveat {

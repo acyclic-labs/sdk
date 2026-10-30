@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ResourceGrant::decl(&ts_rs::Config::default()),
         ExecutionGrant::decl(&ts_rs::Config::default()),
         BillingGrant::decl(&ts_rs::Config::default()),
+        FilesystemGrant::decl(&ts_rs::Config::default()),
         SocketPortRange::decl(&ts_rs::Config::default()),
         SocketHostRule::decl(&ts_rs::Config::default()),
         WebsocketConnectGrant::decl(&ts_rs::Config::default()),

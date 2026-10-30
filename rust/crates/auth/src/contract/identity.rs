@@ -274,6 +274,9 @@ pub struct Allowance {
     /// Exclusive Unix seconds, UTC.
     #[wire(tag = 3, uint64)]
     pub expires_at_unix_seconds: u64,
+    /// Products the allowance covers; empty covers every product.
+    #[wire(tag = 4, string)]
+    pub products: Vec<String>,
 }
 
 /// Allowance signed by a trusted environment key.

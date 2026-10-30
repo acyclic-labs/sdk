@@ -95,7 +95,7 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
             view.validate_for(&request)?;
             let filter = crate::FollowFilter::authorized(
                 wire::SessionFilter::default(),
-                &authorization.current()?,
+                &*authorization.current()?,
             )?;
             for head in view.heads.iter().flatten() {
                 if let Some(record) = &head.last {

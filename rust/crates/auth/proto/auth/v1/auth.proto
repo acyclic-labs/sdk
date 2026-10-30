@@ -103,6 +103,7 @@ message Allowance {
   string account_id = 1;
   uint64 spend_micros = 2;
   uint64 expires_at_unix_seconds = 3;
+  repeated string products = 4;
 }
 
 message Attribute {
@@ -244,6 +245,12 @@ message ExecutionGrant {
   optional uint64 reserved_capacity_units = 7;
 }
 
+message FilesystemGrant {
+  ResourceGrant grant = 1;
+  optional uint32 posix_uid = 2;
+  optional uint32 posix_gid = 3;
+}
+
 message Filter {
   repeated KeyRange keys = 1;
   repeated AttributeMatch attributes = 2;
@@ -255,6 +262,7 @@ message Grant {
     ExecutionGrant execution = 2;
     BillingGrant billing = 3;
     WebsocketConnectGrant websocket_connect = 4;
+    FilesystemGrant filesystem = 5;
   }
 }
 
