@@ -147,16 +147,13 @@ pub(super) async fn withdrawal_and_producer_loss_retire_original_pins() -> Resul
                 Err(failure) => failure,
                 Ok(_) => return Err("lost producer returned a row".into()),
             };
-            let mut cause: &(dyn Error + 'static) = &failure.error;
-            loop {
-                if let Some(cause) = cause.downcast_ref::<ObjectStoreError>() {
-                    assert!(
-                        matches!(cause, ObjectStoreError::Rejected(reason) if reason == "read producer lost")
-                    );
-                    break;
-                }
-                cause = cause.source().ok_or("lost original object error")?;
-            }
+            assert!(
+                matches!(&failure.error,
+                    WorkspaceError::Filesystem(crate::FsError::Object(ObjectStoreError::Rejected(reason)))
+                    if reason == "read producer lost"),
+                "lost original typed producer error: {:?}",
+                failure.error,
+            );
         }
         let spent = reader.work();
         assert!(
