@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
+import { join } from "node:path";
 
 export function sha256(payload) {
   return createHash("sha256").update(payload).digest("hex");
@@ -83,4 +84,41 @@ export function tarEntries(tar) {
     offset = bodyStart + Math.ceil(size / 512) * 512;
   }
   throw new Error("archive lacks an end marker");
+}
+
+// wasm-bindgen emits flat bindings plus inline JavaScript under snippets/.
+export function isWasmArtifactPath(path) {
+  const parts = path.split("/");
+  return parts.every(part => part !== "" && part !== "." && part !== ".." && !part.includes("\\"))
+    && (parts.length === 1 || (parts[0] === "snippets" && parts.length > 1));
+}
+
+/** Read the complete emitted tree without following symbolic links.
+ * @returns {Generator<[string, Buffer]>}
+ */
+export function* wasmArtifactFiles(directory, { receipt = false } = {}) {
+  const root = lstatSync(directory);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new Error(`WASM artifact admission failed at ${directory}: expected a real directory; recovery: bun scripts/build-wasm.mjs`);
+  }
+  /** @returns {Generator<[string, Buffer]>} */
+  function* visit(parent, prefix) {
+    for (const entry of readdirSync(parent, { withFileTypes: true })) {
+      const path = prefix + entry.name;
+      if (entry.isDirectory() && !entry.isSymbolicLink() && (path === "snippets" || path.startsWith("snippets/"))) {
+        yield* visit(join(parent, entry.name), `${path}/`);
+      } else if (entry.isFile() && !entry.isSymbolicLink() && isWasmArtifactPath(path)) {
+        if (receipt || path !== "producer-receipt.json") yield [`generated/wasm/${path}`, readFileSync(join(parent, entry.name))];
+      } else {
+        throw new Error(`WASM artifact admission failed at ${path}: non-regular artifact; recovery: bun scripts/build-wasm.mjs`);
+      }
+    }
+  }
+  yield* visit(directory, "");
+}
+
+export function wasmArtifactInventory(files) {
+  return Array.from(files, ([path, bytes]) => ({
+    path, bytes: bytes.length, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  })).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 }
