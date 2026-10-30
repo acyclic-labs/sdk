@@ -322,17 +322,8 @@ impl StreamProvider for PostgresStream {
             // wait needs no unrelated journal read or server clock request.
             self.refresh().await?;
         }
-        let projection = request.projection;
         self.inner.core.revisions.wait(&request.at_least).await?;
-        let mut view = self.inner.core.capture_heads(&request).await?;
-        for head in view.heads.iter_mut().flatten() {
-            head.durable = if projection == crate::HeadProjection::Tail {
-                0
-            } else {
-                head.tail
-            };
-        }
-        Ok(view)
+        self.inner.core.capture_heads(&request, true).await
     }
 
     fn write(
