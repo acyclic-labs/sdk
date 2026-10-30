@@ -223,9 +223,8 @@ impl Write for Tty {
 
 impl Drop for Tty {
     fn drop(&mut self) {
-        if lifecycle::detach(self.owner, &self.state, RawTty::restore).is_err() {
-            let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
-        }
+        // A failed detach retains the original owner and restoration journal.
+        let _ = lifecycle::detach(self.owner, &self.state, RawTty::restore);
     }
 }
 
