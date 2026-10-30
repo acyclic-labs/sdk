@@ -182,18 +182,12 @@ impl PathState {
                     edge.retire(accounting)?;
                     return Err(error);
                 }
-                let Owned {
-                    value: Binding { parent, name },
-                    mut allocation,
-                    bytes,
-                } = edge;
+                let Binding { parent, name } = edge.transfer_to(
+                    &mut self.names.allocation,
+                    &mut self.names.bytes,
+                    accounting,
+                )?;
                 self.names.value.push(name);
-                self.names.allocation.absorb(&mut allocation)?;
-                self.names.bytes = self
-                    .names
-                    .bytes
-                    .checked_add(bytes)
-                    .ok_or(WorkError::Overflow)?;
                 accounting.charge(WorkCounters {
                     source_path_components: 1,
                     items_examined: 1,

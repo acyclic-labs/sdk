@@ -226,12 +226,13 @@ impl<F: Format> Side<F> {
             Node::Leaf(values) => {
                 let value = values.as_slice().first().ok_or(FsError::InvalidDiff)?;
                 let bytes = F::value_owned_bytes(value);
-                let allocation = split_allocation(&mut frame.node.allocation, bytes)?;
-                frame.node.bytes = frame
+                let remaining = frame
                     .node
                     .bytes
                     .checked_sub(bytes)
                     .ok_or(WorkError::Overflow)?;
+                let allocation = split_allocation(&mut frame.node.allocation, bytes)?;
+                frame.node.bytes = remaining;
                 let value = values.next().ok_or(FsError::InvalidDiff)?;
                 Ok(Owned::new(value, allocation, bytes))
             }
@@ -261,12 +262,13 @@ impl<F: Format> Side<F> {
             Node::Leaf(values) => {
                 let value = values.as_slice().first().ok_or(FsError::InvalidDiff)?;
                 let bytes = F::value_owned_bytes(value);
-                let allocation = split_allocation(&mut frame.node.allocation, bytes)?;
-                frame.node.bytes = frame
+                let remaining = frame
                     .node
                     .bytes
                     .checked_sub(bytes)
                     .ok_or(WorkError::Overflow)?;
+                let allocation = split_allocation(&mut frame.node.allocation, bytes)?;
+                frame.node.bytes = remaining;
                 drop(values.next().ok_or(FsError::InvalidDiff)?);
                 retire_allocation(allocation, bytes, accounting)
             }
@@ -531,14 +533,12 @@ impl<F: Format> Cursor<F> {
                 (after, &mut self.after, &mut result.value.after),
             ] {
                 if selected {
-                    let Owned {
-                        value,
-                        mut allocation,
-                        bytes,
-                    } = side.take_value(self.limits, accounting)?;
-                    *destination = Some(value);
-                    result.allocation.absorb(&mut allocation)?;
-                    result.bytes = result.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
+                    let part = side.take_value(self.limits, accounting)?;
+                    *destination = Some(part.transfer_to(
+                        &mut result.allocation,
+                        &mut result.bytes,
+                        accounting,
+                    )?);
                 }
             }
             Ok(())

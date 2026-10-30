@@ -78,14 +78,9 @@ async fn diff_with_accounting<S: AsyncObjectStore, F: Format>(
                 change.retire(accounting)?;
                 return Err(error);
             }
-            let Owned {
-                value,
-                mut allocation,
-                bytes,
-            } = change;
+            let value =
+                change.transfer_to(&mut values.allocation, &mut values.bytes, accounting)?;
             values.value.push(value);
-            values.allocation.absorb(&mut allocation)?;
-            values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
         }
         Ok(false)
     }

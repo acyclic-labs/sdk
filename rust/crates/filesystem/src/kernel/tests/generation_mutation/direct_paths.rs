@@ -1,4 +1,5 @@
 use super::*;
+use crate::FsError;
 use crate::kernel::direct_paths::DirectPaths;
 
 struct DirectOnly<'a>(&'a MemoryObjectStore);
@@ -74,6 +75,8 @@ async fn collect_paths(
 #[tokio::test]
 async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    refused_transfer_retires_the_value_before_its_original_native_credit()?;
     let store = MemoryObjectStore::default();
     let fixture = fixture(&store).await?;
     let file = FileId::from_bytes([2; 16]);
@@ -219,5 +222,63 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
     ));
     cursor.retire(&mut work)?;
     assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn refused_transfer_retires_the_value_before_its_original_native_credit()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::kernel::Owned;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    struct Held {
+        bytes: Vec<u8>,
+        original: crate::NativeMaterializationWork,
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for Held {
+        fn drop(&mut self) {
+            assert!(
+                self.original.live_allocation_bytes() >= self.bytes.capacity() as u64,
+                "physical backing outlived its original credit"
+            );
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    let cancel = CancellationToken::new();
+    let donor = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+        .map_err(|(error, _)| error)?;
+    let recipient = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancel)
+        .map_err(|(error, _)| error)?;
+    let dropped = Arc::new(AtomicBool::new(false));
+    let bytes = vec![7; 73];
+    let length = bytes.capacity() as u64;
+    let guard = donor.claim(length, 1, WorkCounters::UNCHARGED)?;
+    let owned = Owned::new(
+        Held {
+            bytes,
+            original: donor.clone(),
+            dropped: Arc::clone(&dropped),
+        },
+        KernelOwnedAllocation::NativeOriginal(guard),
+        length,
+    );
+    let mut accounting = KernelAccounting::native(&recipient, &cancel);
+    let mut target = Owned::<Vec<u8>>::allocate(5, &mut accounting)?;
+    let target_bytes = target.bytes;
+    assert!(matches!(
+        owned.transfer_to(&mut target.allocation, &mut target.bytes, &mut accounting),
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::InvalidLayout
+        ))
+    ));
+    assert!(dropped.load(Ordering::SeqCst));
+    assert_eq!(donor.live_allocation_bytes(), 0);
+    assert_eq!(target.bytes, target_bytes);
+    assert_eq!(recipient.live_allocation_bytes(), target_bytes);
+    target.retire(&mut accounting)?;
+    assert_eq!(recipient.live_allocation_bytes(), 0);
     Ok(())
 }

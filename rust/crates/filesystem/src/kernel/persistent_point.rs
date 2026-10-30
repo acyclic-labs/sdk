@@ -28,6 +28,30 @@ impl<T> Owned<T> {
         }
     }
 
+    /// Moves the value only after its original guard has joined the recipient.
+    /// On refusal the donor destroys its value before releasing its own credit.
+    pub(crate) fn transfer_to(
+        mut self,
+        allocation: &mut KernelOwnedAllocation,
+        bytes: &mut u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<T, crate::FsError> {
+        let handoff = bytes
+            .checked_add(self.bytes)
+            .ok_or(crate::FsError::Work(crate::WorkError::Overflow))
+            .and_then(|total| allocation.absorb(&mut self.allocation).map(|()| total));
+        match handoff {
+            Ok(total) => {
+                *bytes = total;
+                Ok(self.value)
+            }
+            Err(error) => {
+                self.retire(accounting)?;
+                Err(error)
+            }
+        }
+    }
+
     /// Drops the value and releases its accounted ownership.
     pub fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let Self {
