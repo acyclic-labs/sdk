@@ -319,6 +319,15 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "encode_grpc_frame",
         &mut manifest,
     )?;
+    for (name, bytes) in acyclic_codec_fuzz::auth_socket::seeds() {
+        save(
+            "auth",
+            &name,
+            &bytes,
+            "WebsocketConnectGrantProto::from through admitted DNS, suffix, literal IP and CIDR grants with default or explicit ports",
+            &mut manifest,
+        )?;
+    }
     let opaque = b"\0./%\xff\xc3\xa9";
     save(
         "auth",

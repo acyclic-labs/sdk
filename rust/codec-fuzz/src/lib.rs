@@ -1,6 +1,7 @@
 //! On-demand oracles call the production decoders; no alternate wire parser.
 use prost::Message;
 mod auth_resource;
+pub mod auth_socket;
 pub mod filesystem_pages;
 mod harness_manifest;
 pub mod inference_http;
@@ -268,6 +269,7 @@ pub fn ids(bytes: &[u8]) {
 
 pub fn auth(bytes: &[u8]) {
     auth_resource::check(bytes);
+    auth_socket::check(bytes);
     use acyclic_auth::{authority, contract::*};
     if let Ok(value) = authority::decode_block(bytes) {
         assert_eq!(BlockProto::from(value).encode_to_vec(), bytes);

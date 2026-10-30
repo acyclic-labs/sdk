@@ -248,3 +248,11 @@ arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.
 Resource/action grammar validators receive arbitrary UTF-8 input. Two actual
 SDK writer producers and a bounded component proof await capture/execution.
+
+Socket grant fuzzing also reaches the shared host parser and actual destination
+matcher. Admitted grants preserve DNS case/root-dot equivalence and literal
+IP/CIDR self-membership; wildcard apexes, DNS/IP substitution, invalid hosts,
+zero ports and excluded ports refuse. Arbitrary UTF-8 host spellings reach
+direct admission, including malformed forms. Twelve semantic-to-wire writer
+producers cover DNS, suffix, both IP families and both CIDR families with
+default and explicit ports. Capture and runtime execution remain pending.
