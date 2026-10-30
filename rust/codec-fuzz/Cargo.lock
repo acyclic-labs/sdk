@@ -23,6 +23,7 @@ dependencies = [
  "acyclic-grpc-observability",
  "acyclic-host-platform",
  "acyclic-native-runtime",
+ "acyclic-objects",
  "acyclic-proto-build",
  "acyclic-protobuf-json",
  "acyclic-stream",
@@ -301,6 +302,7 @@ dependencies = [
  "rustix",
  "security-framework 3.7.0",
  "serde",
+ "sha2 0.11.1",
  "subtle",
  "tokio",
  "tokio-util",
@@ -325,12 +327,16 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "js-sys",
  "libc",
  "pin-project-lite",
  "prost",
+ "prost-reflect",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
