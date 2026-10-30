@@ -237,6 +237,35 @@ impl Pool {
                 }
                 Ok(())
             }
+            Command::Socket {
+                id,
+                frame: bytes,
+                sent,
+            } => {
+                // Only the generation that is open now carries the frame; a
+                // socket is never replayed, so a lost link fails its route.
+                let route = self
+                    .routes
+                    .get(&id)
+                    .filter(|route| route.opened && matches!(route.kind, Kind::ActorSocket(_)));
+                let Some(route) = route else {
+                    let _ = sent.send(Err(StreamError::Unavailable));
+                    return Ok(());
+                };
+                let value = frame(
+                    id,
+                    route.generation,
+                    Body::Data(wire::SessionData {
+                        after: None,
+                        accepted: 0,
+                        durable: 0,
+                        item: Some(Item::ActorSocket(bytes)),
+                    }),
+                );
+                let node = route.node.clone();
+                let _ = sent.send(Ok(()));
+                self.send(&node, value)
+            }
             Command::Open(open) => {
                 let OpenCommand {
                     id,
@@ -564,11 +593,16 @@ impl Pool {
     }
     /// End a route with the server's status after its earlier records.
     fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {
-        // Only an opened bounded follow ends cleanly; anywhere else "end" is a
-        // protocol error, and a checked follow never ends unconfirmed.
+        // Only an opened bounded follow or actor socket ends cleanly (a socket
+        // after its final frame); anywhere else "end" is a protocol error, and
+        // a checked follow never ends unconfirmed.
         if closed.code == wire_codec::session::END_CODE
             && route.opened
-            && matches!(&route.kind, Kind::Follow(follow) if follow.until != 0 || follow.key.is_some())
+            && match &route.kind {
+                Kind::Follow(follow) => follow.until != 0 || follow.key.is_some(),
+                Kind::ActorSocket(_) => true,
+                _ => false,
+            }
         {
             route.progress.end();
             return None;
@@ -631,6 +665,9 @@ impl Pool {
                 &route.received_opaque,
                 &data,
             )?,
+            (Kind::ActorSocket(_), Some(Item::ActorSocket(_))) => {
+                wire_codec::session::actor_socket_sequence(route.received, &data)?
+            }
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
@@ -639,7 +676,11 @@ impl Pool {
             Received::Frame(frame(id, generation, Body::Data(data)))
         } else if matches!(
             route.kind,
-            Kind::Follow(_) | Kind::ActorCall(_) | Kind::ChildrenPage(_) | Kind::Heads(_)
+            Kind::Follow(_)
+                | Kind::ActorCall(_)
+                | Kind::ActorSocket(_)
+                | Kind::ChildrenPage(_)
+                | Kind::Heads(_)
         ) {
             Received::Data(data)
         } else {

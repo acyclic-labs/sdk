@@ -144,6 +144,16 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     /// Enqueue without waiting. Uncertain transport failures are retried with
     /// the identical Invocation, whose key and complete request stay stable.
     pub async fn enqueue_invoke(&self, invocation: &Invocation) -> Result<InvocationTicket, Error> {
+        self.enqueue_joined(invocation, |_| Ok(Vec::new())).await
+    }
+
+    /// Enqueue `invocation` in one commit with the companion effects `joined`
+    /// derives from the resolved input stream, such as a socket's registration.
+    pub(super) async fn enqueue_joined(
+        &self,
+        invocation: &Invocation,
+        joined: impl FnOnce(&StreamPath) -> Result<Vec<Effect>, Error>,
+    ) -> Result<InvocationTicket, Error> {
         acyclic_observability::async_operation!(
             "acyclic.actors.enqueue_invoke",
             Error::kind,
@@ -168,6 +178,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                     },
                 })?;
                 publication.join(self.activation(invocation.actor()))?;
+                for effect in joined(&input)? {
+                    publication.join(effect)?;
+                }
                 let mut request = publication.into_request()?;
                 let binding = acyclic_stream::request::commit_binding_with(&mut request, |_| {
                     Ok::<(), StreamError>(())

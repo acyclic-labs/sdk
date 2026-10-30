@@ -1,5 +1,5 @@
 //! In-process platform I/O over the same multiplexed session implementation.
-use super::{CallProvider, Client, Limits, ResourceProvider, transport};
+use super::{CallProvider, Client, Limits, Products, ResourceProvider, SocketProvider, transport};
 use crate::runtime::Executor;
 use crate::{BoxProviderFuture, StreamError, StreamProvider};
 use futures::StreamExt as _;
@@ -9,8 +9,7 @@ struct Local<P: ?Sized> {
     provider: Arc<P>,
     executor: Arc<dyn Executor>,
     authority: Arc<super::Authority>,
-    resources: Option<Arc<dyn ResourceProvider>>,
-    calls: Option<Arc<dyn CallProvider>>,
+    products: Products,
     lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
@@ -22,8 +21,7 @@ impl<P: StreamProvider + ?Sized> transport::Transport for Local<P> {
             super::serve_on_with_products(
                 self.provider.clone(),
                 self.authority.clone(),
-                self.resources.clone(),
-                self.calls.clone(),
+                self.products.clone(),
                 "local".into(),
                 Limits::default(),
                 Box::pin(source.map(Ok)),
@@ -46,7 +44,7 @@ impl Client {
         authority: Arc<super::Authority>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, None, None, executor, None)
+        Self::local(provider, authority, Products::default(), executor, None)
     }
 
     /// The in-process pool whose product follows, such as `fs:/` filesystem
@@ -58,7 +56,16 @@ impl Client {
         resources: Arc<dyn ResourceProvider>,
         executor: Arc<dyn Executor>,
     ) -> Self {
-        Self::local(provider, authority, Some(resources), None, executor, None)
+        Self::local(
+            provider,
+            authority,
+            Products {
+                resources: Some(resources),
+                ..Products::default()
+            },
+            executor,
+            None,
+        )
     }
 
     /// Uses the identical channel admission/credit/dispatch as a network host.
@@ -74,8 +81,34 @@ impl Client {
         Self::local(
             provider,
             authority,
-            resources,
-            Some(calls),
+            Products {
+                resources,
+                calls: Some(calls),
+                sockets: None,
+            },
+            executor,
+            lifetime,
+        )
+    }
+
+    /// The in-process pool whose actor sockets are hosted by `sockets`, on
+    /// the same admission, credit and channel lifetime as a network host.
+    pub fn in_process_with_sockets<P: StreamProvider + ?Sized>(
+        provider: Arc<P>,
+        authority: Arc<super::Authority>,
+        calls: Option<Arc<dyn CallProvider>>,
+        sockets: Arc<dyn SocketProvider>,
+        executor: Arc<dyn Executor>,
+        lifetime: Option<tokio::sync::watch::Receiver<()>>,
+    ) -> Self {
+        Self::local(
+            provider,
+            authority,
+            Products {
+                resources: None,
+                calls,
+                sockets: Some(sockets),
+            },
             executor,
             lifetime,
         )
@@ -84,8 +117,7 @@ impl Client {
     fn local<P: StreamProvider + ?Sized>(
         provider: Arc<P>,
         authority: Arc<super::Authority>,
-        resources: Option<Arc<dyn ResourceProvider>>,
-        calls: Option<Arc<dyn CallProvider>>,
+        products: Products,
         executor: Arc<dyn Executor>,
         lifetime: Option<tokio::sync::watch::Receiver<()>>,
     ) -> Self {
@@ -93,8 +125,7 @@ impl Client {
             provider,
             executor: executor.clone(),
             authority,
-            resources,
-            calls,
+            products,
             lifetime,
         });
         let local = endpoint.clone();

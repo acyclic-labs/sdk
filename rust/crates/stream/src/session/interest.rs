@@ -4,6 +4,7 @@ struct Opened {
     channel: Channel,
     source: Source,
     terminal: Option<Source>,
+    socket: Option<Box<dyn SocketInbound>>,
 }
 enum Admission {
     Open(Box<Opened>),
@@ -74,10 +75,12 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             };
             let Opened {
                 identity,
-                channel,
+                mut channel,
                 source,
                 terminal,
+                socket,
             } = *opened;
+            channel.socket = socket;
             self.remove(identity.channel_id)?;
             let mode = channel.source_mode();
             self.channels.insert(identity.channel_id, channel);
@@ -108,6 +111,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         let mut opaque_cursor = false;
         let binding;
         let mut terminal = None;
+        let mut socket = None;
         // Records of a stream follow spell only an origin other than its path.
         let mut followed = None;
         let (latest, source, revalidate) = match subscription.kind {
@@ -226,6 +230,40 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
+            Some(Kind::ActorSocket(open)) => {
+                if open.is_empty()
+                    || open.len() > crate::MAX_COMMAND_BYTES
+                    || resume.next != 0
+                    || !resume.opaque.is_empty()
+                    || subscription.filter.is_some()
+                {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let Some(provider) = self.sockets.as_ref() else {
+                    return Ok(Admission::Failed(identity, StreamError::Unsupported));
+                };
+                let resource = match provider.resource(&open) {
+                    Ok(resource) => resource,
+                    Err(error) => return Ok(Admission::Failed(identity, error)),
+                };
+                // A socket is admitted exactly as a call to the same actor.
+                let (authorization, context) = match self.authority.bind_call(
+                    &self.slots,
+                    subscription.credential,
+                    resource,
+                    channels,
+                ) {
+                    Ok(binding) => binding,
+                    Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                };
+                let opened = match provider.open(open, context) {
+                    Ok(opened) => opened,
+                    Err(error) => return Ok(Admission::Failed(identity, error)),
+                };
+                binding = Some(authorization);
+                socket = Some(opened.inbound);
+                (false, sockets::source(opened.outbound, identity), None)
+            }
             Some(Kind::Heads(request)) => {
                 if resume.next != 0 || !resume.opaque.is_empty() || subscription.filter.is_some() {
                     return Err(StreamError::InvalidArgument);
@@ -282,6 +320,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             ),
             source,
             terminal,
+            socket,
         })))
     }
 
@@ -362,6 +401,7 @@ impl Channel {
             sent: resume.clone(),
             applied: resume,
             ending: None,
+            socket: None,
         }
     }
 }

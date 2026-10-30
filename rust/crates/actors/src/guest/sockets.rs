@@ -75,7 +75,9 @@ pub enum GuestSocketEvent {
         /// Text or binary payload.
         payload: SocketPayload,
     },
-    /// Final close; close and error participate in the delivery offset sequence.
+    /// Final close: exactly one follows every delivered Open, and nothing for
+    /// the connection follows it. Close and error participate in the delivery
+    /// offset sequence.
     Close {
         /// Decimal positive u64 actor delivery offset.
         offset: String,
@@ -132,7 +134,8 @@ pub enum GuestEventResult {
         /// Checkpointed broadcast tags (at most ten, each at most 256 characters).
         tags: Vec<String>,
     },
-    /// Reject the pending `SocketOpen` without installing a connection.
+    /// Reject the pending `SocketOpen` without installing a connection. The
+    /// one Close that follows every delivered Open still arrives.
     SocketReject {
         /// HTTP rejection status.
         status: u16,
