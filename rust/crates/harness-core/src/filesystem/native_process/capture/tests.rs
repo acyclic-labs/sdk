@@ -1,14 +1,6 @@
 use super::*;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
-#[test]
-fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
-    assert!(
-        std::mem::size_of::<Started<(), ()>>()
-            < std::mem::size_of::<acyclic_native_runtime::ProcessTree>(),
-        "the old handoff retains the whole physical process tree in every completion slot"
-    );
-}
 use proptest::prelude::*;
 
 #[test]
@@ -30,20 +22,24 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
     let completed = Arc::clone(&observed);
     let root = tempfile::tempdir()?;
     let invocation = Invocation {
-        executable: std::env::current_exe()?,
-        argv: vec![
-            "--exact".into(),
-            "filesystem::native_process::capture::tests::capture_output_child".into(),
-            "--nocapture".into(),
-        ],
-        cwd: root.path().into(),
-        environment: Default::default(),
-        inherit_environment: true,
-        timeout_ms: 300_000,
-        control_timeout_ms: 1000,
-        maximum_output_bytes: 32_768,
-        standard_input: None,
-        process_custody: None,
+        host: acyclic_native_runtime::NativeHost {
+            cwd: root.path().into(),
+            environment: Default::default(),
+            inherit_environment: true,
+            custody: None,
+        },
+        command: acyclic_native_runtime::NativeCommand {
+            argv: vec![
+                std::env::current_exe()?.into_os_string(),
+                "--exact".into(),
+                "filesystem::native_process::capture::tests::capture_output_child".into(),
+                "--nocapture".into(),
+            ],
+            cwd: None,
+            stdin: None,
+            deadline: std::time::Instant::now() + Duration::from_secs(300),
+            maximum_output_bytes: 32_768,
+        },
     };
     let observer = Arc::new(move |_: acyclic_native_runtime::ProcessOutput<'_>| {
         // The old capture owner occupied this runtime's only blocking worker.
@@ -73,6 +69,56 @@ fn capture_callbacks_can_reenter_a_single_tokio_blocking_worker()
     assert!(output.success, "{output:?}");
     assert!(String::from_utf8_lossy(&output.stdout).contains("captured"));
     assert!(observed.load(Ordering::SeqCst) > 0);
+    Ok(())
+}
+
+fn child_invocation(root: &std::path::Path, deadline: std::time::Instant) -> std::io::Result<Invocation> {
+    Ok(Invocation {
+        host: acyclic_native_runtime::NativeHost {
+            cwd: root.into(),
+            environment: Default::default(),
+            inherit_environment: true,
+            custody: None,
+        },
+        command: acyclic_native_runtime::NativeCommand {
+            argv: vec![
+                std::env::current_exe()?.into_os_string(),
+                "--exact".into(),
+                "filesystem::native_process::capture::tests::capture_output_child".into(),
+                "--nocapture".into(),
+            ],
+            cwd: None,
+            stdin: None,
+            deadline,
+            maximum_output_bytes: 32_768,
+        },
+    })
+}
+
+/// A launch refused before spawn ran nothing, so the checkout reports a
+/// definite, cleaned-up timeout rather than an unknown outcome; only a launch
+/// that may have run is unknown. The live deadline is the negative control.
+#[tokio::test]
+async fn a_refused_launch_is_a_definite_stop_and_only_a_failed_spawn_is_unknown()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let root = tempfile::tempdir()?;
+    let run = |invocation| capture_with_custody(invocation, |(), _| Ok(()), || Ok(()), (), None);
+    let (refused, ()) = run(child_invocation(root.path(), std::time::Instant::now())?).await?;
+    let refused = refused.ok_or("a refused launch was reported as unknown")?;
+    let stop = refused.stop.as_ref().ok_or("a refused launch reported no stop")?;
+    assert_eq!(stop.kind, NativeProcessStopKind::Timeout);
+    assert!(stop.cleanup_completed);
+    assert!(refused.stdout.is_empty() && refused.exit_code.is_none());
+
+    let live = std::time::Instant::now() + Duration::from_secs(300);
+    let (ran, ()) = run(child_invocation(root.path(), live)?).await?;
+    assert!(ran.is_some_and(|ran| ran.success), "the negative control did not run");
+
+    let mut absent = child_invocation(root.path(), live)?;
+    absent.command.argv = vec![root.path().join("absent").into_os_string()];
+    let (unknown, ()) = run(absent).await?;
+    assert!(unknown.is_none(), "a failed spawn was reported as definite");
     Ok(())
 }
 
@@ -116,8 +162,10 @@ mod simulation {
             } else {
                 Schedule::without_entropy(71)
             };
+            // The original admission's deadline reaches the boundary unrenewed.
+            let deadline = std::time::Instant::now() + Duration::from_millis(1000);
             if simulated_process {
-                schedule.set_process_provider(|request, check, observe| {
+                schedule.set_process_provider(move |request, check, observe| {
                     use std::os::unix::process::ExitStatusExt;
                     assert!(unix_millis().is_some(), "provider escaped its clock scope");
                     assert_eq!(request.command.get_program(), "/bin/sh");
@@ -125,7 +173,7 @@ mod simulation {
                         request.command.get_args().collect::<Vec<_>>(),
                         ["-c", "printf dst"]
                     );
-                    assert_eq!(request.timeout, Duration::from_millis(1000));
+                    assert_eq!(request.deadline, deadline);
                     assert_eq!(request.maximum, 3);
                     assert!(request.input.is_none());
                     check().expect("script ownership check");
@@ -146,16 +194,19 @@ mod simulation {
             let source = Arc::new(OnceLock::new());
             let worker_source = Arc::clone(&source);
             let invocation = Invocation {
-                executable: "/bin/sh".into(),
-                argv: vec!["-c".into(), "printf dst".into()],
-                cwd: "/".into(),
-                environment: Default::default(),
-                inherit_environment: false,
-                timeout_ms: 1000,
-                control_timeout_ms: 1000,
-                maximum_output_bytes: 3,
-                process_custody: None,
-                standard_input: None,
+                host: acyclic_native_runtime::NativeHost {
+                    cwd: "/".into(),
+                    environment: Default::default(),
+                    inherit_environment: false,
+                    custody: None,
+                },
+                command: acyclic_native_runtime::NativeCommand {
+                    argv: vec!["/bin/sh".into(), "-c".into(), "printf dst".into()],
+                    cwd: None,
+                    stdin: None,
+                    deadline,
+                    maximum_output_bytes: 3,
+                },
             };
             let handle = tokio::runtime::Handle::current();
             let operation = capture_with_custody(

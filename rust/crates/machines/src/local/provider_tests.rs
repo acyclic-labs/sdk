@@ -32,7 +32,7 @@ pub(super) fn options() -> LocalOptions {
         cwd: std::fs::canonicalize(std::env::temp_dir()).unwrap(),
         environment: BTreeMap::from([("ACYCLIC_TEST_MACHINE_PROCESS".into(), "credit".into())]),
         inherit_environment: true,
-        process_custody: None,
+        custody: None,
     }
 }
 

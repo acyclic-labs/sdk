@@ -13,6 +13,28 @@ pub struct ShellSpec {
     pub stdin_bootstrap: Option<&'static str>,
 }
 
+impl ShellSpec {
+    /// Appends this language's arguments and `source` to `argv`, which holds
+    /// the resolved executable. Returns the stdin carrying `source` when the
+    /// language reads it through its bootstrap; every runner composes so.
+    /// `argv` is native (`OsString`) for a local launch, whose executable
+    /// path need not be UTF-8, and `String` for a wire command.
+    pub fn compose<A: From<&'static str> + From<String>>(
+        &self,
+        argv: &mut Vec<A>,
+        source: String,
+    ) -> Option<Vec<u8>> {
+        argv.extend(self.arguments.iter().map(|argument| A::from(*argument)));
+        if let Some(bootstrap) = self.stdin_bootstrap {
+            argv.push(A::from(bootstrap));
+            Some(source.into_bytes())
+        } else {
+            argv.push(A::from(source));
+            None
+        }
+    }
+}
+
 /// Windows commands must use the native filesystem namespace.
 #[cfg(windows)]
 pub const PLATFORM: ShellSpec = ShellSpec {

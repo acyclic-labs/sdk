@@ -29,6 +29,8 @@ pub use control::{ControlledCapture, ProcessControl};
 mod exit_wait;
 #[cfg(any(windows, test))]
 mod job_members;
+mod launch;
+pub use launch::{CaptureStop, LaunchFailure, NativeCommand, NativeHost};
 mod pump;
 mod stream;
 pub use stream::{ProcessCaptureStream, ProcessChunk};

@@ -1,7 +1,7 @@
 //! Native execution over the public command and output contract. The local
 //! host retains workspace admission; no shell or output reader is inserted.
 use super::*;
-use acyclic_native_runtime::{CaptureHandler, ProcessCaptureStream};
+use acyclic_native_runtime::{CaptureHandler, CaptureStop, ProcessCaptureStream};
 use futures::Stream;
 use std::{
     pin::Pin,
@@ -113,11 +113,11 @@ impl<H: CaptureHandler, C> Stream for Output<H, C> {
                 ExecOutput::ExitCode,
             ),
             Err(failure) => ExecOutput::Stopped(ExecStop {
-                kind: match failure.error.kind() {
-                    std::io::ErrorKind::TimedOut => ExecStopKind::Timeout,
-                    std::io::ErrorKind::FileTooLarge => ExecStopKind::OutputLimit,
-                    std::io::ErrorKind::Interrupted => ExecStopKind::ControlStopped,
-                    _ => ExecStopKind::CaptureFailed,
+                kind: match failure.stop() {
+                    CaptureStop::Timeout => ExecStopKind::Timeout,
+                    CaptureStop::OutputLimit => ExecStopKind::OutputLimit,
+                    CaptureStop::ControlStopped => ExecStopKind::ControlStopped,
+                    CaptureStop::Failed => ExecStopKind::CaptureFailed,
                 },
                 message: failure.error.to_string(),
                 cleanup_completed: failure.cleanup_completed,

@@ -1,24 +1,13 @@
-//! One spawn using the original host workspace and native process owner.
+//! One spawn through the shared native launch core, over the original host
+//! workspace and native process owner.
 use super::*;
 use acyclic_native_runtime::{
-    CaptureSchedule, ControlledCapture, OwnedCaptureInput, ProcessControl, ProcessCustody,
-    ProcessTree, TaskSpawner,
-};
-use futures::FutureExt;
-use std::{
-    io,
-    path::PathBuf,
-    process::{Command, Stdio},
+    ControlledCapture, LaunchFailure, NativeCommand, ProcessControl,
 };
 
 /// Host-owned execution configuration, derived from its admitted workspace.
 /// This is not a filesystem authority or a serialized guest enrollment.
-pub struct LocalOptions {
-    pub cwd: PathBuf,
-    pub environment: BTreeMap<String, String>,
-    pub inherit_environment: bool,
-    pub process_custody: Option<Arc<ProcessCustody>>,
-}
+pub use acyclic_native_runtime::NativeHost as LocalOptions;
 
 /// Execution of one already admitted local Machine incarnation. Processes run
 /// with the host user's OS privileges; this is not a tenant isolation boundary.
@@ -52,27 +41,21 @@ impl LocalMachine {
     /// Binds host configuration once. The caller retains the original verified
     /// workspace, path policy and physical custody in each capture handler.
     pub fn new(id: MachineId, options: LocalOptions) -> Result<Self, ProviderError> {
-        if !options.cwd.is_absolute()
-            || options.environment.iter().any(|(key, value)| {
-                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
-            })
-        {
-            return Err(ProviderError::Invalid("local workspace configuration failed; recovery: bind an absolute admitted directory and valid native environment".into()));
-        }
+        options.validate().map_err(|_| ProviderError::Invalid("local workspace configuration failed; recovery: bind an absolute admitted directory and valid native environment".into()))?;
         Ok(Self {
             id,
             options: Arc::new(options),
         })
     }
 
-    /// Dispatches exactly once on the shared native worker. Command input is
-    /// moved into the original pipe writer; output uses the existing pump and
-    /// one credit channel. The handler checks source custody before spawning
-    /// and on every physical turn, including original expiry and owner wakes.
-    /// Admission refusal is the first stream error; `finish` still returns the
-    /// original callback custody. Physical owner loss returns uncertainty.
-    /// `deadline` is the original admission's absolute monotonic deadline;
-    /// queueing and worker setup never renew it.
+    /// Dispatches exactly once through the shared native launch core. Command
+    /// input moves into the original pipe writer; output uses the existing
+    /// pump and one credit channel. The handler checks source custody before
+    /// spawning and on every physical turn, including original expiry and
+    /// owner wakes. Admission refusal is the first stream error; `finish`
+    /// still returns the original callback custody. Physical owner loss
+    /// returns uncertainty. `deadline` is the original admission's absolute
+    /// monotonic deadline; queueing and worker setup never renew it.
     pub async fn exec<H: CaptureHandler>(
         &self,
         command: ExecCommand,
@@ -93,93 +76,34 @@ impl LocalMachine {
             }
         };
         let mut admission = StopOnDrop(Some(control.clone()));
-        let options = self.options.clone();
-        let spawner = TaskSpawner::current();
-        let submitted = acyclic_native_runtime::run_blocking_io(
-            move || {
-                let mut handler = control.bind(handler);
-                let started = (|| {
-                    handler.check().map_err(StartFailure::Refused)?;
-                    if std::time::Instant::now() >= deadline {
-                        return Err(StartFailure::Refused(io::ErrorKind::TimedOut.into()));
-                    }
-                    let mut argv = command.argv.into_iter();
-                    let executable = argv
-                        .next()
-                        .ok_or_else(|| StartFailure::Refused(io::ErrorKind::InvalidInput.into()))?;
-                    let mut process = Command::new(executable);
-                    if !options.inherit_environment {
-                        process.env_clear();
-                    }
-                    process
-                        .args(argv)
-                        .current_dir(
-                            command
-                                .cwd
-                                .map(|cwd| options.cwd.join(cwd))
-                                .as_ref()
-                                .unwrap_or(&options.cwd),
-                        )
-                        .envs(&options.environment)
-                        .stdin(if command.stdin.is_empty() {
-                            Stdio::null()
-                        } else {
-                            Stdio::piped()
-                        })
-                        .stdout(Stdio::piped())
-                        .stderr(Stdio::piped());
-                    let tree = match &options.process_custody {
-                        Some(custody) => ProcessTree::spawn_in_custody(&mut process, custody),
-                        None => ProcessTree::spawn(&mut process),
-                    }
-                    .map_err(|_| StartFailure::Dispatched)?;
-                    let input = (!command.stdin.is_empty())
-                        .then_some(OwnedCaptureInput::Literal(command.stdin));
-                    Ok::<_, StartFailure>((tree, input))
-                })();
-                match started {
-                    Ok((tree, input)) => Ok(tree.stream_capture(
-                        &spawner,
-                        CaptureSchedule::until(deadline),
-                        maximum,
-                        input,
-                        handler,
-                    )),
-                    Err(failure) => {
-                        handler.retired(matches!(&failure, StartFailure::Refused(_)));
-                        Err((
-                            match failure {
-                                StartFailure::Refused(error) => ProviderError::Rejected(format!(
-                                    "local command refused before spawn: {error}; recovery: restore original workspace authority before a new command"
-                                )),
-                                StartFailure::Dispatched => {
-                                    ProviderError::CommandIndeterminate(machine)
-                                }
-                            },
-                            Some(handler.into_inner()),
-                        ))
-                    }
-                }
-            },
-            None,
-        );
-        let result = match submitted {
-            Ok(submitted) => std::panic::AssertUnwindSafe(submitted)
-                .catch_unwind()
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or(Err((ProviderError::CommandIndeterminate(machine), None))),
-            Err(_) => Err((ProviderError::CommandIndeterminate(machine), None)),
-        };
-        LocalExecution(match result {
+        let launched = NativeCommand {
+            argv: command.argv.into_iter().map(Into::into).collect(),
+            cwd: command.cwd.map(Into::into),
+            stdin: (!command.stdin.is_empty()).then_some(command.stdin),
+            deadline,
+            maximum_output_bytes: maximum,
+        }
+        .stream(Arc::clone(&self.options), control.bind(handler))
+        .await;
+        LocalExecution(match launched {
             Ok(capture) => {
                 admission.0 = None;
                 Output::new(machine, capture, ControlledCapture::into_inner)
             }
-            Err((error, custody)) => {
-                Output::failed(machine, error, custody, ControlledCapture::into_inner)
-            }
+            Err(LaunchFailure::Refused { failure, handler }) => Output::failed(
+                machine,
+                ProviderError::Rejected(format!(
+                    "local command refused before spawn: {failure}; recovery: restore original workspace authority before a new command"
+                )),
+                Some(ControlledCapture::into_inner(handler)),
+                ControlledCapture::into_inner,
+            ),
+            Err(LaunchFailure::Indeterminate { handler }) => Output::failed(
+                machine,
+                ProviderError::CommandIndeterminate(machine),
+                handler.map(ControlledCapture::into_inner),
+                ControlledCapture::into_inner,
+            ),
         })
     }
 }
@@ -194,11 +118,7 @@ fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError
     Ok((maximum, control))
 }
 
-enum StartFailure {
-    Refused(io::Error),
-    Dispatched,
-}
-
+/// Stops a command whose launch did not hand its control to a capture.
 struct StopOnDrop(Option<ProcessControl>);
 impl Drop for StopOnDrop {
     fn drop(&mut self) {

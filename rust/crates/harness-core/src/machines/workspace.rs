@@ -109,18 +109,12 @@ impl MachinesWorkspace {
             .ok_or_else(|| Error::Invalid("machine authority expiry overflow; recovery: issue an exactly representable expiry".into()))?;
         let expiry = task_deadline.map_or(expiry, |deadline| deadline.min(expiry));
         let timeout = input.timeout_ms()?;
-        let (source, stdin) = match self.shell.stdin_bootstrap {
-            Some(bootstrap) => (bootstrap.to_owned(), input.command.into_bytes()),
-            None => (input.command, Vec::new()),
-        };
-        let argv = std::iter::once(self.executable.clone())
-            .chain(self.shell.arguments.iter().map(|value| (*value).into()))
-            .chain(std::iter::once(source))
-            .collect();
+        let mut argv = vec![self.executable.clone()];
+        let stdin = self.shell.compose(&mut argv, input.command);
         let mut command = ExecCommand::new(argv, timeout)
             .map_err(|error| map_error(error, None))?
             .with_expiry(expiry)
-            .with_stdin(stdin)
+            .with_stdin(stdin.unwrap_or_default())
             .with_output_limit(maximum_output);
         if let Some(cwd) = input.cwd.filter(|value| !value.is_empty()) {
             command = command

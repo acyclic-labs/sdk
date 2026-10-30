@@ -211,7 +211,7 @@ fn a_replay_without_a_scripted_process_refuses_the_os() {
             acyclic_native_runtime::testing::capture_process(
                 ProcessCapture {
                     command: &command,
-                    timeout: Duration::from_secs(1),
+                    deadline: std::time::Instant::now(),
                     maximum: 1,
                     input: None,
                 },
