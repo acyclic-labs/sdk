@@ -540,9 +540,9 @@ fn blob(id: ObjectId) -> acyclic_objects::Digest {
 async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
 -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_fs::{
-        CreationOperation, EmbeddedCapabilities, Fs, IdempotencyKey, Lifecycle,
-        MemoryAuthorityBackend, OperationId, PublicationPermit, TransactionCommit, VolumeConfig,
-        VolumeInitialization, WorkspaceError,
+        CheckoutMode, CreationOperation, EmbeddedCapabilities, Fs, GenerationSelector,
+        IdempotencyKey, Lifecycle, MemoryAuthorityBackend, OperationId, PublicationPermit,
+        TransactionCommit, VolumeConfig, VolumeInitialization, WorkspaceError,
     };
 
     acyclic_native_runtime::initialize_native_io_services()?;
@@ -553,7 +553,23 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
     let cancellation = CancellationToken::new();
     let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    let lineage = FileId::from_bytes([51; 16]);
+    // Obtain the root through the canonical creator in an independent store,
+    // without duplicating its identity derivation or admitting any plain child
+    // into the sealed volume under test. Both use the default namespace/name.
+    let bootstrap = Fs::memory();
+    let workspace = bootstrap
+        .create_workspace("sealed-changed-paths", &original, &cancellation)
+        .await?;
+    let checkout = workspace
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode::read_only_pinned(),
+            &original,
+            &cancellation,
+        )
+        .await?;
+    let lineage = checkout.root().root_file_id;
+    drop((checkout, workspace, bootstrap));
     let writer_origin = GenerationId::new(Digest::from_bytes([52; 32]));
     let fs = Fs::new(
         Arc::clone(&authority),
@@ -625,6 +641,11 @@ async fn cold_sealed_changed_paths_follow_the_original_hard_link_bindings()
         return Err("content publication did not commit".into());
     };
     let endpoints = [before.id(), after.id()];
+    for endpoint in endpoints {
+        let seal = endpoint.object_id().storage.ok_or("unsealed endpoint")?;
+        assert_eq!(seal.root_file_id, lineage);
+        assert_eq!(seal.origin_generation, writer_origin.digest());
+    }
     drop((transaction, before, after, created, workspace, fs));
 
     // A fresh store and filesystem have no retained decoded namespace pages.
