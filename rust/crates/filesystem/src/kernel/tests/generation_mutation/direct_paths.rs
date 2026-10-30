@@ -118,6 +118,15 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
             .flat_map(|(_, paths)| paths.iter().map(|(path, _)| path.clone()))
             .collect();
         assert_eq!(actual, expected[..maximum as usize]);
+        assert_eq!(
+            work.spent().source_path_components,
+            match maximum {
+                0 => 0,
+                1 => 1,
+                2 => 3,
+                _ => unreachable!("the original admitted bounds are 0/1/2"),
+            }
+        );
         if maximum == 2 {
             full_allocations = work.spent().allocation_operations;
         }

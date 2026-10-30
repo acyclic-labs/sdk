@@ -218,11 +218,17 @@ pub(super) async fn collect_selected<O: AsyncObjectStore>(
                 accounting,
             )?;
             let result = async {
-                while let Some(path) = paths.next(view.objects, accounting, cancellation).await? {
-                    if emitted == maximum_entries {
-                        path.retire(accounting)?;
+                let mut aliases = 0_u64;
+                loop {
+                    // The authenticated count proves another alias remains;
+                    // do not reconstruct that path after the output is full.
+                    if emitted == maximum_entries && aliases < record.link_count {
                         return Ok(false);
                     }
+                    let Some(path) = paths.next(view.objects, accounting, cancellation).await?
+                    else {
+                        break;
+                    };
                     reverse_insert(
                         &mut matches.0.records,
                         &mut matches.1,
@@ -231,6 +237,7 @@ pub(super) async fn collect_selected<O: AsyncObjectStore>(
                         accounting,
                     )?;
                     emitted += 1;
+                    aliases += 1;
                 }
                 Ok(true)
             }
