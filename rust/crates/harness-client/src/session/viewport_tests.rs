@@ -238,18 +238,30 @@ fn terminal_viewport_interests_preserve_output_until_explicit_reopen() {
             } else {
                 Vec::new()
             };
-            let follow = Subscription {
-                state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+            let interest = if resource {
+                Interest::Resource(name.as_str().into())
+            } else {
+                Interest::Stream(path.clone())
             };
+            let id = if resource {
+                session.resources[&name]
+            } else {
+                session.follows[&path]
+            };
+            let follow = Subscription {
+                id,
+                interest,
+                state: SubscriptionState::Open(Box::pin(futures::stream::iter(terminal))),
+                report_open: false,
+            };
+            session.register(follow);
             let mut context = Context::from_waker(std::task::Waker::noop());
             if resource {
                 fill(&mut session.resource_views.get_mut(&name).unwrap().view);
-                session.resources.insert(name.clone(), follow);
                 assert!(session.poll_resource(&name, &mut context).is_ready());
                 assert!(!session.is_resource_following(&name));
             } else {
                 fill(&mut session.views.get_mut(&path).unwrap().view);
-                session.follows.insert(path.clone(), follow);
                 assert!(session.poll_stream(&path, &mut context).is_ready());
                 assert!(!session.is_following(&path));
             }

@@ -1,13 +1,13 @@
 //! Agent records over the one Rust session and its bounded record fold.
 //!
 //! Both native and browser callers supply the platform's existing authenticated
-//! Streams pool. This adapter owns no transport task, queue or recovery loop.
+//! Streams pool and shared readiness owner, without a transport task or recovery loop.
 
 use crate::{DemandPolicy, StreamView, WireSession, WireSessionError};
 use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord};
 use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     task::{Context, Poll},
 };
 
@@ -99,9 +99,8 @@ pub struct AgentClient {
     session: WireSession,
     agent: AgentPath,
     conversation: StreamPath,
-    streams: Vec<(AgentPath, bool, StreamPath)>,
-    resources: Vec<String>,
-    next_stream: usize,
+    selected: Vec<AgentPath>,
+    streams: BTreeMap<StreamPath, (AgentPath, bool)>,
     credential: u32,
 }
 
@@ -127,9 +126,8 @@ impl AgentClient {
             session: WireSession::new(client, DemandPolicy::default()),
             agent: agent.clone(),
             conversation,
-            streams: Vec::new(),
-            resources: Vec::new(),
-            next_stream: 0,
+            selected: Vec::new(),
+            streams: BTreeMap::new(),
             credential,
         };
         selected.set_view(
@@ -187,7 +185,8 @@ impl AgentClient {
             selections.push(selection);
         }
         let conversation = focused.agent.conversation()?;
-        let mut streams = Vec::with_capacity(selections.len() * 2);
+        let mut streams = BTreeMap::new();
+        let mut ordered = Vec::with_capacity(selections.len());
         let mut subscriptions = Vec::with_capacity(selections.len() * 2);
         for selection in selections {
             for (is_status, path, from) in [
@@ -202,28 +201,19 @@ impl AgentClient {
                     path.clone(),
                     subscription(&path, from, self.credential, is_status),
                 ));
-                streams.push((selection.agent.clone(), is_status, path));
+                streams.insert(path, (selection.agent.clone(), is_status));
             }
+            ordered.push(selection.agent);
         }
         if let Some(resources) = resources {
-            let names = resources
-                .iter()
-                .map(|subscription| match &subscription.kind {
-                    Some(wire::session_subscription::Kind::Follow(follow)) => {
-                        Ok(follow.resource.clone())
-                    }
-                    _ => Err(WireSessionError::InvalidSubscription),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
             self.session.replace_interests(subscriptions, resources)?;
-            self.resources = names;
         } else {
             self.session.replace_streams(subscriptions)?;
         }
         self.agent = focused.agent;
         self.conversation = conversation;
         self.streams = streams;
-        self.next_stream %= self.streams.len() + self.resources.len();
+        self.selected = ordered;
         Ok(())
     }
 
@@ -239,15 +229,12 @@ impl AgentClient {
     /// Borrow just the explicit selected agents, with focus first. No all-agent
     /// membership or status map is retained.
     pub fn selected_agents(&self) -> impl Iterator<Item = &AgentPath> {
-        self.streams.iter().step_by(2).map(|(agent, _, _)| agent)
+        self.selected.iter()
     }
 
     /// Borrow one selected conversation without copying its retained records.
     pub fn agent_conversation(&self, agent: &AgentPath) -> Option<&StreamView> {
-        self.streams
-            .iter()
-            .find(|(selected, status, _)| selected == agent && !*status)
-            .and_then(|(_, _, path)| self.session.view(path))
+        self.session.view(&agent.conversation().ok()?)
     }
 
     /// Selected agent identity; status paths come from AgentPath, never suffixes.
@@ -302,17 +289,11 @@ impl AgentClient {
         &self,
         agent: &AgentPath,
     ) -> Result<Option<StatusRecord>, AgentClientError> {
-        let Some((_, _, path)) = self
-            .streams
-            .iter()
-            .find(|(selected, status, _)| selected == agent && *status)
-        else {
-            return Err(WireSessionError::NotRequested.into());
-        };
+        let path = agent.status()?;
         let view = self
             .session
-            .view(path)
-            .expect("selected status owns a view");
+            .view(&path)
+            .ok_or(WireSessionError::NotRequested)?;
         view.latest_value(b"status")
             .map(|value| StatusRecord::decode(&value.value).map_err(AgentClientError::Record))
             .transpose()
@@ -337,11 +318,7 @@ impl AgentClient {
         };
         wire_codec::session::validate_resource(&follow.resource)
             .map_err(WireSessionError::Stream)?;
-        let resource = follow.resource.clone();
         self.session.begin_resource(subscription)?;
-        if !self.resources.contains(&resource) {
-            self.resources.push(resource);
-        }
         Ok(())
     }
 
@@ -355,121 +332,83 @@ impl AgentClient {
     /// Release both live interest and retained output custody, including after
     /// a failure. The next combined read can continue with healthy selections.
     pub fn release_resource(&mut self, resource: &str) -> Result<bool, AgentClientError> {
-        let released = self.session.release_resource(resource)?;
-        if released {
-            self.resources.retain(|selected| selected != resource);
-            self.next_stream %= self.streams.len() + self.resources.len();
-        }
-        Ok(released)
+        self.session.release_resource(resource).map_err(Into::into)
     }
 
-    /// Fairly poll selected streams.
+    /// Deliver ready selected streams without scanning dormant subscriptions.
     pub fn poll_next(
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<AgentEvent, AgentClientError>> {
-        let mut waiting = false;
-        let count = self.streams.len() + self.resources.len();
-        for offset in 0..count {
-            let index = (self.next_stream + offset) % count;
-            if index >= self.streams.len() {
-                let resource = &self.resources[index - self.streams.len()];
-                if !self.session.is_resource_following(resource) {
-                    continue;
-                }
-                let outcome = self.session.poll_resource(resource, context);
-                if outcome.is_ready() {
-                    self.next_stream = (index + 1) % count;
-                }
-                match outcome {
-                    Poll::Pending => {
-                        waiting = true;
-                        continue;
-                    }
-                    Poll::Ready(Err(cause)) => return Poll::Ready(Err(cause.into())),
-                    Poll::Ready(Ok(None)) => {
-                        return Poll::Ready(Err(AgentClientError::ResourceClosed(
-                            resource.clone(),
-                        )));
-                    }
-                    Poll::Ready(Ok(Some(frame))) => {
-                        if matches!(frame.body, Some(wire::session_frame::Body::Closed(_))) {
-                            return Poll::Ready(Err(AgentClientError::ResourceClosed(
-                                resource.clone(),
-                            )));
-                        }
-                        let revision = self
-                            .session
-                            .resource_view(resource)
-                            .expect("selected resource owns a view")
-                            .revision();
-                        return Poll::Ready(Ok(AgentEvent::Resource {
-                            resource: resource.clone(),
-                            revision,
-                        }));
-                    }
-                }
+        use crate::session::Interest;
+        let (interest, outcome) = match self.session.poll_next(context) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
+            Poll::Ready(Ok(None)) => {
+                return Poll::Ready(Err(AgentClientError::Closed(self.conversation.clone())));
             }
-            let (agent, status, path) = &self.streams[index];
-            // WireSession releases terminal follows but retains their final
-            // views. Poll only its actual live ownership, so reporting one
-            // failed path cannot strand the other selected streams on NotOpen.
-            if !self.session.is_following(path) {
-                continue;
+            Poll::Ready(Ok(Some(event))) => event,
+        };
+        let frame = match outcome {
+            Err(error) => return Poll::Ready(Err(error.into())),
+            Ok(Some(frame))
+                if !matches!(frame.body, Some(wire::session_frame::Body::Closed(_))) =>
+            {
+                frame
             }
-            let outcome = self.session.poll_stream(path, context);
-            if outcome.is_ready() {
-                self.next_stream = (index + 1) % count;
-            }
-            let frame = match outcome {
-                Poll::Pending => {
-                    waiting = true;
-                    continue;
-                }
-                Poll::Ready(Err(error)) => return Poll::Ready(Err(error.into())),
-                Poll::Ready(Ok(None)) => {
-                    return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
-                }
-                Poll::Ready(Ok(Some(frame))) => frame,
-            };
-            let event = match frame.body {
-                Some(wire::session_frame::Body::Data(data)) => {
-                    if *status {
-                        let Some(wire::session_data::Item::LatestValue(value)) = data.item else {
-                            return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
-                        };
-                        return Poll::Ready(
-                            StatusRecord::decode(&value.value)
-                                .map(|status| AgentEvent::Status {
-                                    agent: agent.clone(),
-                                    status,
-                                })
-                                .map_err(AgentClientError::Record),
-                        );
+            Ok(_) => {
+                return Poll::Ready(Err(match interest {
+                    Interest::Stream(path) => AgentClientError::Closed(path),
+                    Interest::Resource(resource) => {
+                        AgentClientError::ResourceClosed(resource.to_string())
                     }
-                    let Some(wire::session_data::Item::Record(record)) = data.item else {
+                }));
+            }
+        };
+        let path = match interest {
+            Interest::Stream(path) => path,
+            Interest::Resource(resource) => {
+                let revision = self
+                    .session
+                    .resource_view(&resource)
+                    .expect("selected resource owns a view")
+                    .revision();
+                return Poll::Ready(Ok(AgentEvent::Resource {
+                    resource: resource.to_string(),
+                    revision,
+                }));
+            }
+        };
+        let Some((agent, status)) = self.streams.get(&path) else {
+            return Poll::Ready(Err(WireSessionError::NotRequested.into()));
+        };
+        let event = match frame.body {
+            Some(wire::session_frame::Body::Data(data)) => {
+                if *status {
+                    let Some(wire::session_data::Item::LatestValue(value)) = data.item else {
                         return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
                     };
-                    ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
-                        agent: agent.clone(),
-                        sequence: record.sequence,
-                        entry,
-                    })
+                    return Poll::Ready(
+                        StatusRecord::decode(&value.value)
+                            .map(|status| AgentEvent::Status {
+                                agent: agent.clone(),
+                                status,
+                            })
+                            .map_err(AgentClientError::Record),
+                    );
                 }
-                Some(wire::session_frame::Body::Closed(_)) => {
-                    return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
-                }
-                _ => Ok(AgentEvent::Progress),
-            };
-            return Poll::Ready(event.map_err(AgentClientError::Record));
-        }
-        if waiting {
-            Poll::Pending
-        } else {
-            // No live follow can wake this task. Report exhaustion rather than
-            // leaving the next read permanently pending after the last failure.
-            Poll::Ready(Err(AgentClientError::Closed(self.conversation.clone())))
-        }
+                let Some(wire::session_data::Item::Record(record)) = data.item else {
+                    return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
+                };
+                ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
+                    agent: agent.clone(),
+                    sequence: record.sequence,
+                    entry,
+                })
+            }
+            _ => Ok(AgentEvent::Progress),
+        };
+        Poll::Ready(event.map_err(AgentClientError::Record))
     }
 
     /// Wait without adding a task, channel or independent follow loop.
