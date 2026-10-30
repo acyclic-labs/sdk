@@ -68,9 +68,29 @@ fn waits_for_predecessor(
     let first = events.recv();
     let mut observation = Vec::new();
     let reported = report.report(&mut observation);
+    let framed = serde_json::to_value(report.snapshot());
     predecessor.complete();
     let was_complete = worker.join().map_err(|_| io::ErrorKind::Other)??;
     reported?;
+    let framed = framed.map_err(io::Error::other)?;
+    let wait = framed
+        .as_array()
+        .and_then(|waits| {
+            waits
+                .iter()
+                .find(|wait| wait["primitive"] == "persistence-completion")
+        })
+        .ok_or_else(|| io::Error::other("framed persistence wait is missing"))?;
+    assert!(
+        wait["job"].is_string(),
+        "opaque job identity must survive JSON consumers"
+    );
+    assert!(wait["origin"].is_null() || wait["origin"].is_string());
+    assert_eq!(wait["stage"], 5);
+    assert_eq!(
+        wait["predecessor"],
+        format!("{:#x}", Arc::as_ptr(&predecessor) as usize),
+    );
     let observation = String::from_utf8(observation).map_err(io::Error::other)?;
     assert!(
         observation.contains("stage=file-predecessor"),

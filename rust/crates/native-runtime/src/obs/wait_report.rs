@@ -34,12 +34,12 @@ pub struct WaitSnapshot {
     pub primitive: String,
     /// Opaque operation identity, never user content or credentials.
     pub key: String,
-    /// Original wait span identity, independent of its creating span.
-    pub job: u64,
-    /// Creating span identity, when the wait has a parent.
-    pub origin: Option<u64>,
-    /// Exact native file fence currently blocking the persistence job, or zero.
-    pub predecessor: u64,
+    /// Original wait span identity, encoded as decimal text without JSON integer loss.
+    pub job: String,
+    /// Creating span identity as decimal text, when the wait has a parent.
+    pub origin: Option<String>,
+    /// Exact native file fence as hexadecimal text, or `0x0` when absent.
+    pub predecessor: String,
     /// Persistence stage: admitted, queued, running, syscall, published or file
     /// predecessor, encoded as 0 through 5 respectively.
     pub stage: u64,
@@ -239,9 +239,12 @@ impl WaitReport {
             .map(|node| WaitSnapshot {
                 primitive: node.fields.primitive.clone(),
                 key: node.fields.key.clone(),
-                job: node.job,
-                origin: node.origin,
-                predecessor: node.predecessor.load(std::sync::atomic::Ordering::Relaxed),
+                job: node.job.to_string(),
+                origin: node.origin.map(|origin| origin.to_string()),
+                predecessor: format!(
+                    "{:#x}",
+                    node.predecessor.load(std::sync::atomic::Ordering::Relaxed)
+                ),
                 stage: node.stage.load(std::sync::atomic::Ordering::Relaxed),
                 since: node
                     .started
@@ -270,8 +273,10 @@ impl WaitReport {
                 };
                 write!(
                     output,
-                    " job={} origin={:?} predecessor={:#x} stage={stage}",
-                    node.job, node.origin, node.predecessor,
+                    " job={} origin={} predecessor={} stage={stage}",
+                    node.job,
+                    node.origin.as_deref().unwrap_or("None"),
+                    node.predecessor,
                 )?;
             }
             writeln!(
