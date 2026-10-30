@@ -7,8 +7,30 @@ use std::os::windows::io::OwnedHandle as PipeHandle;
 
 fn readiness_channel() -> io::Result<(ServiceReadiness, ServiceReadySignal)> {
     let (reader, writer) = io::pipe()?;
+    let stdout = std::process::ChildStdout::from(PipeHandle::from(reader));
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd as _;
+    #[cfg(windows)]
+    use std::os::windows::io::AsRawHandle as _;
+    #[cfg(unix)]
+    let original = stdout.as_raw_fd();
+    #[cfg(windows)]
+    let original = stdout.as_raw_handle();
+    let starter = ServiceReadiness::from(stdout);
+    #[cfg(unix)]
+    assert_eq!(
+        starter.0.as_raw_fd(),
+        original,
+        "transfer must not duplicate the pipe"
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        starter.0.as_raw_handle(),
+        original,
+        "transfer must not duplicate the pipe"
+    );
     Ok((
-        ServiceReadiness(File::from(PipeHandle::from(reader))),
+        starter,
         ServiceReadySignal(File::from(PipeHandle::from(writer))),
     ))
 }
@@ -60,6 +82,13 @@ fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
     let (starter, service) = readiness_channel()?;
     drop(service);
     assert_eq!(starter.wait()?, ServiceStartOutcome::Exited);
+
+    let (starter, mut service) = readiness_channel()?;
+    service.send(b"not-ready")?;
+    assert_eq!(
+        starter.wait().unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
 
     // A pipe buffer may be smaller than the report: the service writes while
     // its starter reads, as two processes do.

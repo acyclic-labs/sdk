@@ -10,6 +10,25 @@ pub const SERVICE_READY_ARGUMENT: &str = "--signal-ready";
 #[derive(Debug)]
 pub struct ServiceReadiness(File);
 
+impl From<File> for ServiceReadiness {
+    fn from(file: File) -> Self {
+        Self(file)
+    }
+}
+
+/// Transfers the original output pipe without duplicating its handle. The
+/// caller retains the child and its physical retirement responsibility.
+impl From<std::process::ChildStdout> for ServiceReadiness {
+    fn from(stdout: std::process::ChildStdout) -> Self {
+        #[cfg(unix)]
+        use std::os::fd::OwnedFd as Handle;
+        #[cfg(windows)]
+        use std::os::windows::io::OwnedHandle as Handle;
+
+        Self::from(File::from(Handle::from(stdout)))
+    }
+}
+
 /// How a started service left its readiness channel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ServiceStartOutcome {
@@ -53,7 +72,13 @@ impl ServiceReadiness {
                             String::from_utf8_lossy(&reason).into_owned(),
                         ));
                     }
-                    Ok(_) => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) if frame[0] == READY_FRAME => break Ok(ServiceStartOutcome::Ready),
+                    Ok(_) => {
+                        break Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "invalid service readiness frame",
+                        ));
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) if error.kind() == io::ErrorKind::BrokenPipe => {
                         break Ok(ServiceStartOutcome::Exited);
@@ -74,6 +99,24 @@ impl ServiceReadiness {
 pub struct ServiceReadySignal(File);
 
 impl ServiceReadySignal {
+    /// Takes the selected startup output and redirects later standard output
+    /// to discard. Signal only after the original service listener is bound.
+    /// A missing output handle supplies no readiness channel.
+    pub fn take_stdout() -> io::Result<Option<Self>> {
+        #[cfg(windows)]
+        {
+            windows::take_standard_output().map(|file| file.map(Self))
+        }
+        #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+        {
+            take_standard_output().map(|file| Some(Self(file)))
+        }
+        #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
+        {
+            Ok(None)
+        }
+    }
+
     /// Tells a connected starter that the service answers requests, and closes the channel.
     /// A starter that has already exited does not prevent the service from running.
     pub fn signal(mut self) -> io::Result<()> {
@@ -104,18 +147,7 @@ pub fn take_service_ready_signal() -> io::Result<Option<ServiceReadySignal>> {
     {
         return Ok(None);
     }
-    #[cfg(windows)]
-    {
-        windows::take_standard_output().map(|file| file.map(ServiceReadySignal))
-    }
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
-    {
-        take_standard_output().map(|file| Some(ServiceReadySignal(file)))
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
-    {
-        Ok(None)
-    }
+    ServiceReadySignal::take_stdout()
 }
 
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
@@ -147,7 +179,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
         let spawn = || {
             #[cfg(windows)]
             {
-                windows::spawn_service_process(executable).map(ServiceReadiness)
+                windows::spawn_service_process(executable).map(ServiceReadiness::from)
             }
             #[cfg(unix)]
             {
@@ -165,9 +197,7 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
                     .stdout
                     .take()
                     .ok_or_else(|| io::Error::other("service readiness channel is missing"))?;
-                Ok(ServiceReadiness(File::from(std::os::fd::OwnedFd::from(
-                    readiness,
-                ))))
+                Ok(ServiceReadiness::from(readiness))
             }
         };
         operation.finish(spawn())
