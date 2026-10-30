@@ -417,7 +417,8 @@ fn release_model(
     Ok(())
 }
 
-pub(super) const OBSERVATION_VERSION: u32 = 2;
+// Version 3 settles approval refusals through the ordinary tool-failure kind.
+pub(super) const OBSERVATION_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]

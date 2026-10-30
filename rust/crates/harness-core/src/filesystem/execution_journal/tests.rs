@@ -95,6 +95,7 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
         "missing_turn",
         "missing_version",
         "old_version",
+        "old_refusal",
         "unknown_version",
         "wrong_version_type",
         "unknown_field",
@@ -124,8 +125,22 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
                     .ok_or_else(|| Error::Invalid("envelope".into()))?
                     .remove("version");
             }
-            "old_version" => wire["version"] = serde_json::json!(1),
-            "unknown_version" => wire["version"] = serde_json::json!(3),
+            "old_version" => wire["version"] = serde_json::json!(OBSERVATION_VERSION - 1),
+            "old_refusal" => {
+                wire["version"] = serde_json::json!(2);
+                wire["event"] = serde_json::to_value(ExecutionEvent::ToolFailed {
+                    step: 0,
+                    call_id: "denied".into(),
+                    reason: crate::executor::ToolFailureKind::ExecutorRejected,
+                    cause: crate::executor::ToolFailureCause::of(
+                        &Error::Unauthorized("denied".into()),
+                        &mut None,
+                    )?,
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                wire["event"]["reason"] = serde_json::json!("refused");
+            }
+            "unknown_version" => wire["version"] = serde_json::json!(OBSERVATION_VERSION + 1),
             "wrong_version_type" => wire["version"] = serde_json::json!("2"),
             "unknown_field" => wire["event_operation"] = serde_json::json!(operation),
             _ => unreachable!("enumerated envelope mutation"),
