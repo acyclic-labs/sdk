@@ -37,7 +37,7 @@ live view is a selected metrics query, woken by that operation's completion
 watch. Losing the producer returns a typed error. There is no SLO endpoint or
 separate settings service. See the [file format and query contract](../rust/crates/observability/README.md).
 
-Empty cohorts are unknown. A histogram bucket crossing a latency threshold is
+Empty cohorts and counter precision loss are unknown. A histogram bucket crossing a latency threshold is
 unknown whenever that ambiguity can change the verdict. Evaluating a query for
 another operation or an unsupported file version refuses by type.
 
@@ -70,7 +70,7 @@ another operation or an unsupported file version refuses by type.
 
 - Span names are `acyclic.<family>.<op>`. The family is one of `fs`, `stream`,
   `objects`, `harness`, `runtime`, `machines`, `inference`, `actors`,
-  `workers` or `plugin`. Native-mount callbacks are `acyclic.fs.mount.<callback>`.
+  `workers`, `auth` or `plugin`. Native-mount callbacks are `acyclic.fs.mount.<callback>`.
 - `target` stays the default module path, so `ACYCLIC_LOG=acyclic_fs::kernel=debug`
   works.
 
@@ -92,7 +92,7 @@ ends.
 - **Retries:** each physical `acyclic.stream.grpc.call` span records its singular
   `attempt` ordinal. The logical read or follow span stays open through terminal
   completion or consumer drop.
-- **Result:** `outcome` is `"ok"` or `"err"`. `error.kind` is a stable
+- **Result:** `outcome` is `"ok"`, `"err"` or `"incomplete"`. `error.kind` is a stable
   `&'static str` from the error enum's `fn kind(&self) -> &'static str`; add
   that method to any error enum that lacks one. RPCs record `rpc.code` only for
   received transport status (the tonic `Code` or HTTP status). A streaming
@@ -121,6 +121,9 @@ returns; an abandoned future leaves its outcome unset.
 Stream gRPC bodies also require EOF for success and record `cancelled` on
 unfinished consumer drop. Detached provider work
 records its actual terminal worker result even when its caller was cancelled.
+Portable and native provider `read`/`follow` operations observe cursor opening,
+as defined by their public contracts. Returned cursors retain their original
+late error and native accounting mechanisms; opening is not evidence of EOF.
 
 **Forbidden fields.** Users attach trace files to bug reports, so never record:
 

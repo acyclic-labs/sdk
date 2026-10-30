@@ -47,6 +47,9 @@ endpoint, separate settings store or readiness poll. Empty cohorts are unknown.
 A latency threshold crossing a histogram bucket is unknown if that ambiguity
 can change the verdict; the view never claims precision the histogram lacks.
 Version mismatches and a query naming another operation are typed refusals.
+Operations have no count or duration cap. If the fixed-width metric counters
+lose precision, the snapshot marks `overflowed` and SLO verdicts stay unknown
+for that cohort. Export sinks still receive every terminal sample.
 
 On a volume-query file replacement, construct the replacement `SloQuery` from
 the newly authorized bytes. Select its completion event alongside the volume's
