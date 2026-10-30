@@ -66,19 +66,37 @@ fn reverse_insert(
     record: crate::kernel::FileRecord,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
-    // Namespace order and file-identity order are independent. Append during
-    // discovery; sorting and grouping once avoids shifting every prior file.
-    reverse_grow(records, allocation, accounting)?;
-    let mut entries = Vec::new();
-    reverse_grow(&mut entries, allocation, accounting)?;
-    let mut path = path;
-    accounting.charge(copy_work(
-        (std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>()
-            + std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>())
-            as u64,
-    ))?;
-    allocation.absorb(&mut path.1)?;
-    entries.push((path.0, record));
+    // The path stays with its original guard until every destination is funded.
+    let bytes = path.0.retained_bytes();
+    let path = crate::kernel::Owned::new(path.0, path.1, bytes);
+    let prepared = reverse_grow(records, allocation, accounting).and_then(|()| {
+        accounting.charge(copy_work(
+            (std::mem::size_of::<(NamespacePath, crate::kernel::FileRecord)>()
+                + std::mem::size_of::<(FileId, Vec<(NamespacePath, crate::kernel::FileRecord)>)>())
+                as u64,
+        ))
+    });
+    if let Err(error) = prepared {
+        path.retire(accounting)?;
+        return Err(error);
+    }
+    let mut entries = match crate::kernel::Owned::<Vec<_>>::allocate(1, accounting) {
+        Ok(entries) => entries,
+        Err(error) => {
+            path.retire(accounting)?;
+            return Err(error);
+        }
+    };
+    let path = match path.transfer_to(&mut entries.allocation, &mut entries.bytes, accounting) {
+        Ok(path) => path,
+        Err(error) => {
+            entries.retire(accounting)?;
+            return Err(error);
+        }
+    };
+    entries.value.push((path, record));
+    let mut transferred = 0;
+    let entries = entries.transfer_to(allocation, &mut transferred, accounting)?;
     records.push((record.file_id, entries));
     Ok(())
 }

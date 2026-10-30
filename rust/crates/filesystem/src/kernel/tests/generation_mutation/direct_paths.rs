@@ -99,6 +99,7 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
         collect_paths(&store, &linked, record).await?,
         [path(&["a"])?, path(&["dir", "alias"])?]
     );
+    let mut full_allocations = 0;
     for maximum in [0, 1, 2] {
         let cancel = CancellationToken::new();
         let mut work = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancel);
@@ -117,10 +118,37 @@ async fn aliases_follow_pinned_parent_edges_and_refusals_keep_original_custody()
             .flat_map(|(_, paths)| paths.iter().map(|(path, _)| path.clone()))
             .collect();
         assert_eq!(actual, expected[..maximum as usize]);
+        if maximum == 2 {
+            full_allocations = work.spent().allocation_operations;
+        }
         let bytes = crate::workspace::namespace_records_bytes(&search.records);
         crate::kernel::Owned::new(search, allocation, bytes).retire(&mut work)?;
         assert_eq!(work.standalone_parts().unwrap().0.live_bytes(), 0);
     }
+    let cancel = CancellationToken::new();
+    let mut refused = KernelAccounting::standalone(
+        WorkBudget {
+            allocation_operations: full_allocations
+                .checked_sub(1)
+                .ok_or("no actual allocations")?,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    );
+    let selected = DirectOnly(&store);
+    let view = crate::workspace::NamespaceView {
+        objects: &selected,
+        root: &linked,
+        config: config(),
+    };
+    assert!(matches!(
+        view.records(&[file], 2, &mut refused, &cancel).await,
+        Err(FsError::Work(crate::WorkError::BudgetExceeded {
+            counter: "allocation_operations",
+            ..
+        }))
+    ));
+    assert_eq!(refused.standalone_parts().unwrap().0.live_bytes(), 0);
     let moved = apply_generation_mutations(
         &store,
         &linked,
