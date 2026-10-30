@@ -187,7 +187,9 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         tokio::pin!(waiting);
         assert!(futures::poll!(&mut waiting).is_pending(), "live producer must retain the wait");
         drop(producer);
-        assert!(matches!(waiting.await, Err(Error::Storage(_))));
+        // The session closed by the failed runtime reports that failure, not a bare `unavailable`.
+        let observed = waiting.await;
+        assert!(matches!(&observed, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "observation lost the runtime cause: {observed:?}");
         let hosted = harness.agents.get().unwrap();
         assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
         assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
