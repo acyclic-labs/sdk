@@ -205,6 +205,7 @@ pub struct Metrics(Arc<Mutex<Names>>);
 struct Names {
     children: BTreeMap<u8, Names>,
     series: Option<Arc<Series>>,
+    methods: Option<Box<Names>>,
 }
 
 impl Metrics {
@@ -224,14 +225,11 @@ impl Metrics {
     fn series(&self, operation: &str, rpc: Option<&str>) -> Arc<Series> {
         let mut names = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let mut node = &mut *names;
-        for byte in operation
-            .bytes()
-            .chain([0])
-            .chain(rpc.into_iter().flat_map(str::bytes))
-        {
-            #[cfg(test)]
-            INDEX_VISITS.set(INDEX_VISITS.get() + 1);
-            node = node.children.entry(byte).or_default();
+        node = node.select(operation);
+        if let Some(rpc) = rpc {
+            // A separate method namespace preserves the typed key. A delimiter
+            // alone aliases None with Some("") and embedded delimiters.
+            node = node.methods.get_or_insert_with(Box::default).select(rpc);
         }
         Arc::clone(node.series.get_or_insert_with(|| {
             Arc::new(Series(
@@ -244,6 +242,18 @@ impl Metrics {
                 .0,
             ))
         }))
+    }
+}
+
+impl Names {
+    fn select(&mut self, name: &str) -> &mut Self {
+        let mut node = self;
+        for byte in name.bytes() {
+            #[cfg(test)]
+            INDEX_VISITS.set(INDEX_VISITS.get() + 1);
+            node = node.children.entry(byte).or_default();
+        }
+        node
     }
 }
 
@@ -268,7 +278,7 @@ mod tests {
             previous = population;
             INDEX_VISITS.set(0);
             let selected = metrics.query("acyclic.selected");
-            assert_eq!(INDEX_VISITS.get(), "acyclic.selected".len() + 1);
+            assert_eq!(INDEX_VISITS.get(), "acyclic.selected".len());
             assert_eq!(query.snapshot(), selected.snapshot());
         }
         // A full namespace visit, formerly typical of snapshot collectors,
@@ -277,7 +287,7 @@ mod tests {
             1 + names.children.values().map(full_visit).sum::<usize>()
         }
         let names = metrics.0.lock().unwrap_or_else(PoisonError::into_inner);
-        assert!(full_visit(&names) > "acyclic.selected".len() + 1);
+        assert!(full_visit(&names) > "acyclic.selected".len());
     }
 }
 

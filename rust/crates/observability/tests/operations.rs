@@ -201,6 +201,34 @@ fn filtered_operation_cannot_complete_its_enabled_parent() {
 }
 
 #[test]
+fn method_queries_preserve_the_complete_typed_key() {
+    let metrics = Metrics::default();
+    let without_method = metrics.query("acyclic.test.rpc");
+    let empty_method = metrics.query_rpc("acyclic.test.rpc", "");
+    let method = metrics.query_rpc("acyclic.test.rpc", "Read\0");
+    let embedded_separator = metrics.query("acyclic.test.rpc\0Read");
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(metrics)));
+    tracing::dispatcher::with_default(&dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.test.rpc",
+            rpc = "Read\0",
+            outcome = tracing::field::Empty
+        );
+        acyclic_observability::record_outcome(&span, None);
+    });
+    assert_eq!(method.snapshot().ok, 1);
+    assert_eq!(without_method.snapshot().ok, 0);
+    assert_eq!(empty_method.snapshot().rpc.as_deref(), Some(""));
+    assert_eq!(embedded_separator.snapshot().ok, 0);
+    // A delimiter-only index aliases these two keys despite their different
+    // operation identities. The selected query above must remain isolated.
+    assert_eq!(
+        format!("{}\0{}", "acyclic.test.rpc", "Read\0"),
+        format!("{}\0", "acyclic.test.rpc\0Read"),
+    );
+}
+
+#[test]
 fn slo_file_refuses_empty_and_ambiguous_evidence() -> Result<(), Box<dyn std::error::Error>> {
     use acyclic_observability::{Slo, Snapshot};
     let file = br#"{"version":1,"operation":"acyclic.test.operation","success_ppm":990000,"latency":{"maximum_ns":10,"target_ppm":990000}}"#;
