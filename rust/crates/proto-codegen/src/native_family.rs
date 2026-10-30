@@ -273,11 +273,14 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "actors" => &[
             "scripts/generate-actors.mjs",
             "scripts/generate-actors-routes.mjs",
+            "scripts/generate-actors-rpc-inventory.mjs",
         ],
         "stream" => &[
             "scripts/actors-napi-types.mjs",
             "scripts/generate-actors.mjs",
             "scripts/generate-actors-routes.mjs",
+            "scripts/generate-actors-rpc-inventory.mjs",
+            "scripts/generate-stream-rpc-inventory.mjs",
             "scripts/generate-stream-http-contract.mjs",
             "scripts/generate-stream-token-operations.mjs",
         ],

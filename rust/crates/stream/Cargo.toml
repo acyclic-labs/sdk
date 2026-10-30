@@ -25,6 +25,11 @@ required-features = ["http"]
 name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 
+[[bin]]
+name = "stream-rpc-inventory"
+path = "src/bin/stream-rpc-inventory.rs"
+required-features = ["grpc", "http"]
+
 [features]
 conformance = []
 model-checking = ["dep:loom", "dep:tempfile"]

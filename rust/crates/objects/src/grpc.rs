@@ -359,6 +359,7 @@ macro_rules! call {
     }};
 }
 
+#[acyclic_contract_derive::implementation_methods(RPC_METHODS)]
 #[async_trait::async_trait]
 impl Blobs for GrpcObjects {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {

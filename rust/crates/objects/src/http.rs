@@ -346,6 +346,7 @@ impl HttpObjects {
 #[path = "http_context_tests.rs"]
 mod context_tests;
 
+#[acyclic_contract_derive::implementation_methods(RPC_METHODS)]
 #[async_trait::async_trait]
 impl Blobs for HttpObjects {
     async fn availability(&self, digest: Digest) -> Result<crate::Availability, Error> {

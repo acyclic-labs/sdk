@@ -1,133 +1,118 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { API, SymbolFlags, TypeFlags, SignatureKind } from "typescript/unstable/sync";
+import { isFunctionDeclaration } from "typescript/unstable/ast/is";
 
-// Ignore comments and literals when locating declaration bodies. Preserve offsets
-// so nested braces can be balanced without confusing request objects with methods.
-const codeOnly = text => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g,
-  match => match.replace(/[^\n]/g, " "));
-function body(source, declaration) {
-  const code = codeOnly(source);
-  const match = declaration.exec(code);
-  if (!match) return "";
-  const start = code.indexOf("{", match.index + match[0].length);
-  if (start < 0) return "";
-  let depth = 1;
-  for (let end = start + 1; end < code.length; end++) {
-    if (code[end] === "{") depth++;
-    if (code[end] === "}" && --depth === 0) return code.slice(start + 1, end);
-  }
-  return "";
-}
-
-const objectMethods = {
-  PutBlob: "put", GetBlob: "get", HeadBlob: "head", DeleteBlob: "delete", ListBlobs: "list",
+const objectMethods = { PutBlob: "put", GetBlob: "get", HeadBlob: "head", DeleteBlob: "delete", ListBlobs: "list" };
+// These RPCs compose the same canonical provider operations; they are not
+// independent methods on each adapter. Unknown RPCs refuse inventory generation.
+const streamMethods = {
+  InspectIdempotency: "inspect_idempotency", Append: "write", Fork: "write", Commit: "write",
+  Head: "heads", Heads: "heads", Tail: "heads", Children: "heads", ChildrenPage: "heads",
+  Read: "read", ReadCommit: "read_commit",
 };
-// A Blobs method named otherwise than its operation: the batch rides the
-// shared batch entry point every provider overrides.
 const objectRustMethods = { PutBlobs: "put_batch_sealed" };
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
-const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
-const rustImpl = (source, header) => source.match(new RegExp(`${header}\\s*\\{([\\s\\S]*?)^\\}`, "m"))?.[1] ?? "";
 
-// These checks establish source exposure. Runtime semantics are proved separately
-// by the complete transport fixtures, not by the inventory's presence flags.
+// Rust inventories are emitted from the exact impl or operation macro rustc
+// compiles. TypeScript uses the compiler's exported and inherited symbols,
+// including generated mapped types, rather than parsing source spellings.
 export function createSourceInspector(root, read = path => {
   const url = new URL(path, root);
   return existsSync(url) ? readFileSync(url, "utf8") : "";
 }) {
-  const sources = new Map();
-  const source = path => {
-    if (!sources.has(path)) sources.set(path, read(path));
-    return sources.get(path);
+  const files = [
+    "actors/client.ts", "actors/index.ts", "stream/client.ts", "stream/http.ts", "stream/grpc.ts", "stream/index.ts",
+    "objects/v1.ts", "objects/v1-http.ts", "objects/v1-grpc.ts", "objects/index.ts", "machines/transport.ts",
+  ].map(path => `typescript/packages/${path.replace("/", "/src/")}`);
+  const directory = fileURLToPath(root);
+  const config = resolve(directory, ".rpc-inventory.tsconfig.json");
+  const api = new API({ cwd: directory, fs: { readFile(path) {
+    if (resolve(path) === config) return JSON.stringify({ compilerOptions: {
+      target: "esnext", module: "nodenext", moduleResolution: "nodenext", skipLibCheck: true, noEmit: true, allowJs: true,
+    }, files });
+    const relative = path.replaceAll("\\", "/").slice(directory.replaceAll("\\", "/").length);
+    return relative && !relative.startsWith("..") && resolve(directory, relative) === resolve(path)
+      ? read(relative.replace(/^\//, "")) || null : undefined;
+  } } });
+  const snapshot = api.updateSnapshot({ openProjects: [config] });
+  const project = snapshot.getProject(config);
+  if (!project) {
+    snapshot.dispose(); api.close();
+    throw new Error("RPC compiler inventory could not open its project; recovery: bun run test:contracts");
+  }
+  const checker = project.checker;
+  const module = path => project.program.getSourceFile(resolve(directory, `typescript/packages/${path}`));
+  const exported = (path, name) => {
+    const file = module(path);
+    const symbol = file && checker.getSymbolAtLocation(file);
+    return symbol && checker.getExportsOfModule(symbol).find(symbol => symbol.name === name);
   };
-  const method = (path, className, name) => new RegExp(`^\\s*(?:(?:public|protected|private|async)\\s+)*\\*?${name}\\s*\\(`, "m").test(
-    body(source(path), new RegExp(`\\bclass\\s+${className}\\b`)));
-  const factory = (path, name, service) => {
-    let implementation = body(source(path), new RegExp(`\\bexport\\s+function\\s+${name}\\s*\\(`));
-    if (name === "createStreamGrpcClient" && /\bstreamGrpc\s*\(/.test(implementation)) {
-      const provider = body(source(path), /\bfunction\s+streamGrpc\s*\(/);
-      if (/\bcreateStreamGrpcTransport\s*\(/.test(provider)) {
-        implementation += provider + body(source(path), /\bfunction\s+createStreamGrpcTransport\s*\(/);
-      }
+  const original = symbol => symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
+  const value = symbol => symbol && checker.getTypeOfSymbol(original(symbol));
+  const property = (type, name) => type && value(checker.getPropertyOfType(type, name));
+  const callable = type => Boolean(type && !(type.flags & (TypeFlags.Any | TypeFlags.Unknown)) && checker.getSignaturesOfType(type, SignatureKind.Call).length);
+  const member = (path, owner, name) => {
+    const symbol = original(exported(path, owner));
+    return Boolean(symbol && callable(property(checker.getDeclaredTypeOfSymbol(symbol), name)));
+  };
+  const factory = (path, name, field, operation) => {
+    const type = value(exported(path, name));
+    if (!callable(type)) return false;
+    let result = checker.getReturnTypeOfSignature(checker.getSignaturesOfType(type, SignatureKind.Call)[0]);
+    if (field) result = property(result, field);
+    return callable(property(result, operation));
+  };
+  const binding = name => {
+    const file = module("actors/src/client.ts");
+    return Boolean(file && file.statements.some(statement => isFunctionDeclaration(statement) && statement.name?.text === name && callable(value(checker.getSymbolAtLocation(statement.name)))));
+  };
+  const inventories = new Map();
+  const inventory = family => {
+    if (!inventories.has(family)) {
+      const text = read(`compatibility/rpc-implementations/${family}.json`);
+      if (!text) throw new Error(`RPC inventory missing for ${family}; recovery: bun scripts/generate-contracts.mjs write ${family}`);
+      inventories.set(family, JSON.parse(text));
     }
-    return new RegExp(`\\bcreateClient\\s*\\(\\s*${service}\\s*,`).test(implementation) &&
-      /\bcreateGrpcTransport\s*\(/.test(implementation);
+    return inventories.get(family);
   };
-  const exported = (path, module) => new RegExp(`export\\s+\\*\\s+from\\s+["']${module.replaceAll(".", "\\.")}["']`).test(source(path));
 
-  return (service, rpc) => {
-    const [, family, version, serviceName] = service.typeName.split(".");
+  const inspect = (service, rpc) => {
+    const [, family, version] = service.typeName.split(".");
+    if ((family === "objects" || family === "stream") && version !== "v1") throw new Error("unsupported current contract");
     const objects = family === "objects";
     const stream = family === "stream";
-    if ((objects || stream) && version !== "v1") throw new Error("unsupported current contract");
-    const unified = family === "actors";
-    const rustBase = `rust/crates/${family}/src/`;
-    const tsBase = `typescript/packages/${family}/src/`;
+    const actors = family === "actors";
     const operation = objects ? objectMethods[rpc.name] ?? rpc.localName : rpc.localName;
-    const rustName = (objects ? objectRustMethods[rpc.name] : undefined) ?? snake(operation);
-    const rustRoot = source(`${rustBase}lib.rs`);
-    const grpc = source(`${rustBase}${stream ? "grpc/client.rs" : "grpc.rs"}`);
-    const http = source(`${rustBase}http.rs`);
-    // Actors' tonic declarations are generated in Cargo OUT_DIR, so the clean
-    // checkout has no stable generated .rs path to inspect. The checked-in
-    // operation macro, Rust route table, and generated TS facade are the
-    // Rust-owned metadata surfaces for this bounded inspector fallback.
-    const actorsClient = family === "actors" ? source("rust/crates/actors/src/client.rs") : "";
-    const actorsTypescriptClient = family === "actors" ? source("typescript/packages/actors/src/client.ts") : "";
-    const facade = unified ? source(`${tsBase}generated/${family}-service.ts`) : "";
-    const client = unified ? source(`${tsBase}client.ts`) : "";
-    const installer = `install${serviceName.replace(/Service$/u, "")}Methods`;
-    const semanticOperation = unified &&
-      facade.includes(`"${rpc.input.typeName}":`) && facade.includes(`"${rpc.output.typeName}":`) &&
-      facade.includes("readonly [K in keyof Methods]") &&
-      facade.includes(`for (const method of ${serviceName}.methods)`) &&
-      facade.includes("Object.defineProperty(target, method.localName") && client.includes(`${installer}(this,`);
-    const module = name => new RegExp(`^pub mod ${name};`, "m").test(rustRoot);
-    const rustGrpc = module("grpc") && (family === "actors"
-      ? (actorsClient.includes("operations!(client_operations)") &&
-          new RegExp(`\\("${rpc.name}",\\s*${rustName},`).test(actorsClient)) ||
-        new RegExp(`\\boperation!\\(\\s*${rustName}\\s*,`).test(actorsClient)
-      : objects || stream
-      ? objects
-        ? grpc.includes("impl Blobs for GrpcObjects") &&
-          (rustMethod(grpc, rustName) || new RegExp(`^${rustName}\\(\\w+\\) ->`, "m").test(grpc))
-        : rustMethod(rustImpl(grpc, "impl StreamProvider for Client"), rustName)
-      : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
-        rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
-    const rustHttp = module("http") && (rustMethod(objects || stream
-      ? rustImpl(http, objects ? "impl Blobs for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName)
-      || (unified && http.includes("operations! {") && new RegExp(`\\(${rustName},\\s*\\d+,`).test(http)));
-    const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
-    const typescriptGrpcNodeBun = family === "actors"
-      ? semanticOperation &&
-        actorsTypescriptClient.includes("nativeBinding()") && actorsTypescriptClient.includes("wasmBinding()")
-      : factory(grpcPath, objects ? "createObjectsV1GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
-    // Unified clients use gRPC-Web in browsers; their compatibility aliases do
-    // not expose the retired raw HTTP implementation. Inventory both honestly.
-    const typescriptHttp = unified
-      ? false
-      : objects
-      ? method(`${tsBase}v1.ts`, "ObjectsV1Provider", operation) && method(`${tsBase}v1-http.ts`, "HttpObjectsV1", "invoke") && source(`${tsBase}v1-http.ts`).includes("extends ObjectsV1Provider")
-      : method(`${tsBase}http.ts`, stream ? "HttpStreamProvider" : `Http${family[0].toUpperCase()}${family.slice(1)}Client`, operation) ||
-        (stream && operation === "children" && method(`${tsBase}client.ts`, "StreamClient", "children") &&
-          method(`${tsBase}http.ts`, "HttpStreamProvider", "childrenPage"));
-    const typescriptGrpcWeb = semanticOperation && client.includes("function wasmBinding()") && actorsClient.includes("tonic_web_wasm_client::Client::new_with_options(") &&
-      source("rust/crates/actors-wasm/src/lib.rs").includes("pub struct ActorsClient");
-    const manifestText = source(`typescript/packages/${family}/package.json`);
+    const rustName = stream ? streamMethods[rpc.name] : objects ? objectRustMethods[rpc.name] ?? snake(operation) : snake(operation);
+    if (stream && !rustName) throw new Error(`RPC provider mapping missing for ${rpc.name}; recovery: update the canonical provider composition in scripts/public-rpc-source.mjs`);
+    const rust = actors || objects || stream ? inventory(family) : { grpc: [], http: [] };
+    const typescriptGrpcNodeBun = actors
+      ? member("actors/src/client.ts", "ActorsClient", operation) && binding("nativeBinding")
+      : objects ? factory("objects/src/v1-grpc.ts", "createObjectsV1GrpcClients", "blobs", rpc.localName)
+      : stream && factory("stream/src/grpc.ts", "createStreamGrpcClient", undefined, rpc.localName);
+    const typescriptHttp = objects
+      ? member("objects/src/v1-http.ts", "HttpObjectsV1", operation) && member("objects/src/v1-http.ts", "HttpObjectsV1", "open")
+      : stream && (rpc.name === "Children"
+        ? member("stream/src/client.ts", "StreamClient", "children") && member("stream/src/http.ts", "HttpStreamProvider", "childrenPage")
+        : member("stream/src/http.ts", "HttpStreamProvider", operation));
+    const manifestText = read(`typescript/packages/${family}/package.json`);
     const manifest = manifestText ? JSON.parse(manifestText) : {};
-    const typescriptPackageExported = unified
-      ? manifest.exports?.["."]?.default === "./dist/index.js" &&
-        manifest.exports?.["./client"]?.default === "./dist/client.js" &&
-        manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
-        exported(`${tsBase}index.ts`, "./client.js")
-      : manifest.exports?.["."]?.default === "./dist/index.js" &&
-        manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v1-grpc" : "grpc"}.js` &&
-        manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
-        (objects ? exported(`${tsBase}index.ts`, "./v1.js") && exported(`${tsBase}index.ts`, "./v1-http.js")
-          : family === "machines"
-          ? manifest.exports?.["./transport"]?.default === "./dist/transport.js" &&
-            /export function createMachinesClient\(transport: Transport\)/.test(source(`${tsBase}transport.ts`)) &&
-            source(`${tsBase}transport.ts`).includes("createClient(wire.MachinesService, transport)")
-          : exported(`${tsBase}index.ts`, "./http.js"));
-    return { rustGrpc, rustHttp, typescriptGrpcNodeBun, typescriptHttp, typescriptGrpcWeb: Boolean(typescriptGrpcWeb), typescriptPackageExported: Boolean(typescriptPackageExported) };
+    const typescriptPackageExported = manifest.exports?.["."]?.default === "./dist/index.js" &&
+      (actors ? manifest.exports?.["./client"]?.default === "./dist/client.js" && Boolean(exported("actors/src/index.ts", "ActorsClient"))
+      : objects ? manifest.exports?.["./grpc"]?.default === "./dist/v1-grpc.js" && Boolean(exported("objects/src/index.ts", "HttpObjectsV1")) && Boolean(exported("objects/src/index.ts", "ObjectsV1Provider"))
+      : stream ? manifest.exports?.["./grpc"]?.default === "./dist/grpc.js" && Boolean(exported("stream/src/index.ts", "HttpStreamProvider"))
+      : family === "machines" && manifest.exports?.["./transport"]?.default === "./dist/transport.js" && factory("machines/src/transport.ts", "createMachinesClient", "machines", rpc.localName)) &&
+      manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js`;
+    return {
+      rustGrpc: rust.grpc.includes(rustName), rustHttp: rust.http.includes(rustName),
+      typescriptGrpcNodeBun: Boolean(typescriptGrpcNodeBun), typescriptHttp: Boolean(typescriptHttp),
+      typescriptGrpcWeb: actors && member("actors/src/client.ts", "ActorsClient", operation) && binding("wasmBinding"),
+      typescriptPackageExported: Boolean(typescriptPackageExported),
+    };
   };
+  inspect.routes = family => inventory(family).routes;
+  inspect.close = () => { snapshot.dispose(); api.close(); };
+  return inspect;
 }

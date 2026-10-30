@@ -5,9 +5,33 @@ mod authorization;
 mod enumeration;
 mod explicit_provider;
 mod heap_layout;
+mod implementation_methods;
 mod message;
 mod options;
 mod registration;
+
+/// Derive a method inventory from the same implementation rustc checks.
+/// The associated constant has no independently maintained method list.
+///
+/// Removing an implementation method removes exactly that inventory entry.
+/// ```
+/// use acyclic_contract_derive::implementation_methods;
+/// struct Original;
+/// #[implementation_methods(METHODS)]
+/// impl Original { fn read() {} fn write() {} }
+/// struct RemovedRead;
+/// #[implementation_methods(METHODS)]
+/// impl RemovedRead { fn write() {} }
+/// assert_eq!(Original::METHODS, &["read", "write"]);
+/// assert_eq!(RemovedRead::METHODS, &["write"]);
+/// Original::read(); Original::write(); RemovedRead::write();
+/// ```
+#[proc_macro_attribute]
+pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let name = parse_macro_input!(arguments as syn::Ident);
+    let implementation = parse_macro_input!(input as syn::ItemImpl);
+    implementation_methods::expand(name, implementation).into()
+}
 
 /// Generate an `ExplicitNAME` provider contract with every default removed,
 /// and the forwarding implementation of `NAME`. Adding a default method to

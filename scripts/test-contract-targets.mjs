@@ -29,7 +29,7 @@ test("contract binaries use exact Cargo identities and current source/configurat
     put("dependency/src/lib.rs", 'pub fn value() -> bool { cfg!(feature = "propagated") }\n');
     for (const name of ["alpha", "beta"]) {
       mkdirSync(join(root, name, "src"), { recursive: true });
-      put(`${name}/Cargo.toml`, `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n[lib]\ncrate-type = ["rlib", "cdylib"]\n[[${name === "alpha" ? "bin" : "example"}]]\nname = "contract"\npath = "src/main.rs"\n[features]\ndefault = ["alternate"]\nalternate = []\n`);
+      put(`${name}/Cargo.toml`, `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2024"\n[lib]\ncrate-type = ["rlib", "cdylib"]\n[[${name === "alpha" ? "bin" : "example"}]]\nname = "contract"\npath = "src/main.rs"\nrequired-features = ["contract"]\n[features]\ndefault = ["alternate"]\nalternate = []\ncontract = []\n`);
       put(`${name}/src/lib.rs`, 'pub fn value() -> bool { cfg!(feature = "alternate") }\n');
       put(`${name}/src/main.rs`, `fn main() { println!("${name}:{}:{}", ${name}::value(), dependency::value()); }\n`);
       writeFileSync(join(root, name, "Cargo.toml"), '\n[dependencies]\ndependency = { path = "../dependency" }\n', { flag: "a" });
@@ -43,7 +43,7 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.deepEqual(run(binaries), ["alpha:false:true", "beta:false:true"]);
     // --no-default-features disables selected packages' defaults; a dependency
     // keeps its defaults unless its dependency declaration disables them.
-    assert.deepEqual(report.artifacts.filter(item => item.requested).map(item => item.features), [[], []]);
+    assert.deepEqual(report.artifacts.filter(item => item.requested).map(item => item.features), [["contract"], ["contract"]]);
     assert.ok(report.artifacts.some(item => item.name === "dependency" && item.features.includes("propagated")));
     assert.ok(binaries.every(binary => binary.includes("configured-target")));
     const before = binaries.map(binary => statSync(binary).mtimeMs);

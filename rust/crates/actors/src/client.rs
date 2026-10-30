@@ -522,6 +522,8 @@ macro_rules! operations {
 macro_rules! client_operations {
     ($(($name:literal, $method:ident, $input:ident, $output:ident)),* $(,)?) => {
         impl Client {
+            /// Methods emitted with this client's canonical operation table.
+            pub const RPC_METHODS: &'static [&'static str] = &[$(stringify!($method)),*];
             $(
             #[doc = concat!("Executes the semantic ", $name, " operation.")]
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {

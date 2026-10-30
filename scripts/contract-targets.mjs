@@ -39,11 +39,14 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   const packages = new Map(metadata.packages.map(pkg => [pkg.name, pkg]));
   /** @type {Map<string, string | undefined>} */
   const requested = new Map();
+  const features = new Set();
   for (const [packageName, kind, name] of targets) {
     const pkg = packages.get(packageName);
     if (!["bin", "example"].includes(kind) || !pkg?.targets.some(target => target.name === name && target.kind.includes(kind))) {
       throw new Error(`unknown Rust contract target: ${identity([packageName, kind, name])}`);
     }
+    const target = pkg.targets.find(target => target.name === name && target.kind.includes(kind));
+    for (const feature of target["required-features"] ?? []) features.add(`${packageName}/${feature}`);
     const key = identity([pkg.id, kind, name]);
     if (requested.has(key)) throw new Error(`duplicate Rust contract target: ${key}`);
     requested.set(key, undefined);
@@ -53,6 +56,7 @@ export function buildContractTargets(root, targets, cargo = process.env.ACYCLIC_
   report.target_directory = metadata.target_directory;
   const output = capture("build", [
     "build", ...manifest, "--quiet", "--no-default-features",
+    ...(features.size ? ["--features", [...features].sort().join(",")] : []),
     "--target-dir", report.target_directory,
     "--message-format=json-render-diagnostics",
     ...[...new Set(targets.map(([name]) => name))].flatMap(name => ["-p", name]),

@@ -10,6 +10,10 @@ publish.workspace = true
 description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
+[[bin]]
+name = "actors-rpc-inventory"
+path = "src/bin/actors-rpc-inventory.rs"
+
 [features]
 conformance = ["acyclic-stream/conformance"]
 model-checking = ["acyclic-stream/model-checking"]

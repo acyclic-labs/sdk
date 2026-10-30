@@ -925,6 +925,7 @@ name = "acyclic-objects"
 version = "0.2.0"
 dependencies = [
  "acyclic-auth",
+ "acyclic-contract-derive",
  "acyclic-native-runtime",
  "acyclic-observability",
  "acyclic-proto-build",
