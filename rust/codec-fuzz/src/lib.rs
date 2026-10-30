@@ -4,6 +4,7 @@ pub mod filesystem_pages;
 mod harness_manifest;
 pub mod inference_http;
 mod mcp;
+mod objects_json;
 mod semantic;
 
 /// Real service-writer outputs to capture under both protobuf syntax targets.
@@ -114,6 +115,7 @@ pub struct Decoder {
 
 fn check<T: Message + Default>(bytes: &[u8], descriptor: prost_reflect::MessageDescriptor) {
     if let Ok(value) = T::decode(bytes) {
+        objects_json::typed(&descriptor, &value);
         let encoded = value.encode_to_vec();
         // Unknown fields may be discarded at a wire boundary; the projection
         // must preserve its value after that first decode. Map iteration may
@@ -169,6 +171,7 @@ pub fn protobuf_json(bytes: &[u8]) {
     };
     let index = (u64::from_le_bytes(*selector) % DECODERS.len() as u64) as usize;
     let descriptor = descriptor(&DECODERS[index]);
+    objects_json::json(&descriptor, payload);
     if let Ok(value) = acyclic_protobuf_json::decode(descriptor.clone(), payload, usize::MAX) {
         let binary = value.encode_to_vec();
         (DECODERS[index].check)(&binary, descriptor.clone());
@@ -205,7 +208,9 @@ pub fn protobuf(bytes: &[u8]) {
         return;
     };
     let index = (u64::from_le_bytes(*selector) % DECODERS.len() as u64) as usize;
-    (DECODERS[index].check)(payload, descriptor(&DECODERS[index]));
+    let descriptor = descriptor(&DECODERS[index]);
+    objects_json::binary(&descriptor, payload);
+    (DECODERS[index].check)(payload, descriptor);
     semantic::check(DECODERS[index].name, payload);
 }
 
