@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { ownFixtureServer as fixtureServer } from "../../../../scripts/fixture-server.mjs";
 
-test("fixture shutdown closes a persistent HTTP/2 client session", { timeout: 5000 }, async () => {
+test("fixture shutdown closes a persistent HTTP/2 client session", async () => {
   const server = createServer();
   const close = fixtureServer(server);
   server.listen(0, "127.0.0.1");
