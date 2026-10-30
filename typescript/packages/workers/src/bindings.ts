@@ -1,9 +1,9 @@
 import { ActorNamespaceBinding, materializeActorState, validateDeploymentBinding, type ActorsClient, type ActorStateBinding, type ActorStateHost, type semantic } from "@acyclic-labs/actors";
 import { materializeGuestAdmission, type GuestAdmissionHost } from "@acyclic-labs/auth";
-import { materializeImmutableObjects, type ImmutableObjects } from "@acyclic-labs/objects";
+import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
 import { WorkerServiceBinding } from "./service.js";
 
-export type DeploymentBinding<A = never, H = never, M = never, S = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ImmutableObjects | A | H | M | S;
+export type DeploymentBinding<A = never, H = never, M = never, S = never> = ActorNamespaceBinding | WorkerServiceBinding | ActorStateBinding | ObjectsV1BinaryPort | A | H | M | S;
 export interface BindingAuthority<A = never, H = never, M = never, S = never> {
   /** The host admits the declaration and returns the holder's scoped transport. */
   namespace(binding: semantic.Binding): Pick<ActorsClient, "invokeActor">;
@@ -11,7 +11,8 @@ export interface BindingAuthority<A = never, H = never, M = never, S = never> {
   /** All aliases share the original executing actor and admitted invocation. */
   stateTransaction?: ActorStateHost;
   guestAdmission?: GuestAdmissionHost<A, H>;
-  immutableObjects?(binding: semantic.Binding): ImmutableObjects;
+  /** The admitted account's original Objects v1 transport. */
+  objects?(binding: semantic.Binding): ObjectsV1BinaryPort;
   /** The Machines owner supplies its concrete workspace type and producer. */
   machinesWorkspace?(binding: semantic.Binding): M;
   /** The Streams owner supplies the original hosted provider for the shared subtree. */
@@ -19,8 +20,8 @@ export interface BindingAuthority<A = never, H = never, M = never, S = never> {
 }
 
 /** Resource producers by the product of the canonical `product:/path` name. */
-const RESOURCES = new Map<string, "immutableObjects" | "machinesWorkspace" | "streams">([
-  ["objects", "immutableObjects"], ["machines", "machinesWorkspace"], ["streams", "streams"],
+const RESOURCES = new Map<string, "objects" | "machinesWorkspace" | "streams">([
+  ["objects", "objects"], ["machines", "machinesWorkspace"], ["streams", "streams"],
 ]);
 
 function kind(binding: semantic.Binding) {
@@ -63,7 +64,12 @@ export async function materializeBindings<A = never, H = never, M = never, S = n
       case "service": env[binding.name] = new WorkerServiceBinding(binding.targetAccount, binding.workerService!, authority.service(binding), binding.name); break;
       case "stateTransaction": env[binding.name] = state ??= materializeActorState(authority.stateTransaction!); break;
       case "platformAuthority": case "hostAccess": env[binding.name] = materializeGuestAdmission(selection, authority.guestAdmission); break;
-      case "immutableObjects": env[binding.name] = materializeImmutableObjects(authority.immutableObjects!(binding)); break;
+      case "objects": {
+        // Only the port crosses: its receiver, promises and errors stay the producer's.
+        const port = authority.objects!(binding);
+        env[binding.name] = Object.freeze({ open: port.open.bind(port) });
+        break;
+      }
       case "machinesWorkspace": case "streams": env[binding.name] = authority[selection]!(binding); break;
     }
   });

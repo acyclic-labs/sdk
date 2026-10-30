@@ -2,7 +2,7 @@
  * Each names an existing public SDK interface; none is a new binding kind. */
 export const HARNESS_BINDINGS = {
   storage: "eventStorage",
-  objects: "immutableObjects",
+  objects: "objects",
   streams: "sharedStreams",
   access: "hostAccess",
   authority: "platformAuthority",

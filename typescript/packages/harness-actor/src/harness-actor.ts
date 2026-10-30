@@ -2,7 +2,7 @@
  * session engine as every other deployment, behind the public guest ABI. */
 import { defineActor, GUEST_ABI_VERSION, type CheckpointCodec, type GuestState } from "@acyclic-labs/actors";
 import { ActorStateStorage, EventAgentHost, initializeHosting, serveActorFetch,
-  type ActorState, type EventHostAccess, type ImmutableObjects, type StreamLedger } from "@acyclic-labs/harness/hosting";
+  type ActorState, type EventHostAccess, type StreamLedger, type WasmObjectsPort } from "@acyclic-labs/harness/hosting";
 import { BrowserAgentAuthority, BrowserAgentRegistry, BrowserMachinesWorkspace, type BrowserAgentOptions,
   type BrowserMachinesWorkspaceSource, type WasmAuthorityCapability } from "@acyclic-labs/harness/browser";
 import { ModelRegistry, type CompactionPolicy, type ModelCredentialResolver, type ProviderSpec } from "@acyclic-labs/harness";
@@ -26,7 +26,8 @@ export interface HarnessActorConfig {
 interface Values {
   /** Only host metadata belongs to the executing Actor. */
   storage: ActorState;
-  objects: ImmutableObjects;
+  /** The admitted Objects v1 account the volumes keep their blobs in. */
+  objects: WasmObjectsPort;
   /** Original shared publication and durable placement owner. */
   streams: Pick<StreamLedger, "register" | "dispatch" | "open">;
   access: EventHostAccess;

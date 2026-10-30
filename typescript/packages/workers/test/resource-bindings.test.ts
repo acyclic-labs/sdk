@@ -1,10 +1,8 @@
-import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import type { ActorStateBinding, ActorStateHost, semantic } from "@acyclic-labs/actors";
 import type { GuestAdmissionHost } from "@acyclic-labs/auth";
-import type { ImmutableObjects } from "@acyclic-labs/objects";
+import type { ObjectsV1BinaryPort } from "@acyclic-labs/objects";
 import { materializeBindings } from "../src/bindings.js";
-import { SqliteObjects, type SqliteStorage } from "../../harness/src/cloudflare-storage.js";
 
 const base = { name: "binding", capability: "", resource: "", targetAccount: new Uint8Array() };
 const transports = {
@@ -55,53 +53,32 @@ test("guestAdmission retains original projections and current refusal", async ()
   await expect(materializeBindings(declarations, transports)).rejects.toBeInstanceOf(TypeError);
 });
 
-test("immutableObjects materializes the original durable SQLite port without exposing its storage", async () => {
-  const database = new Database(":memory:");
-  let barriers = 0;
-  const storage: SqliteStorage = {
-    sql: { exec<Row extends Record<string, import("../../harness/src/cloudflare-storage.js").SqlValue>>(query: string, ...bindings: import("../../harness/src/cloudflare-storage.js").SqlValue[]): Iterable<Row> {
-      return database.query(query).all(...bindings.map(value => value instanceof ArrayBuffer ? new Uint8Array(value) : value)).map(row =>
-        Object.fromEntries(Object.entries(row as Record<string, unknown>).map(([key, value]) => [key, value instanceof Uint8Array ? value.slice().buffer : value])) as Row);
-    } },
-    transactionSync(operation) { return database.transaction(operation)(); },
-    async sync() { barriers++; },
-  };
-  try {
-    const original = new SqliteObjects(storage, "selected");
-    const declaration = { ...base, capability: "grant", resource: "objects:/" };
-    const scoped = { ...declaration, name: "scoped", resource: "objects:/harness" };
-    const env = await materializeBindings([declaration, scoped], { ...transports, immutableObjects(binding) {
-      expect(binding).toEqual(binding.name === scoped.name ? scoped : declaration); return original;
-    } });
-    const objects = env.scoped as ImmutableObjects;
-    expect(Object.keys(objects).sort()).toEqual(["length", "put", "read"]);
-    expect(barriers).toBe(0);
-    const key = new Uint8Array(33); key[0] = 1;
-    const value = new Uint8Array([1, 2, 3]);
-    await objects.put([key], [value]);
-    expect(barriers).toBe(1);
-    expect(await objects.length(key)).toBe(3);
-    expect(barriers).toBe(2);
-    expect(await objects.read(key, 3n)).toEqual(value);
-    expect(barriers).toBe(3);
-    await expect(objects.read(key, 2n)).rejects.toThrow("size exceeds admission");
-    await expect(objects.put([key], [new Uint8Array([3, 2, 1])])).rejects.toThrow("immutable bytes changed");
-    const sealed = new Uint8Array(113); sealed.set(key); sealed[0] |= 0x80;
-    const otherLocator = sealed.slice(); otherLocator[33] = 1;
-    const otherRoot = sealed.slice(); otherRoot[65] = 1;
-    const otherOrigin = sealed.slice(); otherOrigin[81] = 1;
-    const keys = [sealed, otherLocator, otherRoot, otherOrigin];
-    const values = keys.map((_, index) => new Uint8Array([index + 4]));
-    await objects.put(keys, values);
-    const reopened = new SqliteObjects(storage, "selected");
-    expect(await reopened.read(key, 3n)).toEqual(value);
-    for (let index = 0; index < keys.length; index++) {
-      expect(await reopened.length(keys[index]!)).toBe(1);
-      expect(await reopened.read(keys[index]!, 1n)).toEqual(values[index]!);
+test("objects materializes only the admitted account port, keeping its receiver and outcomes", async () => {
+  const refused = new Error("original refusal");
+  class Account {
+    readonly calls: [string, Uint8Array][] = [];
+    open(route: string, input: Uint8Array) {
+      this.calls.push([route, input]);
+      return { next: async () => {
+        if (route === "blobs/delete") throw refused;
+        return { body: Uint8Array.of(input.length) };
+      }, close() {} };
     }
-    expect(await new SqliteObjects(storage, "other").length(sealed)).toBeNull();
-    await expect(reopened.put([sealed], [new Uint8Array([99])])).rejects.toThrow("immutable bytes changed");
-  } finally { database.close(); }
+    readonly secret = "account storage";
+  }
+  const original = new Account();
+  const declaration = { ...base, capability: "grant", resource: "objects:/" };
+  const scoped = { ...declaration, name: "scoped", resource: "objects:/harness" };
+  const env = await materializeBindings([declaration, scoped], { ...transports, objects(binding) {
+    expect(binding).toEqual(binding.name === scoped.name ? scoped : declaration); return original;
+  } });
+  const port = env.scoped as ObjectsV1BinaryPort;
+  expect(Object.isFrozen(port)).toBe(true);
+  expect(Object.keys(port)).toEqual(["open"]);
+  const input = Uint8Array.of(1, 2, 3);
+  expect(await port.open("blobs/get", input).next()).toEqual({ body: Uint8Array.of(3) });
+  expect(original.calls).toEqual([["blobs/get", input]]);
+  await expect(port.open("blobs/delete", input).next()).rejects.toBe(refused);
 });
 
 for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machines:/harness", "machinesWorkspace"],
@@ -118,7 +95,7 @@ for (const [resource, producer] of [["machines:/", "machinesWorkspace"], ["machi
 
 test("unsupported and malformed resource selections refuse before any host producer runs", async () => {
   let effects = 0;
-  const authority = { ...transports, immutableObjects(): never { effects++; throw new Error("unexpected producer"); } };
+  const authority = { ...transports, objects(): never { effects++; throw new Error("unexpected producer"); } };
   const valid = { ...base, capability: "grant", resource: "objects:/" };
   const invalid: semantic.Binding[] = [
     { ...valid, resource: "unknown:/" }, { ...valid, resource: "objects-other:/child" }, { ...valid, resource: "streams-other:/child" },

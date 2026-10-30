@@ -1213,7 +1213,7 @@ impl<M: Medium> Account<M> {
         envelope: Envelope,
         range: std::ops::Range<u64>,
         out: &'a mut Vec<OwnedBytes>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+    ) -> acyclic_stream::BoxProviderFuture<'a, Result<(), Error>> {
         Box::pin(async move {
             if range.is_empty() {
                 return Ok(());

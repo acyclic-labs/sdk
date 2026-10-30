@@ -1,7 +1,5 @@
-import type { WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmJournalStreamLimits, WasmObjects } from "../generated/wasm/acyclic_harness_wasm.js";
 import { WakeIndex, type EventStorage, type StreamChange, type Placement } from "./event-storage.js";
-import type { ImmutableObjects } from "@acyclic-labs/objects";
-export type { ImmutableObjects } from "@acyclic-labs/objects";
 import { providerFailure as failure, type ProviderReply, type StreamProviderPort } from "./stream-provider.js";
 
 export type { ProviderReply } from "./stream-provider.js";
@@ -15,9 +13,8 @@ export interface StreamLedger {
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>>;
   /** Length-delimited SessionFrame bytes; transport chunks need not preserve messages. */
   open(operation: string, input: Uint8Array, preceding: Uint8Array): Promise<ProviderReply<ReadableStream<Uint8Array>>>;
-  objectLength(key: Uint8Array): Promise<number | null>;
-  objectRead(key: Uint8Array, maximum: bigint): Promise<Uint8Array | null>;
-  objectPut(keys: Uint8Array[], values: Uint8Array[]): Promise<void>;
+  /** The domain's Objects v1 blobs, opened once for every actor it hosts. */
+  readonly objects: WasmObjects;
 }
 
 /** Shared event-owned ledger, including durable wake custody and cursor lifetime. */
@@ -27,7 +24,7 @@ export class EventStreamLedger implements StreamLedger {
   private source = "";
   private readonly wakes: WakeIndex;
 
-  constructor(private readonly storage: EventStorage, private readonly objects: ImmutableObjects,
+  constructor(private readonly storage: EventStorage, readonly objects: WasmObjects,
     provider: EventStreamProvider,
     private readonly wake: (actor: string) => Promise<void>, limits: WasmJournalStreamLimits) {
     this.wakes = new WakeIndex(storage, limits.paths);
@@ -41,9 +38,6 @@ export class EventStreamLedger implements StreamLedger {
   }
 
   register(actor: string, paths: string[]) { return this.wakes.register(actor, paths); }
-  objectLength(key: Uint8Array) { return this.objects.length(key); }
-  objectRead(key: Uint8Array, maximum: bigint) { return this.objects.read(key, maximum); }
-  objectPut(keys: Uint8Array[], values: Uint8Array[]) { return this.objects.put(keys, values); }
   pending(): number { return this.wakes.pending().length; }
 
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {

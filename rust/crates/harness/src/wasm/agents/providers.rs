@@ -37,10 +37,8 @@ use wasm_bindgen::prelude::*;
 pub(super) enum Objects {
     /// The browser profile's IndexedDB objects.
     IndexedDb(IndexedDbObjectStore),
-    /// Any Rust objects provider.
+    /// Any Objects v1 provider, Rust or a host's account port.
     Provider(LogicalObjectStore<dyn Blobs>),
-    /// Any JavaScript immutable-object provider.
-    Injected(acyclic_fs::InjectedObjectStore),
 }
 
 macro_rules! each {
@@ -48,7 +46,6 @@ macro_rules! each {
         match $objects {
             Objects::IndexedDb($store) => $body,
             Objects::Provider($store) => $body,
-            Objects::Injected($store) => $body,
         }
     };
 }
@@ -400,27 +397,19 @@ impl WasmAgentProviders {
 
 #[wasm_bindgen]
 impl WasmAgentProviders {
-    /// Open storage injection: any Stream handle plus immutable length/read/put
-    /// promises. `durable` requires both providers to retain accepted writes.
+    /// Open storage injection: any Stream handle plus the host's Objects v1
+    /// storage, either an admitted account's original port or the host's own
+    /// durable keys holding one account under the one blob engine. `durable`
+    /// requires both providers to retain accepted writes.
     pub fn injected(
         stream: &acyclic_stream::WasmStream,
-        objects: JsValue,
+        objects: &super::WasmObjects,
         durable: bool,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
     ) -> Result<WasmAgentProviders, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let stream = stream.provider();
-        let authority = StreamAuthorityStore::new(stream.clone());
-        let objects = acyclic_fs::InjectedObjectStore::new(objects, options.maximum_object_bytes)
-            .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Ok(Self {
-            providers: Providers::new(
-                stream,
-                authority,
-                Objects::Injected(objects),
-                durable,
-                &options,
-            )?,
+            providers: Providers::over(stream.provider(), objects.blobs(), durable, &options)?,
         })
     }
 

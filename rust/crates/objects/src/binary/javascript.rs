@@ -1,9 +1,11 @@
 //! Original JavaScript request ownership over the canonical binary client.
 use super::{Reply, Transport};
-use crate::{Availability, Digest, Error, wire};
+use crate::{Availability, Blobs, Digest, Error, wire};
 use bytes::Bytes;
+use futures::StreamExt as _;
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use prost::Message as _;
+use std::{rc::Rc, sync::Arc};
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
@@ -151,5 +153,63 @@ impl Transport for JavaScriptTransport {
 
     async fn availability(&self, _digest: Digest) -> Result<Availability, Error> {
         Err(wire::ErrorCode::Unsupported.into())
+    }
+}
+
+/// One original account operation served by Rust blobs to JavaScript, through
+/// the shared pull and cancellation owner: every Rust-backed account's
+/// `open(route, input)` returns one, so it is an `ObjectsV1BinaryPort`.
+#[wasm_bindgen]
+pub struct ObjectsV1Request {
+    state: Rc<acyclic_stream::pull::PullCursor<crate::route::Served<Vec<u8>>, Error>>,
+}
+
+impl ObjectsV1Request {
+    /// Own one lazy canonical request against `blobs`. The input is copied
+    /// before this returns; the operation starts on the first `next`.
+    ///
+    /// # Errors
+    /// When the input bytes cannot be snapshotted.
+    pub fn serve(
+        blobs: Arc<dyn Blobs>,
+        route: String,
+        input: &Uint8Array,
+    ) -> Result<Self, JsValue> {
+        let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
+        let request = futures::stream::once(async move {
+            crate::route::invoke_at(blobs.as_ref(), &route, input.into()).await
+        })
+        .boxed_local();
+        Ok(Self {
+            state: Rc::new(acyclic_stream::pull::PullCursor::new(
+                request,
+                unavailable(),
+            )),
+        })
+    }
+
+    /// The single reply body, for a caller that needs no revision.
+    ///
+    /// # Errors
+    /// The operation's own refusal, or `UNAVAILABLE` once closed.
+    pub async fn body(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.state.next().await?.ok_or_else(unavailable)?.0)
+    }
+}
+
+#[wasm_bindgen]
+impl ObjectsV1Request {
+    /// Resolve one original reply, or null when closed or consumed.
+    #[wasm_bindgen(unchecked_return_type = "ObjectsV1BinaryReply | null")]
+    pub async fn next(&self) -> Result<JsValue, JsValue> {
+        match self.state.next().await.map_err(js_error)? {
+            Some((body, revision)) => js_reply(&body, revision.as_ref()),
+            None => Ok(JsValue::NULL),
+        }
+    }
+
+    /// Cancel the original operation and settle its outstanding pull.
+    pub fn close(&self) {
+        self.state.close();
     }
 }

@@ -5,7 +5,7 @@ import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmObjects, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import { fixtureAuthority } from "./fixture-authority.mjs";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
@@ -46,11 +46,36 @@ export class Ledger extends DurableObject {
   }
   resumeCreation() { return this.ctx.storage.put("resume-saved-creation", true); }
   open(operation: string, input: Uint8Array, preceding: Uint8Array) { return this.ledger.open(operation, input, preceding); }
-  objectLength(key: Uint8Array) { return this.ledger.objectLength(key); }
-  objectRead(key: Uint8Array, maximum: bigint) { return this.ledger.objectRead(key, maximum); }
-  objectPut(keys: Uint8Array[], values: Uint8Array[]) { return this.ledger.objectPut(keys, values); }
+  /** The domain's one Objects v1 account: one route's reply body per RPC. */
+  async invoke(route: string, input: Uint8Array) {
+    const request = this.ledger.objects.open(route, input);
+    try {
+      const reply = await request.next();
+      if (!reply) throw new Error("STEP Objects request closed before its reply; recovery: retry the agent operation");
+      return reply.body;
+    } finally { request.free(); }
+  }
   alarm() { return this.ledger.alarm(); }
   pending() { return this.ledger.pending(); }
+}
+
+/** The domain's Objects RPC as an `ObjectsV1BinaryPort`: an RPC cannot be
+ * cancelled once sent, so closing only settles a request that never pulled. */
+function rpcPort(domain: { invoke(route: string, input: Uint8Array): Promise<Uint8Array> }) {
+  return {
+    open(route: string, input: Uint8Array) {
+      const bytes = input.slice();
+      let done = false;
+      return {
+        async next() {
+          if (done) return null;
+          done = true;
+          return { body: await domain.invoke(route, bytes) };
+        },
+        close() { done = true; },
+      };
+    },
+  };
 }
 
 export class Agent extends DurableObject {
@@ -97,6 +122,7 @@ export class Agent extends DurableObject {
       { kind: "disabled" });
   }
   private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
+    if (this.agent) return this.agent;
     const custody = this.custody ??= fixtureAuthority("00112233-4455-6677-8899-aabbccddeeff", this.grants);
     const owner = this.owner ??= new WasmAgentAuthority(custody.capability);
     const name = this.ctx.id.name!;
@@ -114,7 +140,12 @@ export class Agent extends DurableObject {
         return this.ctx.storage.deleteAlarm();
       },
     } };
-    return this.agent ??= openCloudflareAgent(context, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
+    const domain = this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite");
+    const ledger = { register: (actor: string, paths: string[]) => domain.register(actor, paths),
+      dispatch: (actor: string, operation: string, input: Uint8Array) => domain.dispatch(actor, operation, input),
+      open: (operation: string, input: Uint8Array, preceding: Uint8Array) => domain.open(operation, input, preceding),
+      objects: new WasmObjects({ port: rpcPort(domain) }) };
+    return this.agent = openCloudflareAgent(context, ledger, name,
       { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, owner, this.registry,
       { trust: { trust: new TextEncoder().encode(hostFixtureTrust()), audience: "workers:/test", holder: "account" },
       credential: hostFixtureCredential(), policy: () => true });

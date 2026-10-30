@@ -256,7 +256,8 @@ struct Faulty {
     faults: AtomicU8,
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Faulty {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         if self.faults.load(Ordering::SeqCst) & 1 != 0 {
@@ -505,7 +506,8 @@ impl Shared {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Shared {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         let lost = self
@@ -1312,7 +1314,8 @@ impl Counting {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Counting {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.count("create");
@@ -1633,7 +1636,8 @@ impl Crashing {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Crashing {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         let mut disk = self.step()?;
@@ -2605,7 +2609,8 @@ impl Latent {
     }
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl Medium for Latent {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         let slow = self

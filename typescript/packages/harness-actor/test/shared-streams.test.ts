@@ -1,7 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { materializeBindings } from "../../workers/src/bindings.js";
-import { EventStreamLedger, streamLedgerPort, streamProviderPort, WasmStream,
-  type EventStorage, type ImmutableObjects, type StreamLedger } from "@acyclic-labs/harness/hosting";
+import { EventStreamLedger, streamLedgerPort, streamProviderPort, WasmObjects, WasmStream,
+  type EventStorage, type StreamLedger } from "@acyclic-labs/harness/hosting";
 import { initializeClientQueries } from "../../harness/src/client-query.js";
 import { sharedProviderTree } from "../../harness/test/support/stream-provider-contract.js";
 import { HARNESS_BINDINGS, MODEL_FETCH } from "../src/bindings.js";
@@ -18,7 +18,8 @@ test("Actor bindings retain the original shared ledger and refuse a port without
     flush: async () => {}, alarm: async () => {},
   };
   const unexpected = async (): Promise<never> => { throw new Error("unexpected Objects or wake operation"); };
-  const objects: ImmutableObjects = { length: unexpected, read: unexpected, put: unexpected };
+  const port = { open: unexpected };
+  const objects = new WasmObjects({ port });
   const provider = streamProviderPort(new WasmStream());
   const shared = new EventStreamLedger(storage, objects, () => provider, unexpected,
     { commands: 64, journal_bytes: 1048576n, paths: 64, path_bytes: 65536,
@@ -40,7 +41,7 @@ test("Actor bindings retain the original shared ledger and refuse a port without
     const binding = env[HARNESS_BINDINGS.streams];
     expect(binding).toBe(shared);
     if (!binding || !("register" in binding)) throw new Error("shared ledger binding missing");
-    const ledger = harnessStreamLedger(binding, objects);
+    const ledger = harnessStreamLedger(binding, port);
     expect(await ledger.register("root", ["tree/root/inbox", "tree/root/control"])).toEqual({ admitted: true });
     expect(await ledger.register("child", ["tree/child/inbox", "tree/child/control"])).toEqual({ admitted: true });
     expect(await ledger.register("other", ["tree/child/inbox", "tree/other/control"])).toEqual({ refused: "conflict" });
