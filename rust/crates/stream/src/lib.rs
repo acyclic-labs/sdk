@@ -124,11 +124,11 @@ pub use wasm::js_error as wasm_error;
 pub use wasm::{
     WasmFollow, WasmSessionAuthority, WasmStream, serve_wasm_grpc_session, serve_wasm_session,
 };
-/// Conversion helpers between the canonical Rust domain types and generated wire messages.
-pub mod wire_codec;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod codec_fuzz;
+/// Conversion helpers between the canonical Rust domain types and generated wire messages.
+pub mod wire_codec;
 
 #[cfg(all(loom, feature = "local"))]
 #[path = "memory/recovery_model.rs"]

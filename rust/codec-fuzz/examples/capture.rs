@@ -334,11 +334,12 @@ fn capture_semantic(manifest: &mut String) -> Result<(), Box<dyn Error>> {
         headers: encoded.headers,
         commit_id: CommitId::from_bytes([1; 32]),
         committed_at_micros: 42,
+        origin: StreamPath::new("codec/actors/inbox")?,
     };
     save(
         "actor_codecs",
         "invocation",
-        &acyclic_stream::wire_codec::record_wire(record).encode_to_vec(),
+        &acyclic_stream::wire_codec::record_wire(record, None).encode_to_vec(),
         "Invocation::record and wire_codec::record_wire",
         manifest,
     )?;

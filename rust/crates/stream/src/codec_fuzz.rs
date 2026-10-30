@@ -110,11 +110,16 @@ pub fn check(bytes: &[u8]) -> bool {
         }
     }
     if let Ok(value) = crate::wire::Record::decode(bytes) {
-        if let Ok(record) = crate::wire_codec::record(value) {
-            if crate::wire_codec::record(crate::wire_codec::record_wire(record.clone()))
-                != Ok(record)
-            {
-                return false;
+        let followed = crate::StreamPath::new("codec/events").expect("canonical fixture path");
+        for context in [None, Some(&followed)] {
+            if let Ok(record) = crate::wire_codec::record(value.clone(), context) {
+                if crate::wire_codec::record(
+                    crate::wire_codec::record_wire(record.clone(), context),
+                    context,
+                ) != Ok(record)
+                {
+                    return false;
+                }
             }
         }
     }
@@ -260,13 +265,17 @@ pub async fn seeds() -> Result<Vec<(String, Vec<u8>)>, StreamError> {
         "changes-append-record".into(),
         crate::wire_codec::append_record_wire(changes.clone()).encode_to_vec(),
     ));
-    let record = crate::wire_codec::record_wire(crate::Record {
-        sequence: 0,
-        value: changes.value,
-        headers: changes.headers,
-        commit_id: crate::CommitId::from_bytes([1; 32]),
-        committed_at_micros: 42,
-    });
+    let record = crate::wire_codec::record_wire(
+        crate::Record {
+            sequence: 0,
+            value: changes.value,
+            headers: changes.headers,
+            commit_id: crate::CommitId::from_bytes([1; 32]),
+            committed_at_micros: 42,
+            origin: crate::StreamPath::new("codec/events")?,
+        },
+        None,
+    );
     seeds.push(("changes-record".into(), record.encode_to_vec()));
     seeds.push((
         "record-batch".into(),

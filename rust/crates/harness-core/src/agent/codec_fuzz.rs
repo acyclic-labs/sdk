@@ -33,6 +33,20 @@ pub fn check(bytes: &[u8]) {
             state
         );
     }
+    if let Ok(value) = serde_json::from_slice::<acyclic_actors::guest::Checkpoint>(bytes) {
+        if let Ok(state) = checkpoint::checkpoint_state(&value) {
+            let encoded = acyclic_actors::guest::Checkpoint {
+                codec: checkpoint::codec(),
+                bytes: checkpoint::encode(&state)
+                    .expect("admitted state encodes")
+                    .into(),
+            };
+            assert_eq!(
+                checkpoint::checkpoint_state(&encoded).expect("checkpoint identity admits"),
+                state
+            );
+        }
+    }
 }
 
 /// Seed bytes come from the same writers used by committed actor transitions.
@@ -50,6 +64,8 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
         policy: None,
     };
     let state = AgentState::adopted(path.clone(), &adopted)?;
+    let encoded = checkpoint::encode(&state)?;
+    let envelope = checkpoint::from_encoded(encoded.clone())?;
     let id = IntentId::try_from("captured-intent")?;
     Ok(vec![
         (
@@ -78,6 +94,10 @@ pub fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error
             "agent-effect",
             records::seal(&TurnEffect::Archive { target: path, id })?,
         ),
-        ("agent-checkpoint", checkpoint::encode(&state)?),
+        ("agent-checkpoint", encoded),
+        (
+            "agent-checkpoint-envelope",
+            crate::contract::canonical_json_bytes(&envelope)?,
+        ),
     ])
 }
