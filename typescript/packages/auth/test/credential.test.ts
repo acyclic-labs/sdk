@@ -123,6 +123,17 @@ test("source observation can invalidate a registered watch and recover from refu
 });
 
 test("notification detaches its admitted generation before reentrant subscriptions without copying subscribers", async () => {
+  const idle = new CredentialCache(async () => new CredentialSnapshot("synthetic-idle", "r", 100),
+    () => ({ nowUnixSeconds: 1, revision: "r" }));
+  let allocations = 0;
+  const sets = globalThis.Set;
+  globalThis.Set = new Proxy(sets, { construct(target, args) {
+    allocations += 1;
+    return Reflect.construct(target, args);
+  } });
+  try { idle.invalidate(); } finally { globalThis.Set = sets; }
+  expect(allocations).toBe(0);
+
   for (const count of [1, 100, 1000]) for (const change of ["invalidate", "reject"] as const) {
     let revision = "original";
     let refreshes = 0;

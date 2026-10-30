@@ -246,6 +246,7 @@ export class CredentialCache {
 
   #notify(): void {
     const changes = this.#changes;
+    if (changes.size === 0) return;
     // Detach the admitted generation before callbacks may register another.
     // Delivery visits its subscribers directly, without copying their owners.
     this.#changes = new Set();
