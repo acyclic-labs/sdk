@@ -73,6 +73,14 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 /// Shared pool owning one bidirectional Streams session per authenticated node.
 #[derive(Clone)]
 pub struct Client {
+    pool: PoolHandle,
+    /// Requirements owned by this operation, independently of the transport.
+    revisions: Arc<crate::RevisionTracker>,
+}
+
+/// The shared transport owners, without an operation's causal requirements.
+#[derive(Clone)]
+pub(crate) struct PoolHandle {
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
     commands: mpsc::Sender<Command>,
@@ -82,9 +90,24 @@ pub struct Client {
     admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
-    /// Last observed revision per authority: raised by receipts and every
-    /// served open, forwarded as the floor of every read and follow.
-    revisions: Arc<crate::RevisionTracker>,
+}
+
+impl PoolHandle {
+    pub(crate) fn with_revisions(self, revisions: Arc<crate::RevisionTracker>) -> Client {
+        Client {
+            pool: self,
+            revisions,
+        }
+    }
+
+    fn abandon_pending(&self) -> Result<(), StreamError> {
+        self.attempt_epoch
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
+                epoch.checked_add(1)
+            })
+            .map_err(|_| StreamError::Capacity)?;
+        self.abandoned.set(true)
+    }
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
@@ -239,7 +262,6 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
-    revisions: Arc<crate::RevisionTracker>,
 }
 impl Route {
     fn live(&self) -> bool {
@@ -273,9 +295,21 @@ impl Client {
             .with_revisions(crate::RevisionTracker::scoped(&self.revisions, scope))
     }
 
-    pub(crate) fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {
+    /// Uses an explicitly owned causal context on this existing Session pool.
+    /// Clones sharing `revisions` share read-your-writes requirements; unrelated
+    /// operations may supply distinct contexts without opening new connections.
+    /// Keep the context through every dependent operation and reconnect. Ending
+    /// its lifetime does not prove coverage or authorize discarding a minimum
+    /// still needed elsewhere. Explicit request minima are never filtered.
+    #[must_use]
+    pub fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {
         self.revisions = revisions;
         self
+    }
+
+    #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+    pub(crate) fn into_pool(self) -> PoolHandle {
+        self.pool
     }
 
     /// Shares one protocol pool across platform endpoints and every logical follow.
@@ -287,8 +321,8 @@ impl Client {
         Self::tracking(channel, connect, executor, Arc::default())
     }
 
-    /// Like [`Self::with_transport`], raising `revisions`, which outlives this
-    /// pool: a credential change opens a new pool but keeps read-your-writes.
+    /// Like [`Self::with_transport`], raising the supplied causal context.
+    /// Retain it across pool or credential changes to keep read-your-writes.
     pub fn tracking(
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
@@ -327,14 +361,13 @@ impl Client {
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
             release_sender,
-            revisions: Arc::clone(&revisions),
         };
         executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {
                 pool.fail(&error);
             }
         }));
-        Self {
+        PoolHandle {
             connections,
             executor,
             commands,
@@ -344,11 +377,11 @@ impl Client {
             admissions,
             attempt_epoch,
             abandoned,
-            revisions,
         }
+        .with_revisions(revisions)
     }
-    /// This pool's revision tracker; transports record their receipts here so
-    /// every later session read and follow covers them.
+    /// This operation's revision tracker; transports record their receipts
+    /// here so its later reads and follows cover them.
     #[must_use]
     pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
         &self.revisions
@@ -371,7 +404,8 @@ impl Client {
         if frame.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        self.commands
+        self.pool
+            .commands
             .try_send(Command::Credential { slot, credential })
             .map_err(|error| match error {
                 mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
@@ -381,17 +415,12 @@ impl Client {
     /// Observes successful handshakes without depending on further task records.
     #[must_use]
     pub fn connections(&self) -> super::Connections {
-        self.connections.clone()
+        self.pool.connections.clone()
     }
 
     /// Cancels pending handshakes when their credential scope ends.
     pub fn abandon_pending(&self) -> Result<(), StreamError> {
-        self.attempt_epoch
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
-                epoch.checked_add(1)
-            })
-            .map_err(|_| StreamError::Capacity)?;
-        self.abandoned.set(true)
+        self.pool.abandon_pending()
     }
     /// Opens a logical follow on the shared session, without a per-stream RPC.
     pub async fn follow(
@@ -690,17 +719,18 @@ impl Client {
                 progress
             },
         );
-        let id = progress::allocate(&self.next_id)?;
+        let id = progress::allocate(&self.pool.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
         let mut cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
         let operation = cursor.observation.operation.clone();
         let registration = async {
-            self.commands
+            self.pool
+                .commands
                 .send(Command::Open(Box::new(OpenCommand {
                     revisions: Arc::clone(&self.revisions),
                     id,
-                    attempt_epoch: self.attempt_epoch.load(Ordering::Acquire),
+                    attempt_epoch: self.pool.attempt_epoch.load(Ordering::Acquire),
                     acknowledge,
                     kind,
                     filter,
@@ -721,7 +751,10 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(registration, self.executor.sleep(10_000)))
+            .scope(deadline::until(
+                registration,
+                self.pool.executor.sleep(10_000),
+            ))
             .await
             .unwrap_or(Err(StreamError::DeadlineElapsed));
         if let Err(error) = registered {
@@ -739,13 +772,14 @@ impl Client {
     ) -> Result<Cursor, StreamError> {
         // Reserve before queueing Open: dispatch may observe a removal before
         // a concurrent Open, but must retain their shared initialization.
-        self.active
+        self.pool
+            .active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 active.checked_add(1)
             })
             .map_err(|_| StreamError::Capacity)?;
-        if let Err(error) = self.admissions.insert(id) {
-            self.active.fetch_sub(1, Ordering::AcqRel);
+        if let Err(error) = self.pool.admissions.insert(id) {
+            self.pool.active.fetch_sub(1, Ordering::AcqRel);
             return Err(error);
         }
         Ok(Cursor {
@@ -798,10 +832,10 @@ impl Cursor {
 }
 impl Drop for Cursor {
     fn drop(&mut self) {
-        self.client.admissions.cancel(self.id, &self.progress);
+        self.client.pool.admissions.cancel(self.id, &self.progress);
         self.receiver.close();
-        self.client.active.fetch_sub(1, Ordering::AcqRel);
-        let _ = self.client.removed.send(self.id);
+        self.client.pool.active.fetch_sub(1, Ordering::AcqRel);
+        let _ = self.client.pool.removed.send(self.id);
     }
 }
 

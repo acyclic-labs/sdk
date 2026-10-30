@@ -51,9 +51,9 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             assert_eq!(next(&mut ordinary).await?.sequence, sequence);
             assert_eq!(next(&mut checked).await?.sequence, sequence);
         }
-        assert_eq!(client.connections.changed(0).await?, 1);
+        assert_eq!(client.pool.connections.changed(0).await?, 1);
         drop((ordinary, checked));
-        assert_eq!(client.active.load(super::super::Ordering::Acquire), 0);
+        assert_eq!(client.pool.active.load(super::super::Ordering::Acquire), 0);
     }
     Ok(())
 }

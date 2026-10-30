@@ -4,15 +4,17 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
     (
         Client {
-            connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands,
-            removed: Arc::new(signal::Signal::new()),
-            next_id: Arc::new(AtomicU64::new(1)),
-            active: Arc::new(AtomicU64::new(0)),
-            admissions: Arc::new(Admissions::new()),
-            attempt_epoch: Arc::new(AtomicU64::new(0)),
-            abandoned: Arc::new(gate::Gate::new()),
+            pool: PoolHandle {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands,
+                removed: Arc::new(signal::Signal::new()),
+                next_id: Arc::new(AtomicU64::new(1)),
+                active: Arc::new(AtomicU64::new(0)),
+                admissions: Arc::new(Admissions::new()),
+                attempt_epoch: Arc::new(AtomicU64::new(0)),
+                abandoned: Arc::new(gate::Gate::new()),
+            },
             revisions: Arc::default(),
         },
         receiver,
@@ -62,11 +64,11 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     let healthy = healthy.await?;
     tokio::time::advance(Duration::from_secs(10)).await;
     assert!(matches!(stalled.await, Err(StreamError::DeadlineElapsed)));
-    assert_eq!(client.removed.next().await?, id);
-    assert_eq!(client.active.load(Ordering::Acquire), 1);
+    assert_eq!(client.pool.removed.next().await?, id);
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 1);
     drop(healthy);
-    assert_eq!(client.removed.next().await?, healthy_id);
-    assert_eq!(client.active.load(Ordering::Acquire), 0);
+    assert_eq!(client.pool.removed.next().await?, healthy_id);
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     Ok(())
 }
 
@@ -96,7 +98,7 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
     tokio::time::advance(Duration::from_secs(10)).await;
     assert!(matches!(blocked.await, Err(StreamError::DeadlineElapsed)));
     drop(first);
-    assert_eq!(client.active.load(Ordering::Acquire), 0);
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     assert!(commands.try_recv().is_ok());
     assert!(
         commands.try_recv().is_err(),

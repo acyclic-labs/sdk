@@ -22,16 +22,18 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let mut links = std::mem::take(&mut pool.links);
             let (commands, _) = mpsc::channel(2);
             let client = Client {
-                connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-                commands,
-                removed: Arc::clone(&pool.removed),
-                next_id: Arc::new(AtomicU64::new(1)),
-                active: Arc::clone(&pool.active),
-                admissions: Arc::clone(&pool.admissions),
-                attempt_epoch: Arc::clone(&pool.attempt_epoch),
-                abandoned: Arc::clone(&pool.abandoned),
-                revisions: Arc::clone(&pool.revisions),
+                pool: PoolHandle {
+                    connections: super::super::super::Connections::new(),
+                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                    commands,
+                    removed: Arc::clone(&pool.removed),
+                    next_id: Arc::new(AtomicU64::new(1)),
+                    active: Arc::clone(&pool.active),
+                    admissions: Arc::clone(&pool.admissions),
+                    attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                    abandoned: Arc::clone(&pool.abandoned),
+                },
+                revisions: Arc::default(),
             };
             let prepare = |client: &Client, id| {
                 let progress = Arc::new(Progress::new(0));
@@ -47,7 +49,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                         credential: 0,
                         raw: false,
                         id,
-                        attempt_epoch: client.attempt_epoch.load(Ordering::Acquire),
+                        attempt_epoch: client.pool.attempt_epoch.load(Ordering::Acquire),
                         acknowledge: false,
                         kind: Kind::Follow(wire::SessionFollow {
                             delivery: wire::SessionDelivery::All as i32,
@@ -134,16 +136,18 @@ pub fn verify_pool_lifetime(fault: u8) {
         let links = std::mem::take(&mut pool.links);
         let (commands, _) = mpsc::channel(2);
         let client = Client {
-            connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands,
-            removed: Arc::clone(&pool.removed),
-            next_id: Arc::new(AtomicU64::new(1)),
-            active: Arc::clone(&pool.active),
-            admissions: Arc::clone(&pool.admissions),
-            attempt_epoch: Arc::clone(&pool.attempt_epoch),
-            abandoned: Arc::clone(&pool.abandoned),
-            revisions: Arc::clone(&pool.revisions),
+            pool: PoolHandle {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands,
+                removed: Arc::clone(&pool.removed),
+                next_id: Arc::new(AtomicU64::new(1)),
+                active: Arc::clone(&pool.active),
+                admissions: Arc::clone(&pool.admissions),
+                attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                abandoned: Arc::clone(&pool.abandoned),
+            },
+            revisions: Arc::default(),
         };
         let prepare = |id| {
             let progress = Arc::new(Progress::new(0));
@@ -244,15 +248,17 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
         let (commands, _) = mpsc::channel(2);
         let client = Client {
-            connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands,
-            removed: Arc::new(signal::Signal::new()),
-            next_id: Arc::new(AtomicU64::new(1)),
-            active: Arc::new(AtomicU64::new(0)),
-            admissions: Arc::new(Admissions::new()),
-            attempt_epoch: Arc::new(AtomicU64::new(0)),
-            abandoned: Arc::new(gate::Gate::new()),
+            pool: PoolHandle {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands,
+                removed: Arc::new(signal::Signal::new()),
+                next_id: Arc::new(AtomicU64::new(1)),
+                active: Arc::new(AtomicU64::new(0)),
+                admissions: Arc::new(Admissions::new()),
+                attempt_epoch: Arc::new(AtomicU64::new(0)),
+                abandoned: Arc::new(gate::Gate::new()),
+            },
             revisions: Arc::default(),
         };
         let mut live = BTreeMap::new();
@@ -266,10 +272,13 @@ pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
             } else {
                 live.remove(&key);
             }
-            assert_eq!(client.active.load(Ordering::Acquire), live.len() as u64);
+            assert_eq!(
+                client.pool.active.load(Ordering::Acquire),
+                live.len() as u64
+            );
         }
         drop(live);
-        assert_eq!(client.active.load(Ordering::Acquire), 0);
+        assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
     });
 }
 
@@ -389,7 +398,7 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open(Box::new(OpenCommand {
-            revisions: Arc::clone(&pool.revisions),
+            revisions: Arc::default(),
             filter: None,
             credential: 0,
             raw: false,
@@ -430,15 +439,17 @@ pub fn verify_registration_deadline(broken: bool) {
         loom::model(move || {
             let (commands, _commands) = mpsc::channel(1);
             let client = Client {
-                connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-                commands,
-                removed: Arc::new(signal::Signal::new()),
-                next_id: Arc::new(AtomicU64::new(1)),
-                active: Arc::new(AtomicU64::new(0)),
-                admissions: Arc::new(Admissions::new()),
-                attempt_epoch: Arc::new(AtomicU64::new(0)),
-                abandoned: Arc::new(gate::Gate::new()),
+                pool: PoolHandle {
+                    connections: super::super::super::Connections::new(),
+                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                    commands,
+                    removed: Arc::new(signal::Signal::new()),
+                    next_id: Arc::new(AtomicU64::new(1)),
+                    active: Arc::new(AtomicU64::new(0)),
+                    admissions: Arc::new(Admissions::new()),
+                    attempt_epoch: Arc::new(AtomicU64::new(0)),
+                    abandoned: Arc::new(gate::Gate::new()),
+                },
                 revisions: Arc::default(),
             };
             let (_, receiver) = mpsc::channel(2);
@@ -497,8 +508,11 @@ pub fn verify_registration_deadline(broken: bool) {
             }
             drop(registration);
             assert!(progress.cancelled());
-            assert_eq!(client.active.load(Ordering::Acquire), 0);
-            assert_eq!(loom::future::block_on(client.removed.next()).unwrap(), 1);
+            assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
+            assert_eq!(
+                loom::future::block_on(client.pool.removed.next()).unwrap(),
+                1
+            );
         });
     }
 }
@@ -531,16 +545,18 @@ pub fn verify_node_dials(fault: u8) {
                 pool.routes.rehome(&1, "good").unwrap();
             }
             let client = Client {
-                connections: super::super::super::Connections::new(),
-                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-                commands: mpsc::channel(2).0,
-                removed: Arc::clone(&pool.removed),
-                next_id: Arc::new(AtomicU64::new(5)),
-                active: Arc::clone(&pool.active),
-                admissions: Arc::clone(&pool.admissions),
-                attempt_epoch: Arc::clone(&pool.attempt_epoch),
-                abandoned: Arc::clone(&pool.abandoned),
-                revisions: Arc::clone(&pool.revisions),
+                pool: PoolHandle {
+                    connections: super::super::super::Connections::new(),
+                    executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                    commands: mpsc::channel(2).0,
+                    removed: Arc::clone(&pool.removed),
+                    next_id: Arc::new(AtomicU64::new(5)),
+                    active: Arc::clone(&pool.active),
+                    admissions: Arc::clone(&pool.admissions),
+                    attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                    abandoned: Arc::clone(&pool.abandoned),
+                },
+                revisions: Arc::default(),
             };
             let a = client
                 .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver)
@@ -645,16 +661,18 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.routes.get_mut(&1).unwrap().records = records;
         pool.routes.rehome(&1, "good").unwrap();
         let client = Client {
-            connections: super::super::super::Connections::new(),
-            executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands: mpsc::channel(2).0,
-            removed: Arc::clone(&pool.removed),
-            next_id: Arc::new(AtomicU64::new(5)),
-            active: Arc::clone(&pool.active),
-            admissions: Arc::clone(&pool.admissions),
-            attempt_epoch: Arc::clone(&pool.attempt_epoch),
-            abandoned: Arc::clone(&pool.abandoned),
-            revisions: Arc::clone(&pool.revisions),
+            pool: PoolHandle {
+                connections: super::super::super::Connections::new(),
+                executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
+                commands: mpsc::channel(2).0,
+                removed: Arc::clone(&pool.removed),
+                next_id: Arc::new(AtomicU64::new(5)),
+                active: Arc::clone(&pool.active),
+                admissions: Arc::clone(&pool.admissions),
+                attempt_epoch: Arc::clone(&pool.attempt_epoch),
+                abandoned: Arc::clone(&pool.abandoned),
+            },
+            revisions: Arc::default(),
         };
         let a = client
             .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)

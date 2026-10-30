@@ -6,9 +6,21 @@ impl Client {
     /// minima are never filtered. Uses the existing channel and credentials.
     #[must_use]
     pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Self {
-        let mut client = self.clone();
-        client.revisions = crate::RevisionTracker::scoped(&self.revisions, scope);
-        client
+        self.clone()
+            .with_revisions(crate::RevisionTracker::scoped(&self.revisions, scope))
+    }
+
+    /// Uses an operation-owned causal context while sharing this channel,
+    /// credentials and Session pool. Retain the context across dependent
+    /// operations and reconnects. Ending its lifetime proves no coverage of
+    /// another operation's requirements; explicit minima are never filtered.
+    #[must_use]
+    pub fn with_revisions(
+        mut self,
+        revisions: crate::query_sync::Arc<crate::RevisionTracker>,
+    ) -> Self {
+        self.revisions = revisions;
+        self
     }
 
     /// Abandons pending Session handshakes when their credential scope ends.
@@ -22,8 +34,8 @@ impl Client {
     pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
         self.session()
     }
-    /// The revision tracker every route and session pool of this client
-    /// shares, across credential changes.
+    /// This causal context's tracker, shared by its routes across credential
+    /// changes. The physical Session cache owns no revision tracker.
     #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
     pub(crate) fn revisions(
         &self,
@@ -41,7 +53,8 @@ impl Client {
                         self.credential.clone(),
                         connect.clone(),
                         crate::query_sync::Arc::clone(&self.revisions),
-                    );
+                    )
+                    .into_pool();
                 }
                 crate::session::Client::open(
                     self.channel.clone(),
@@ -51,6 +64,7 @@ impl Client {
                     self.session_verifier.clone(),
                     crate::query_sync::Arc::clone(&self.revisions),
                 )
+                .into_pool()
             })?
             .with_revisions(crate::query_sync::Arc::clone(&self.revisions)))
     }

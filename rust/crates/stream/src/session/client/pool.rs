@@ -408,7 +408,7 @@ impl Pool {
                             let link = self.links.get_mut(node)?;
                             match link.served.observe(applied) {
                                 Ok(applied) => {
-                                    self.revisions.observe(applied);
+                                    route.revisions.observe(applied);
                                     None
                                 }
                                 Err(error) => Some(error),
