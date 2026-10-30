@@ -1,11 +1,10 @@
 //! One spawn using the original host workspace and native process owner.
 use super::*;
 use acyclic_native_runtime::{
-    CaptureSchedule, ControlledCapture, OwnedCaptureInput, ProcessCommand, ProcessControl,
-    ProcessCustody, ProcessStdio, ProcessTree, TaskSpawner,
+    CaptureRequest, CaptureSchedule, ControlledCapture, LaunchFailure, OwnedCaptureInput,
+    ProcessCommand, ProcessControl, ProcessCustody,
 };
-use futures::FutureExt;
-use std::{io, path::PathBuf};
+use std::path::PathBuf;
 
 /// Host-owned execution configuration, derived from its admitted workspace.
 /// This is not a filesystem authority or a serialized guest enrollment.
@@ -89,83 +88,36 @@ impl LocalMachine {
             }
         };
         let mut admission = StopOnDrop(Some(control.clone()));
-        let options = self.options.clone();
-        let spawner = TaskSpawner::current();
-        let submitted = acyclic_native_runtime::run_blocking_io(
-            move || {
-                let mut handler = control.bind(handler);
-                let started = (|| {
-                    handler.check().map_err(StartFailure::Refused)?;
-                    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
-                        return Err(StartFailure::Refused(io::ErrorKind::TimedOut.into()));
-                    }
-                    let mut argv = command.argv.into_iter();
-                    let executable = argv
-                        .next()
-                        .ok_or_else(|| StartFailure::Refused(io::ErrorKind::InvalidInput.into()))?;
-                    let mut process = ProcessCommand::new(executable);
-                    process
-                        .env_clear()
-                        .args(argv)
-                        .current_dir(
-                            command
-                                .cwd
-                                .map(|cwd| options.cwd.join(cwd))
-                                .as_ref()
-                                .unwrap_or(&options.cwd),
-                        )
-                        .envs(&options.environment)
-                        .stdin(if command.stdin.is_empty() {
-                            ProcessStdio::null()
-                        } else {
-                            ProcessStdio::piped()
-                        })
-                        .stdout(ProcessStdio::piped())
-                        .stderr(ProcessStdio::piped());
-                    let tree = match &options.process_custody {
-                        Some(custody) => ProcessTree::spawn_in_custody(&mut process, custody),
-                        None => ProcessTree::spawn(&mut process),
-                    }
-                    .map_err(|_| StartFailure::Dispatched)?;
-                    let input = (!command.stdin.is_empty())
-                        .then_some(OwnedCaptureInput::Literal(command.stdin));
-                    Ok::<_, StartFailure>((tree, input))
-                })();
-                match started {
-                    Ok((tree, input)) => Ok(tree.stream_capture(
-                        &spawner,
-                        deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
-                        maximum,
-                        input,
-                        handler,
-                    )),
-                    Err(failure) => {
-                        handler.retired(matches!(&failure, StartFailure::Refused(_)));
-                        Err((
-                            match failure {
-                                StartFailure::Refused(error) => ProviderError::Rejected(format!(
-                                    "local command refused before spawn: {error}; recovery: restore original workspace authority before a new command"
-                                )),
-                                StartFailure::Dispatched => {
-                                    ProviderError::CommandIndeterminate(machine)
-                                }
-                            },
-                            Some(handler.into_inner()),
-                        ))
-                    }
-                }
-            },
-            None,
-        );
-        let result = match submitted {
-            Ok(submitted) => std::panic::AssertUnwindSafe(submitted)
-                .catch_unwind()
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or(Err((ProviderError::CommandIndeterminate(machine), None))),
-            Err(_) => Err((ProviderError::CommandIndeterminate(machine), None)),
-        };
+        let options = &self.options;
+        let mut argv = command.argv.into_iter();
+        let mut process = ProcessCommand::new(argv.next().unwrap_or_default());
+        process
+            .env_clear()
+            .args(argv)
+            .current_dir(
+                command
+                    .cwd
+                    .map(|cwd| options.cwd.join(cwd))
+                    .as_ref()
+                    .unwrap_or(&options.cwd),
+            )
+            .envs(&options.environment);
+        let result = CaptureRequest {
+            command: process,
+            custody: options.process_custody.clone(),
+            execution_grant: None,
+            input: (!command.stdin.is_empty()).then_some(OwnedCaptureInput::Literal(command.stdin)),
+            schedule: deadline.map_or(CaptureSchedule::Unbounded, CaptureSchedule::until),
+            maximum_output_bytes: maximum,
+        }.stream(control.bind(handler)).await.map_err(|failure| match failure {
+            LaunchFailure::Refused { failure, handler } => (
+                ProviderError::Rejected(format!("local command refused before spawn: {}; recovery: restore original workspace authority before a new command", failure.error)),
+                Some(handler.into_inner()),
+            ),
+            LaunchFailure::Indeterminate { handler, .. } => (
+                ProviderError::CommandIndeterminate(machine), handler.map(ControlledCapture::into_inner),
+            ),
+        });
         LocalExecution(match result {
             Ok(capture) => {
                 admission.0 = None;
@@ -186,11 +138,6 @@ fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError
         None => ProcessControl::unbounded(),
     }.map_err(|error| ProviderError::Rejected(format!("local control admission failed: {error}; recovery: restore native wake and expiry services before dispatch")))?;
     Ok((maximum, control))
-}
-
-enum StartFailure {
-    Refused(io::Error),
-    Dispatched,
 }
 
 struct StopOnDrop(Option<ProcessControl>);

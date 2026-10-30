@@ -47,6 +47,8 @@ mod exit_wait;
 pub use exit_wait::{ChildExitWatch, wait_child_until};
 #[cfg(any(windows, test))]
 mod job_members;
+mod launch;
+pub use launch::{CaptureRequest, CaptureStop, LaunchFailure};
 mod pump;
 mod stream;
 pub use stream::{ProcessCaptureStream, ProcessChunk};

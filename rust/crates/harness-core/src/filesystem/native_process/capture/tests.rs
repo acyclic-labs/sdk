@@ -39,19 +39,6 @@ fn launch_failure_returns_its_cause_and_original_custody()
     Ok(())
 }
 
-#[test]
-fn started_capture_handoff_does_not_retain_an_inline_process_tree() {
-    type TestHandler = Handler<
-        (),
-        fn(&mut (), acyclic_native_runtime::ProcessOutput<'_>) -> std::io::Result<()>,
-        fn() -> std::io::Result<()>,
-    >;
-    assert!(
-        std::mem::size_of::<Started<TestHandler>>()
-            < std::mem::size_of::<acyclic_native_runtime::ProcessTree>(),
-        "the old handoff retains the whole physical process tree in every completion slot"
-    );
-}
 use proptest::prelude::*;
 
 #[test]

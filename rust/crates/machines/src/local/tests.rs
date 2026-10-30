@@ -87,13 +87,17 @@ async fn local_machine_spawns_public_command_once_and_returns_original_custody()
     };
     // The actual child would publish this file before doing anything else.
     // An expired admission must refuse before creating that real process.
-    let mut refused = local.exec(command().with_expiry(1), handler(), None).await;
-    assert!(matches!(
-        refused.next().await,
-        Some(Err(ProviderError::Rejected(_)))
-    ));
-    assert!(Arc::ptr_eq(&refused.finish().await?.buffers, &buffers));
-    assert!(!marker.exists());
+    let mut invalid = command();
+    invalid.argv.push("nul\0".into());
+    for command in [command().with_expiry(1), invalid] {
+        let mut refused = local.exec(command, handler(), None).await;
+        assert!(matches!(
+            refused.next().await,
+            Some(Err(ProviderError::Rejected(_)))
+        ));
+        assert!(Arc::ptr_eq(&refused.finish().await?.buffers, &buffers));
+        assert!(!marker.exists());
+    }
     let mut execution = local.exec(command(), handler(), None).await;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
