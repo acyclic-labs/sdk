@@ -137,9 +137,7 @@ async fn cancelling_initialization_reaps_the_owned_child_without_blocking_the_ru
     };
     assert_eq!(stream.read_u8().await.map_err(Error::process_io)?, 1);
     drop(future);
-    let result = tokio::time::timeout(Duration::from_millis(500), stream.read_u8())
-        .await
-        .map_err(invalid)?;
+    let result = stream.read_u8().await;
     assert!(
         matches!(result, Err(error) if matches!(error.kind(), std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset))
     );

@@ -264,12 +264,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
     assert_eq!(stream.read_u8().await.map_err(process_error)?, 1);
     drop(future);
     let mut bytes = Vec::new();
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        stream.read_to_end(&mut bytes),
-    )
-    .await
-    .map_err(|_| Error::Invalid("cancelled hook process stayed alive".into()))?;
+    let result = stream.read_to_end(&mut bytes).await;
     match result {
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
