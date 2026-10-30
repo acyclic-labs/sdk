@@ -1,5 +1,5 @@
 import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type MessageShape } from "@bufbuild/protobuf";
-import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart, runTerminalMetadata, type RunTerminalKind } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
@@ -264,8 +264,8 @@ function utf8Length(value: string): number {
   return utf8.encode(value).byteLength;
 }
 
-async function readBoundedText(response: Response, maximumBytes: number, kind: string): Promise<string> {
-  if (response.body === null) return "";
+async function readBoundedText(response: Response, maximumBytes: number, kind: string, check: () => void): Promise<string> {
+  if (response.body === null) { check(); return ""; }
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
   const decode = (bytes: Uint8Array, stream: boolean): string => {
@@ -279,8 +279,10 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
   let observed = 0;
   let completed = false;
   try {
+    check();
     for (;;) {
       const item = await reader.read();
+      check();
       if (item.done) break;
       observed += item.value.byteLength;
       if (observed > maximumBytes) {
@@ -303,6 +305,7 @@ export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
   readonly authorization: AuthorizationHeaders;
+  readonly #credential: CredentialProvider | undefined;
   constructor(
     readonly endpoint: string,
     authorization: AuthorizationHeaders | CredentialOptions,
@@ -313,8 +316,9 @@ export class HttpInferenceTransport implements InferenceTransport {
   ) {
     if (typeof authorization === "function") this.authorization = authorization;
     else {
-      const credential = credentialProvider(authorization);
-      this.authorization = async signal => ({ authorization: `Bearer ${await credential(signal)}` });
+      const credential = authorization.credential ?? credentialProvider(authorization);
+      this.#credential = credential;
+      this.authorization = async signal => ({ authorization: `Bearer ${(await resolveCredential(credential, signal)).token()}` });
     }
     this.#observer = resolveObserver(observer);
     if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes <= 0) {
@@ -379,7 +383,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     const route = routeFor(RunsService.method.watch);
     if (route.method.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
     await validateRuntimeShape(route.method.input, request);
-    const response = await this.#request(route.path, toJsonString(route.method.input, request), signal);
+    const { response, check } = await this.#request(route.path, toJsonString(route.method.input, request), signal);
     if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -390,19 +394,24 @@ export class HttpInferenceTransport implements InferenceTransport {
         throw new InferenceTransportError(response.status, "run event is not valid UTF-8");
       }
     };
-    let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
-    let lineLength = 0;
     let completed = false;
     try {
+      check();
+      let lineBuffer = new Uint8Array(Math.min(this.maximumMessageBytes, 1024));
+      let lineLength = 0;
       for (;;) {
         const item = await reader.read();
+        check();
         if (item.done) break;
         for (const byte of item.value) {
           if (byte === 0x0a) {
             const rawLine = decodeLine(lineBuffer.subarray(0, lineLength));
             lineLength = 0;
             const line = rawLine.trim();
-            if (line.length > 0) yield fromJson(route.method.output, JSON.parse(line));
+            if (line.length > 0) {
+              yield fromJson(route.method.output, JSON.parse(line));
+              check();
+            }
             continue;
           }
           if (lineLength >= this.maximumMessageBytes) {
@@ -417,7 +426,10 @@ export class HttpInferenceTransport implements InferenceTransport {
         }
       }
       const final = decodeLine(lineBuffer.subarray(0, lineLength)).trim();
-      if (final.length > 0) yield fromJson(route.method.output, JSON.parse(final));
+      if (final.length > 0) {
+        yield fromJson(route.method.output, JSON.parse(final));
+        check();
+      }
       completed = true;
     } finally {
       if (!completed) await reader.cancel().catch(() => undefined);
@@ -433,26 +445,34 @@ export class HttpInferenceTransport implements InferenceTransport {
     return observed(this.#observer, "inference", route.path, async sizes => {
       if (route.method.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
       await validateRuntimeShape(route.method.input, request);
-      const response = await this.#request(route.path, toJsonString(route.method.input as Method["input"], request), signal, sizes);
-      return fromJson(route.method.output as Method["output"], JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
+      const { response, check } = await this.#request(route.path, toJsonString(route.method.input as Method["input"], request), signal, sizes);
+      const text = await readBoundedText(response, this.maximumMessageBytes, "unary response", check);
+      check();
+      return fromJson(route.method.output as Method["output"], JSON.parse(text));
     });
   }
 
-  async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<Response> {
+  async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<{ response: Response; check: () => void }> {
     const length = utf8Length(body);
     if (sizes) sizes.requestBytes = length;
     if (length > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
     signal?.throwIfAborted();
-    const headers = new Headers(await this.authorization(signal));
-    signal?.throwIfAborted();
-    // Headers already rejects CR, LF, and NUL; also bound the credential size.
-    const authorization = headers.get("authorization") ?? "";
-    if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
-      throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
+    const lease = this.#credential === undefined ? undefined : await resolveCredential(this.#credential, signal);
+    const headers = new Headers(lease === undefined
+      ? await this.authorization(signal)
+      : { authorization: `Bearer ${lease.token()}` });
+    const check = () => { signal?.throwIfAborted(); lease?.check(); };
+    // Shared Auth validates lease tokens once. Raw header callbacks have no lease.
+    if (lease === undefined) {
+      const authorization = headers.get("authorization") ?? "";
+      if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
+        throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
+      }
     }
     headers.set("content-type", "application/json");
+    check();
     const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {
       method: "POST",
       redirect: "error",
@@ -460,13 +480,18 @@ export class HttpInferenceTransport implements InferenceTransport {
       body,
       ...(signal === undefined ? {} : { signal }),
     });
+    if (signal?.aborted) {
+      await response.body?.cancel().catch(() => undefined);
+      signal.throwIfAborted();
+    }
     if (!response.ok) {
+      if (response.status === 401) lease?.reject();
       throw new InferenceTransportError(
         response.status,
-        await readBoundedText(response, this.maximumMessageBytes, "error response"),
+        await readBoundedText(response, this.maximumMessageBytes, "error response", () => signal?.throwIfAborted()),
       );
     }
-    return response;
+    return { response, check };
   }
 }
 
