@@ -107,6 +107,12 @@ impl Slo {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn evaluate_selected(&self, snapshot: &crate::Snapshot) -> Verdict {
+        if snapshot.overflowed {
+            return Verdict {
+                success: None,
+                latency: None,
+            };
+        }
         let total =
             u128::from(snapshot.ok) + u128::from(snapshot.err) + u128::from(snapshot.incomplete);
         let success = (total != 0)

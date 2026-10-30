@@ -157,6 +157,9 @@ pub struct Snapshot {
     pub incomplete: u64,
     /// One sample per outcome, never one per span handle.
     pub latency_ns: Vec<u64>,
+    /// Fixed-width counters lost precision. Operations continue without a cap;
+    /// SLO evaluation remains unknown until this cohort is released.
+    pub overflowed: bool,
 }
 
 /// Exactly one disposition of an observed operation.
@@ -204,10 +207,14 @@ impl Snapshot {
             Outcome::Err => &mut self.err,
             Outcome::Incomplete => &mut self.incomplete,
         };
-        *count = count.saturating_add(1);
+        let (next, overflowed) = count.overflowing_add(1);
+        self.overflowed |= overflowed;
+        *count = if overflowed { u64::MAX } else { next };
         let bucket = usize::try_from(u128::BITS - nanos.leading_zeros()).unwrap_or(usize::MAX);
         if let Some(count) = self.latency_ns.get_mut(bucket) {
-            *count = count.saturating_add(1);
+            let (next, overflowed) = count.overflowing_add(1);
+            self.overflowed |= overflowed;
+            *count = if overflowed { u64::MAX } else { next };
         }
     }
 }
@@ -374,6 +381,41 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn counter_overflow_cannot_produce_decisive_slo_evidence() {
+        let slo = crate::Slo {
+            version: 1,
+            operation: "acyclic.test".into(),
+            rpc: None,
+            success_ppm: 0,
+            latency: None,
+        };
+        for outcome in [Outcome::Ok, Outcome::Err, Outcome::Incomplete] {
+            for histogram in [false, true] {
+                let mut snapshot = Snapshot {
+                    operation: slo.operation.clone(),
+                    ok: u64::MAX,
+                    err: u64::MAX,
+                    incomplete: u64::MAX,
+                    latency_ns: vec![0; 129],
+                    ..Snapshot::default()
+                };
+                if histogram {
+                    snapshot.ok = 0;
+                    snapshot.err = 0;
+                    snapshot.incomplete = 0;
+                    snapshot.latency_ns[0] = u64::MAX;
+                }
+                snapshot.sample(outcome, 0);
+                assert!(snapshot.overflowed);
+                assert_eq!(slo.evaluate(&snapshot).unwrap().success, None);
+                // The former silent saturation invents a decisive verdict.
+                snapshot.overflowed = false;
+                assert_eq!(slo.evaluate(&snapshot).unwrap().success, Some(true));
+            }
+        }
+    }
 
     #[test]
     fn selected_series_cost_is_independent_of_unrelated_series() {
