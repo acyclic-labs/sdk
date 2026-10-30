@@ -127,6 +127,8 @@ pub fn decode_capability(bytes: &[u8]) -> Result<Capability, Error> {
 /// Root is index zero; each `max_depth` is an absolute terminal index ceiling.
 /// The minimum across every block applies. Sealing has no block and no cost.
 pub fn valid_chain(blocks: &[Block]) -> bool {
+    #[cfg(test)]
+    acyclic_test_support::differential::record(StructuralAdmission);
     let Some(root) = blocks.first() else {
         return false;
     };
@@ -283,6 +285,26 @@ pub fn permits(
     policy: PolicyDecision,
     scope: Scope,
 ) -> Result<(), Deny> {
+    permits_inner::<false>(blocks, r, policy, scope)
+}
+
+// Only VerifiedCapability::authorize calls this after checking its immutable
+// admitted chain against current trust and its effective validity interval.
+pub(crate) fn permits_current(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+    scope: Scope,
+) -> Result<(), Deny> {
+    permits_inner::<true>(blocks, r, policy, scope)
+}
+
+fn permits_inner<const CURRENT: bool>(
+    blocks: &[Block],
+    r: &Request<'_>,
+    policy: PolicyDecision,
+    scope: Scope,
+) -> Result<(), Deny> {
     let admitted = match (scope, r.target) {
         (Scope::Exact, _) => true,
         (
@@ -320,7 +342,7 @@ pub fn permits(
     if policy == PolicyDecision::Deny {
         return Err(Deny::OwnerPolicy);
     }
-    if permits_canonical(
+    if permits_canonical::<CURRENT>(
         blocks,
         r,
         scope == Scope::Exact && !matches!(r.target, Target::Context),
@@ -331,8 +353,12 @@ pub fn permits(
     }
 }
 
-fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> bool {
-    if !valid_chain(blocks) {
+fn permits_canonical<const CURRENT: bool>(
+    blocks: &[Block],
+    r: &Request<'_>,
+    record_facts: bool,
+) -> bool {
+    if !CURRENT && !valid_chain(blocks) {
         return false;
     }
     let Some(certificates) = blocks.first().and_then(|block| block.certificates.as_ref()) else {
@@ -343,8 +369,9 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> b
     };
     if !certificates.keys.iter().all(|cert| {
         let key = &cert.key;
-        r.now_unix_seconds >= key.validity.not_before_unix_seconds
-            && r.now_unix_seconds < key.validity.expires_at_unix_seconds
+        (CURRENT
+            || r.now_unix_seconds >= key.validity.not_before_unix_seconds
+                && r.now_unix_seconds < key.validity.expires_at_unix_seconds)
             && grants_allow(&key.grants, r, record_facts)
     }) {
         return false;
@@ -352,8 +379,8 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> b
     blocks.iter().enumerate().all(|(i, block)| {
         block.caveats.iter().all(|c| match &c.kind {
             CaveatKind::Grants(set) => grants_allow(set, r, record_facts),
-            CaveatKind::ExpiresAtUnixSeconds(t) => r.now_unix_seconds < *t,
-            CaveatKind::NotBeforeUnixSeconds(t) => r.now_unix_seconds >= *t,
+            CaveatKind::ExpiresAtUnixSeconds(t) => CURRENT || r.now_unix_seconds < *t,
+            CaveatKind::NotBeforeUnixSeconds(t) => CURRENT || r.now_unix_seconds >= *t,
             CaveatKind::Audience(a) => !a.prefix && resource_matches(a, r.audience),
             CaveatKind::Holder(h) => h
                 .account
@@ -382,3 +409,7 @@ fn permits_canonical(blocks: &[Block], r: &Request<'_>, record_facts: bool) -> b
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[derive(Debug, PartialEq)]
+pub(crate) struct StructuralAdmission;
