@@ -126,8 +126,10 @@ callback, preserving any earlier pending transaction group. Values are copied
 at the JavaScript boundary so later caller mutation cannot alter admitted work.
 Native read-only transactions borrow the admitted in-memory cut, allocate
 nothing and leave the binding clean; flushing a clean binding performs no I/O.
-Native rollback records only touched keys and the journal's original length,
-including when a callback unwinds.
+Both projections roll back only touched keys and the journal's original length;
+native rollback also handles callback unwind. Neither copies unrelated metadata,
+pending writes or staged journal frames on the first write. JavaScript still
+copies byte values at its guest boundary; explicit enumeration visits its output.
 `flush` publishes all pending metadata, journal frames and alarm in **one**
 conditional Stream commit against the original actor head and journal tail.
 Only its confirmed result acknowledges durability. Failed/unknown publication
