@@ -6,23 +6,73 @@
   "inputs": [
     {
       "mode": "qualification",
-      "format": "libtest",
-      "args": [
-        "actual_codex_binary_executes_the_scripted_scenario",
-        "--exact",
-        "--ignored",
-        "--test-threads=1"
+      "format": "installed-host",
+      "host": "codex",
+      "tools": [
+        "spawn",
+        "wait"
       ],
-      "minimum_tests": 1,
-      "fixture_binary_env": "E2E_PLUGIN_BINARY",
-      "binary_env": "E2E_PLUGIN_TEST_BINARY"
+      "prompt": "NATIVE_PLUGIN_MODEL",
+      "answer": "NATIVE_PLUGIN_MODEL_DONE"
     }
   ],
   "model": {
-    "steps": []
+    "steps": [
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_MODEL"
+        },
+        "tools": [
+          {
+            "id": "native_spawn",
+            "namespace": "mcp__acyclic_sessions",
+            "name": "spawn",
+            "arguments": {
+              "reference": "native-child",
+              "prompt": "NATIVE_PLUGIN_CHILD"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "inbox"
+        },
+        "tools": [
+          {
+            "id": "native_wait",
+            "namespace": "mcp__acyclic_sessions",
+            "name": "wait",
+            "arguments": {
+              "reference": "native-child"
+            }
+          }
+        ]
+      },
+      {
+        "when": {
+          "tool_result": "NATIVE_PLUGIN_CHILD_DONE"
+        },
+        "text": [
+          "NATIVE_PLUGIN_MODEL_DONE"
+        ]
+      },
+      {
+        "when": {
+          "user": "NATIVE_PLUGIN_CHILD"
+        },
+        "text": [
+          "NATIVE_PLUGIN_CHILD_DONE"
+        ]
+      }
+    ]
   },
   "id": "installed-codex",
   "assert": {
-    "requests": 0
+    "requests": 4,
+    "tool_contains": [
+      "NATIVE_PLUGIN_CHILD_DONE",
+      "Succeeded"
+    ]
   }
 }
