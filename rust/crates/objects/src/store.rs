@@ -1085,8 +1085,9 @@ impl<M: Medium> Account<M> {
                 };
                 match self.medium.replace(observed, live.encode().into()).await {
                     Ok(Some(_)) => {}
-                    // Moved since: the next pass decides.
-                    Ok(None) | Err(MediumError::Ambiguous(_)) => continue,
+                    // A definite conflict names a different envelope cut.
+                    Ok(None) => continue,
+                    Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
                     Err(error) => return Err(medium(error)),
                 }
                 self.track(&digest, &live);
