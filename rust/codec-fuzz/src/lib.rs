@@ -106,29 +106,36 @@ pub fn harness_codecs(bytes: &[u8]) {
 pub struct Decoder {
     pub name: &'static str,
     family: usize,
-    pub check: fn(&[u8]),
+    pub check: fn(&[u8], prost_reflect::MessageDescriptor),
     pub seed: fn() -> Vec<u8>,
 }
 
-fn check<T: Message + Default>(bytes: &[u8]) {
+fn check<T: Message + Default>(bytes: &[u8], descriptor: prost_reflect::MessageDescriptor) {
     if let Ok(value) = T::decode(bytes) {
         let encoded = value.encode_to_vec();
         // Unknown fields may be discarded at a wire boundary; the projection
-        // must reach a fixed point after that first decode.
-        assert_eq!(
-            T::decode(encoded.as_slice()).unwrap().encode_to_vec(),
-            encoded
-        );
+        // must preserve its value after that first decode. Map iteration may
+        // change wire order, and valid NaNs cannot use Rust float equality.
+        let repeated = T::decode(encoded.as_slice()).unwrap().encode_to_vec();
+        if repeated != encoded {
+            let json = |bytes: &[u8]| {
+                let encoded = acyclic_protobuf_json::encode(descriptor.clone(), bytes)
+                    .expect("typed wire writer agrees with its descriptor");
+                serde_json::from_slice::<serde_json::Value>(&encoded)
+                    .expect("production protobuf JSON writer output")
+            };
+            assert_eq!(json(&repeated), json(&encoded));
+        }
     }
 }
 
-fn check_semantic<W, S>(bytes: &[u8])
+fn check_semantic<W, S>(bytes: &[u8], descriptor: prost_reflect::MessageDescriptor)
 where
     W: Message + Default + From<S>,
     S: TryFrom<W> + Clone + std::fmt::Debug + PartialEq,
     S::Error: std::fmt::Debug,
 {
-    check::<W>(bytes);
+    check::<W>(bytes, descriptor);
     semantic::project(bytes, S::try_from, W::from);
 }
 
@@ -162,7 +169,7 @@ pub fn protobuf_json(bytes: &[u8]) {
     let descriptor = descriptor(&DECODERS[index]);
     if let Ok(value) = acyclic_protobuf_json::decode(descriptor.clone(), payload, usize::MAX) {
         let binary = value.encode_to_vec();
-        (DECODERS[index].check)(&binary);
+        (DECODERS[index].check)(&binary, descriptor.clone());
         semantic::check(DECODERS[index].name, &binary);
         let canonical = acyclic_protobuf_json::encode(descriptor.clone(), &binary).unwrap();
         let mut written = Vec::new();
@@ -196,7 +203,7 @@ pub fn protobuf(bytes: &[u8]) {
         return;
     };
     let index = (u64::from_le_bytes(*selector) % DECODERS.len() as u64) as usize;
-    (DECODERS[index].check)(payload);
+    (DECODERS[index].check)(payload, descriptor(&DECODERS[index]));
     semantic::check(DECODERS[index].name, payload);
 }
 
