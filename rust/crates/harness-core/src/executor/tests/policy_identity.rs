@@ -94,7 +94,7 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
                 &Journal::default(),
                 invocation.operation_id,
                 &invocation,
-                tool,
+                (tool, None),
                 false,
             )
             .await;

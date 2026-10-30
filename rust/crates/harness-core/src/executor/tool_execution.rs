@@ -197,10 +197,39 @@ impl StockExecution<'_> {
             }
             pending @ (RecordedCall::Started(_) | RecordedCall::Unstarted) => {
                 let started = matches!(pending, RecordedCall::Started(_));
+                // The target is resolved before any approval, so the subject
+                // names the device and owner the command will run on, and a
+                // target that cannot take the call is refused without asking.
+                let target = match self.call_target(&invocation) {
+                    Ok(target) => target,
+                    Err(refusal @ Error::Target(_)) if !started => {
+                        let content = self
+                            .settle_tool_refusal(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation,
+                                ToolCallRejection::Failed(refusal),
+                            )
+                            .await?;
+                        return self.push_tool_result(&invocation, content, prior_messages);
+                    }
+                    // A dispatched command whose target went away may have run.
+                    Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
+                    Err(error) => return Err(error),
+                };
+                let target = target.as_ref().map(|target| &target.record);
                 #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(prompt) = hook_approval
                     && let Some(stop) = self
-                        .hook_approval(journal, operation_id, &invocation, tool, prompt, started)
+                        .hook_approval(
+                            journal,
+                            operation_id,
+                            &invocation,
+                            tool,
+                            (prompt, target),
+                            started,
+                        )
                         .await?
                 {
                     match stop {
@@ -220,7 +249,13 @@ impl StockExecution<'_> {
                     }
                 }
                 match self
-                    .require_tool_policy(journal, operation_id, &invocation, tool, started)
+                    .require_tool_policy(
+                        journal,
+                        operation_id,
+                        &invocation,
+                        (tool, target),
+                        started,
+                    )
                     .await?
                 {
                     Some(PolicyStop::Progress(progress)) => return Ok(progress),
@@ -338,6 +373,18 @@ impl StockExecution<'_> {
         .await
     }
 
+    /// The target a workspace call runs on, `None` for any other call or
+    /// a composition binding no targets.
+    fn call_target(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<Arc<crate::runtime::Target>>> {
+        let Some(targets) = self.context.and_then(|(task, _)| task.harness.targets()) else {
+            return Ok(None);
+        };
+        crate::runtime::call_target(&**targets, invocation).transpose()
+    }
+
     fn authorize_tool_invocation(
         &self,
         tool: &crate::tool::Tool,
@@ -387,7 +434,7 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         operation_id: OperationId,
         invocation: &ToolInvocation,
-        tool: &crate::tool::Tool,
+        (tool, target): (&crate::tool::Tool, Option<&crate::agent::TargetRecord>),
         started: bool,
     ) -> Result<Option<PolicyStop>> {
         // Every call, ordinary or native, passes the one pinned policy. A
@@ -455,7 +502,7 @@ impl StockExecution<'_> {
                     invocation,
                     (prompt, custody),
                     self.native_work(),
-                    crate::interaction::ApprovalRoute::Policy,
+                    (crate::interaction::ApprovalRoute::Policy, target),
                 )?;
                 if let Some(progress) = self
                     .settle_approval(

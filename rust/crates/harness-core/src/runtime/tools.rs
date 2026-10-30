@@ -109,7 +109,10 @@ pub fn tool_approval_request(
     invocation: &ToolInvocation,
     paid: (String, NativeCustody),
     work: Option<&NativeWork>,
-    route: crate::interaction::ApprovalRoute,
+    (route, target): (
+        crate::interaction::ApprovalRoute,
+        Option<&crate::agent::TargetRecord>,
+    ),
 ) -> Result<((OperationId, Interaction), NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
@@ -144,7 +147,7 @@ pub fn tool_approval_request(
     let (prompt, custody) = paid;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut custody = custody;
-    let subject = copy_approval_subject(invocation, work, route)?;
+    let subject = copy_approval_subject(invocation, work, route, target)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let mut subject = subject;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -170,6 +173,7 @@ fn copy_approval_subject(
     invocation: &ToolInvocation,
     work: Option<&NativeWork>,
     route: crate::interaction::ApprovalRoute,
+    target: Option<&crate::agent::TargetRecord>,
 ) -> Result<(ApprovalSubject, NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
@@ -190,12 +194,20 @@ fn copy_approval_subject(
             Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| io.codec_charge(charge),
         )?;
+        let target = match target {
+            Some(target) => Some(crate::interaction::ApprovalTarget {
+                device: io.clone_text(&target.name)?,
+                owner: io.clone_text(&target.owner)?,
+            }),
+            None => None,
+        };
         return Ok((
             ApprovalSubject::Tool {
                 route,
                 tool,
                 call_id,
                 arguments,
+                target,
             },
             Some(io.into_custody()?),
         ));
@@ -207,6 +219,10 @@ fn copy_approval_subject(
             tool: invocation.name.clone(),
             call_id: invocation.call_id.clone(),
             arguments: invocation.arguments.clone(),
+            target: target.map(|target| crate::interaction::ApprovalTarget {
+                device: target.name.clone(),
+                owner: target.owner.clone(),
+            }),
         },
         None,
     ))

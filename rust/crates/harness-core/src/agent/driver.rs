@@ -52,6 +52,10 @@ pub struct OpenTurn {
     /// The input the executor runs, with its attachment manifests expanded
     /// ([`expand_attachments`]); `None` runs the input as given.
     pub input: Option<ModelContent>,
+    /// The roster this turn announces, staged, and its digest: present only
+    /// when it differs from the one the agent last announced
+    /// ([`AgentState::roster`]); the input above already leads with it.
+    pub roster: Option<(FileRef, [u8; 32])>,
 }
 
 fn is_manifest(part: &ModelContentPart) -> bool {
@@ -192,6 +196,11 @@ pub struct ConversationEntry {
     #[cfg_attr(feature = "wasm", tsify(type = "string", optional))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<OperationId>,
+    /// The execution-target roster this turn announced before its input,
+    /// staged on the agent's private volume; absent while it is unchanged.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef", optional))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<FileRef>,
 }
 
 impl ConversationEntry {
@@ -365,6 +374,38 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     })
 }
 
+/// `content` led by the roster announcement `roster` names, if any.
+#[must_use]
+pub fn announce(roster: Option<&FileRef>, content: ModelContent) -> ModelContent {
+    let Some(roster) = roster else {
+        return content;
+    };
+    let mut parts = vec![
+        ModelContentPart::Text {
+            text: super::ROSTER_LEAD.to_owned(),
+        },
+        ModelContentPart::File {
+            file: roster.clone(),
+            policy: FileProjectionPolicy::BoundedFull,
+        },
+    ];
+    match content {
+        ModelContent::Text(text) => parts.push(ModelContentPart::Text { text }),
+        ModelContent::Part(part) => parts.push(part),
+        ModelContent::Parts(rest) => parts.extend(rest),
+    }
+    ModelContent::Parts(parts)
+}
+
+/// The model-visible content of a settled entry: its input, led by the
+/// roster it announced.
+///
+/// # Errors
+/// When the input does not encode.
+pub fn entry_input(entry: &ConversationEntry) -> Result<ModelContent, Error> {
+    Ok(announce(entry.targets.as_ref(), model_input(&entry.input)?))
+}
+
 fn host_error(error: crate::Error) -> Error {
     Error::Turn(Box::new(error))
 }
@@ -420,20 +461,30 @@ async fn settle_selection(
         output,
         outcome: TurnOutcome::Completed,
         goal: None,
+        targets: None,
     };
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
-        outs: settled(&entry)?,
+        outs: settled(&entry, open)?,
         wait: Wait::Input,
         drops: None,
     })
 }
 
+/// An entry's append, recording the roster it announced.
+fn appended(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+    let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if let (Some(_), Some((_, digest))) = (&entry.targets, &open.roster) {
+        outs.push(Out::Roster(*digest));
+    }
+    Ok(outs)
+}
+
 /// A settled entry's appends: the entry, indexed as the agent's latest
 /// checkpoint when it is one.
-fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
-    let mut outs = vec![Out::Conversation(entry.encode()?)];
+fn settled(entry: &ConversationEntry, open: &OpenTurn) -> Result<Vec<Out>, Error> {
+    let mut outs = appended(entry, open)?;
     if entry.checkpoint().is_some() {
         outs.push(Out::Checkpoint);
     }
@@ -441,6 +492,11 @@ fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
         outs.push(Out::GoalCompleted { run });
     }
     Ok(outs)
+}
+
+/// The roster file a turn's entry names: the one it announced.
+fn announced(open: &OpenTurn) -> Option<FileRef> {
+    open.roster.as_ref().map(|(file, _)| file.clone())
 }
 
 /// Every settled turn commits its already-recorded actions, including a turn
@@ -506,11 +562,12 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     output: stage_text(&open, turn, partial).await?,
                     outcome: TurnOutcome::Cancelled,
                     goal,
+                    targets: announced(&open),
                 };
                 return Ok(TurnStep {
                     reserved_children: 0,
                     checkpoint: None,
-                    outs: settled(&entry)?,
+                    outs: settled(&entry, &open)?,
                     wait: Wait::Input,
                     drops: None,
                 });
@@ -562,12 +619,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         output,
                         outcome: TurnOutcome::Completed,
                         goal: run,
+                        targets: announced(&open),
                     };
                     // The tools' recorded effects commit with the turn's settlement.
                     let mut outs = if goal.is_some() {
-                        vec![Out::Conversation(entry.encode()?)]
+                        appended(&entry, &open)?
                     } else {
-                        settled(&entry)?
+                        settled(&entry, &open)?
                     };
                     outs.extend(goal);
                     // Every agent waits for input once its turn settles: a child

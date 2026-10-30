@@ -24,6 +24,18 @@ pub enum ApprovalRoute {
     Human,
 }
 
+/// The execution target a tool call runs on, as its approver sees it: rules
+/// match on the device and its owner alongside the command.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalTarget {
+    /// The resolved device's roster name, never the `user:` alias.
+    pub device: String,
+    /// The user who owns the device.
+    pub owner: String,
+}
+
 /// The exact action an approval decides, as its approver sees it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
@@ -43,6 +55,11 @@ pub enum ApprovalSubject {
         #[serde(deserialize_with = "crate::deserialize_json_value")]
         #[heap_layout(as = serde_json::Value)]
         arguments: Value,
+        /// The resolved execution target of a workspace call (`shell`, `fs`);
+        /// absent for every other tool.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "wasm", tsify(optional))]
+        target: Option<ApprovalTarget>,
     },
     /// An action whose preimage stays private to its owner (credentials,
     /// authorization URLs, sealed native requests). Only the digest is public.

@@ -3,7 +3,7 @@
 //! each backend without a per-backend limit.
 use crate::{
     Error, Result,
-    runtime::{RuntimeScope, ToolContext},
+    runtime::{RuntimeScope, Target, ToolContext},
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
@@ -13,22 +13,32 @@ pub(super) fn executor(name: &'static str) -> Arc<dyn ToolExecutor> {
     Arc::new(WorkspaceExecutor { name })
 }
 
-fn workspace<'a>(
-    context: &'a ToolContext,
+/// The target this call runs on ([`crate::runtime::call_target`]).
+fn target(
+    context: &ToolContext,
+    invocation: &ToolInvocation,
     work: crate::NativeWork<'_>,
-) -> Result<&'a Arc<dyn ToolExecutor>> {
-    context
-        .task()
-        .harness
-        .workspace_tools
-        .as_ref()
-        .ok_or_else(|| {
-            boundary(
-                work,
-                crate::wire::ErrorCode::Unsupported,
-                "workspace tools are not bound",
-            )
-        })
+) -> Result<Arc<Target>> {
+    let unbound = || {
+        boundary(
+            work,
+            crate::wire::ErrorCode::Unsupported,
+            "workspace tools are not bound",
+        )
+    };
+    let targets = context.task().harness.targets().ok_or_else(unbound)?;
+    crate::runtime::call_target(&**targets, invocation).ok_or_else(unbound)?
+}
+
+/// Every shell result names the target and command language it ran under.
+fn echo(name: &str, target: &Target, mut result: ToolResult) -> ToolResult {
+    if name == super::shell::PLATFORM.name
+        && let serde_json::Value::Object(fields) = &mut result.value
+    {
+        fields.insert("target".into(), target.record.name.clone().into());
+        fields.insert("shell".into(), target.record.shell.clone().into());
+    }
+    result
 }
 
 struct WorkspaceExecutor {
@@ -60,7 +70,15 @@ impl ToolExecutor for WorkspaceExecutor {
                 "workspace tool call identity changed",
             ));
         }
-        workspace(context, work)?.authorize(scope, Some(context), invocation, work)
+        match target(context, invocation, work) {
+            Ok(target) => target
+                .executor
+                .authorize(scope, Some(context), invocation, work),
+            // A target that cannot take the call is no authorization failure:
+            // the call settles with that refusal and the run continues.
+            Err(Error::Target(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn execute<'a>(
@@ -77,13 +95,13 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
-            let executor = workspace(&context, None)?.clone();
+            let target = target(&context, &invocation, None)?;
             let limits = super::bounds::limits(&context);
             if let Err(error) = super::bounds::operands(self.name, &invocation.arguments, limits) {
                 return Ok(super::rejected_input(error));
             }
-            let result = executor.execute(invocation, Some(context)).await?;
-            super::bounds::result(self.name, result, limits.0)
+            let result = target.executor.execute(invocation, Some(context)).await?;
+            super::bounds::result(self.name, echo(self.name, &target, result), limits.0)
         })
     }
 
@@ -101,12 +119,15 @@ impl ToolExecutor for WorkspaceExecutor {
                 )
             })?;
             self.authorize(None, Some(&context), &invocation, None)?;
-            let executor = workspace(&context, None)?.clone();
+            let target = target(&context, &invocation, None)?;
             let maximum = super::bounds::limits(&context).0;
-            executor
+            target
+                .executor
                 .reconcile(invocation, Some(context))
                 .await?
-                .map(|result| super::bounds::result(self.name, result, maximum))
+                .map(|result| {
+                    super::bounds::result(self.name, echo(self.name, &target, result), maximum)
+                })
                 .transpose()
         })
     }
@@ -128,7 +149,15 @@ impl ToolExecutor for WorkspaceExecutor {
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ToolResult, acyclic_fs::NativeAllocation)>> {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        workspace(context, Some(work))?.execute_with_native_context(context, invocation, work)
+        let target = target(context, invocation, Some(work))?;
+        let name = self.name;
+        crate::NativeFutureBundle::new(work, move || async move {
+            let (result, allocation) = target
+                .executor
+                .execute_with_native_context(context, invocation, work)?
+                .await?;
+            Ok((echo(name, &target, result), allocation))
+        })
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -140,7 +169,15 @@ impl ToolExecutor for WorkspaceExecutor {
     ) -> Result<crate::NativeFutureBundle<'a, (Option<ToolResult>, acyclic_fs::NativeAllocation)>>
     {
         self.authorize(None, Some(context), invocation, Some(work))?;
-        workspace(context, Some(work))?.reconcile_with_native_context(context, invocation, work)
+        let target = target(context, invocation, Some(work))?;
+        let name = self.name;
+        crate::NativeFutureBundle::new(work, move || async move {
+            let (result, allocation) = target
+                .executor
+                .reconcile_with_native_context(context, invocation, work)?
+                .await?;
+            Ok((result.map(|result| echo(name, &target, result)), allocation))
+        })
     }
 }
 

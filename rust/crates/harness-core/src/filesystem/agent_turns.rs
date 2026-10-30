@@ -377,6 +377,13 @@ pub trait TurnExecutors: acyclic_stream::ProviderPlatform {
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxFuture<'a, Result<Arc<dyn Executor>>>;
+
+    /// The execution targets `agent`'s `shell` reaches, announced to its
+    /// model whenever they change; `None` binds no targets.
+    fn roster(&self, agent: &AgentState) -> Option<Arc<crate::agent::Roster>> {
+        let _ = agent;
+        None
+    }
 }
 
 /// Bounds of one agent turn.
@@ -816,7 +823,7 @@ impl<'a> TurnContext<'a> {
             .map(|entry| {
                 Ok((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
-                    crate::agent::model_input(&entry.input).map_err(agent_error)?,
+                    crate::agent::entry_input(&entry).map_err(agent_error)?,
                     entry.output,
                 ))
             })
@@ -977,6 +984,19 @@ where
             // under the grant above at the manifest's pinned length.
             let input =
                 &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
+            // A changed roster leads the model's input, staged once per
+            // distinct roster; an unchanged one costs nothing.
+            let roster = match self.executors.roster(agent) {
+                Some(roster) => match roster.announcement(agent.roster).map_err(agent_error)? {
+                    Some((bytes, digest)) => {
+                        Some((files.stage_roster(digest, &bytes).await?, digest))
+                    }
+                    None => None,
+                },
+                None => None,
+            };
+            let model_input =
+                crate::agent::announce(roster.as_ref().map(|(file, _)| file), input.clone());
             let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
             let effects = Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
@@ -1020,7 +1040,7 @@ where
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = context
-                .select(agent, &*bindings.content.reader, input)
+                .select(agent, &*bindings.content.reader, &model_input)
                 .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
@@ -1051,7 +1071,8 @@ where
                 effects: Some(effects),
                 goal,
                 outputs,
-                input: Some(input.clone()),
+                input: Some(model_input),
+                roster,
             })
         })
     }

@@ -151,6 +151,7 @@ fn native_tool_approval_preserves_literal_arguments_and_original_custody() -> Re
                 tool: "fs".into(),
                 call_id: "original-call".into(),
                 arguments,
+                target: None,
             },
         )?;
         let bytes =
@@ -299,6 +300,7 @@ fn approval_subject_names_the_exact_tool_call() -> Result<()> {
         tool: tool.into(),
         call_id: call_id.into(),
         arguments: json!({"command": "rm -rf build", "timeout": 30}),
+        target: None,
     };
     let approval = |subject| {
         Interaction::approval(
@@ -348,7 +350,7 @@ proptest::proptest! {
         let arguments = json!({"strings": strings, "number": number, "flag": flag,
             "$serde_json::private::RawValue": ["literal", false]});
         let request = Interaction::approval("Run?".into(), OperationId::from_bytes([1;16]), [2;32],
-            ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy, tool: "tool".into(), call_id: "call".into(), arguments }).unwrap();
+            ApprovalSubject::Tool { route: crate::interaction::ApprovalRoute::Policy, tool: "tool".into(), call_id: "call".into(), arguments, target: None }).unwrap();
         let bytes = serde_json::to_vec(&request).unwrap();
         let ticket = InteractionTicket { id: Uuid::from_bytes([3;16]), kind: InteractionKind::Approval,
             request: file("approval.json", &bytes).unwrap(), deadline_unix_ms: None,

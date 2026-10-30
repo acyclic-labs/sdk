@@ -3,8 +3,10 @@
 pub struct ShellSpec {
     /// Model-visible tool and approval-policy name.
     pub name: &'static str,
-    /// Model guidance for the host's command language.
-    pub description: &'static str,
+    /// Command language the roster lists for targets using this contract.
+    pub language: &'static str,
+    /// Whether commands use the Windows filesystem namespace.
+    pub windows_paths: bool,
     /// Native executables in preference order; resolved once at host startup.
     pub executables: &'static [&'static str],
     /// Non-interactive arguments preceding the source text.
@@ -39,7 +41,8 @@ pub const PLATFORM: ShellSpec = POWERSHELL;
 /// PowerShell contract, including when a different client OS selects a Machine.
 pub const POWERSHELL: ShellSpec = ShellSpec {
     name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view, using PowerShell 7 (pwsh) when available, otherwise Windows PowerShell 5.1. Use PowerShell syntax and Windows paths. Runs with -NoProfile -NonInteractive; writes outside the task view are not captured. No OS sandbox in release 1",
+    language: "powershell",
+    windows_paths: true,
     executables: &["pwsh.exe", "powershell.exe"],
     arguments: POWERSHELL_ARGUMENTS,
     stdin_bootstrap: Some(
@@ -54,7 +57,8 @@ pub const PLATFORM: ShellSpec = BASH;
 /// Bash contract for a Linux or macOS Machine, regardless of the client OS.
 pub const BASH: ShellSpec = ShellSpec {
     name: "shell",
-    description: "Run a command in the platform shell (bash on Linux/macOS; PowerShell 7, or Windows PowerShell 5.1, on Windows) in the calling task's composed workspace view. Use bash syntax and Unix paths. No OS sandbox in release 1; writes outside the task view are not captured",
+    language: "bash",
+    windows_paths: false,
     executables: &["bash"],
     arguments: BASH_ARGUMENTS,
     stdin_bootstrap: None,

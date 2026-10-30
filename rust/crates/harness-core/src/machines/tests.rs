@@ -255,7 +255,8 @@ async fn machine_shell_admission_requires_parent_grants_and_rechecks_revocation(
                 crate::tools::ShellInput {
                     command: "true".into(),
                     cwd: None,
-                    timeout: None
+                    timeout: None,
+                    target: None
                 },
                 1024
             )

@@ -51,6 +51,48 @@ where
         }
     }
 
+    /// Stages the canonical roster `bytes` whose digest is `digest`, once per
+    /// distinct roster: the file a conversation entry announces it by.
+    pub(in crate::filesystem) async fn stage_roster(
+        &self,
+        digest: [u8; 32],
+        bytes: &[u8],
+    ) -> Result<FileRef> {
+        let digest = blake3::Hash::from(digest).to_hex();
+        self.conversation_file(
+            format!("targets/{digest}.json"),
+            "targets.json",
+            IdempotencyKey(format!("targets:{digest}")),
+            bytes,
+        )
+        .await
+    }
+
+    /// Creates the conversation-area file `path` once, keyed by `key`.
+    async fn conversation_file(
+        &self,
+        path: String,
+        name: &'static str,
+        key: IdempotencyKey,
+        bytes: &[u8],
+    ) -> Result<FileRef> {
+        let path = format!("{}{path}", InternalContentClass::Conversation.prefix());
+        self.host
+            .put_internal_content(
+                &self.volume,
+                &self.grant,
+                &path,
+                bytes,
+                "application/json",
+                name,
+                bytes.len() as u64,
+                &key,
+                InternalContentClass::Conversation,
+                None,
+            )
+            .await
+    }
+
     /// The committed head of the private volume, whose bytes are durable.
     async fn head(&self) -> Result<acyclic_fs::Generation<A, O>> {
         let cancellation = CancellationToken::new();
@@ -209,27 +251,13 @@ where
         turn: OperationId,
         bytes: &'a [u8],
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            // One identity per turn: a re-run turn replays the same output.
-            let path = format!(
-                "{}turns/{turn}.json",
-                InternalContentClass::Conversation.prefix()
-            );
-            self.host
-                .put_internal_content(
-                    &self.volume,
-                    &self.grant,
-                    &path,
-                    bytes,
-                    "application/json",
-                    "output.json",
-                    bytes.len() as u64,
-                    &IdempotencyKey(format!("turn-output:{turn}")),
-                    InternalContentClass::Conversation,
-                    None,
-                )
-                .await
-        })
+        // One identity per turn: a re-run turn replays the same output.
+        Box::pin(self.conversation_file(
+            format!("turns/{turn}.json"),
+            "output.json",
+            IdempotencyKey(format!("turn-output:{turn}")),
+            bytes,
+        ))
     }
 
     fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {

@@ -83,9 +83,9 @@ Replies preserve short IO and POSIX errno. A write can be partial after
 interruption and is never automatically repeated. Suspend preserves the machine and is distinct
 from deletion; there is no separate public stop RPC.
 
-For the harness `shell`, bind `MachinesWorkspace` through
-`runtime::Bindings::workspace_tools` using the original verified scope and
-selected volume. The host separately owns the authenticated filesystem mount
+For the harness `shell`, bind `MachinesWorkspace` as the home target of
+`runtime::Bindings::targets` (`runtime::InProcessTargets::home`) using the
+original verified scope and selected volume. The host separately owns the authenticated filesystem mount
 and content bindings. The standard `fs` history facade is not supplied by this
 shell binding. Commands use the shared bash invocation and original input schema.
 

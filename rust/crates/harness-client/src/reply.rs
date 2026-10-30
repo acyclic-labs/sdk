@@ -794,6 +794,7 @@ mod tests {
             output: file.clone(),
             outcome: Default::default(),
             goal: Some(run),
+            targets: None,
         };
         let terminal = ConversationEntry {
             inbox: 3,

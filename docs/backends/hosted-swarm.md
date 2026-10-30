@@ -13,7 +13,7 @@ remain in the host. The preset supplies GraphCoder's prompt, tools and approval
 policy. Additional workspace tools and task context are explicit host choices.
 Storage implementations stay below the shared filesystem and Actors engines.
 
-An admitted workspace executor belongs in `runtime::Bindings.workspace_tools`.
+An admitted workspace executor is the home target in `runtime::Bindings.targets`.
 Build those bindings once, then pass `filesystem::Tasks(bindings)` as the turn
 context. It binds each turn's original volume grants, content access, execution
 journal and approval policy to that turn's operation. Native context manifests
