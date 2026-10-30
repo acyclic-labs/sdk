@@ -135,6 +135,24 @@ fn capture() -> Result<(), Box<dyn Error>> {
             &mut manifest,
         )?;
     }
+    for (name, bytes) in acyclic_fs::native_exchange::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "native_exchange production durable journal encoder",
+            &mut manifest,
+        )?;
+    }
+    for (name, bytes) in acyclic_fs::lazy_workspace::codec_fuzz::seeds()? {
+        save(
+            "filesystem_codecs",
+            &name,
+            &bytes,
+            "LazyDirectoryCursor::encode production funded continuation writer",
+            &mut manifest,
+        )?;
+    }
     save(
         "filesystem_codecs",
         "usn-checkpoint",

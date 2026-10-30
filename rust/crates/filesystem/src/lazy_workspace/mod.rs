@@ -110,6 +110,8 @@ mod tombstones;
 mod transaction;
 mod work;
 mod write;
+#[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
+pub use directory::cursor_codec::codec_fuzz;
 pub use directory::{LazyDirectoryCursor, LazyDirectoryEntry, LazyDirectoryPage};
 pub use error::LazyWorkspaceError;
 pub use lookup::{LazyLookup, LazyStat};

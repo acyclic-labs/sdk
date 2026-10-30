@@ -337,6 +337,8 @@ pub fn actor_codecs(bytes: &[u8]) {
 
 pub fn filesystem_codecs(bytes: &[u8]) {
     assert!(acyclic_fs::core_state::codec_fuzz::check(bytes));
+    assert!(acyclic_fs::native_exchange::codec_fuzz::check(bytes));
+    assert!(acyclic_fs::lazy_workspace::codec_fuzz::check(bytes));
     use acyclic_fs::{
         streams_record::{StreamsAuthorityRecord, StreamsDurableRecord},
         workspace_context_wire as context,
