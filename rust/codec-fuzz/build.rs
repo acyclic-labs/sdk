@@ -29,6 +29,13 @@ fn messages(
                 "check_semantic::<{ty}, {rust}::{}>",
                 name.to_upper_camel_case()
             )
+        } else if package == "acyclic.actors.v1" {
+            let semantic = if name == "Error" {
+                "ServiceError"
+            } else {
+                name
+            };
+            format!("check_semantic::<{ty}, acyclic_actors::contract::domain::{semantic}>")
         } else {
             format!("check::<{ty}>")
         };
