@@ -856,7 +856,7 @@ async fn diff_accounted<S: AsyncObjectStore, F: Format>(
     cancellation: &CancellationToken,
 ) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
-    let result = diff_with_accounting::<S, F, true, true>(
+    let result = diff_with_accounting::<S, F>(
         store,
         before,
         after,
