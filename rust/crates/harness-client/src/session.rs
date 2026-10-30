@@ -1,33 +1,33 @@
 use crate::reader::backing::BackingPool;
 use crate::{DemandError, DemandPolicy, StreamView, StreamViewPolicy, ViewDemand};
 use acyclic_stream::{
-    BoxProviderFuture, BoxProviderStream, StreamError, StreamPath, session::Client, wire,
-    wire_codec,
+    BoxProviderFuture, BoxProviderStream, StreamError, StreamPath,
+    runtime::{ReadySources, SourceReader},
+    session::Client,
+    wire, wire_codec,
 };
 use bytes::Bytes;
-use futures::StreamExt;
 use prost::Message as _;
 use std::{
-    borrow::Borrow,
     collections::BTreeMap,
     task::{Context, Poll},
 };
 
+mod subscription;
 #[cfg(all(test, feature = "agents"))]
 mod viewport_tests;
 mod views;
+pub(crate) use subscription::Interest;
+use subscription::{Delivery, Subscription, SubscriptionState};
 use views::Views;
 
+#[cfg(feature = "agents")]
+pub(crate) type SessionEvent = (
+    Interest,
+    Result<Option<wire::SessionFrame>, WireSessionError>,
+);
+
 type Follow = BoxProviderStream<'static, Result<acyclic_stream::session::Frame, StreamError>>;
-
-enum SubscriptionState {
-    Opening(BoxProviderFuture<'static, Result<Follow, StreamError>>),
-    Open(Follow),
-}
-
-struct Subscription {
-    state: SubscriptionState,
-}
 
 // The fold owns its original selection even after its live follow ends. A
 // viewport refresh must neither restart terminal interests nor forget which
@@ -88,14 +88,16 @@ impl WireSessionError {
 
 /// One owner for view-selected logical follows on the canonical Streams pool.
 /// The pool alone owns physical connections, cursor recovery and receive credit.
-/// This layer adds no queue, reconnect loop or per-agent transport task.
+/// One shared readiness owner drives selected sources without a reconnect loop
+/// or per-agent transport task.
 pub struct WireSession {
     client: Client,
     policy: DemandPolicy,
     demand: ViewDemand,
-    follows: BTreeMap<StreamPath, Subscription>,
+    follows: BTreeMap<StreamPath, u64>,
     views: Views<StreamPath>,
-    resources: BTreeMap<String, Subscription>,
+    resources: BTreeMap<String, u64>,
+    ready: ReadySources<Subscription, SourceReader>,
     resource_views: Views<String>,
     view_policy: StreamViewPolicy,
     revision: u64,
@@ -128,6 +130,7 @@ impl WireSession {
             follows: BTreeMap::new(),
             views: Views::default(),
             resources: BTreeMap::new(),
+            ready: ReadySources::with_readers(),
             resource_views: Views::default(),
             view_policy,
             revision: 0,
@@ -176,7 +179,13 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        self.follows.retain(|agent, _| demand.contains_full(agent));
+        self.follows.retain(|agent, id| {
+            let keep = demand.contains_full(agent);
+            if !keep {
+                self.ready.remove(*id);
+            }
+            keep
+        });
         self.views.retain(|agent, _| demand.contains_full(agent));
         self.demand = demand;
         self.revision = revision;
@@ -302,7 +311,13 @@ impl WireSession {
                     .as_ref()
                     .ok_or(WireSessionError::InvalidSubscription)?
                     .next;
-                let (view, follow) = self.stage_stream(subscription.clone(), from, revision);
+                let (view, follow) = self.stage_stream(
+                    Interest::Resource(resource.as_str().into()),
+                    subscription.clone(),
+                    from,
+                    revision,
+                    false,
+                );
                 staged_resources.push((resource.clone(), view, follow));
             }
         }
@@ -318,23 +333,43 @@ impl WireSession {
                 .as_ref()
                 .ok_or(WireSessionError::InvalidSubscription)?
                 .next;
-            let (view, subscription) = self.stage_stream(subscription, from, revision);
+            let (view, subscription) = self.stage_stream(
+                Interest::Stream(path.clone()),
+                subscription,
+                from,
+                revision,
+                false,
+            );
             staged.push((path, view, subscription));
         }
-        self.follows.retain(|path, _| demand.contains_full(path));
+        self.follows.retain(|path, id| {
+            let keep = demand.contains_full(path);
+            if !keep {
+                self.ready.remove(*id);
+            }
+            keep
+        });
         self.views.retain(|path, _| demand.contains_full(path));
         if let Some(requested) = &resources {
-            self.resources.retain(|key, _| requested.contains_key(key));
+            self.resources.retain(|key, id| {
+                let keep = requested.contains_key(key);
+                if !keep {
+                    self.ready.remove(*id);
+                }
+                keep
+            });
             self.resource_views
                 .retain(|key, _| requested.contains_key(key));
         }
         for (path, view, subscription) in staged {
             self.views.insert(path.clone(), view);
-            self.follows.insert(path, subscription);
+            self.follows.insert(path, subscription.id);
+            self.register(subscription);
         }
         for (resource, view, subscription) in staged_resources {
             self.resource_views.insert(resource.clone(), view);
-            self.resources.insert(resource, subscription);
+            self.resources.insert(resource, subscription.id);
+            self.register(subscription);
         }
         self.demand = demand;
         self.revision = last_revision;
@@ -368,7 +403,7 @@ impl WireSession {
         agent: StreamPath,
         subscription: wire::SessionSubscription,
     ) -> Result<(), WireSessionError> {
-        self.begin_stream(agent.clone(), subscription)?;
+        self.begin_stream_with(agent.clone(), subscription, true)?;
         futures::future::poll_fn(|context| self.poll_open(&agent, context)).await
     }
 
@@ -383,6 +418,15 @@ impl WireSession {
         agent: StreamPath,
         subscription: wire::SessionSubscription,
     ) -> Result<(), WireSessionError> {
+        self.begin_stream_with(agent, subscription, false)
+    }
+
+    fn begin_stream_with(
+        &mut self,
+        agent: StreamPath,
+        subscription: wire::SessionSubscription,
+        report_open: bool,
+    ) -> Result<(), WireSessionError> {
         if !self.demand.contains_full(&agent) {
             return Err(WireSessionError::NotRequested);
         }
@@ -395,18 +439,27 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        let (view, subscription) = self.stage_stream(subscription, from, revision);
+        let (view, subscription) = self.stage_stream(
+            Interest::Stream(agent.clone()),
+            subscription,
+            from,
+            revision,
+            report_open,
+        );
         self.views.insert(agent.clone(), view);
-        self.follows.insert(agent, subscription);
+        self.follows.insert(agent, subscription.id);
+        self.register(subscription);
         self.revision = revision;
         Ok(())
     }
 
     fn stage_stream(
         &self,
+        interest: Interest,
         subscription: wire::SessionSubscription,
         from: u64,
         revision: u64,
+        report_open: bool,
     ) -> (RetainedView, Subscription) {
         let filtered = subscription.filter.is_some()
             || matches!(
@@ -438,7 +491,10 @@ impl WireSession {
                 ),
             },
             Subscription {
+                id: revision,
+                interest,
                 state: SubscriptionState::Opening(opening),
+                report_open,
             },
         )
     }
@@ -448,7 +504,18 @@ impl WireSession {
         agent: &StreamPath,
         context: &mut Context<'_>,
     ) -> Poll<Result<(), WireSessionError>> {
-        poll_open(&mut self.follows, agent, context)
+        let Some(id) = self.follows.get(agent).copied() else {
+            return Poll::Ready(Err(WireSessionError::NotOpen));
+        };
+        match self.ready.poll_one(id, context) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => Poll::Ready(Ok(())),
+            Poll::Ready(Ok(Some((interest, outcome)))) => {
+                Poll::Ready(self.fold(&interest, outcome).map(|_| ()))
+            }
+            Poll::Ready(Ok(None)) => Poll::Ready(Err(WireSessionError::NotOpen)),
+            Poll::Ready(Err(error)) => Poll::Ready(Err(WireSessionError::Stream(error))),
+        }
     }
 
     /// Poll only the requested visible agent; never enumerate the stored swarm.
@@ -459,13 +526,10 @@ impl WireSession {
         agent: &StreamPath,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
-        poll_follow(
-            &mut self.follows,
-            &mut self.views,
-            &mut self.revision,
-            agent,
-            context,
-        )
+        let Some(id) = self.follows.get(agent).copied() else {
+            return Poll::Ready(Err(WireSessionError::NotOpen));
+        };
+        self.poll_follow(id, context)
     }
 
     /// Select one filesystem change follow, `fs:/<volume>/<path>`, on the same
@@ -490,9 +554,16 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
-        let (view, subscription) = self.stage_stream(subscription, from, revision);
+        let (view, subscription) = self.stage_stream(
+            Interest::Resource(resource.as_str().into()),
+            subscription,
+            from,
+            revision,
+            false,
+        );
         self.resource_views.insert(resource.clone(), view);
-        self.resources.insert(resource, subscription);
+        self.resources.insert(resource, subscription.id);
+        self.register(subscription);
         self.revision = revision;
         Ok(())
     }
@@ -503,13 +574,108 @@ impl WireSession {
         resource: &str,
         context: &mut Context<'_>,
     ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
-        poll_follow(
-            &mut self.resources,
-            &mut self.resource_views,
-            &mut self.revision,
-            resource,
-            context,
-        )
+        let Some(id) = self.resources.get(resource).copied() else {
+            return Poll::Ready(Err(WireSessionError::NotOpen));
+        };
+        self.poll_follow(id, context)
+    }
+
+    fn register(&mut self, subscription: Subscription) {
+        self.ready.register(
+            wire::SessionChannel {
+                channel_id: subscription.id,
+                generation: 1,
+            },
+            subscription,
+        );
+    }
+
+    fn remove(&mut self, interest: &Interest) {
+        let id = match interest {
+            Interest::Stream(path) => self.follows.remove(path),
+            Interest::Resource(resource) => self.resources.remove(resource.as_ref()),
+        };
+        if let Some(id) = id {
+            self.ready.remove(id);
+        }
+    }
+
+    // One fold for direct readers and combined ready delivery. Every terminal
+    // outcome releases the original subscription while retaining its final view.
+    fn fold(
+        &mut self,
+        interest: &Interest,
+        outcome: Result<Delivery, StreamError>,
+    ) -> Result<Option<wire::SessionFrame>, WireSessionError> {
+        let result = (|| {
+            let delivery = outcome.map_err(WireSessionError::Stream)?;
+            let Delivery::Frame(Some(frame)) = delivery else {
+                return Ok(None);
+            };
+            let revision = self
+                .revision
+                .checked_add(1)
+                .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+            let retained = match interest {
+                Interest::Stream(path) => self.views.get_mut(path),
+                Interest::Resource(resource) => self.resource_views.get_mut(resource.as_ref()),
+            }
+            .ok_or(WireSessionError::NotOpen)?;
+            retained
+                .view
+                .apply(&frame, revision)
+                .map_err(WireSessionError::Stream)?;
+            self.revision = revision;
+            Ok(Some(frame.into_wire()))
+        })();
+        if !matches!(&result, Ok(Some(frame))
+            if !matches!(frame.body, Some(wire::session_frame::Body::Closed(_))))
+        {
+            self.remove(interest);
+        }
+        result
+    }
+
+    fn poll_follow(
+        &mut self,
+        id: u64,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
+        loop {
+            match self.ready.poll_one(id, context) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => continue,
+                Poll::Ready(Ok(Some((interest, outcome)))) => {
+                    return Poll::Ready(self.fold(&interest, outcome));
+                }
+                Poll::Ready(Ok(None)) => return Poll::Ready(Err(WireSessionError::NotOpen)),
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Err(WireSessionError::Stream(error)));
+                }
+            }
+        }
+    }
+
+    /// Drive only sources whose original provider has signaled readiness.
+    #[cfg(feature = "agents")]
+    pub(crate) fn poll_next(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<Option<SessionEvent>, WireSessionError>> {
+        loop {
+            match self.ready.poll_next(context) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => {
+                    return Poll::Ready(Err(WireSessionError::Stream(error)));
+                }
+                Poll::Ready(Ok(None)) => return Poll::Ready(Ok(None)),
+                Poll::Ready(Ok(Some((_, Ok(Delivery::Opened))))) => continue,
+                Poll::Ready(Ok(Some((interest, outcome)))) => {
+                    let outcome = self.fold(&interest, outcome);
+                    return Poll::Ready(Ok(Some((interest, outcome))));
+                }
+            }
+        }
     }
 
     /// Borrow one selected filesystem follow's bounded fold.
@@ -535,7 +701,9 @@ impl WireSession {
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
         self.resource_views.remove(resource);
-        self.resources.remove(resource);
+        if let Some(id) = self.resources.remove(resource) {
+            self.ready.remove(id);
+        }
         Ok(true)
     }
 
@@ -561,6 +729,9 @@ impl WireSession {
             .revision
             .checked_add(1)
             .ok_or(WireSessionError::Stream(StreamError::Capacity))?;
+        for id in self.follows.values().chain(self.resources.values()) {
+            self.ready.remove(*id);
+        }
         self.follows.clear();
         self.views.clear();
         self.resources.clear();
@@ -638,93 +809,6 @@ fn validate_subscription(
 }
 
 const FS_RESOURCE: &str = "fs:/";
-
-fn poll_open<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
-    follows: &mut BTreeMap<K, Subscription>,
-    key: &Q,
-    context: &mut Context<'_>,
-) -> Poll<Result<(), WireSessionError>> {
-    let Some(subscription) = follows.get_mut(key) else {
-        return Poll::Ready(Err(WireSessionError::NotOpen));
-    };
-    let SubscriptionState::Opening(opening) = &mut subscription.state else {
-        return Poll::Ready(Ok(()));
-    };
-    match opening.as_mut().poll(context) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(Ok(stream)) => {
-            subscription.state = SubscriptionState::Open(stream);
-            Poll::Ready(Ok(()))
-        }
-        Poll::Ready(Err(error)) => {
-            follows.remove(key);
-            Poll::Ready(Err(WireSessionError::Stream(error)))
-        }
-    }
-}
-
-/// The one poll and fold shared by stream and filesystem follows.
-fn poll_follow<K: Ord + Borrow<Q>, Q: Ord + ?Sized>(
-    follows: &mut BTreeMap<K, Subscription>,
-    views: &mut Views<K>,
-    session_revision: &mut u64,
-    key: &Q,
-    context: &mut Context<'_>,
-) -> Poll<Result<Option<wire::SessionFrame>, WireSessionError>> {
-    match poll_open(follows, key, context) {
-        Poll::Pending => return Poll::Pending,
-        Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
-        Poll::Ready(Ok(())) => {}
-    }
-    let Some(Subscription {
-        state: SubscriptionState::Open(stream),
-        ..
-    }) = follows.get_mut(key)
-    else {
-        return Poll::Ready(Err(WireSessionError::NotOpen));
-    };
-    match stream.poll_next_unpin(context) {
-        Poll::Pending => Poll::Pending,
-        Poll::Ready(Some(Ok(frame))) => {
-            let revision = session_revision
-                .checked_add(1)
-                .ok_or(WireSessionError::Stream(StreamError::Capacity));
-            let folded = revision.and_then(|revision| {
-                views
-                    .get_mut(key)
-                    .ok_or(WireSessionError::NotOpen)
-                    .and_then(|mut view| {
-                        view.view
-                            .apply(&frame, revision)
-                            .map_err(WireSessionError::Stream)
-                    })?;
-                *session_revision = revision;
-                Ok(())
-            });
-            if let Err(error) = folded {
-                // End a malformed or over-budget fold at this boundary;
-                // never keep consuming past a failed display transition.
-                follows.remove(key);
-                return Poll::Ready(Err(error));
-            }
-            if matches!(
-                frame.wire().body.as_ref(),
-                Some(wire::session_frame::Body::Closed(_))
-            ) {
-                follows.remove(key);
-            }
-            Poll::Ready(Ok(Some(frame.into_wire())))
-        }
-        Poll::Ready(Some(Err(error))) => {
-            follows.remove(key);
-            Poll::Ready(Err(WireSessionError::Stream(error)))
-        }
-        Poll::Ready(None) => {
-            follows.remove(key);
-            Poll::Ready(Ok(None))
-        }
-    }
-}
 
 /// A filesystem follow requests every record of its `fs:/` resource; unlike
 /// a stream follow it may carry a key filter selecting a subtree.
