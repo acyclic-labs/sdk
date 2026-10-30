@@ -16,7 +16,7 @@
 //! rewritten to a fresh log that replaces it atomically, so space is
 //! reclaimed in amortised constant work per dead byte.
 use crate::{Medium, MediumError, Store};
-use acyclic_native_runtime::{LogFrame, spawn_persistence};
+use acyclic_native_runtime::{LogFrame, PersistenceKey, spawn_persistence};
 use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -124,7 +124,7 @@ fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'stati
     let submitted = spawn_persistence(
         "objects",
         operation,
-        &format_args!("{:p}/{key:x}", Arc::as_ptr(&medium.shared)),
+        PersistenceKey::new(Arc::as_ptr(&medium.shared) as usize, key as u64),
         work,
     );
     async move { submitted.await? }
@@ -452,7 +452,8 @@ impl LocalMedium {
         }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
-        let shared = spawn_persistence("objects", "open", &"root", move || {
+        let key = PersistenceKey::new(root.as_os_str().as_encoded_bytes().as_ptr() as usize, 0);
+        let shared = spawn_persistence("objects", "open", key, move || {
             open_root(root, durability, anchor)
         })
         .await

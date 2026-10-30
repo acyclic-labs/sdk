@@ -18,7 +18,7 @@ impl FileLease {
     pub fn submit<C, T, E, A, F>(
         medium: &'static str,
         kind: &'static str,
-        key: &dyn std::fmt::Display,
+        key: crate::PersistenceKey,
         acquire: A,
         operation: F,
     ) -> impl Future<Output = io::Result<Result<T, E>>> + Send + use<C, T, E, A, F>
