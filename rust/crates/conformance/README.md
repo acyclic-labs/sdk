@@ -51,6 +51,21 @@ Filesystem reads select an immutable generation; staged writes and dirty
 transaction publication are timed separately. Objects PUT ends at stored-byte
 admission; the explicit crash-survival flush occurs outside its interval, as
 required by the distinct `Blobs::put` and `Blobs::flush` contracts.
+Actor entry uses the population's original Handler, wrapped through the public
+host composition seam. Each sample commits a fresh cancellation input and its
+activation together, then measures `event-drain-to-handler-entry` from explicit
+resident delivery admission to `Handler::on_record`. Input publication is
+outside that interval. `event-drain-completion` separately includes checkpoint
+durability and finite-input exhaustion; neither interval claims to measure a
+continuous activation-follow notification. Entry identity and exactly one
+invocation are checked, along with the consumed cursor and idle checkpoint.
+The delivery scope closes the observing channel on completion, error or
+cancellation. A dropped scope must return typed producer loss, and a real
+entry checked against another input cursor must be rejected. Entry-prefix work
+counts remain missing because whole-drain work cannot be attributed to it.
+Warm Actor reads retain a `Bytes` handle and charge no payload-copy floor.
+Independent metadata flushes warm this read fixture but do not qualify the
+combined mutation/checkpoint/cursor durable-write row.
 Follow parks at the tail before
 its append producer starts and measures notification-waker entry through record
 delivery; append durability completes concurrently in its own interval.

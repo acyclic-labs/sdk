@@ -179,8 +179,8 @@ impl Measurements {
             let Some(row) = self.rows.remove(&operation) else {
                 complete = false;
                 let reason = match operation {
-                    Operation::ActorWake => {
-                        "Runtime::wake reports queue admission; completed delivery needs its original producer event"
+                    Operation::ActorDurableWrite => {
+                        "independent state flush does not combine metadata with the original checkpoint and consumed input cursor"
                     }
                     Operation::WorkerCold | Operation::WorkerWarm => {
                         "native Worker execution producer is absent from this composition"
@@ -204,6 +204,7 @@ impl Measurements {
             let floor_ns = floors.compose(terms);
             emit(serde_json::json!({
                 "schema": 1, "kind": "operation", "operation": operation.name(),
+                "measurement_label": if operation == Operation::ActorWake { "event-drain-to-handler-entry" } else { operation.name() },
                 "agents": self.agents, "active": 1, "quantiles": quantiles,
                 "floor": terms, "floor_ns": floor_ns,
                 "p50_ratio": quantiles.p50_ns / floor_ns,

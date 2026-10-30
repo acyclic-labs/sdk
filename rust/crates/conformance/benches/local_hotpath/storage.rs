@@ -1,7 +1,8 @@
 use super::{
+    actor_delivery::{Entries, EntryError},
     calibrate::Floors,
     population::{Fixture, id, key},
-    report::{Measurements, Observation, Result, Terms, emit},
+    report::{Measurements, Observation, Quantiles, Result, Terms, emit, ns},
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -86,6 +87,7 @@ pub(super) async fn run(
     objects(fixture, samples, &mut rows).await?;
     streams(fixture, samples, &mut rows).await?;
     actors(fixture, samples, &mut rows).await?;
+    actor_delivery(fixture, agents, samples, &mut rows).await?;
     filesystem(fixture, samples, &mut rows).await?;
     sessions(fixture, agents, samples, &mut rows).await?;
     rows.finish(floors)
@@ -298,19 +300,129 @@ async fn actors(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> R
     for index in 0..samples {
         let payload = Bytes::from(vec![u8::try_from(index % 256)?; 128]);
         let operation = key(format!("actor-write/{index}"))?;
-        timed!(rows, Operation::ActorDurableWrite, commit(128), async {
-            state.transaction(|transaction| {
-                transaction.put("value".into(), payload.clone());
-                Ok(())
-            })?;
-            state.flush(operation).await
+        // Warm-read setup is independent state publication, not the combined
+        // mutation/checkpoint/cursor operation required by the durable row.
+        state.transaction(|transaction| {
+            transaction.put("value".into(), payload.clone());
+            Ok(())
         })?;
-        let value = timed!(rows, Operation::ActorWarmRead, read(128), async {
+        state.flush(operation).await?;
+        // Cloning Bytes retains a handle; it does not copy the payload.
+        let value = timed!(rows, Operation::ActorWarmRead, read(0), async {
             state.transaction(|transaction| Ok(transaction.get("value").cloned()))
         })?;
         require_bytes(value.ok_or("actor metadata missing")?.as_ref(), &payload)?;
     }
     Ok(())
+}
+
+async fn actor_delivery(
+    fixture: &Fixture,
+    agents: usize,
+    samples: usize,
+    rows: &mut Measurements,
+) -> Result {
+    use acyclic_harness_core::agent::{
+        AgentPath, Control, Delivered, INBOX, InboxRecord, IntentId, Phase, Sender,
+    };
+    use std::sync::atomic::Ordering;
+
+    let path = AgentPath::root(&id(0)?);
+    let host = fixture.bound.agents();
+    let actor = host.actor(&path)?;
+    let runtime = host.runtime();
+    fixture
+        .entries
+        .check_dropped_producer(actor.clone())
+        .await?;
+    if runtime.counts() != (agents, 0) {
+        return Err("handler-entry population is not resident and idle".into());
+    }
+    let mut completed = Vec::with_capacity(samples);
+    for index in 0..=samples {
+        let by = Sender::Host {
+            host: "benchmark".into(),
+        };
+        let record = InboxRecord::Cancel(Control {
+            by: by.clone(),
+            id: IntentId::try_from(format!("delivery-{index}").as_str())?,
+        });
+        // AgentHost publishes the fresh input and Store::activation together
+        // in one original conditional commit. Publication is outside delivery.
+        let Delivered::Committed { inbox } = host.send(&path, &by, &record).await? else {
+            return Err("delivery input was not committed".into());
+        };
+        let expected = if index == 0 {
+            inbox.checked_add(1).ok_or("delivery cursor overflow")?
+        } else {
+            inbox
+        };
+        let (scope, receiver) = fixture.entries.arm(actor.clone(), expected)?;
+        let entries_before = fixture.entries.calls();
+        let started = Instant::now();
+        let drained = {
+            // The scope closes its producer on success, error or cancellation.
+            let _scope = scope;
+            Box::pin(runtime.drain_actor(&actor)).await
+        };
+        let elapsed = started.elapsed();
+        drained?;
+        if fixture.entries.calls().checked_sub(entries_before) != Some(1) {
+            return Err("fresh input did not enter the handler exactly once".into());
+        }
+        // The only producer was on the completed drain path. This receive
+        // must now contain its entry or return typed producer loss.
+        let entered = Entries::receive(receiver).await;
+        if index == 0 {
+            if entered != Err(EntryError::UnexpectedDelivery) {
+                return Err("handler-entry oracle accepted another input identity".into());
+            }
+            emit(
+                serde_json::json!({"schema": 1, "kind": "negative_control", "control": "real handler entry against another input cursor", "result": "rejected"}),
+            )?;
+        } else {
+            rows.record(
+                Operation::ActorWake,
+                Terms {
+                    wakes: 1,
+                    ..Terms::default()
+                },
+                entered?
+                    .checked_duration_since(started)
+                    .ok_or("handler entry preceded delivery")?,
+                // Entry is a prefix of drain. Completion work cannot be
+                // attributed to that prefix by a whole-drain ledger delta.
+                Observation::default(),
+            )?;
+            completed.push(ns(elapsed));
+        }
+        let cut = runtime.store().load(&actor).await?;
+        let state = cut.state().ok_or("delivered actor state absent")?;
+        if state.subscriptions().get(INBOX).map(|value| value.cursor) != inbox.checked_add(1)
+            || state.checkpoint().is_none()
+            || !matches!(host.state(&path).await?.phase, Phase::Idle)
+            || fixture.model_calls.load(Ordering::Relaxed) != 0
+        {
+            return Err("delivery did not durably consume its original idle input".into());
+        }
+        // Clear the confirmed input's ready event through the same runtime.
+        // This is outside timing and must not enter the handler a second time.
+        if let Some((actor, error)) = Box::pin(runtime.drain()).await.into_iter().next() {
+            return Err(format!("settle delivery {actor:?}: {error}").into());
+        }
+        if runtime.counts() != (agents, 0) {
+            return Err("delivery changed the resident population or left ready work".into());
+        }
+        if fixture.entries.calls().checked_sub(entries_before) != Some(1) {
+            return Err("settled input entered the handler again".into());
+        }
+    }
+    emit(serde_json::json!({
+        "schema": 1, "kind": "delivery_completion", "operation": Operation::ActorWake.name(),
+        "agents": agents, "entry_label": "event-drain-to-handler-entry",
+        "completion_label": "event-drain-completion", "input_publication_timed": false,
+        "quantiles": Quantiles::new(&mut completed.clone())?, "raw_ns": completed,
+    }))
 }
 
 async fn filesystem(fixture: &Fixture, samples: usize, rows: &mut Measurements) -> Result {

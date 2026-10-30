@@ -1,4 +1,6 @@
 //! Serial measurements of native providers against same-device primitive floors.
+#[path = "local_hotpath/actor_delivery.rs"]
+mod actor_delivery;
 #[path = "local_hotpath/calibrate.rs"]
 mod calibrate;
 #[path = "local_hotpath/population.rs"]

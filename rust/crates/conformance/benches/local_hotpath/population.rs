@@ -1,4 +1,7 @@
-use super::report::{Result, emit};
+use super::{
+    actor_delivery::{Entries, Observed},
+    report::{Result, emit},
+};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_fs::{
     CancellationToken, EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore,
@@ -63,6 +66,8 @@ pub(super) struct Fixture {
     pub(super) fs: Filesystem,
     pub(super) bound: Binding,
     pub(super) provider: ProviderRef,
+    pub(super) entries: Arc<Entries>,
+    pub(super) model_calls: Arc<AtomicU64>,
 }
 
 pub(super) fn key(value: impl Into<String>) -> Result<IdempotencyKey> {
@@ -151,6 +156,12 @@ impl Fixture {
                 approval_policy: Default::default(),
             },
         )?;
+        let entries = Arc::new(Entries::default());
+        let handler = Arc::new(Observed {
+            handler: bound.handler(),
+            entries: entries.clone(),
+        });
+        let bound = bound.hosting(handler)?;
         let fixture = Self {
             stream,
             requests,
@@ -158,6 +169,8 @@ impl Fixture {
             fs,
             bound,
             provider,
+            entries,
+            model_calls: model_calls.clone(),
         };
         // Chunking bounds setup memory and command size; it never bounds the
         // population. Each root is an actual actor, inbox subtree and volume.
