@@ -31,11 +31,18 @@ semantic conversions, including their nested validation and post-admission
 checks. Its only public naming alias is wire `Error` to semantic `ServiceError`.
 Both protobuf syntax targets additionally call public semantic conversions for
 18 Stream message types, 20 Objects message types, nine Inference message types
-and seven Harness value message types. Harness provider, volume, file,
+and twelve Harness value/protocol message types. Harness provider, volume, file,
 attachment and conversation projections check their actual reverse codecs and
 missing-required-field refusal. Twenty admitted writer producers cover all
 three volume owners, both attachment representations, all nine conversation
 kinds and populated extension maps (40 pending binary/JSON inputs).
+Handshake, admission, status and cancellation validators keep the original
+caller-selected operation, retry key and owner through normalization. Foreign
+identities, missing status and unsupported protocol/digest refuse with the
+actual typed categories. Protocol admission precedes invalid capabilities.
+Ten more writer producers include the actual negotiated response and all five
+completion states (20 pending inputs). These checks cover identity binding;
+service authorization remains the host's responsibility.
 Objects requests reach all ten unary dispatches on fresh real
 MemoryObjects accounts. Its nine unary response types reach the public binary
 client and the shared request/response verifier; admission and normalized
