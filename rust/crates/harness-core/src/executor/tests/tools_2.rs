@@ -138,6 +138,25 @@ async fn policy_denial_returns_to_the_model_before_dispatch() -> Result<()> {
         assert_eq!(executor.execute(input, &journal).await?, output);
         assert_eq!(model.requests().len(), 2);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
+        // A later denial cannot settle an effect whose start was already recorded.
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "started".into(),
+            name: "example.echo".into(),
+            arguments: json!({}),
+        };
+        let tool = executor.tools.get(&invocation.name, None, None)?.unwrap();
+        let started = StockExecution::ordinary(&executor)
+            .require_tool_policy(&journal, invocation.operation_id, &invocation, tool, true)
+            .await;
+        if deny {
+            assert!(
+                matches!(started, Err(Error::Indeterminate(id)) if id == invocation.operation_id)
+            );
+        } else {
+            assert!(matches!(started, Ok(None)));
+        }
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), usize::from(!deny));
     }
     Ok(())
 }

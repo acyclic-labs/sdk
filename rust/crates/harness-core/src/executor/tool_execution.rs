@@ -397,7 +397,7 @@ impl StockExecution<'_> {
         let Some(policy) = &self.stock.policy else {
             let denial = Error::Unauthorized("no approval policy admits this tool call".into());
             return if started {
-                Err(denial)
+                Err(Error::Indeterminate(invocation.operation_id))
             } else {
                 Ok(Some(PolicyStop::Failed(denial)))
             };
@@ -427,18 +427,23 @@ impl StockExecution<'_> {
         match decision {
             ToolPolicyDecision::Allow => {}
             // A denial before dispatch is the call's result; the pinned policy
-            // re-derives it on replay. After a recorded start it is a conflict.
+            // re-derives it on replay. A recorded start requires reconciliation,
+            // so a later denial cannot establish that the effect never happened.
             ToolPolicyDecision::Deny { reason } if !started => {
                 return Ok(Some(PolicyStop::Failed(Error::Unauthorized(reason))));
             }
-            ToolPolicyDecision::Deny { reason } => {
-                return Err(Error::Unauthorized(reason));
+            ToolPolicyDecision::Deny { .. } => {
+                return Err(Error::Indeterminate(invocation.operation_id));
             }
             ToolPolicyDecision::RequireApproval { prompt } => {
                 if !scope.grants().contains(capability::INTERACTION_ROUTE) {
-                    return Err(Error::Unauthorized(
-                        "stock tool approval requires interaction:route".into(),
-                    ));
+                    return if started {
+                        Err(Error::Indeterminate(invocation.operation_id))
+                    } else {
+                        Ok(Some(PolicyStop::Failed(Error::Unauthorized(
+                            "stock tool approval requires interaction:route".into(),
+                        ))))
+                    };
                 }
                 let task = TaskId::from_bytes(operation_id.into_bytes());
                 let ((approval_operation, request), _hold) = tool_approval_request(
