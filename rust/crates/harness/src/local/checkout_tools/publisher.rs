@@ -125,12 +125,12 @@ impl CheckoutPublisher {
             if original.is_none() {
                 if let Some(native) = native {
                     native.sync().await?;
-                } else if let Some(mounted) = &self.tools.workspace.mounted {
-                    mounted.sync().await.map_err(storage)?;
-                } else if mount.view.source.is_none()
-                    && matches!(&publication, Publication::Replace(_))
-                {
-                    self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
+                } else if mount.view.source.is_none() {
+                    if let Some(mounted) = &self.tools.workspace.mounted {
+                        mounted.sync().await.map_err(storage)?;
+                    } else if matches!(&publication, Publication::Replace(_)) {
+                        self.tools.capture((&self.tools.workspace, view), watcher, operation, 0, PublicationPermit::Unrestricted)?.await?;
+                    }
                 }
             }
             let file = match publication {
