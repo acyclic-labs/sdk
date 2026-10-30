@@ -144,7 +144,7 @@ fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
     ActiveFlightGuard {
         store: &first,
         object_id: object(1),
-        flight,
+        flight: Some(flight),
     }
     .finish(None)
     .unwrap();
@@ -154,7 +154,7 @@ fn fills_share_capacity_and_only_coalesce_within_their_namespace() {
     ActiveFlightGuard {
         store: &second,
         object_id: object(1),
-        flight,
+        flight: Some(flight),
     }
     .finish(None)
     .unwrap();

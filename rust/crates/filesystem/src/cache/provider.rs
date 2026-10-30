@@ -169,35 +169,29 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
             work.original = context.original;
         }
         let result = async {
-            loop {
-                work.accounting()
-                    .charge(cache_probe_work())
-                    .map_err(crate::async_storage::object_error)?;
-                match self.read_plan(
-                    object_id,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    work.original,
-                )? {
-                    ReadPlan::Hit(bytes) => return shared_read(bytes, maximum_bytes),
-                    ReadPlan::Leader(flight) => {
-                        return self
-                            .load_leader(object_id, maximum_bytes, flight, &mut work)
-                            .await;
-                    }
-                    ReadPlan::Follower(flight) => {
-                        let result = wait_for_flight(
-                            &flight,
-                            work.cancellation,
-                            #[cfg(not(target_arch = "wasm32"))]
-                            work.original,
-                        )
-                        .await?;
-                        self.record_coalesced()?;
-                        if let Some(bytes) = result {
-                            return shared_read(bytes, maximum_bytes);
-                        }
-                        self.remove_flight(object_id, &flight)?;
-                    }
+            work.accounting()
+                .charge(cache_probe_work())
+                .map_err(crate::async_storage::object_error)?;
+            match self.read_plan(
+                object_id,
+                #[cfg(not(target_arch = "wasm32"))]
+                work.original,
+            )? {
+                ReadPlan::Hit(bytes) => shared_read(bytes, maximum_bytes),
+                ReadPlan::Leader(flight) => {
+                    self.load_leader(object_id, maximum_bytes, flight, &mut work)
+                        .await
+                }
+                ReadPlan::Follower(flight) => {
+                    let bytes = wait_for_flight(
+                        &flight,
+                        work.cancellation,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        work.original,
+                    )
+                    .await;
+                    self.record_coalesced()?;
+                    shared_read(bytes?, maximum_bytes)
                 }
             }
         }
@@ -220,7 +214,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for CachedObjectStore<S> {
         }
         let result = async {
             let mut prepared = self.prepare_batch(requests, &mut work)?;
-            let leaders = self.load_batch_leaders(&prepared, &mut work).await?;
+            let leaders = self.load_batch_leaders(&mut prepared, &mut work).await?;
             let mut values = Owned::allocate(requests.len(), &mut work.accounting())
                 .map_err(crate::async_storage::object_error)?;
             for (request, slot) in requests

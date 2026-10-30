@@ -744,6 +744,10 @@ pub enum ObjectStoreError {
     /// Exact typed object is absent.
     #[error("object is missing")]
     Missing,
+    /// The original shared read failed or its owner disappeared before producing bytes.
+    /// The leader retains its original backend error; followers never issue a replacement read.
+    #[error("the original shared object read produced no result")]
+    SharedReadUnavailable,
     /// Supplied bytes do not match the typed object digest.
     #[error("object digest does not match canonical bytes")]
     DigestMismatch,
