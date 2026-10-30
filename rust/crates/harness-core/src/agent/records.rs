@@ -24,8 +24,9 @@ pub const MAX_VOLUMES: usize = 8;
 /// carried by their one shared header. Any change to a persisted shape bumps
 /// it, and readers refuse every other version whole: there is no migration
 /// code. The headerless format before it is version 1; version 2 carries a
-/// spawn brief by file reference.
-pub const RECORD_VERSION: u32 = 2;
+/// spawn brief by file reference. Version 3 binds goal runs to their committed
+/// terminal conversation entry.
+pub const RECORD_VERSION: u32 = 3;
 
 /// A persisted record of a format version this build does not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]

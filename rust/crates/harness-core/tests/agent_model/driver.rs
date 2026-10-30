@@ -576,6 +576,13 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
 
 #[tokio::test]
 async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_blocks_it() -> Result {
+    use acyclic_stream::{CommitOutcome, MemoryStream, StreamProvider};
+    let provider = MemoryStream::default();
+    let missing_completion = MemoryStream::default();
+    let wrong_completion = MemoryStream::default();
+    super::create(&provider, id(1)).await?;
+    super::create(&missing_completion, id(1)).await?;
+    super::create(&wrong_completion, id(1)).await?;
     let path = AgentPath::root(&id(1));
     let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     let goal = Arc::new(Goal {
@@ -600,7 +607,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
         let settled = step(
             &driver,
             &path,
-            Some(state),
+            Some(state.clone()),
             sequence,
             Wake::Inbox { sequence, record },
             acyclic_actors::guest::CancellationToken::new(),
@@ -612,6 +619,94 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
             assert_eq!(*message.body, file("GOAL.md")?);
             sent.push(message.id.as_str().to_owned());
             next = Some(InboxRecord::Message(message));
+        }
+        let commit = lower(
+            &settled,
+            sequence + 1,
+            delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+        )?;
+        assert!(matches!(
+            provider.commit(commit.clone()).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(
+            matches!(provider.commit(commit).await?, CommitOutcome::Committed(_)),
+            "delivery replay changes no result"
+        );
+        // The original lowering without its terminal join still commits every
+        // conversation entry, but cannot answer the original goal request.
+        let mut broken = lower(
+            &settled,
+            sequence + 1,
+            delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+        )?;
+        broken.mutations.retain(|mutation| !matches!(mutation,
+            acyclic_stream::CommitMutation::Append { path, .. } if path.as_str().contains("/goals/")));
+        assert!(matches!(
+            missing_completion.commit(broken).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let mut wrong = Step {
+            state: settled.state.clone(),
+            outs: settled.outs.clone(),
+            status: settled.status.clone(),
+            alarm: settled.alarm,
+        };
+        if sequence == 3 {
+            for out in &mut wrong.outs {
+                if let Out::Conversation(bytes) = out {
+                    let mut entry = ConversationEntry::decode(bytes)?;
+                    entry.goal = Some(OperationId::from_bytes([99; 16]));
+                    *bytes = entry.encode()?;
+                }
+            }
+        }
+        let wrong = lower(
+            &wrong,
+            sequence + 1,
+            delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+        )?;
+        assert!(matches!(
+            wrong_completion.commit(wrong).await?,
+            CommitOutcome::Committed(_)
+        ));
+        let answer = reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?;
+        if sequence < 3 {
+            assert_eq!(
+                answer,
+                Reply::Pending,
+                "first settlement is not the goal's result"
+            );
+            let mut cancelled = settled.state.clone();
+            cancelled.dropped_before = sequence + 1;
+            assert_eq!(
+                reply(&provider, &cancelled, sequence + 1, &intent("m1"), 1).await?,
+                Reply::Dropped
+            );
+        } else {
+            let Reply::Answered {
+                sequence: result,
+                entry,
+                origin: Some(origin),
+            } = answer
+            else {
+                return Err("goal did not return its terminal conversation entry".into());
+            };
+            assert_eq!((result, origin.inbox, entry.inbox), (2, 1, 3));
+            assert_eq!(entry.goal, origin.goal);
+            assert_eq!(
+                reply(&missing_completion, &settled.state, 4, &intent("m1"), 1).await?,
+                Reply::Pending
+            );
+            assert!(matches!(
+                reply(&wrong_completion, &settled.state, 4, &intent("m1"), 1).await,
+                Err(Error::Record("goal completion names another run"))
+            ));
+            // A stale checkpoint cannot expose the future terminal record.
+            assert_eq!(
+                reply(&provider, &state, 3, &intent("m1"), 1).await?,
+                Reply::Pending
+            );
         }
         state = settled.state;
     }
@@ -638,6 +733,11 @@ ship it
     for status in [GoalStatus::Blocked, GoalStatus::Done] {
         *goal.status.lock().expect("lock") = status;
         let sequence = 4 + u64::from(status == GoalStatus::Done);
+        let mut user = user.clone();
+        let InboxRecord::Message(message) = &mut user else {
+            return Err("original input is not a message".into());
+        };
+        message.id = intent(&format!("m{sequence}"));
         let settled = step(
             &driver,
             &path,
@@ -645,12 +745,29 @@ ship it
             sequence,
             Wake::Inbox {
                 sequence,
-                record: user.clone(),
+                record: user,
             },
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
         assert!(continuation(&settled, &path).is_none());
+        let commit = lower(
+            &settled,
+            sequence + 1,
+            delivery_key(&settled.state, &format!("goal-{sequence}"))?,
+        )?;
+        assert!(matches!(
+            provider.commit(commit).await?,
+            CommitOutcome::Committed(_)
+        ));
+        assert!(
+            matches!(reply(&provider, &settled.state, sequence + 1, &intent(&format!("m{sequence}")), sequence).await?,
+            Reply::Answered { origin: None, entry, .. } if entry.inbox == sequence)
+        );
+        assert!(
+            matches!(reply(&provider, &settled.state, sequence + 1, &intent("m1"), 1).await?,
+            Reply::Answered { sequence: 2, entry, origin: Some(origin) } if entry.inbox == 3 && origin.inbox == 1)
+        );
         state = settled.state;
     }
     assert_eq!(goal.rewrites.lock().expect("lock").len(), 1);

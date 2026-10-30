@@ -23,6 +23,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
         input,
         output: file("output")?,
         outcome: Default::default(),
+        goal: None,
     }
     .encode()?)
 }
@@ -83,6 +84,7 @@ async fn a_reply_is_answered_pending_dropped_or_a_conflict() -> Result {
         let Reply::Answered {
             sequence: found,
             entry,
+            ..
         } = ask(state.clone(), name, inbox).await?
         else {
             return Err(format!("{name} is not answered").into());

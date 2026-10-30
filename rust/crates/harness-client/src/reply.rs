@@ -325,14 +325,24 @@ fn validate_reply(
             | AgentCommand::Rewind { .. }
             | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
-        (AgentReply::Reply { reply }, AgentCommand::Reply { id, inbox, .. }) => {
+        (AgentReply::Reply { reply }, AgentCommand::Reply { agent, id, inbox }) => {
             // An answer is the entry of exactly the requested message.
             return match reply {
-                Reply::Answered { entry, .. }
-                    if entry.inbox != *inbox
-                        || !matches!(&entry.input, TurnInput::Message { id: settled, .. } if settled == id) =>
-                {
-                    Err(CommandError::Invalid)
+                Reply::Answered { entry, origin, .. } => {
+                    let request = origin.as_deref().unwrap_or(entry);
+                    if request.inbox != *inbox
+                        || !matches!(&request.input, TurnInput::Message { id: settled, .. } if settled == id)
+                        || match origin {
+                            Some(origin) => !origin
+                                .goal
+                                .is_some_and(|run| entry.continues_goal(agent, run)),
+                            None => entry.goal.is_some(),
+                        }
+                    {
+                        Err(CommandError::Invalid)
+                    } else {
+                        Ok(())
+                    }
                 }
                 _ => Ok(()),
             };
