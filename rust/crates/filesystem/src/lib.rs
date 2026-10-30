@@ -141,7 +141,6 @@ pub mod native_mount;
 mod native_name;
 pub mod operation_window;
 pub mod path;
-mod path_index;
 pub mod performance;
 mod record_store;
 pub mod s3;

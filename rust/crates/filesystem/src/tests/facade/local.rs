@@ -83,7 +83,6 @@ async fn local_root_lifecycle_outlives_provider_destruction()
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        path_index: crate::path_index::MemoryGenerationPathIndex::default(),
         generation_positions: super::super::generation_cache::GenerationPositions::default(),
         policy_cache: super::super::policy_cache::PolicyCache::default(),
         publication_proof: Default::default(),

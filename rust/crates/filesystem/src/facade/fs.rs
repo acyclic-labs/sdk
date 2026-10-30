@@ -17,7 +17,6 @@ pub(super) struct FsInner<A, O> {
     pub(super) objects: O,
     pub(super) capabilities: EmbeddedCapabilities,
     pub(super) workspace_namespace: [u8; 16],
-    pub(super) path_index: crate::path_index::MemoryGenerationPathIndex,
     pub(super) generation_positions: super::generation_cache::GenerationPositions,
     pub(super) policy_cache: super::policy_cache::PolicyCache,
     pub(super) publication_proof: crate::kernel::PublicationCache,
@@ -181,10 +180,6 @@ impl<A, O> Fs<A, O> {
         self.same_deployment(&workspace.volume.fs)
     }
 
-    pub(crate) fn path_index(&self) -> &crate::path_index::MemoryGenerationPathIndex {
-        &self.inner.path_index
-    }
-
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
     }
@@ -222,7 +217,6 @@ impl<A, O> Fs<A, O> {
                 objects,
                 capabilities,
                 workspace_namespace,
-                path_index: crate::path_index::MemoryGenerationPathIndex::default(),
                 generation_positions: super::generation_cache::GenerationPositions::default(),
                 policy_cache: super::policy_cache::PolicyCache::default(),
                 publication_proof: Default::default(),
