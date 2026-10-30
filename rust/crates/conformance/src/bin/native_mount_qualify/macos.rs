@@ -140,7 +140,7 @@ fn macos_nfs_toolchain(mount: &Path) -> Result<(), Failure> {
     }
     if !acyclic_native_runtime::process_status(
         &mut Command::new(&binary),
-        std::time::Duration::from_secs(120),
+        acyclic_native_runtime::CaptureSchedule::Unbounded,
     )?
     .success()
     {

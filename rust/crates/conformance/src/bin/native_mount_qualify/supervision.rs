@@ -28,12 +28,11 @@ pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
     }
 }
 
-pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), Failure> {
+pub(super) fn run_supervised_case(case: &str) -> Result<(), Failure> {
     let output = capture_child(
         Command::new(std::env::current_exe()?)
             .arg("--qualification-case-worker")
             .arg(case),
-        timeout,
     )?;
     if output.status.success() {
         Ok(())
@@ -181,18 +180,15 @@ impl CapturedChild {
     }
 }
 
-pub(super) fn capture_child(
-    command: &mut Command,
-    timeout: Duration,
-) -> Result<std::process::Output, Failure> {
+pub(super) fn capture_child(command: &mut Command) -> Result<std::process::Output, Failure> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     ProcessTree::spawn(command)?
         .wait_with_output(
-            timeout,
-            usize::try_from(MAX_CHILD_OUTPUT_BYTES)?,
+            acyclic_native_runtime::CaptureSchedule::Unbounded,
+            usize::MAX,
             None,
             || Ok(()),
             |_| Ok(acyclic_native_runtime::ProcessInput::default()),

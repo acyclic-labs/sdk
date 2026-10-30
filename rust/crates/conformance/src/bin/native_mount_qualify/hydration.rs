@@ -15,7 +15,6 @@ pub(super) async fn rename_hydration_case() -> Result<(), Failure> {
         Command::new(std::env::current_exe()?)
             .arg("--rename-hydration-child")
             .arg(&mount_path),
-        Duration::from_secs(10),
     );
     let synced = mount.sync().await.map_err(Failure::from);
     let unmounted = mount.unmount().await.map_err(Failure::from);

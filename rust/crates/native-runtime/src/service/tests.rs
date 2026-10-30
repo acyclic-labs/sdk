@@ -75,3 +75,29 @@ fn the_starter_distinguishes_readiness_failure_and_exit() -> io::Result<()> {
     assert_eq!(reason.len(), 4096);
     Ok(())
 }
+
+#[test]
+fn status_schedule_child() {
+    if std::env::var_os("ACYCLIC_STATUS_SCHEDULE_CHILD").is_some() {
+        std::process::exit(7);
+    }
+}
+
+#[test]
+fn process_status_keeps_unbounded_exit_and_rejects_invalid_deadline() -> io::Result<()> {
+    let command = || -> io::Result<std::process::Command> {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args(["--exact", "service::tests::status_schedule_child"])
+            .env("ACYCLIC_STATUS_SCHEDULE_CHILD", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        Ok(command)
+    };
+    let status = process_status(&mut command()?, CaptureSchedule::Unbounded)?;
+    assert_eq!(status.code(), Some(7));
+    let error = process_status(&mut command()?, CaptureSchedule::Overflow)
+        .expect_err("invalid caller deadline must not report child status");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    Ok(())
+}

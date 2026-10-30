@@ -684,12 +684,20 @@ impl ProcessTree {
         Ok(())
     }
 
-    /// Observes direct-child exit within `timeout`, retaining descendant ownership.
-    pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
-        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
-        })?;
-        self.wait_exit_until(Some(deadline), None)
+    /// Observes direct-child exit on the caller's original schedule, retaining
+    /// descendant ownership. An unbounded schedule waits only on OS exit.
+    pub fn wait(&mut self, schedule: impl Into<CaptureSchedule>) -> io::Result<ExitStatus> {
+        let deadline = match schedule.into() {
+            CaptureSchedule::Unbounded => None,
+            CaptureSchedule::Deadline(deadline) => Some(deadline),
+            CaptureSchedule::Overflow => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "process deadline overflow",
+                ));
+            }
+        };
+        self.wait_exit_until(deadline, None)
     }
 
     /// Waits for direct-child exit, retaining descendant ownership.
