@@ -25,6 +25,7 @@ copy a codec into a model. The obligations are:
 | `bounded_actor_triples_round_trip_and_refuse_resource_encodings` | Admitted four-byte account, namespace and ID triples round-trip; Actor and Resource grammars are disjoint, and old/unknown Actor versions refuse before fields. |
 | `usn_checkpoint_preserves_accepted_bytes_and_refuses_other_versions` | Every admitted 40-byte checkpoint has one encoding and a representable signed USN; truncations and old/unknown versions refuse before fields. |
 | `log_prefixes_preserve_lengths_and_refuse_unrepresentable_or_outside_bounds` | Both four/eight-byte log prefixes preserve every length bit under arbitrary configured bounds, including reversed bounds. Narrow overflows, out-of-domain lengths and truncated prefixes refuse; every admitted prefix has one canonical spelling. |
+| `bounded_resource_components_are_lossless_and_have_one_spelling` | Every opaque byte sequence through four bytes round-trips; every admitted spelling through twelve bytes re-encodes identically. An incomplete appended escape refuses. |
 
 Kani's unwinding assertions check the stated bounds; there are no waits or
 timeouts. ID operations inspect a fixed maximum of 113 bytes, with no heap
@@ -39,6 +40,9 @@ These added harnesses and the expanded seal negative control are unexecuted.
 The log-prefix harness covers exactly the bounded prefix codec. It does not
 prove full-frame extent arithmetic, body allocation or SHA-256; the shared
 format inventory records the separate extent-arithmetic admission work.
+The resource-component model bounds decoded bytes to four and input syntax to
+twelve bytes. The unbounded production grammar performs input-proportional
+work; arbitrary lengths remain in the Auth fuzz target.
 
 These harnesses establish properties only when their Kani run succeeds. They
 do not establish that unrelated consumers use the codecs: that is a separate

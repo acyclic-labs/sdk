@@ -319,6 +319,21 @@ fn capture() -> Result<(), Box<dyn Error>> {
         "encode_grpc_frame",
         &mut manifest,
     )?;
+    let opaque = b"\0./%\xff\xc3\xa9";
+    save(
+        "auth",
+        "resource-component",
+        acyclic_auth::encode_component(opaque).as_bytes(),
+        "acyclic_auth::encode_component from opaque control, separator and non-UTF-8 bytes",
+        &mut manifest,
+    )?;
+    save(
+        "auth",
+        "objects-resource",
+        acyclic_auth::objects_resource(b"bucket", opaque).as_bytes(),
+        "acyclic_auth::objects_resource from an opaque key containing separators",
+        &mut manifest,
+    )?;
     let token = acyclic_auth::testing::root(|block| {
         block.caveats.push(acyclic_auth::contract::Caveat {
             kind: acyclic_auth::contract::CaveatKind::ExpiresAtUnixSeconds(500),
