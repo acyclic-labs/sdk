@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { API, SymbolFlags, TypeFlags, SignatureKind } from "typescript/unstable/sync";
-import { isFunctionDeclaration } from "typescript/unstable/ast/is";
+import { SyntaxKind } from "typescript/unstable/ast";
+import { isCallExpression, isClassDeclaration, isConstructorDeclaration, isExpressionStatement, isFunctionDeclaration } from "typescript/unstable/ast/is";
 
 const objectMethods = { PutBlob: "put", GetBlob: "get", HeadBlob: "head", DeleteBlob: "delete", ListBlobs: "list" };
 // These RPCs compose the same canonical provider operations; they are not
@@ -68,6 +69,21 @@ export function createSourceInspector(root, read = path => {
     const file = module("actors/src/client.ts");
     return Boolean(file && file.statements.some(statement => isFunctionDeclaration(statement) && statement.name?.text === name && callable(value(checker.getSymbolAtLocation(statement.name)))));
   };
+  const actorsInstalled = () => {
+    const installer = original(exported("actors/src/generated/actors-service.ts", "installActorsMethods"));
+    if (!installer || !callable(value(installer))) return false;
+    const client = module("actors/src/client.ts")?.statements.find(statement =>
+      isClassDeclaration(statement) && statement.name?.text === "ActorsClient");
+    const constructor = client?.members.find(isConstructorDeclaration);
+    return Boolean(constructor?.body?.statements.some(statement => {
+      if (!isExpressionStatement(statement) || !isCallExpression(statement.expression)) return false;
+      const call = statement.expression;
+      return call.arguments[0]?.kind === SyntaxKind.ThisKeyword &&
+        original(checker.getSymbolAtLocation(call.expression))?.id === installer.id &&
+        Boolean(checker.getResolvedSignature(call));
+    }));
+  };
+  const installed = actorsInstalled();
   const inventories = new Map();
   const inventory = family => {
     if (!inventories.has(family)) {
@@ -89,7 +105,7 @@ export function createSourceInspector(root, read = path => {
     if (stream && !rustName) throw new Error(`RPC provider mapping missing for ${rpc.name}; recovery: update the canonical provider composition in scripts/public-rpc-source.mjs`);
     const rust = actors || objects || stream ? inventory(family) : { grpc: [], http: [] };
     const typescriptGrpcNodeBun = actors
-      ? member("actors/src/client.ts", "ActorsClient", operation) && binding("nativeBinding")
+      ? installed && member("actors/src/client.ts", "ActorsClient", operation) && binding("nativeBinding")
       : objects ? factory("objects/src/v1-grpc.ts", "createObjectsV1GrpcClients", "blobs", rpc.localName)
       : stream && factory("stream/src/grpc.ts", "createStreamGrpcClient", undefined, rpc.localName);
     const typescriptHttp = objects
@@ -108,7 +124,7 @@ export function createSourceInspector(root, read = path => {
     return {
       rustGrpc: rust.grpc.includes(rustName), rustHttp: rust.http.includes(rustName),
       typescriptGrpcNodeBun: Boolean(typescriptGrpcNodeBun), typescriptHttp: Boolean(typescriptHttp),
-      typescriptGrpcWeb: actors && member("actors/src/client.ts", "ActorsClient", operation) && binding("wasmBinding"),
+      typescriptGrpcWeb: actors && installed && rust.wasm?.includes(rustName) && member("actors/src/client.ts", "ActorsClient", operation) && binding("wasmBinding"),
       typescriptPackageExported: Boolean(typescriptPackageExported),
     };
   };

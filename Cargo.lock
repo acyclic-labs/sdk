@@ -82,6 +82,7 @@ name = "acyclic-actors-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-contract-derive",
  "js-sys",
  "serde-wasm-bindgen",
  "tokio-util",

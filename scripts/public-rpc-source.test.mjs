@@ -32,6 +32,19 @@ removed("removing an inherited Objects implementation changes exactly its HTTP r
   source => source.replace("async put(", "async removed_put("), "typescriptHttp");
 removed("compiler-emitted Rust inventory changes exactly the removed provider row", StreamService, "Read", "compatibility/rpc-implementations/stream.json",
   source => { const inventory = JSON.parse(source); inventory.grpc = inventory.grpc.filter(method => method !== "read"); return JSON.stringify(inventory); }, "rustGrpc");
+removed("compiler-emitted WASM bridge inventory changes exactly its removed RPC row", ActorsService, "InvokeActor", "compatibility/rpc-implementations/actors.json",
+  source => { const inventory = JSON.parse(source); inventory.wasm = inventory.wasm.filter(method => method !== "invoke_actor"); return JSON.stringify(inventory); }, "typescriptGrpcWeb");
+
+test("Actors declarations cannot substitute for installing the actual methods", () => {
+  const path = "typescript/packages/actors/src/client.ts";
+  const source = read(path);
+  const changed = source.replace("installActorsMethods(this,", "removedActorsMethods(this,");
+  assert.notEqual(changed, source);
+  const before = rows(ActorsService);
+  const after = rows(ActorsService, candidate => candidate === path ? changed : read(candidate));
+  assert.ok(before.every(row => row.typescriptGrpcNodeBun && row.typescriptGrpcWeb));
+  assert.deepEqual(after, before.map(row => ({ ...row, typescriptGrpcNodeBun: false, typescriptGrpcWeb: false })));
+});
 
 for (const [name, flag] of [["nativeBinding", "typescriptGrpcNodeBun"], ["wasmBinding", "typescriptGrpcWeb"]]) {
   test(`removing the typed Actors ${name} declaration removes its bridge exposure`, () => {

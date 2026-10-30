@@ -12,6 +12,14 @@ mod registration;
 
 /// Derive a method inventory from the same implementation rustc checks.
 /// The associated constant has no independently maintained method list.
+/// Additional arguments name attributes required on the inventoried impl.
+/// A bridge inventory therefore cannot silently outlive its export annotation.
+/// ```compile_fail
+/// use acyclic_contract_derive::implementation_methods;
+/// struct MissingBridge;
+/// #[implementation_methods(METHODS, wasm_bindgen)]
+/// impl MissingBridge { fn read() {} }
+/// ```
 ///
 /// Removing an implementation method removes exactly that inventory entry.
 /// ```
@@ -28,8 +36,28 @@ mod registration;
 /// ```
 #[proc_macro_attribute]
 pub fn implementation_methods(arguments: TokenStream, input: TokenStream) -> TokenStream {
-    let name = parse_macro_input!(arguments as syn::Ident);
+    let arguments = parse_macro_input!(arguments with syn::punctuated::Punctuated::<syn::Ident, syn::Token![,]>::parse_terminated);
     let implementation = parse_macro_input!(input as syn::ItemImpl);
+    let mut arguments = arguments.into_iter();
+    let Some(name) = arguments.next() else {
+        return syn::Error::new_spanned(&implementation, "expected inventory constant name")
+            .into_compile_error()
+            .into();
+    };
+    for required in arguments {
+        if !implementation
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident(&required))
+        {
+            return syn::Error::new_spanned(
+                &implementation,
+                format!("inventory requires #[{required}] on this implementation"),
+            )
+            .into_compile_error()
+            .into();
+        }
+    }
     implementation_methods::expand(name, implementation).into()
 }
 

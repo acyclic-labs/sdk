@@ -236,6 +236,7 @@ impl ActorsClient {
 
 macro_rules! operation_wrappers {
     ($(($method:ident, $name:literal)),+ $(,)?) => {
+        #[acyclic_contract_derive::implementation_methods(RPC_METHODS, wasm_bindgen)]
         #[wasm_bindgen]
         impl ActorsClient {
             $(
