@@ -8,7 +8,7 @@
   "sideEffects": false,
   "scripts": {
     "generate": "bun ../../../scripts/generate.mjs harness-actor",
-    "build": "bun run generate && bun ../../../scripts/build-wasm.mjs harness-actor && bun x tsc -b tsconfig.json",
+    "build": "bun ../../../scripts/build-wasm.mjs harness-actor && bun x tsc -b tsconfig.json",
     "test": "bun run build && bun test test"
   },
   "dependencies": {
