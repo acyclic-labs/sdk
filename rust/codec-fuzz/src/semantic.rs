@@ -239,26 +239,6 @@ pub(super) fn check(name: &str, bytes: &[u8]) {
                 acyclic_objects::AvailabilityCursor,
             >(bytes);
         }
-        "acyclic.actors.v1.DeploymentRequest" => {
-            admission!(acyclic_actors::wire::DeploymentRequest, |wire| {
-                acyclic_actors::contract::validate_deployment(&wire)
-            });
-        }
-        "acyclic.actors.v1.UpdateNamespaceRequest" => {
-            admission!(acyclic_actors::wire::UpdateNamespaceRequest, |wire| {
-                acyclic_actors::contract::validate_update(&wire)
-            });
-        }
-        "acyclic.actors.v1.DeleteAllRequest" => {
-            admission!(acyclic_actors::wire::DeleteAllRequest, |wire| {
-                acyclic_actors::contract::validate_delete(&wire)
-            });
-        }
-        "acyclic.actors.v1.AddSubscriptionRequest" => {
-            admission!(acyclic_actors::wire::AddSubscriptionRequest, |wire| {
-                acyclic_actors::contract::validate_add_subscription(&wire)
-            });
-        }
         "inference.customer.v1.RetainWarmRequest" => {
             inference::<acyclic_inference::wire::RetainWarmRequest>(
                 bytes,

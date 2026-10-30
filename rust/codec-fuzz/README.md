@@ -3,8 +3,8 @@ target here does not register a scheduled check.
 
 | Target | Production decoders exercised |
 | --- | --- |
-| `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects, Streams and Harness, including session messages, the protocol handshake and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. Every Auth entry also exercises its semantic admission and semantic decode/encode round trip, including grant, certificate, revocation, caller and attribute validation. |
-| `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. The resulting binary projection reaches the same typed and semantic checks as `protobuf`, including Auth admission. |
+| `protobuf` | Every declared message in Auth, Actors, Filesystem, Inference, Machines, Objects, Streams and Harness, including session messages, the protocol handshake and nested messages. The build script derives the table from the canonical descriptors and calls each real generated Rust message type. Every Auth and Actors entry also exercises its semantic admission and semantic decode/encode round trip, including grant, certificate, revocation, caller, attribute, deployment, binding, subscription and invocation validation. |
+| `protobuf_json` | The shared Protobuf JSON decoder over those same descriptors, including writer output, canonical value identity, caller bounds and trailing-input refusal. The resulting binary projection reaches the same typed and semantic checks as `protobuf`, including every Auth and Actors conversion. |
 | `session_frames` | Length-delimited and gRPC framing, minimal varints, chunk boundaries, concatenated frames and EOF. Whole-input decoding must agree with chunks of 1, 2, 5, 10 and 127 bytes; each step must consume input. |
 | `session_protocol` | Actual session admission and dispatch, including arbitrary first Hello, typed version refusal before credentials, initial interests and request-producer closure. |
 | `stream_persistence` | Canonical append/fork/commit commands, journal headers and checksum frames, memory and local snapshot containers, incarnations, retained retry observations, committed envelopes, semantic records, compressed read batches and change records. File and memory frame readers must agree. |
@@ -23,9 +23,12 @@ valid floating-point NaNs do not compare equal to themselves. Unknown protobuf
 fields may be discarded at a service boundary. Persisted canonical codecs also
 check byte equality wherever their contract requires it.
 
+The generated table links all thirty-six Actors message types to the actual
+semantic conversions, including their nested validation and post-admission
+checks. Its only public naming alias is wire `Error` to semantic `ServiceError`.
 Both protobuf syntax targets additionally call public semantic conversions for
-18 Stream message types, the Objects availability cursor, four Actors request
-validators and nine Inference message types. Accepted Stream projections use
+18 Stream message types, the Objects availability cursor and nine Inference
+message types. Accepted Stream projections use
 their actual reverse codec and preserve the complete semantic value, including
 record origins under explicit, matching and foreign follow contexts. Accepted
 Inference views must refuse a changed caller-selected identity. The one
