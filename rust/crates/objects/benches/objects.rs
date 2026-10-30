@@ -131,6 +131,29 @@ fn put_durable(bencher: Bencher, length: usize) {
         });
 }
 
+/// A put and the retain that commits it: one flush round covers the blob,
+/// its index key and the root batch.
+#[divan::bench(args = SIZES, sample_count = 20)]
+fn retain_durable(bencher: Bencher, length: usize) {
+    let runtime = runtime();
+    let (_root, blobs) = store(&runtime);
+    let root = acyclic_objects::RootId::new(*b"bench").unwrap();
+    let mut index = 0;
+    bencher
+        .counter(divan::counter::BytesCount::new(length))
+        .with_inputs(|| {
+            index += 1;
+            sized(index, length)
+        })
+        .bench_local_values(|body| {
+            runtime.block_on(async {
+                let put = blobs.put(body, Vec::new()).await.unwrap();
+                let digest = put.verified().unwrap().digest;
+                blobs.retain(&root, vec![digest]).await.unwrap()
+            })
+        });
+}
+
 /// Floor term `B_hash`: one content hash of the body.
 #[divan::bench(args = SIZES, sample_count = 20)]
 fn floor_hash(bencher: Bencher, length: usize) {

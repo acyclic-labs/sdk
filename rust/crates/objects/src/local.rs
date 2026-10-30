@@ -99,6 +99,8 @@ fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'stati
     key: usize,
     work: F,
 ) -> impl Future<Output = std::io::Result<T>> + use<T, F> {
+    #[cfg(test)]
+    SUBMITTED.set(SUBMITTED.get() + 1);
     let submitted = spawn_persistence(
         "objects",
         operation,
@@ -106,6 +108,13 @@ fn blocking<T: Send + 'static, F: FnOnce() -> std::io::Result<T> + Send + 'stati
         work,
     );
     async move { submitted.await? }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Work this thread has submitted, so a test sees how much of a flush is
+    /// in flight at once.
+    pub(crate) static SUBMITTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -588,37 +597,40 @@ impl Medium for LocalMedium {
         let paths: Vec<PathBuf> = keys.iter().map(|key| self.path(key)).collect();
         let durability = self.durability;
         // What this flush covers is snapshot first: a change finishing during
-        // it is tracked again, and stays unflushed. Members are submitted
-        // together, so the device can retire them as one batch; directories
-        // follow their entries, and Apple's one full flush follows every
-        // barrier.
+        // it is tracked again, and stays unflushed. Every member and each
+        // distinct directory are submitted together, so the device retires
+        // them as one batch, and the flush acknowledges only once all have;
+        // Apple's one full flush follows every barrier. A directory durable
+        // before its entry's data leaves a short or damaged key, which a
+        // crash may leave of any unflushed write and the store repairs.
         let (directories, covered) = self.unflushed.plan(&self.root.join("keys"), &paths);
-        let files: Vec<_> = paths
-            .iter()
-            .cloned()
+        let syncs: Vec<_> = paths
+            .into_iter()
             .zip(keys)
-            .map(|(path, key)| {
-                blocking(self, "flush-content", key.as_ptr() as usize, move || {
-                    sync_member(&path, durability)
+            .map(|(path, key)| (path, "flush-content", key.as_ptr() as usize, false))
+            .chain(directories.into_iter().map(|directory| {
+                let key = directory.as_os_str().as_encoded_bytes().as_ptr() as usize;
+                (directory, "flush-directory", key, true)
+            }))
+            .map(|(path, operation, key, directory)| {
+                blocking(self, operation, key, move || {
+                    if directory {
+                        sync_member_directory(&path, durability)
+                    } else {
+                        sync_member(&path, durability)
+                    }
                 })
             })
             .collect();
-        for file in files {
-            file.await.map_err(failed)?;
+        // Every sync is awaited, so none outlives a failed flush.
+        let mut failure = None;
+        for sync in syncs {
+            if let Err(error) = sync.await {
+                failure.get_or_insert(error);
+            }
         }
-        let directories: Vec<_> = directories
-            .into_iter()
-            .map(|directory| {
-                blocking(
-                    self,
-                    "flush-directory",
-                    directory.as_os_str().as_encoded_bytes().as_ptr() as usize,
-                    move || sync_member_directory(&directory, durability),
-                )
-            })
-            .collect();
-        for directory in directories {
-            directory.await.map_err(failed)?;
+        if let Some(error) = failure {
+            return Err(failed(error));
         }
         let root = self.root.clone();
         blocking(self, "flush-batch", 0, move || {
@@ -709,6 +721,65 @@ mod isolation_tests {
         let (_, covered) = medium.unflushed.plan(&keys, std::slice::from_ref(&path));
         medium.unflushed.forget(covered);
         assert!(!tracked(&medium.unflushed));
+    }
+
+    #[tokio::test]
+    async fn a_flush_submits_every_file_and_directory_sync_at_once() {
+        let root = tempfile::tempdir().unwrap();
+        let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        let keys = ["a/x", "a/y", "b/z"].map(str::to_owned);
+        for key in &keys {
+            medium
+                .create(key, OwnedBytes::from(vec![1; 8]))
+                .await
+                .unwrap();
+        }
+        let paths: Vec<_> = keys.iter().map(|key| medium.path(key)).collect();
+        let (directories, _) = medium.unflushed.plan(&medium.root.join("keys"), &paths);
+        // Two keys share a directory, which syncs once.
+        assert!(directories.len() < paths.len() * 2, "{directories:?}");
+        let durability = medium.durability;
+        // How many syncs a flush has in flight before its first completes;
+        // the current-thread runtime runs no completion within one poll.
+        async fn in_flight(flush: impl Future<Output = Result<(), MediumError>>) -> usize {
+            let mut flush = std::pin::pin!(flush);
+            let before = SUBMITTED.get();
+            assert!(futures::poll!(&mut flush).is_pending());
+            let submitted = SUBMITTED.get() - before;
+            flush.await.unwrap();
+            submitted
+        }
+        assert_eq!(
+            in_flight(medium.flush(&keys)).await,
+            paths.len() + directories.len()
+        );
+        // Negative control: directories after their files, serially.
+        let serial = async {
+            let files: Vec<_> = paths
+                .iter()
+                .cloned()
+                .map(|path| {
+                    blocking(&medium, "flush-content", 0, move || {
+                        sync_member(&path, durability)
+                    })
+                })
+                .collect();
+            for file in files {
+                file.await.map_err(failed)?;
+            }
+            for directory in &directories {
+                let directory = directory.clone();
+                blocking(&medium, "flush-directory", 0, move || {
+                    sync_member_directory(&directory, durability)
+                })
+                .await
+                .map_err(failed)?;
+            }
+            Ok(())
+        };
+        assert_eq!(in_flight(serial).await, paths.len());
     }
 
     #[test]
