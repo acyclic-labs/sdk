@@ -68,7 +68,10 @@ export async function installedHost({host,processes,fixture,capture,tools,prompt
  const run=async(program,args,input)=>{
   // The long-lived workspace owner holds the one mount lease. Commands retain
   // process-tree custody without attempting another lease over its live views.
-  const record={program,args,...await processes.runOwned(program,args,{cwd:workspace,env},input)};
+  // Owned external commands receive empty stdin; the one workspace-API request
+  // with a body runs inside the same scope through its ordinary process path.
+  const record={program,args,...await (input===undefined?processes.runOwned(program,args,{cwd:workspace,env})
+   :processes.run(program,args,{cwd:workspace,env},input))};
   capture(record);return record;
  };
  try {
