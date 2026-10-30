@@ -25,8 +25,8 @@ async function ledgerBinding(port: OwnedStreamProviderPort): Promise<OwnedStream
       records: 1024, payload_bytes: 1048576, commits: 64, idempotency_results: 64 });
   const binding = { ...streamLedgerPort(ledger, "root"), close: () => port.close() };
   const declaration = { name: "STREAMS", capability: "shared-provider-grant", resource: "streams:/",
-    targetAccount: new Uint8Array() };
-  const env = await materializeBindings([declaration], {
+    targetAccount: new Uint8Array(), stateTransaction: false };
+  const env = await materializeBindings<never, never, never, OwnedStreamProviderPort>([declaration], {
     namespace(): never { throw new Error("unexpected namespace binding"); },
     service(): never { throw new Error("unexpected service binding"); },
     streams(grant) {
