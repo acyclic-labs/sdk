@@ -1220,7 +1220,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
     assert!(
         matches!(cause, Error::CommandIndeterminate { operation_id, cause }
         if operation_id == command_operation
-            && matches!(cause.reason, crate::CommandIndeterminacyReason::Failed { error, .. }
+            && matches!(&cause.reason, crate::CommandIndeterminacyReason::Failed { error, .. }
                 if error == "command response lost after effect"))
     );
     assert!(replay.is_ok());
