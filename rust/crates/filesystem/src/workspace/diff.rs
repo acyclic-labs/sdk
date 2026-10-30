@@ -1,9 +1,5 @@
 use super::*;
 
-mod created;
-mod moved;
-mod paths;
-
 /// Immutable semantic delta between two exact generations.
 pub struct ChangeSet<A: 'static, O: 'static> {
     pub(super) from: Generation<A, O>,
@@ -12,16 +8,7 @@ pub struct ChangeSet<A: 'static, O: 'static> {
     pub(super) work: crate::WorkCounters,
 }
 
-/// One changed exact path between two immutable generations.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ChangedPath {
-    /// Canonical exact path in either endpoint.
-    pub path: NamespacePath,
-    /// Complete path-independent record in the earlier generation, when present.
-    pub before: Option<crate::kernel::FileRecord>,
-    /// Complete path-independent record in the later generation, when present.
-    pub after: Option<crate::kernel::FileRecord>,
-}
+pub use crate::kernel::changed_paths::ChangedPath;
 
 impl<A, O> ChangeSet<A, O> {
     /// Exact immutable base endpoint.
@@ -65,352 +52,95 @@ impl<A, O> ChangeSet<A, O> {
     }
 }
 
-fn merge_changed_record(
-    paths: &mut (Vec<ChangedPath>, KernelOwnedAllocation),
-    path: &NamespacePath,
-    record: Option<crate::kernel::FileRecord>,
-    before: bool,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(), WorkspaceError> {
-    match binary_search_with_accounting(&paths.0, accounting, |entry| {
-        entry.path.components().cmp(path.components())
-    })? {
-        Ok(index) => {
-            let copied = copy_work(std::mem::size_of::<Option<crate::kernel::FileRecord>>() as u64);
-            accounting.admit(copied)?;
-            let entry = paths.0.get_mut(index).ok_or(FsError::InvalidDiff)?;
-            if before {
-                entry.before = record;
-            } else {
-                entry.after = record;
-            }
-            accounting.record_completed(copied)?;
-        }
-        Err(index) => {
-            reverse_grow(&mut paths.0, &mut paths.1, accounting)?;
-            let (path, mut allocation) = path.clone_with_accounting(accounting, cancellation)?;
-            let copied = copy_work(
-                ((paths.0.len() - index + 1) * std::mem::size_of::<ChangedPath>()) as u64,
-            );
-            accounting.admit(copied)?;
-            paths.1.absorb(&mut allocation)?;
-            paths.0.insert(
-                index,
-                ChangedPath {
-                    path,
-                    before: if before { record } else { None },
-                    after: if before { None } else { record },
-                },
-            );
-            accounting.record_completed(copied)?;
-        }
-    }
-    Ok(())
-}
-
-trait NamespaceEndpoints: acyclic_stream::ProviderPlatform {
-    fn search(
-        &self,
-        before: bool,
-        ids: &[FileId],
-        maximum_entries: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<(NamespaceRecordSearch, KernelOwnedAllocation), WorkspaceError>>
-    + ProviderTask;
-}
-
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NamespaceEndpoints
-    for ChangeSet<A, O>
-{
-    async fn search(
-        &self,
-        before: bool,
-        ids: &[FileId],
-        maximum_entries: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), WorkspaceError> {
-        let generation = if before { &self.from } else { &self.to };
-        generation
-            .namespace_records_with_accounting(ids, maximum_entries, accounting, cancellation)
-            .await
-    }
-}
-
-impl<O: AsyncObjectStore> NamespaceEndpoints for [super::namespace_view::NamespaceView<'_, O>; 2] {
-    async fn search(
-        &self,
-        before: bool,
-        ids: &[FileId],
-        maximum_entries: u32,
-        accounting: &mut KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), WorkspaceError> {
-        let [from, to] = self;
-        let view = if before { from } else { to };
-        view.records(ids, maximum_entries, accounting, cancellation)
-            .await
-            .map_err(Into::into)
-    }
-}
-
-/// Complete path delta, including descendants whose unchanged file records move
-/// when an ancestor is renamed. The supplied scan bound never truncates an
-/// accepted publication's visible change list.
+/// Complete path delta from the same retained producer used by paged queries.
 pub(crate) async fn complete_changed_paths<O: AsyncObjectStore>(
     endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    if let [Some(from), Some(to)] = endpoints {
-        return complete_between([from, to], maximum_entries, accounting, cancellation).await;
-    }
-    collect_all_paths(endpoints, maximum_entries, accounting, cancellation).await
-}
-
-pub(super) async fn collect_all_paths<O: AsyncObjectStore>(
-    endpoints: [Option<super::namespace_view::NamespaceView<'_, O>>; 2],
-    maximum_entries: u32,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
-    for (index, view) in endpoints.into_iter().enumerate() {
-        let Some(view) = view else {
-            continue;
-        };
-        let search = view
-            .all_records(maximum_entries, accounting, cancellation)
-            .await?;
-        if !search.0.complete {
-            return Err(WorkspaceError::ChangedPathLimit);
-        }
-        for (_, records) in &search.0.records {
-            for (path, record) in records {
-                accounting.charge_items(1)?;
-                paths::append(
-                    &mut paths,
-                    path,
-                    Some(*record),
-                    index == 0,
-                    accounting,
-                    cancellation,
-                )?;
-            }
-        }
-        let bytes = namespace_records_bytes(&search.0.records);
-        reverse_drop(search, bytes, accounting)?;
-    }
-    paths::sort_and_coalesce(&mut paths, accounting)?;
-    retain_changed_paths(paths, accounting)
-}
-
-async fn complete_between<O: AsyncObjectStore>(
-    endpoints: [super::namespace_view::NamespaceView<'_, O>; 2],
-    maximum_entries: u32,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    let [from, to] = &endpoints;
-    let changes = crate::kernel::diff_generation_file_tables(
-        to.objects,
-        from.root.file_table,
-        to.root.file_table,
+    let Some(view) = endpoints.iter().flatten().next() else {
+        return Ok((Vec::new(), accounting.claim_owned(0, 0)?));
+    };
+    let roots = endpoints
+        .each_ref()
+        .map(|view| view.as_ref().map(|view| view.root));
+    let cursor = crate::kernel::changed_paths::Cursor::new(roots, view.config, accounting)?;
+    collect_paths(
+        cursor,
+        view.objects,
+        roots,
         maximum_entries,
-        crate::kernel::DecodeLimits::for_volume(to.config),
         accounting,
         cancellation,
     )
-    .await?;
-    if changes.0.truncated {
-        return Err(WorkspaceError::ChangedPathLimit);
-    }
-    // A binding of an existing directory can move unchanged descendants. New
-    // directories have all of their records in the Merkle delta already.
-    let moves_directory = moves_existing_directory(&changes.0, accounting)?;
-    let result = if moves_directory {
-        moved::expand(
-            &endpoints,
-            &changes.0,
-            maximum_entries,
-            accounting,
-            cancellation,
-        )
-        .await
-    } else {
-        match created::created_paths(
-            &endpoints,
-            &changes.0,
-            maximum_entries,
-            to.config.limits,
-            accounting,
-            cancellation,
-        )
-        .await?
-        {
-            Some(paths) => Ok(paths),
-            None => {
-                resolve_changed_paths(
-                    &endpoints,
-                    &changes.0,
-                    maximum_entries,
-                    accounting,
-                    cancellation,
-                )
-                .await
-            }
-        }
-    };
-    let bytes = workspace_vec_bytes(&changes.0.files)
-        + workspace_vec_bytes(&changes.0.bindings)
-        + changes
-            .0
-            .bindings
-            .iter()
-            .map(|binding| {
-                binding.name.retained_bytes() as u64
-                    + binding
-                        .before
-                        .as_ref()
-                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
-                    + binding
-                        .after
-                        .as_ref()
-                        .map_or(0, |entry| entry.name.retained_bytes() as u64)
-            })
-            .sum::<u64>();
-    reverse_drop(changes, bytes, accounting)?;
-    result
+    .await
 }
 
-fn moves_existing_directory(
-    changes: &GenerationDiff,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<bool, WorkspaceError> {
-    for binding in &changes.bindings {
-        for entry in binding.before.iter().chain(binding.after.iter()) {
-            accounting.charge_items(1)?;
-            if entry.kind != FileKind::Directory {
-                continue;
-            }
-            let position = binary_search_with_accounting(&changes.files, accounting, |file| {
-                file.file_id.cmp(&entry.file_id)
-            })?;
-            let newly_created = position
-                .ok()
-                .and_then(|index| changes.files.get(index))
-                .is_some_and(|file| file.before.is_none());
-            if !newly_created {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-async fn resolve_changed_paths(
-    endpoints: &impl NamespaceEndpoints,
-    changes: &GenerationDiff,
+async fn collect_paths<O: AsyncObjectStore>(
+    mut cursor: crate::kernel::changed_paths::Cursor<'_>,
+    objects: &O,
+    roots: [Option<&crate::kernel::GenerationRoot>; 2],
     maximum_entries: u32,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    accounting.check()?;
-    if changes.truncated
-        || (maximum_entries == 0 && (!changes.files.is_empty() || !changes.bindings.is_empty()))
-    {
-        return Err(WorkspaceError::ChangedPathLimit);
-    }
-    let file_ids =
-        sorted_changed_file_ids(
-            changes.files.iter().map(|change| change.file_id).chain(
-                changes.bindings.iter().flat_map(|change| {
-                    change
-                        .before
-                        .iter()
-                        .chain(change.after.iter())
-                        .map(|entry| entry.file_id)
-                }),
-            ),
-            accounting,
-        )?;
-    let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
-    for before in [true, false] {
-        let search = endpoints
-            .search(
-                before,
-                &file_ids.0,
-                maximum_entries,
-                accounting,
-                cancellation,
-            )
-            .await?;
-        if !search.0.complete {
-            return Err(WorkspaceError::ChangedPathLimit);
+    let mut paths = match crate::kernel::Owned::<Vec<ChangedPath>>::allocate(0, accounting) {
+        Ok(paths) => paths,
+        Err(error) => {
+            cursor.retire(accounting)?;
+            return Err(error.into());
         }
-        for (_, records) in &search.0.records {
-            for (path, record) in records {
-                accounting.charge_items(1)?;
-                merge_changed_record(
-                    &mut paths,
-                    path,
-                    Some(*record),
-                    before,
-                    accounting,
-                    cancellation,
-                )?;
+    };
+    let maximum = usize::try_from(maximum_entries).unwrap_or(usize::MAX);
+    let result = async {
+        while let Some(path) = cursor
+            .next(objects, roots, accounting, cancellation)
+            .await?
+        {
+            if paths.value.len() == maximum {
+                path.retire(accounting)?;
+                return Err(WorkspaceError::ChangedPathLimit);
             }
-        }
-        let bytes = namespace_records_bytes(&search.0.records);
-        reverse_drop(search, bytes, accounting)?;
-    }
-    let id_bytes = workspace_vec_bytes(&file_ids.0);
-    reverse_drop(file_ids, id_bytes, accounting)?;
-    retain_changed_paths(paths, accounting)
-}
-
-fn record_changed(before: &crate::kernel::FileRecord, after: &crate::kernel::FileRecord) -> bool {
-    before.file_id != after.file_id
-        || before.kind != after.kind
-        || before.metadata != after.metadata
-        || (before.kind != FileKind::Directory && before.payload != after.payload)
-}
-
-fn retain_changed_paths(
-    mut paths: (Vec<ChangedPath>, KernelOwnedAllocation),
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    let mut retained = 0;
-    let mut retired_paths = 0_u64;
-    for index in 0..paths.0.len() {
-        accounting.charge_items(1)?;
-        let entry = paths.0.get(index).ok_or(FsError::InvalidDiff)?;
-        let changed = match (&entry.before, &entry.after) {
-            (Some(before), Some(after)) => record_changed(before, after),
-            (None, None) => false,
-            _ => true,
-        };
-        if changed {
-            if retained != index {
-                let copied = copy_work((2 * std::mem::size_of::<ChangedPath>()) as u64);
+            let prepared = (|| {
+                let moved = if paths.value.len() == paths.value.capacity() {
+                    paths.value.len()
+                } else {
+                    0
+                };
+                let copied = copy_work(crate::foundation::usize_to_u64(
+                    moved
+                        .checked_add(1)
+                        .and_then(|count| count.checked_mul(std::mem::size_of::<ChangedPath>()))
+                        .ok_or(crate::WorkError::Overflow)?,
+                ));
                 accounting.admit(copied)?;
-                paths.0.swap(retained, index);
-                accounting.record_completed(copied)?;
+                paths.ensure_for_push(maximum, accounting)?;
+                accounting.record_completed(copied)
+            })();
+            if let Err(error) = prepared {
+                path.retire(accounting)?;
+                return Err(error.into());
             }
-            retained += 1;
-        } else {
-            retired_paths = retired_paths
-                .checked_add(entry.path.retained_bytes())
-                .ok_or(crate::WorkError::Overflow)?;
+            let path = path.transfer_to(&mut paths.allocation, &mut paths.bytes, accounting)?;
+            paths.value.push(path);
+        }
+        // The public vector API retains its historical path order. The cursor
+        // itself emits each path once, so no prefix index or coalescing is needed.
+        crate::kernel::sort_by_with_accounting(&mut paths.value, accounting, |left, right| {
+            left.path.components().cmp(right.path.components())
+        })?;
+        Ok(())
+    }
+    .await;
+    let retirement = cursor.retire(accounting);
+    match result.and_then(|()| retirement.map_err(Into::into)) {
+        Ok(()) => Ok((paths.value, paths.allocation)),
+        Err(error) => {
+            paths.retire(accounting)?;
+            Err(error)
         }
     }
-    paths.0.truncate(retained);
-    accounting.release_owned(&mut paths.1, retired_paths)?;
-    accounting.check()?;
-    Ok(paths)
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<A, O> {
@@ -449,52 +179,67 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ChangeSet<
         if self.changes.truncated {
             return Err(WorkspaceError::ChangedPathLimit);
         }
-        // The output bound includes unchanged descendants of moved directories;
-        // only those changed bindings are expanded on the original ledger.
-        let result = if moves_existing_directory(&self.changes, accounting)? {
-            let from = self
-                .from
-                .workspace
-                .open_checkout(
-                    GenerationSelector::Exact(self.from.id),
-                    CheckoutMode::read_only_pinned(),
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            let to = self
-                .to
-                .workspace
-                .open_checkout(
-                    GenerationSelector::Exact(self.to.id),
-                    CheckoutMode::read_only_pinned(),
-                    accounting,
-                    cancellation,
-                )
-                .await?;
-            let view = |root| super::namespace_view::NamespaceView {
-                objects: self.from.workspace.volume.fs.objects(),
-                config: self.from.workspace.volume.config(),
-                root,
-            };
-            let result = moved::expand(
-                &[view(from.value.root()), view(to.value.root())],
-                &self.changes,
-                u32::MAX,
+        let from = self
+            .from
+            .workspace
+            .open_checkout(
+                GenerationSelector::Exact(self.from.id),
+                CheckoutMode::read_only_pinned(),
                 accounting,
                 cancellation,
             )
-            .await;
-            to.retire(accounting)?;
-            from.retire(accounting)?;
-            result?
-        } else {
-            resolve_changed_paths(self, &self.changes, u32::MAX, accounting, cancellation).await?
+            .await?;
+        let to = match self
+            .to
+            .workspace
+            .open_checkout(
+                GenerationSelector::Exact(self.to.id),
+                CheckoutMode::read_only_pinned(),
+                accounting,
+                cancellation,
+            )
+            .await
+        {
+            Ok(to) => to,
+            Err(error) => {
+                from.retire(accounting)?;
+                return Err(error);
+            }
         };
-        if result.0.len() > maximum_entries as usize {
-            return Err(WorkspaceError::ChangedPathLimit);
+        let result = async {
+            let roots = [Some(from.value.root()), Some(to.value.root())];
+            let cursor = crate::kernel::changed_paths::Cursor::from_records(
+                roots,
+                self.from.workspace.volume.config(),
+                &self.changes.files,
+            )?;
+            collect_paths(
+                cursor,
+                self.from.workspace.volume.fs.objects(),
+                roots,
+                maximum_entries,
+                accounting,
+                cancellation,
+            )
+            .await
         }
-        Ok(result)
+        .await;
+        let to = to.retire(accounting);
+        let from = from.retire(accounting);
+        match (result, to.and(from)) {
+            (Ok(paths), Ok(())) => Ok(paths),
+            (Ok(paths), Err(error)) => {
+                let bytes = workspace_vec_bytes(&paths.0)
+                    + paths
+                        .0
+                        .iter()
+                        .map(|row| row.path.retained_bytes())
+                        .sum::<u64>();
+                reverse_drop(paths, bytes, accounting)?;
+                Err(error.into())
+            }
+            (Err(error), _) => Err(error),
+        }
     }
 
     /// Computes the bounded net delta of two contiguous change sets.

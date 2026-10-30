@@ -9,6 +9,7 @@ mod attribute_mutation;
 mod bindings;
 mod blob;
 mod checkpoint;
+pub(crate) mod changed_paths;
 pub(crate) mod closure;
 pub(crate) mod codec;
 mod content_eq;

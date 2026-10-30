@@ -522,6 +522,8 @@ async fn assert_generation_matches_model(
     Ok(())
 }
 
+#[path = "generation_mutation/changed_paths.rs"]
+mod changed_paths;
 #[path = "generation_mutation/construction.rs"]
 mod construction;
 #[path = "generation_mutation/direct_paths.rs"]

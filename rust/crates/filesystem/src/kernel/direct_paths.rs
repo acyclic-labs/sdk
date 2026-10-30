@@ -9,6 +9,20 @@ use super::{
 use crate::async_storage::AsyncObjectStore;
 use crate::{CancellationToken, FileId, FsError, VolumeConfig, WorkCounters, WorkError};
 
+pub(super) fn validate_record(root_file_id: FileId, record: &FileRecord) -> Result<(), FsError> {
+    let is_root = record.file_id == root_file_id;
+    if record.link_count == 0
+        || is_root
+            && (record.bindings.is_some()
+                || record.link_count != 1
+                || record.kind != FileKind::Directory)
+        || !is_root && record.bindings.is_none()
+    {
+        return Err(FsError::InvalidDiff);
+    }
+    Ok(())
+}
+
 /// Retains the exact alias traversal position for one immutable file record.
 /// Parent paths are reconstructed only when their alias is requested.
 pub(crate) struct DirectPaths {
@@ -30,16 +44,7 @@ impl DirectPaths {
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<Self, FsError> {
         accounting.check()?;
-        let is_root = record.file_id == root.root_file_id;
-        if record.link_count == 0
-            || is_root
-                && (record.bindings.is_some()
-                    || record.link_count != 1
-                    || record.kind != FileKind::Directory)
-            || !is_root && record.bindings.is_none()
-        {
-            return Err(FsError::InvalidDiff);
-        }
+        validate_record(root.root_file_id, &record)?;
         let edges = record
             .bindings
             .map(|id| Values::new(id, DecodeLimits::for_volume(config), accounting))
@@ -114,8 +119,7 @@ impl DirectPaths {
             )
             .await?;
         let progress = self.progress.take().ok_or(FsError::InvalidDiff)?;
-        let path =
-            NamespacePath::from_reversed_owned(progress.names, self.config.limits, accounting)?;
+        let path = progress.finish(self.config, accounting)?;
         self.emitted += 1;
         Ok(Some(path))
     }
@@ -128,7 +132,7 @@ impl DirectPaths {
 }
 
 /// Owned by DirectPaths, including while a page future is suspended or dropped.
-struct PathState {
+pub(super) struct PathState {
     names: Owned<Vec<LogicalName>>,
     next: Option<Owned<Binding>>,
     parent: Option<FileId>,
@@ -139,7 +143,7 @@ struct PathState {
 }
 
 impl PathState {
-    fn new(
+    pub(super) fn new(
         file_id: FileId,
         edge: Owned<Binding>,
         accounting: &mut KernelAccounting<'_>,
@@ -162,7 +166,7 @@ impl PathState {
         })
     }
 
-    async fn advance<S: AsyncObjectStore>(
+    pub(super) async fn advance<S: AsyncObjectStore>(
         &mut self,
         store: &S,
         root_file_id: FileId,
@@ -248,7 +252,19 @@ impl PathState {
         }
     }
 
-    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+    pub(super) fn finish(
+        self,
+        config: VolumeConfig,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Owned<NamespacePath>, FsError> {
+        if self.next.is_some() || self.parent_edges.is_some() {
+            self.retire(accounting)?;
+            return Err(FsError::InvalidDiff);
+        }
+        NamespacePath::from_reversed_owned(self.names, config.limits, accounting)
+    }
+
+    pub(super) fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
         let edge = self.next.map_or(Ok(()), |edge| edge.retire(accounting));
         let parents = self
             .parent_edges

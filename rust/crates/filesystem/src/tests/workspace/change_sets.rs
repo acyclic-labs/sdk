@@ -66,23 +66,34 @@ async fn raw_endpoint_paths_mode<
             root: to.value.root(),
         },
     ];
-    let result = if full_scan {
-        crate::workspace::diff::collect_all_paths(
-            endpoints.map(Some),
-            maximum_entries,
+    // Deliberately materialize every file-table row before the same producer.
+    // This real-store counterfactual exposes unrelated-record work and custody.
+    let eager = if full_scan {
+        let (rows, allocation) = crate::kernel::diff_file_records_with_accounting(
+            changes.from.workspace.volume.fs.objects(),
+            None,
+            Some(from.value.root().file_table),
+            u32::MAX,
+            crate::kernel::DecodeLimits::for_volume(changes.from.workspace.volume.config()),
             &mut accounting,
             cancellation,
         )
-        .await
+        .await?;
+        let bytes = rows.retained_allocation_bytes;
+        Some(crate::kernel::Owned::new(rows, allocation, bytes))
     } else {
-        crate::workspace::complete_changed_paths(
-            endpoints.map(Some),
-            maximum_entries,
-            &mut accounting,
-            cancellation,
-        )
-        .await
+        None
     };
+    let result = crate::workspace::complete_changed_paths(
+        endpoints.map(Some),
+        maximum_entries,
+        &mut accounting,
+        cancellation,
+    )
+    .await;
+    if let Some(eager) = eager {
+        eager.retire(&mut accounting)?;
+    }
     to.retire(&mut accounting)?;
     from.retire(&mut accounting)?;
     result
@@ -129,8 +140,8 @@ async fn small_directory_move_does_not_materialize_unrelated_file_records()
         observed.push(original.journal_work()?);
         drop((paths, guard));
     }
-    // Actual former full-namespace production path is the independent control.
-    // Replacing subtree expansion with it makes both strict inequalities fail.
+    // The eager real-store counterfactual adds unrelated records.
+    // Adding that traversal to the producer makes both strict inequalities fail.
     let [expanded, full_scan]: [crate::WorkCounters; 2] = observed
         .try_into()
         .map_err(|_| "missing expanded and full-scan work controls")?;
@@ -307,10 +318,15 @@ async fn changed_directory_bindings_expand_only_their_descendants() -> Result<()
         unbounded!(diff, changed_paths(5)),
         Err(WorkspaceError::ChangedPathLimit)
     ));
-    // Negative control: deleting the changed binding identities recreates the
-    // former selection which sees no unchanged descendants of the moved folder.
+    // Negative control: discarding changed direct relations loses the moved
+    // directory and its unchanged descendants from the original frontier.
     let mut changes = diff.changes.clone();
-    changes.bindings.clear();
+    changes
+        .files
+        .retain(|change| match (change.before, change.after) {
+            (Some(before), Some(after)) => before.bindings == after.bindings,
+            _ => true,
+        });
     let broken = ChangeSet {
         from: base,
         to: current,
