@@ -688,6 +688,9 @@ impl Client {
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
         let mut cursor = self.cursor(id, Arc::clone(&progress), receiver)?;
+        if !matches!(&kind, Kind::Follow(_)) {
+            cursor.primitive = "session-reply";
+        }
         let operation = cursor.observation.operation.clone();
         let registration = async {
             self.pool
@@ -717,7 +720,7 @@ impl Client {
         let registered = operation
             .clone()
             .scope(deadline::until(
-                registration,
+                super::runtime::waiting("session-open", id, registration),
                 self.pool.executor.sleep(10_000),
             ))
             .await
@@ -749,6 +752,7 @@ impl Client {
         }
         Ok(Cursor {
             observation: Observation::channel(id),
+            primitive: "session-follow",
             id,
             client: self.clone(),
             progress,
@@ -760,12 +764,22 @@ impl Client {
 struct Cursor {
     pending: Option<Delivery>,
     observation: Observation,
+    /// Names this cursor's deliveries in wait reports.
+    primitive: &'static str,
     id: u64,
     client: Client,
     progress: Arc<Progress>,
     receiver: mpsc::Receiver<Result<Delivery, StreamError>>,
 }
 impl Cursor {
+    /// Every blocked delivery of every session call and follow is a reported
+    /// wait. A queued delivery is no wait and registers none.
+    async fn next(&mut self) -> Option<Result<Delivery, StreamError>> {
+        match self.receiver.try_recv() {
+            Ok(received) => Some(received),
+            Err(_) => super::runtime::waiting(self.primitive, self.id, self.receiver.recv()).await,
+        }
+    }
     async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
         loop {
             if self.progress.cancelled() {
@@ -773,7 +787,7 @@ impl Cursor {
             }
             let received = match self.pending.take() {
                 Some(delivery) => Ok(delivery),
-                None => match self.receiver.recv().await {
+                None => match self.next().await {
                     Some(received) => received,
                     None if self.progress.ended() => {
                         self.observation.finish(None);

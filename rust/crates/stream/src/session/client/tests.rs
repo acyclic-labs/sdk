@@ -559,4 +559,109 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     Ok(())
 }
 
+#[tokio::test]
+async fn a_blocked_session_follow_is_a_reported_wait_until_its_record_arrives() -> TestResult {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
+    let report = || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut output = Vec::new();
+        waits.report(&mut output)?;
+        Ok(String::from_utf8(output)?)
+    };
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "waits", 1).await?;
+    let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
+    let mut follow = fixture
+        .client()?
+        .follow(crate::FollowRequest::new(StreamPath::new("waits")?, 1))
+        .map_ok(crate::records_only)
+        .await?;
+    assert!(futures::poll!(follow.next()).is_pending());
+    assert!(report()?.contains("waiting: session-follow "));
+    append(&provider, "waits", 1).await?;
+    assert_eq!(next(&mut follow).await?.sequence, 1);
+    assert!(!report()?.contains("waiting: session-follow "));
+    Ok(())
+}
+
+#[tokio::test]
+async fn blocked_registration_and_one_shot_reply_are_reported_waits() -> TestResult {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let waits = acyclic_native_runtime::obs::WaitReport::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(waits.clone()));
+    let report = || -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut output = Vec::new();
+        waits.report(&mut output)?;
+        Ok(String::from_utf8(output)?)
+    };
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "waits", 1).await?;
+    let client = Client::in_process(
+        provider.clone(),
+        crate::session::testing::authority(),
+        Arc::new(crate::runtime::PlatformExecutor),
+    );
+    client.register_credential(0, crate::session::testing::credential())?;
+    let minimum = provider
+        .revisions
+        .at(provider.revisions.current().index + 1);
+    let mut request = crate::HeadsRequest {
+        paths: vec![StreamPath::new("waits")?].into(),
+        retained: Default::default(),
+        durable_through: None,
+        projection: crate::HeadProjection::Tail,
+        children: None,
+        limit: 1,
+        at_least: crate::RevisionCut::of(minimum.clone()),
+    };
+    let kind = Kind::Heads(wire_codec::heads_request_to_wire(request.clone()));
+    let open = |kind| client.open_cursor(kind, cursor(0), false, false, None, 0);
+    // The actual pool has not consumed this registration on the current-thread
+    // executor. Cancelling it must retire the wait and its original interest.
+    let mut opening = Box::pin(open(kind.clone()));
+    assert!(futures::poll!(opening.as_mut()).is_pending());
+    assert_eq!(report()?.matches("waiting: session-open ").count(), 1);
+    drop(opening);
+    assert_eq!(report()?, "");
+    assert_eq!(client.pool.active.load(Ordering::Acquire), 0);
+
+    // Heads admission precedes completion. Its real provider waits for the
+    // requested publication; no replacement completion signal is introduced.
+    let mut opened = open(kind).await?;
+    assert_eq!(report()?, "");
+    let mut reply = Box::pin(opened.receive());
+    assert!(futures::poll!(reply.as_mut()).is_pending());
+    assert_eq!(report()?.matches("waiting: session-reply ").count(), 1);
+    drop(reply);
+    assert_eq!(report()?, "");
+    let mut reply = Box::pin(opened.receive());
+    assert!(futures::poll!(reply.as_mut()).is_pending());
+    append(&provider, "waits", 1).await?;
+    let delivery = reply.await?.ok_or("reply ended before its publication")?;
+    let data = delivery.item.into_data()?;
+    let Some(Item::Heads(bytes)) = data.item else {
+        return Err("one-shot reply lost its Heads result".into());
+    };
+    let view = wire_codec::heads_from_response(wire::HeadsResponse::decode(bytes)?)?;
+    assert_eq!(view.snapshot, minimum);
+    assert_eq!(view.heads[0].as_ref().ok_or("missing head")?.tail, 2);
+    assert_eq!(report()?, "");
+    drop(delivery.credit);
+    drop(opened);
+
+    // Losing the original publication producer is a typed terminal result,
+    // and the same report entry retires without a later record or timer.
+    request.at_least = crate::RevisionCut::of(provider.revisions.at(minimum.index + 1));
+    let mut opened = open(Kind::Heads(wire_codec::heads_request_to_wire(request))).await?;
+    let mut reply = Box::pin(opened.receive());
+    assert!(futures::poll!(reply.as_mut()).is_pending());
+    provider.revisions.close();
+    assert!(matches!(reply.await, Err(StreamError::Unavailable)));
+    assert_eq!(report()?, "");
+    Ok(())
+}
+
 mod tenk;

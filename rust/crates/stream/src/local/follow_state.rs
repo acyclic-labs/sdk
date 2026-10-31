@@ -28,6 +28,8 @@ impl crate::snapshot::Snapshot for Box<FollowState> {
 }
 impl FollowState {
     async fn wait(&mut self) -> Result<(), StreamError> {
+        // The follow's address identifies it while it waits.
+        let key = std::ptr::from_ref(&*self).addr();
         let publication = self.changed.changed.changed();
         #[cfg(loom)]
         let publication = async {
@@ -38,7 +40,12 @@ impl FollowState {
         };
         let unavailable = LocalInner::unavailable(&mut self.failed);
         futures::pin_mut!(publication, unavailable);
-        match futures::future::select(unavailable, publication).await {
+        let ready = acyclic_native_runtime::obs::waiting(
+            "stream-follow",
+            key,
+            futures::future::select(unavailable, publication),
+        );
+        match ready.await {
             futures::future::Either::Left((error, _)) => Err(error),
             futures::future::Either::Right((result, _)) => result.map_err(|_| {
                 if self.anchor.is_some() {
