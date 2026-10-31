@@ -1058,13 +1058,18 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
                 let cwd = request
                     .messages
                     .iter()
-                    .flat_map(|message| message.content.parts())
-                    .find_map(|part| match part {
-                        crate::model::ModelContentPart::Text { text } => text
+                    .find_map(|message| match &message.content {
+                        crate::model::ModelContent::Text(text) => text
                             .split_once("<cwd>")
                             .and_then(|(_, tail)| tail.split_once("</cwd>"))
                             .map(|(cwd, _)| cwd.to_owned()),
-                        _ => None,
+                        content => content.parts().iter().find_map(|part| match part {
+                            crate::model::ModelContentPart::Text { text } => text
+                                .split_once("<cwd>")
+                                .and_then(|(_, tail)| tail.split_once("</cwd>"))
+                                .map(|(cwd, _)| cwd.to_owned()),
+                            _ => None,
+                        }),
                     })
                     .expect("child environment cwd");
                 // Inspect the live binding while the turn still owns its mount.
