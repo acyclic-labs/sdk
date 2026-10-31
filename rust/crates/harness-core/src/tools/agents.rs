@@ -63,6 +63,18 @@ pub struct SendAgentInput {
     pub agent: String,
     /// Message text.
     pub message: String,
+    /// Optional plan file, copied at this exact version before delivery.
+    pub file: Option<SendAgentFile>,
+}
+
+/// A source snapshot selected through the same read path and version as read/edit.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SendAgentFile {
+    /// Project path or `.volumes/<name>/path` in this executing agent's volumes.
+    pub path: String,
+    /// Opaque immutable version returned by read; omission pins the current file.
+    pub version: Option<String>,
 }
 
 /// Archive one open child and, through its cascade, its descendants.
@@ -155,6 +167,9 @@ impl AgentTool {
             return self.wait(invocation.arguments).await;
         }
         let key = call_key(&invocation, context.as_ref());
+        if let Some(recorded) = turn.effects.recorded_call(&key).await? {
+            return self.recorded_result(recorded);
+        }
         let operation = crate::agent::operation_key(invocation.operation_id);
         let _spawning = match self.name {
             "spawn" => Some(turn.spawning.lock().await),
@@ -225,18 +240,54 @@ impl AgentTool {
                 if input.message.len() as u64 > turn.maximum_bytes {
                     return Ok(rejected("message is too large"));
                 }
-                let body = turn
+                // Observe the original successful publication before selecting a
+                // mutable path: interrupted sends retain that exact snapshot.
+                let existing = turn
                     .writer
-                    .stage_once(
+                    .observe_staged_once(
                         invocation.operation_id,
-                        &format!("messages/{operation}.md"),
-                        input.message.as_bytes(),
-                        "text/markdown",
-                        "message",
+                        turn.maximum_bytes,
                         ContentAccess::default(),
                     )?
                     .await?
                     .0;
+                let body = if let Some(existing) = existing {
+                    existing
+                } else {
+                    let mut message = input.message;
+                    if let Some(source) = input.file {
+                        let Some(context) = context.as_ref() else {
+                            return Ok(rejected(
+                                "sending a file requires its admitted tool context",
+                            ));
+                        };
+                        let (file, bytes, _custody) = context
+                            .read_tool_source(&source.path, source.version.as_deref(), None, None)
+                            .await?;
+                        let text = std::str::from_utf8(bytes.as_ref()).map_err(|_| {
+                            Error::Invalid("send plan snapshot must be UTF-8 text".into())
+                        })?;
+                        let (version, _version_custody) =
+                            crate::tool::files::encode_file_version(&file, None)?;
+                        message.push_str("\n\nSnapshot base version: ");
+                        message.push_str(&version);
+                        message.push_str("\nPlan snapshot: ");
+                        message.push_str(&source.path);
+                        message.push_str("\n\n");
+                        message.push_str(text);
+                    }
+                    turn.writer
+                        .stage_once(
+                            invocation.operation_id,
+                            &format!("messages/{operation}.md"),
+                            message.as_bytes(),
+                            "text/markdown",
+                            "message",
+                            ContentAccess::default(),
+                        )?
+                        .await?
+                        .0
+                };
                 TurnEffect::Send {
                     to,
                     id: IntentId::try_from(format!("send:{operation}")).map_err(agent)?,
@@ -263,9 +314,13 @@ impl AgentTool {
             Err(error @ Error::Conflict(_)) => return Ok(super::rejected_input(error)),
             Err(error) => return Err(error),
         };
+        self.recorded_result(recorded)
+    }
+
+    fn recorded_result(&self, recorded: TurnEffect) -> Result<ToolResult> {
         let value = match recorded {
             TurnEffect::Spawn { intent, .. } => json!({
-                "agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str(),
+                "agent": TurnEffect::child(&self.turn.agent, &intent).map_err(agent)?.as_str(),
                 "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
             }),
             TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
@@ -524,7 +579,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Send a message to your parent or an open child (by name or path); it is queued for the recipient before your next tool call runs",
+                "Send a message to your parent or an open child (by name or path). Optional file copies one immutable plan snapshot, including its base version; the recipient never reads your live file. It is queued before your next tool call runs",
             )?,
         ),
         (

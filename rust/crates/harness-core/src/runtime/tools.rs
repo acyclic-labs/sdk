@@ -539,7 +539,7 @@ impl ToolContext {
         path: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<&VolumeRef> {
-        let volume = &self.task().tool_read_content().volume;
+        let (volume, path) = self.tool_path_selection(path)?;
         crate::executor::with_history_io(io, |history| {
             crate::conversation::validate_content_path(path, history).map_err(Error::tool_input)?;
             if path.len() > self.effective_scope().limits().path_bytes
@@ -571,7 +571,11 @@ impl ToolContext {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes, u64)> {
         let volume = self.authorize_tool_path_read(path, io)?;
-        let content = self.task().tool_read_content();
+        let (_, path) = self.tool_path_selection(path)?;
+        let content = self
+            .task()
+            .content_binding(Some(volume))
+            .ok_or_else(|| Error::Unsupported("content reader is not bound".into()))?;
         self.task()
             .read_bound_path(
                 content,
@@ -585,6 +589,56 @@ impl ToolContext {
                 io,
             )
             .await
+    }
+
+    /// Selects an executing agent's volume from the same mounted path spelling
+    /// used by shell. This selects a resource; the original read grant is still
+    /// checked at the read boundary.
+    fn tool_path_selection<'a>(&'a self, path: &'a str) -> Result<(&'a VolumeRef, &'a str)> {
+        let Some(selected) = path.strip_prefix(".volumes/") else {
+            return Ok((&self.task().tool_read_content().volume, path));
+        };
+        let (name, path) = selected
+            .split_once('/')
+            .ok_or_else(|| Error::tool_rejected("volume path requires a file name"))?;
+        let (_, volumes) = self
+            .task()
+            .agent()
+            .ok_or_else(|| Error::tool_rejected("volume path requires an agent binding"))?;
+        let volume = volumes
+            .iter()
+            .find(|binding| binding.name == name)
+            .ok_or_else(|| Error::tool_rejected("volume is not bound to this agent"))?;
+        Ok((&volume.volume, path))
+    }
+
+    /// Resolves one versioned model-visible path through the same original
+    /// grants and immutable descriptor checks used by read/edit and send.
+    pub(crate) async fn read_tool_source(
+        &self,
+        path: &str,
+        version: Option<&str>,
+        work: crate::NativeWork<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<(FileRef, acyclic_stream::OwnedBytes, crate::NativeCustody)> {
+        if let Some(version) = version {
+            let (volume, relative) = self.tool_path_selection(path)?;
+            let (file, custody) = crate::tool::files::decode_file_version(relative, version, work)?;
+            if path.starts_with(".volumes/") && file.volume() != volume {
+                return Err(Error::tool_rejected("version belongs to another volume"));
+            }
+            let bytes = self.read_file(&file, io).await?;
+            return Ok((file, bytes, custody));
+        }
+        let (file, bytes, retained) = self.read_tool_path(path, io).await?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = {
+            let _ = (work, retained);
+            None
+        };
+        Ok((file, bytes, custody))
     }
 
     /// Reads immutable content under the effective tool scope and caller IO limits.

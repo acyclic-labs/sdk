@@ -53,6 +53,11 @@ impl TurnEffect {
 
 /// The effects recorded by one turn's agent tools.
 pub trait TurnEffects: acyclic_stream::ProviderPlatform {
+    /// The original effect of this exact call, without scanning the turn.
+    fn recorded_call<'a>(
+        &'a self,
+        call: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<TurnEffect>>>;
     /// Records `effect` as call `call`'s effect exactly once and returns the
     /// recorded effect: a repeated call returns the first, unchanged.
     fn record<'a>(

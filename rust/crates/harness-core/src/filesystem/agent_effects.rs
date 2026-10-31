@@ -1,5 +1,5 @@
 //! [`TurnEffects`] as internal files on the agent's private volume: one file
-//! `effects/v3/<turn>/<segment>/<call>.json` per agent tool call, in the
+//! `effects/v4/<turn>/<segment>/<call>.json` per agent tool call, in the
 //! internal interaction area, so no file tool can forge an effect past the
 //! call's approval. Each segment's effects commit together, so a segment's
 //! directory lists exactly the effects not yet committed.
@@ -34,7 +34,7 @@ impl<P: ?Sized, A, O> FilesystemTurnEffects<P, A, O> {
             files,
             stream,
             agent,
-            directory: format!("effects/v3/{turn}/{segment}"),
+            directory: format!("effects/v4/{turn}/{segment}"),
             maximum_bytes,
         }
     }
@@ -59,6 +59,32 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
+    fn recorded_call<'a>(
+        &'a self,
+        call: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<TurnEffect>>> {
+        Box::pin(async move {
+            if call.is_empty()
+                || !call
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            {
+                return Err(Error::Invalid(
+                    "agent effect call key is not a file name".into(),
+                ));
+            }
+            self.files
+                .read(
+                    &format!("{}/{call}.json", self.directory),
+                    self.maximum_bytes,
+                )
+                .await?
+                .as_deref()
+                .map(decode)
+                .transpose()
+        })
+    }
+
     fn record<'a>(
         &'a self,
         call: &'a str,
@@ -211,6 +237,11 @@ mod tests {
         assert_eq!(effects.record("0000000002-b", &later).await?, later);
         assert_eq!(effects.record("0000000001-a", &first).await?, first);
         assert_eq!(effects.record("0000000001-a", &later).await?, first);
+        assert_eq!(
+            effects.recorded_call("0000000001-a").await?,
+            Some(first.clone())
+        );
+        assert_eq!(effects.recorded_call("0000000003-c").await?, None);
         assert_eq!(
             effects.recorded().await?,
             vec![first.clone(), later.clone()]
