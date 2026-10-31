@@ -82,7 +82,7 @@ const LOG: &str = "log";
 /// A compaction's replacement log, until it is renamed over [`LOG`].
 const NEXT: &str = "log.next";
 /// Dead bytes below this are never compacted: a chunk of work, not a bound.
-const COMPACTION_CHUNK: u64 = 1 << 20;
+pub(crate) const COMPACTION_CHUNK: u64 = 1 << 20;
 
 /// The log's frame: an operation, the key and, for a put, the value.
 const LOG_FRAME: LogFrame = LogFrame {

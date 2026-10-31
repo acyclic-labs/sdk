@@ -53,6 +53,11 @@ fn replay_inputs(
             Terminal::Flush(Err(MediumError::Failed(_))) => ("flush", "failed"),
             Terminal::Flush(Err(MediumError::Ambiguous(_))) => ("flush", "ambiguous"),
         };
+        let stage = if report.maintenance {
+            "maintenance"
+        } else {
+            stage
+        };
         *coverage
             .entry((
                 report.operation,
