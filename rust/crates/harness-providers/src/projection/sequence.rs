@@ -180,6 +180,7 @@ fn tool_result(item: &Item<'_>) -> bool {
 }
 fn role(message: &Message<'_>) -> &'static str {
     match message {
+        Message::Notice(_) => "user",
         Message::Anthropic { role, .. } | Message::Gemini { role, .. } => role,
         _ => "",
     }
