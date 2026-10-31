@@ -434,7 +434,7 @@ pub(crate) fn order_file_held<W: NativeHostWork>(
     #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,
     work: &mut W,
 ) -> Result<(), W::Error> {
-    retry_io(
+    let ordered = retry_io(
         work,
         WorkCounters {
             durability_operations: 1,
@@ -446,7 +446,16 @@ pub(crate) fn order_file_held<W: NativeHostWork>(
             #[cfg(windows)]
             acyclic_native_runtime::order_descriptor_once(file.as_handle())
         },
-    )
+    );
+    match ordered {
+        Err(error)
+            if cfg!(target_vendor = "apple")
+                && W::io_error_kind(&error) == Some(io::ErrorKind::Unsupported) =>
+        {
+            sync_file_held(file, work)
+        }
+        result => result,
+    }
 }
 
 pub(crate) fn sync_file_held<W: NativeHostWork>(

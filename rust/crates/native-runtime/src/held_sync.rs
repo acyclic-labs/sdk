@@ -47,8 +47,8 @@ pub fn sync_descriptor_once(
 /// Issues exactly one native ordering barrier of `descriptor`: its writes
 /// reach stable storage before any write issued after it on the same device,
 /// and become durable at that device's next full flush. Apple issues
-/// `fcntl(F_BARRIERFSYNC)`, falling back to the full flush, never to a bare
-/// `fsync`, where the filesystem lacks it. Linux and Windows have no ordering
+/// `fcntl(F_BARRIERFSYNC)`; an unsupported barrier returns to the caller,
+/// which can separately admit a full flush. Linux and Windows have no ordering
 /// primitive weaker than the full flush and issue [`sync_descriptor_once`].
 /// Every failure returns to the caller, which owns retry.
 pub fn order_descriptor_once(
