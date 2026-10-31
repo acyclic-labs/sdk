@@ -75,6 +75,12 @@ export function collectPartitions(cases, bundles, platform, coverage) {
   const ordered = [...bundles].sort((a, b) => a.index - b.index), first = ordered[0];
   for (const key of ["binary", "mock", "cases"])
     assert.match(first.binding?.[key] ?? "", /^[a-f0-9]{64}$/, `missing partition ${key} identity`);
+  assert.ok(first.binding.executables && !Array.isArray(first.binding.executables),
+    "missing partition executable identities");
+  assert.match(first.binding.executables.NODE ?? "", /^[a-f0-9]{64}$/, "missing partition Node identity");
+  for (const [name, digest] of Object.entries(first.binding.executables))
+    assert.ok(name && typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
+      `invalid partition executable identity: ${name}`);
   assert.equal(first.binding.cases, createHash("sha256").update(JSON.stringify(cases)).digest("hex"),
     "partition case definitions changed");
   assert.ok(first.binding.source && typeof first.binding.source === "object"
@@ -106,6 +112,12 @@ async function digest(path) {
 }
 
 export async function acceptanceBinding(directory, binary, mock, cases, env=process.env) {
+  const digests = new Map();
+  const executable = path => {
+    const absolute = resolve(path);
+    if (!digests.has(absolute)) digests.set(absolute, digest(absolute));
+    return digests.get(absolute);
+  };
   const source = {};
   async function sources(root,prefix) {
     for (const entry of (await readdir(root,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
@@ -118,10 +130,11 @@ export async function acceptanceBinding(directory, binary, mock, cases, env=proc
   await sources(directory,'graphcoder-e2e/');
   await sources(join(directory,'../../plugin/tests/hosts'),'plugin/tests/hosts/');
   await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
-  const executables={};
-  for(const name of ['E2E_PLUGIN_BINARY','E2E_CODEX','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
-    if(env[name])executables[name]=await digest(env[name]);
-  return { binary: await digest(binary), mock: await digest(mock), source,executables,
+  const executables={ NODE: await executable(process.execPath) };
+  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST',
+    'E2E_PLUGIN_BINARY','E2E_CODEX','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
+    if(env[name])executables[name]=await executable(env[name]);
+  return { binary: await executable(binary), mock: await executable(mock), source,executables,
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
 }
 

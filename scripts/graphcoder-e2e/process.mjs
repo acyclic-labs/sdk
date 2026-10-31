@@ -3,10 +3,11 @@ import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, read
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { stripVTControlCharacters } from "node:util";
 import assert from "node:assert/strict";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ProcessReport } from "./process-report.mjs";
+import { listenReportPipe } from "./report-pipe.mjs";
 
 export async function schedule(items, platform, execute) {
   if (platform !== "win32") return Promise.all(items.map(execute));
@@ -25,18 +26,50 @@ export class Processes {
   stopping = false;
   started = 0;
   #transcripts;
-  constructor({ transcripts } = {}) { this.#transcripts = transcripts; }
+  #closing;
+  #onReport;
+  #admissions = new Set();
+  constructor({ transcripts, onReport } = {}) { this.#transcripts = transcripts; this.#onReport = onReport; }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
+    if (process.platform === "win32" && options.scopeReport) {
+      throw new Error("step=report-admission; recovery=await Processes.startReported before launching the selected Windows executable");
+    }
+    return this.#start(program, args, options);
+  }
+  startReported(program, args, options = {}) {
+    const admission = this.#startReported(program, args, options);
+    this.#admissions.add(admission);
+    const settled = () => this.#admissions.delete(admission);
+    admission.then(settled, settled);
+    return admission;
+  }
+  async #startReported(program, args, options) {
+    if (process.platform !== "win32") return this.start(program, args, { ...options, scopeReport: true });
+    const report = new ProcessReport();
+    const endpoint = await listenReportPipe(report.generation);
+    try { return this.#start(program, args, options, report, endpoint); }
+    catch (error) { await endpoint.close(); throw error; }
+  }
+  #start(program, args, options = {}, selectedReport, endpoint) {
     if (this.stopping) throw new Error("suite process scope is closed (deadline or cleanup)");
-    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReportSignal, ...spawnOptions } = options;
-    const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions });
+    const { scopeKillSignal = "SIGKILL", scopeTreeControl = false, scopeReport = false, ...spawnOptions } = options;
+    const report = selectedReport ?? (scopeReport ? new ProcessReport() : undefined);
+    const env = { ...(spawnOptions.env ?? process.env) };
+    for (const key of ["ACYCLIC_REPORT_FD", "ACYCLIC_REPORT_PIPE", "ACYCLIC_REPORT_OWNER_PID",
+      "ACYCLIC_REPORT_GENERATION", "ACYCLIC_REPORT_REQUEST_ID"]) delete env[key];
+    if (report) Object.assign(env, endpoint?.environment ?? { ACYCLIC_REPORT_FD: "3" }, {
+      ACYCLIC_REPORT_GENERATION: report.generation, ACYCLIC_REPORT_REQUEST_ID: report.requestId,
+    });
+    const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
+      env, ...(report && !endpoint ? { stdio: ["pipe", "pipe", "pipe", "pipe"] } : {}),
+    });
+    report?.attach(child, endpoint?.connected ?? child.stdio[3]);
     child.stdin.on("error", error => { if (error.code !== "EPIPE") child.emit("error", error); });
     const kill = () => {
       if (scopeTreeControl) { child.stdin.end(); return; }
       child.kill(scopeKillSignal);
     };
-    let reportRequested = false;
     const index = this.started++;
     const stdoutPath = join(this.transcripts, `${index}.stdout`), stderrPath = join(this.transcripts, `${index}.stderr`);
     const written = Promise.all([transcript(child.stdout, stdoutPath), transcript(child.stderr, stderrPath)]);
@@ -48,10 +81,16 @@ export class Processes {
     });
     exited.catch(() => {});
     // Reaped once the child and its pipes are gone, however `closed` settles.
-    const reaped = new Promise(resolve => {
-      child.once("error", resolve);
-      child.once("close", () => { this.children.delete(child); resolve(); });
+    const reaped = new Promise((resolve, reject) => {
+      child.once("close", () => {
+        const finish = () => { this.children.delete(child); resolve(); };
+        if (endpoint) report.closeTransport(endpoint.close).then(finish, error => {
+          this.children.delete(child); reject(error);
+        });
+        else finish();
+      });
     });
+    reaped.catch(() => {});
     const closed = new Promise((resolve, reject) => {
       // A transcript that cannot be opened or written ends the run now, with
       // the typed cause, instead of an unhandled rejection at exit.
@@ -62,50 +101,58 @@ export class Processes {
       child.on("error", reject);
       child.on("close", (code, signal) => {
         // Settle only after both transcripts are complete on disk.
-        written.then(() => {
+        Promise.all([written, reaped]).then(() => {
           const result = settled(code, signal, stdoutPath, stderrPath);
-          if (reportRequested) {
-            const stuck_on = waitDetails(result.stderr + "\n" + result.stdout);
-            result.termination = { report_requested: true, stuck_on, missing_wait_report: stuck_on.length === 0 };
-          }
+          if (report?.termination) result.termination = report.termination;
           resolve(result);
-        }, () => {});
+        }, reject);
       });
     });
     // The caller may be waiting for a ready/screen event instead of exit.
     closed.catch(() => {});
-    this.children.set(child, { kill, reaped, report: scopeReportSignal ? () => { reportRequested = true; child.kill(scopeReportSignal); } : undefined });
-    return { child, exited, closed, killExecutable: () => child.kill("SIGKILL") };
+    this.children.set(child, { kill, reaped, report,
+      cancel: process.platform === "win32" ? undefined : () => child.kill("SIGTERM") });
+    return { child, exited, closed, reportReady: report?.ready,
+      requestReport: report ? deadline => report.request(deadline) : undefined,
+      killExecutable: () => child.kill("SIGKILL") };
   }
   async run(program, args, options, input = "") {
-    const process = this.start(program, args, options);
+    const process = options?.scopeReport ? await this.startReported(program, args, options) : this.start(program, args, options);
     process.child.stdin.end(input);
     return process.closed;
   }
   // Windows Job custody kills the whole tree with its host; POSIX custody
   // kills only the executable on SIGUSR1 and still drains and reports it.
   startOwned(program, args, options = {}) {
+    return this.#startOwned(program, args, options, this.start.bind(this));
+  }
+  startReportedOwned(program, args, options = {}) {
+    return this.#startOwned(program, args, options, this.startReported.bind(this));
+  }
+  #startOwned(program, args, options, start) {
     const { scopeMountRoot, scopeInheritInput = false, scopePty = false, ...spawnOptions } = options;
     if (process.platform === "win32") {
       const host = options.env?.E2E_PROCESS_HOST ?? process.env.E2E_PROCESS_HOST;
       assert.ok(host && isAbsolute(host), "E2E_PROCESS_HOST must name the cross-built process-tree host");
-      return this.start(host, [...(scopeInheritInput ? ["--inherit-input"] : []), program, ...args],
+      return start(host, [...(scopeInheritInput ? ["--inherit-input"] : []), program, ...args],
         { ...spawnOptions, scopeTreeControl: !scopeInheritInput });
     }
     const mountLease = process.platform === "linux" && scopeMountRoot
       ? ["--mount-root", scopeMountRoot, "--"] : [];
-    const owned = this.start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
+    const owned = start("python3", [fileURLToPath(new URL("./owned-process.py", import.meta.url)),
       ...(scopePty ? ["--pty"] : []), ...mountLease, program, ...args], { ...spawnOptions, scopeTreeControl: true });
+    if (owned instanceof Promise) return owned.then(running => ({ ...running, killExecutable: () => running.child.kill("SIGUSR1") }));
     return { ...owned, killExecutable: () => owned.child.kill("SIGUSR1") };
   }
   // The one real-terminal transport: ConPTY inside native Job custody on
   // Windows, or a PTY whose root leads its own session under the POSIX owner.
   startTerminal(binary, args, options = {}) {
     const env = { ...(options.env ?? process.env), TERM: "xterm-256color" };
-    if (process.platform !== "win32") return this.startOwned(binary, args, { scopeReportSignal: "SIGTERM", ...options, env, scopePty: true });
+    const start = options.scopeReport ? this.startReportedOwned.bind(this) : this.startOwned.bind(this);
+    if (process.platform !== "win32") return start(binary, args, { ...options, env, scopePty: true });
     const host = env.E2E_CONPTY_HOST;
     assert.ok(host && isAbsolute(host), "cross-build the ConPTY host and set E2E_CONPTY_HOST");
-    return this.startOwned(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
+    return start(host, conptyArgs(binary, args), { ...options, env, scopeInheritInput: true });
   }
   async runOwned(program, args, options, input = "") {
     assert.equal(input, "", "external acceptance commands receive empty stdin");
@@ -113,21 +160,46 @@ export class Processes {
     const [, result] = await Promise.all([running.exited, running.closed]);
     return result;
   }
-  async close() {
+  close() {
+    return this.#closing ??= this.#close();
+  }
+  async #close() {
     this.stopping = true;
+    await Promise.allSettled(this.#admissions);
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
-    if (reporting.length) {
-      // The active deadline already failed. The existing drain reservation
-      // permits diagnostics before the same physical termination barrier.
-      let force;
-      const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
-      for (const child of reporting) child.report();
-      try { await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]); }
-      finally { clearTimeout(force); }
+    let observationError;
+    const observed = (report, outcome) => {
+      try {
+        this.#onReport?.({ request_id: report.requestId, generation: report.generation,
+          outcome, acknowledged: report.termination?.report_acknowledged === true,
+          cause: report.termination?.report_cause });
+      } catch (error) { observationError ??= error; }
+    };
+    try {
+      if (reporting.length) {
+        // The active deadline already failed. The existing drain reservation
+        // permits diagnostics before the same physical termination barrier.
+        let force;
+        const forced = new Promise(resolve => { force = setTimeout(resolve, 500); });
+        const deadline = Date.now() + 500;
+        try {
+          const acknowledgements = reporting.map(child => {
+            const completion = child.report.request(deadline);
+            if (!this.#onReport) return completion;
+            observed(child.report, "requested");
+            return completion.then(() => observed(child.report, child.report.termination.report_outcome));
+          });
+          await Promise.race([Promise.all(acknowledgements), forced]);
+          for (const child of reporting) { child.report.expire(); child.cancel?.(); }
+          await Promise.race([Promise.all(reporting.map(child => child.reaped)), forced]);
+        } finally { clearTimeout(force); }
+      }
+    } finally {
+      for (const child of children) child.kill();
+      await Promise.all(children.map(child => child.reaped));
     }
-    for (const child of children) child.kill();
-    await Promise.all(children.map(child => child.reaped));
+    if (observationError) throw observationError;
   }
 }
 
@@ -383,9 +455,4 @@ export class OutputWatch {
   }
   // Whether `needle` last appeared after `other` last did.
   later(needle, other) { return (this.#last.get(needle) ?? -1) > (this.#last.get(other) ?? -1); }
-}
-
-export function waitDetails(stderr) {
-  return Array.from(stripVTControlCharacters(stderr).matchAll(/^waiting: (\S+) (\S+) since (\d+(?:\.\d+)?) \(.*\)\r?$/gm),
-    match => ({ primitive: match[1], key: match[2], since: Number(match[3]) }));
 }

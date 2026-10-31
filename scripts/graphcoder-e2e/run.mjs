@@ -48,7 +48,9 @@ const cases = scripts
   .flatMap(test => roots.filter((_, index) => index === 0 || test.ntfs).map((root, index) => ({ ...test, id: test.id + (index ? "-ntfs" : ""), root })));
 assert.ok(cases.length, "no matching cases");
 assert.equal(new Set(cases.map(test => test.id)).size, cases.length, "case identities must be unique");
-const processes = new Processes({ transcripts: join(output, "transcripts") });
+const processes = new Processes({ transcripts: join(output, "transcripts"), onReport: event => {
+  process.stderr.write(`case-lifecycle: ${JSON.stringify({ phase: "report", ...event })}\n`);
+} });
 mkdirSync(join(output, "transcripts"), { recursive: true });
 const contexts = new Map();
 const evidence = new Map();
@@ -81,34 +83,39 @@ async function checkTree(test) {
     fenced(records.filter(record => record.case === test.id), test.assert.dead_tree);
   }
 }
-async function execute(test, gitOrigin) {
+async function prepare(test, gitOrigin) {
   const begin = performance.now();
   const fixture = { id: test.id, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
   fixture.binary = binary;
   fixture.output = artifact;
+  fixture.env = environment(fixture.settings);
+  await mkdir(dirname(fixture.workspace), { recursive: true });
+  if (test.workspace?.kind === "git") {
+    const cloned = await processes.run("git", ["clone", "--quiet", "--shared", gitOrigin, fixture.workspace], { env: fixture.env });
+    assert.equal(cloned.code, 0, cloned.stderr);
+  } else await mkdir(fixture.workspace, { recursive: true });
+  await mkdir(fixture.settings, { recursive: true });
+  await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
+  const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
+    models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
+    token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
+  await json(fixture.catalog, { e2e: provider });
+  fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
+  fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
+  fixture.requested = request => events.has(requestKey(test.id, request));
+  fixture.onRequest = listener => events.subscribe(event => {
+    if (event.case === test.id) listener(event);
+  });
+  fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
+  fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
+  return { fixture, artifact, seconds: (performance.now() - begin) / 1000 };
+}
+async function execute(test, prepared) {
+  const begin = performance.now();
+  const { fixture, artifact, seconds: preparationSeconds } = prepared;
   const captures = [], interrupted = [];
   try {
-    fixture.env = environment(fixture.settings);
-    await mkdir(dirname(fixture.workspace), { recursive: true });
-    if (test.workspace?.kind === "git") {
-      const cloned = await processes.run("git", ["clone", "--quiet", "--shared", gitOrigin, fixture.workspace], { env: fixture.env });
-      assert.equal(cloned.code, 0, cloned.stderr);
-    } else await mkdir(fixture.workspace, { recursive: true });
-    await mkdir(fixture.settings, { recursive: true });
-    await Promise.all([seed(fixture.workspace, expand(test.workspace?.files, fixture)), seed(fixture.settings, expand(test.settings, fixture))]);
-    const provider = { adapter: test.adapter ?? "responses", authentication: "optional", base_url: `http://127.0.0.1:${port}/${test.id}/v1`,
-      models: { tiny: { capacity: test.capacity ?? { context_tokens: 32768, output_tokens: 1024 }, features: { tools: true, images: true } } }, max_event_bytes: 65536,
-      token_counter: { path: "count", adapter: test.adapter ?? "responses", response_field: "input_tokens", framing_tokens: 0 } };
-    await json(fixture.catalog, { e2e: provider });
-    fixture.env.E2E_MOCK_URL = `http://127.0.0.1:${port}/${test.id}/v1`;
-    fixture.env.ACYCLIC_TEST_SOURCE_ROOT = resolve(directory, "../..");
-    fixture.requested = request => events.has(requestKey(test.id, request));
-    fixture.onRequest = listener => events.subscribe(event => {
-      if (event.case === test.id) listener(event);
-    });
-    fixture.waitRequest = request => events.keyed(requestKey(test.id, request));
-    fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
@@ -128,7 +135,7 @@ async function execute(test, gitOrigin) {
       }
       const op = input.operation ?? operation;
       const args = input.args ?? (input.mode === "jsonl" ? ["--operation", op, "--input-format", "jsonl"] : ["--operation", op, "-p", input.text ?? "hello"]);
-      const running = processes.start(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env, scopeReportSignal: "SIGTERM" });
+      const running = await processes.startReported(binary, [...fixture.args, ...args, ...(input.extra_args ?? [])], { cwd: input.cwd ?? fixture.workspace, env: fixture.env });
       if (input.kill_on) {
         await Promise.race([fixture.waitRequest(input.kill_on), running.closed.then(result => { throw new Error(`exited before kill point: ${JSON.stringify(result)}`); })]);
         running.child.kill("SIGKILL");
@@ -157,10 +164,14 @@ async function execute(test, gitOrigin) {
     // first would let an unfenced descendant exit and produce a false pass.
     await checkTree(test);
     contexts.set(test.id, { test, fixture, captures, artifact });
-    return { case: test.id, platform: process.platform, status: "pass", seconds: (performance.now() - begin) / 1000 };
+    const productSeconds = (performance.now() - begin) / 1000;
+    return { case: test.id, platform: process.platform, status: "pass", seconds: preparationSeconds + productSeconds,
+      preparation_seconds: preparationSeconds, product_seconds: productSeconds };
   } catch (error) {
     try { await checkTree(test); } catch (treeError) { error = new Error(`${error.stack}\n${treeError.stack}`); }
-    return { case: test.id, platform: process.platform, status: "fail", seconds: (performance.now() - begin) / 1000, error: error.stack, workspace: fixture.workspace };
+    const productSeconds = (performance.now() - begin) / 1000;
+    return { case: test.id, platform: process.platform, status: "fail", phase: "run", seconds: preparationSeconds + productSeconds,
+      preparation_seconds: preparationSeconds, product_seconds: productSeconds, error: error.stack, workspace: fixture.workspace };
   } finally {
     await Promise.all(interrupted);
     evidence.set(test.id, { captures });
@@ -185,8 +196,15 @@ async function verify(result, allRecords) {
     return { ...result, status: "fail", error: error.stack, workspace: fixture.workspace };
   }
 }
-let results;
-const execution = await withOwnedCase({ processes, run: async () => {
+let results, currentPhase, failedPhase, execution, expired = false;
+const phases = {};
+try { execution = await withOwnedCase({ processes, onPhase: event => {
+  currentPhase = event.phase;
+  if (event.outcome === "failed" || event.outcome === "deadline") failedPhase ??= event.phase;
+  if (event.outcome === "deadline") expired = true;
+  phases[event.phase] = event;
+  process.stderr.write(`case-lifecycle: ${JSON.stringify(event)}\n`);
+}, prepare: async () => {
   const scripts = Object.fromEntries(cases.map(test => [test.id, expand(test.model,
     { id: test.id, workspace: join(test.root, test.id, "workspace") })]));
   await json(join(output, "script.json"), { cases: scripts });
@@ -196,24 +214,39 @@ const execution = await withOwnedCase({ processes, run: async () => {
     key: event => event.event === "ready" ? ["ready"]
       : event.event === "request" ? [requestKey(event.case, { step: event.step }), requestKey(event.case, event)] : [] });
   port = (await events.keyed("ready")).port;
-  const origin = join(roots[0], "origin"); await mkdir(origin);
-  await seed(origin, { "seed.txt": "base\n" });
-  for (const args of [["init", "--quiet", "--initial-branch=main", origin], ["-C", origin, "add", "."],
-    ["-C", origin, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"]]) {
-    const git = await processes.run("git", args, { env }); assert.equal(git.code, 0, git.stderr);
+  let origin;
+  if (cases.some(test => test.workspace?.kind === "git")) {
+    origin = join(roots[0], "origin"); await mkdir(origin);
+    await seed(origin, { "seed.txt": "base\n" });
+    for (const args of [["init", "--quiet", "--initial-branch=main", origin], ["-C", origin, "add", "."],
+      ["-C", origin, "-c", "user.name=e2e", "-c", "user.email=e2e@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed"]]) {
+      const git = await processes.run("git", args, { env }); assert.equal(git.code, 0, git.stderr);
+    }
   }
+  return new Map(await schedule(cases, process.platform, async test => [test.id, await prepare(test, origin)]));
+}, run: async prepared => {
   // Unix cases share one mock. Windows runs every case and filesystem variant
   // serially; serial.mjs gives each case its own unchanged ten-second budget.
-  results = await schedule(cases, process.platform, test => execute(test, origin));
-} });
+  results = await schedule(cases, process.platform, test => execute(test, prepared.get(test.id)));
+} }); }
+catch (error) {
+  const detail = `step=case-${failedPhase ?? currentPhase}: ${error.stack}\nrecovery command: ${JSON.stringify([process.execPath, ...process.argv.slice(1)])}`;
+  results = cases.map((test, index) => {
+    const result = results?.[index];
+    return { ...result, case: test.id, platform: process.platform, status: "fail", phase: result?.phase ?? failedPhase ?? currentPhase,
+      error: result?.error ? `${result.error}\n${detail}` : detail };
+  });
+  execution = { expired, preparation_seconds: phases.preparation?.seconds };
+}
 // Every executable has exited and the server has been reaped. No concurrent
 // append can expose an incomplete JSONL line to the assertion phase.
-const allRecords = await recordedRequests(events, join(output, "requests.jsonl"));
+const allRecords = port ? await recordedRequests(events, join(output, "requests.jsonl")) : [];
 results = await Promise.all(results.map(result => verify(result, allRecords)));
 results = results.map(result => ({ ...result, ...(execution.expired ? { timeout: true } : {}), evidence: { ...evidence.get(result.case),
   requests: allRecords.filter(record => record.case === result.case) } }));
 const seconds = (performance.now() - started) / 1000;
-const report = { platform: process.platform, seconds, limit_seconds: 10, expired: execution.expired, results, output, roots,
+const report = { platform: process.platform, seconds, product_seconds: execution.seconds, preparation_seconds: execution.preparation_seconds,
+  phases, limit_seconds: 10, expired: execution.expired, results, output, roots,
   selected, qualification: !selected.length, coverage };
 await publishReport(join(output, "matrix.json"), report);
 process.exitCode = !execution.expired && results?.every(result => result.status === "pass") && seconds < 10

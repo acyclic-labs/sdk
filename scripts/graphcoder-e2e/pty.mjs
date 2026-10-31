@@ -45,8 +45,8 @@ function expectedTaskFailure(visible, condition) {
 export async function pty(processes, binary, fixture, input, capture) {
   const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
   const frames = new TerminalFrames(screen), failures = new FailureHistory();
-  const running = processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
-    { cwd: fixture.workspace, env: fixture.env });
+  const running = await processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
+    { cwd: fixture.workspace, env: fixture.env, scopeReport: true });
   screen.onData(data => running.child.stdin.write(data));
   const raw = new OutputWatch(rawNeedles(input.actions));
   let index = 0, failure;

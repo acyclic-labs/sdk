@@ -215,6 +215,10 @@ def spawn(command, terminal):
             os._exit(127)
     if terminal is not None:
         os.close(terminal[1])
+    # Only the selected executable retains its diagnostic endpoint. The owner
+    # still holds the original cancellation and physical retirement boundary.
+    if "ACYCLIC_REPORT_FD" in os.environ:
+        os.close(int(os.environ["ACYCLIC_REPORT_FD"]))
     return root
 
 
@@ -246,7 +250,7 @@ def main():
     root = spawn(command, terminal)
     master = None if terminal is None else terminal[0]
 
-    # SIGTERM requests a report; SIGUSR1 kills the executable, not this owner.
+    # SIGTERM cancels the root after its report; SIGUSR1 kills the executable.
     # Both leave the tree owner and its physical drain intact. EOF on control
     # stdin remains the force-retirement operation.
     def forward(number):

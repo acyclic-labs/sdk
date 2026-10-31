@@ -1,4 +1,4 @@
-use acyclic_native_runtime::obs::WaitReport;
+use acyclic_native_runtime::obs::{ReportPort, WaitReport};
 use futures::{FutureExt as _, future::BoxFuture, future::Shared};
 use std::{future::Future, io, sync::Arc};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
@@ -52,28 +52,52 @@ pub(super) fn shutdown() -> Shutdown {
     .shared()
 }
 
-// Snapshot before cancelling the operation: dropping its futures would erase
-// the very waits that identify an interrupted turn. A diagnostic write failure
-// must not replace the operation's result or interrupt graceful owner cleanup.
+// Reporting is polled alongside the original operation and shutdown. A blocked
+// diagnostic sink cannot stop its producers or the original shutdown event.
 pub(super) async fn observe(
     report: &WaitReport,
-    output: &mut impl io::Write,
+    port: io::Result<Option<ReportPort>>,
     shutdown: Shutdown,
     graceful: bool,
     operation: impl Future<Output = Result<u8, Failure>>,
 ) -> (Result<u8, Failure>, io::Result<()>) {
-    tokio::pin!(operation);
-    tokio::select! {
-        result = &mut operation => (result, report.report(output)),
-        stopped = shutdown => {
-            let diagnostic = report.report(output);
-            let result = if graceful {
-                operation.await
-            } else {
-                stopped.map_err(|error| Box::new(io::Error::other(error)) as Failure)
-            };
-            (result, diagnostic)
+    let diagnostic = async {
+        let Some(mut port) = port? else {
+            return std::future::pending().await;
+        };
+        port.ready().await?;
+        if let Some(request) = port.request().await? {
+            let ack = port.snapshot(request, report);
+            port.acknowledge(&ack).await?;
         }
+        Ok(())
+    };
+    tokio::pin!(operation);
+    tokio::pin!(diagnostic);
+    let diagnostic = tokio::select! {
+        result = &mut operation => return (result, Ok(())),
+        stopped = shutdown.clone() => return (
+            finish(stopped, graceful, operation).await,
+            Err(io::ErrorKind::Interrupted.into()),
+        ),
+        result = &mut diagnostic => result,
+    };
+    let result = tokio::select! {
+        result = &mut operation => result,
+        stopped = shutdown => finish(stopped, graceful, operation).await,
+    };
+    (result, diagnostic)
+}
+
+async fn finish(
+    stopped: Result<u8, Arc<io::Error>>,
+    graceful: bool,
+    operation: impl Future<Output = Result<u8, Failure>>,
+) -> Result<u8, Failure> {
+    if graceful {
+        operation.await
+    } else {
+        stopped.map_err(|error| Box::new(io::Error::other(error)) as Failure)
     }
 }
 

@@ -15,8 +15,14 @@ test('partition provenance includes plugin executables and host helper source',a
   const binary=join(root,'graphcoder'),mock=join(root,'mock'),plugin=join(root,'plugin-bin'),codex=join(root,'codex');
   for(const path of [binary,mock,plugin,codex])await writeFile(path,'original');
   const helper=join(hosts,'qualify-scripted.mjs');await writeFile(helper,'original helper');
-  const env={E2E_PLUGIN_BINARY:plugin,E2E_CODEX:codex};
+  // These identity-only inputs refer to the actual running executable; no
+  // invented native-tool output or executable image is needed for the check.
+  const env={E2E_PLUGIN_BINARY:plugin,E2E_CODEX:codex,E2E_BUN:process.execPath,
+    E2E_PROCESS_HOST:process.execPath,E2E_CONPTY_HOST:process.execPath};
   const before=await acceptanceBinding(directory,binary,mock,[],env);
+  assert.match(before.executables.NODE,/^[a-f0-9]{64}$/);
+  for(const name of ['E2E_BUN','E2E_PROCESS_HOST','E2E_CONPTY_HOST'])
+    assert.equal(before.executables[name],before.executables.NODE,`${name} must bind its admitted executable`);
   await writeFile(plugin,'different plugin');
   const changedPlugin=await acceptanceBinding(directory,binary,mock,[],env);
   assert.notDeepEqual(changedPlugin,before,'mixed plugin binaries must not share provenance');
@@ -107,6 +113,7 @@ test("partition collection fences runtime, source, definitions and exact case re
   const cases = [{ id: "first" }, { id: "second" }], coverage = { pass: true };
   const hash = value => createHash("sha256").update(value).digest("hex");
   const binding = { binary: hash("binary"), mock: hash("mock"),
+    executables: { NODE: hash("node"), E2E_BUN: hash("bun") },
     cases: hash(JSON.stringify(cases)), source: { "serial.mjs": hash("source") } };
   const bundles = cases.map((item, index) => ({ index, count: 2, platform: "linux", binding,
     inventory: cases.map(item => item.id), selected: [item.id], coverage,
@@ -118,6 +125,7 @@ test("partition collection fences runtime, source, definitions and exact case re
   for (const edit of [bundle => bundle.index = 0, bundle => bundle.count = 3,
     bundle => bundle.platform = "win32", bundle => bundle.binding.binary = hash("changed"),
     bundle => bundle.binding.source["serial.mjs"] = hash("changed"),
+    bundle => bundle.binding.executables.E2E_BUN = hash("changed"),
     bundle => bundle.inventory.reverse(), bundle => bundle.selected = ["first"],
     bundle => bundle.receipts = [], bundle => bundle.coverage = { pass: false }]) {
     // Give each bundle its own binding, as real receipt files do.
@@ -128,6 +136,9 @@ test("partition collection fences runtime, source, definitions and exact case re
   assert.throws(() => collectPartitions(changed, bundles, "linux", coverage), /definitions/);
   const missing = bundles.map(bundle => structuredClone(bundle)); delete missing[0].binding;
   assert.throws(() => collectPartitions(cases, missing, "linux", coverage), /identity/);
+  const missingRuntime = bundles.map(bundle => structuredClone(bundle));
+  for (const bundle of missingRuntime) delete bundle.binding.executables.NODE;
+  assert.throws(() => collectPartitions(cases, missingRuntime, "linux", coverage), /Node identity/);
   // Agreement between partitions cannot turn absent provenance into a digest.
   // Both bundles carry the same malformed value, so equality alone accepts it.
   for (const source of [[], [hash("source")], { "serial.mjs": null },

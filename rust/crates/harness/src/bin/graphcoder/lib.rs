@@ -55,15 +55,10 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
             // Keep Tokio's entry frame independent of the size of the CLI future.
             let result = runtime.block_on(phase(|| async {
                 let shutdown = lifecycle::shutdown();
+                let port = acyclic_native_runtime::obs::ReportPort::from_environment();
                 let operation = phase(|| run(args, seams, shutdown.clone()));
-                let (result, _) = lifecycle::observe(
-                    &report,
-                    &mut std::io::stderr(),
-                    shutdown,
-                    graceful,
-                    operation,
-                )
-                .await;
+                let (result, _) =
+                    lifecycle::observe(&report, port, shutdown, graceful, operation).await;
                 result
             }));
             runtime.shutdown_background();
