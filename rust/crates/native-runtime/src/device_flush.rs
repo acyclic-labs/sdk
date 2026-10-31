@@ -337,7 +337,7 @@ mod apple {
                             "drain process ended before {expected}"
                         )));
                     }
-                    if line.trim_end() == expected {
+                    if line.trim_end().ends_with(expected) {
                         return Ok(());
                     }
                 }
