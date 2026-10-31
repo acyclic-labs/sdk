@@ -664,7 +664,7 @@ struct Operation {
 struct Terminal {
     outcome: Option<Outcome>,
     has_error_kind: bool,
-    has_os_error: bool,
+    has_durability_fields: bool,
 }
 
 struct FirstCause<'a>(&'a mut Option<Box<str>>);
@@ -704,10 +704,10 @@ impl Visit for Fields {
 
 impl Visit for Terminal {
     fn record_i64(&mut self, field: &Field, _: i64) {
-        self.has_os_error |= field.name() == "error.os";
+        self.has_durability_fields |= field.name() == "error.os";
     }
     fn record_u64(&mut self, field: &Field, _: u64) {
-        self.has_os_error |= field.name() == "error.os";
+        self.has_durability_fields |= matches!(field.name(), "error.os" | "descriptor");
     }
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "outcome" {
@@ -719,6 +719,8 @@ impl Visit for Terminal {
             };
         } else if field.name() == "error.kind" {
             self.has_error_kind = true;
+        } else if matches!(field.name(), "requested" | "syscall") {
+            self.has_durability_fields = true;
         }
     }
     fn record_debug(&mut self, _: &Field, _: &dyn fmt::Debug) {}
@@ -779,7 +781,7 @@ impl<C: Sink, S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for Operations<C>
         values.record(&mut terminal);
         if terminal.outcome.is_none()
             && !(terminal.has_error_kind && self.0.error_details())
-            && !terminal.has_os_error
+            && !terminal.has_durability_fields
         {
             return;
         }

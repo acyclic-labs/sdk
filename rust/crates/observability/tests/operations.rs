@@ -133,7 +133,7 @@ fn exported_evidence_retains_original_parent_and_native_field_contract()
     let code = native.raw_os_error().ok_or("native error code absent")?;
     let (fields, mut field_output) = Export::channel(Arc::new(Semaphore::new(1)), false);
     let field_dispatch =
-        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields)));
+        tracing::Dispatch::new(tracing_subscriber::registry().with(Operations(fields.clone())));
     for (requested, syscall, expected) in [
         ("full", "fsync", Some(DurabilitySyscall::Fsync)),
         ("full", "fdatasync", Some(DurabilitySyscall::Fdatasync)),
@@ -190,6 +190,47 @@ fn exported_evidence_retains_original_parent_and_native_field_contract()
     assert_eq!(
         absent.sample().durability,
         Some(DurabilityAttempt::default())
+    );
+    drop(absent);
+    tracing::dispatcher::with_default(&field_dispatch, || {
+        let span = tracing::info_span!(
+            "acyclic.runtime.durability",
+            requested = tracing::field::Empty,
+            syscall = tracing::field::Empty,
+            descriptor = tracing::field::Empty,
+            error.os = tracing::field::Empty,
+            outcome = tracing::field::Empty,
+        );
+        span.record("requested", "barrier");
+        span.record("syscall", "F_BARRIERFSYNC");
+        span.record("descriptor", 0_u64);
+        span.record("error.os", code);
+        // Separately recorded fields keep their first original value.
+        span.record("requested", "full");
+        span.record("syscall", "fsync");
+        span.record("descriptor", 1_u64);
+        span.record("outcome", "err");
+        // Completion freezes the same record, even while its span is retained.
+        span.record("requested", "full");
+        span.record("syscall", "syncfs");
+        span.record("descriptor", 2_u64);
+        span.record("outcome", "ok");
+    });
+    let deferred = ready(field_output.recv())?.ok_or("deferred attempt sample absent")?;
+    assert_eq!(deferred.sample().outcome, Outcome::Err);
+    assert_eq!(
+        deferred.sample().durability,
+        Some(DurabilityAttempt {
+            requested: Some(DurabilityRequest::Barrier),
+            syscall: Some(DurabilitySyscall::BarrierFsync),
+            descriptor: Some(0),
+            os_error: Some(code),
+        })
+    );
+    assert_eq!(
+        fields.stats().full,
+        Some(0),
+        "completion emitted duplicate output"
     );
     Ok(())
 }
