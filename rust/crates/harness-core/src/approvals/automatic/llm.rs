@@ -27,7 +27,7 @@ pub(super) async fn review_model(
     let (model, provider) = binding;
     let capacity = provider.context_capacity(model)?;
     capacity.validate()?;
-    let output = capacity.default_output_budget().min(256);
+    let output = capacity.output_reservation(None)?;
     let prepared = PreparedModelRequest::prepare(
         ModelRequest {
             model: model.clone(),
