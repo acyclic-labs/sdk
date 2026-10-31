@@ -17,6 +17,27 @@ impl FileProjection {
     pub(crate) fn model_schema(mode: ProjectionMode) -> Result<Value> {
         mode.schema::<FileView<'_>>()
     }
+
+    pub(crate) fn read_schema(mode: ProjectionMode) -> Result<Value> {
+        if mode == ProjectionMode::Reference {
+            return Self::model_schema(mode);
+        }
+        schema::output::<ReadProjection<'_>>()
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ReadProjection<'a> {
+    Json { value: FileView<'a> },
+    Parts { parts: [MediaPart<'a>; 2] },
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MediaPart<'a> {
+    Text { text: &'a str },
+    File { file: &'a FileRef, policy: Value },
 }
 
 impl ToolProjection for FileProjection {
@@ -47,7 +68,31 @@ impl ToolProjection for FileProjection {
                 let io = owned_io.as_ref();
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let io: Option<&crate::executor::PreparationIo> = None;
-                if let Some(range) = input.0.range {
+                if let Some(page) = &result.0.page {
+                    if page.start > page.end || (result.0.media.is_some()) {
+                        return Err(super::executor::rejection(
+                            work,
+                            "invalid read page provenance",
+                        ));
+                    }
+                    if !matches!(input.0.selection, Some(ReadSelection::Cells { .. }))
+                        && !input.0.path.ends_with(".ipynb")
+                        && (page.end.checked_sub(page.start) != Some(text.len() as u64)
+                            || page.end > file.descriptor().byte_length())
+                    {
+                        return Err(super::executor::rejection(
+                            work,
+                            "text page differs from source interval",
+                        ));
+                    }
+                } else if result.0.media.is_some() {
+                    if !text.is_empty() {
+                        return Err(super::executor::rejection(
+                            work,
+                            "native read must preserve the source file",
+                        ));
+                    }
+                } else if let Some(range) = input.0.range {
                     if range.end.checked_sub(range.start) != Some(text.len() as u64)
                         || range.end > file.descriptor().byte_length()
                     {
@@ -78,11 +123,54 @@ impl ToolProjection for FileProjection {
                 }
                 if mode == ProjectionMode::Full {
                     let version = super::version::encode_version(file, work)?;
+                    if let Some(media) = &result.0.media {
+                        let intent = match media {
+                            ReadSelection::Image { detail } => {
+                                crate::model::NativeMediaIntent::Image { detail: *detail }
+                            }
+                            ReadSelection::Pdf => crate::model::NativeMediaIntent::Document {
+                                maximum_pages: u32::MAX - 1,
+                            },
+                            _ => {
+                                return Err(super::executor::rejection(
+                                    work,
+                                    "invalid native read modality",
+                                ));
+                            }
+                        };
+                        let policy = crate::model::NativeMediaPolicy {
+                            intent,
+                            maximum_bytes: crate::conversation::MAX_EXACT_JS_INTEGER,
+                            maximum_work: crate::conversation::MAX_EXACT_JS_INTEGER,
+                            configuration: None,
+                        };
+                        // The source version doubles as the compact text provenance.
+                        let encoded = super::value(&policy, u64::MAX, work)?;
+                        #[derive(Serialize)]
+                        struct Native<'a> {
+                            native: &'a Value,
+                        }
+                        let encoded = super::value(&Native { native: &encoded.0 }, u64::MAX, work)?;
+                        return super::value(
+                            &ReadProjection::Parts {
+                                parts: [
+                                    MediaPart::Text { text: &version.0 },
+                                    MediaPart::File {
+                                        file,
+                                        policy: encoded.0,
+                                    },
+                                ],
+                            },
+                            u64::MAX,
+                            work,
+                        );
+                    }
                     return schema::project_json(
                         &FileView {
                             path: &input.0.path,
                             version: &version.0,
                             text: Some(text),
+                            page: result.0.page.as_ref(),
                         },
                         work,
                     );
@@ -125,6 +213,7 @@ impl ToolProjection for FileProjection {
                                     .unwrap_or_else(|| value.0.file.path()),
                                 version: &version.0,
                                 text: None,
+                                page: None,
                             },
                             work,
                         )
