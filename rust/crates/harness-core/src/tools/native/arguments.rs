@@ -330,9 +330,12 @@ impl adapter::Adapter {
                         .into(),
                 ));
             }
-            if fields.get("-i").and_then(Value::as_bool) == Some(true)
-                || fields.get("case_sensitive").and_then(Value::as_bool) == Some(false)
-            {
+            let insensitive = if cc {
+                boolean(fields, "-i")?
+            } else {
+                !boolean(fields, "case_sensitive")?
+            };
+            if insensitive {
                 argv.push(Text("--ignore-case"));
             }
             if fields.get("multiline").and_then(Value::as_bool) == Some(true) {

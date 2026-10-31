@@ -28,6 +28,11 @@ Only its public diagnostic contract is adapted; matching and publication use
 the shared exact edit engine. Overlapping matches remain refused by that
 engine's stronger unique-match contract.
 
+Gemini search's default case-insensitive matching follows
+`performRipgrepSearch` in `packages/core/src/tools/ripGrep.ts` at that revision.
+The adapter selects arguments for the original command executor; it does not
+import that tool's process runner, file discovery or context enrichment.
+
 The `golden/` lists are deterministic protocol projections of those extracted
 public declarations, with recursively sorted schema keys. They are declaration
 goldens, not observations of a provider stream or a private harness prompt.

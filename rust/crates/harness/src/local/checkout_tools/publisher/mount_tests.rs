@@ -1,5 +1,133 @@
 use super::*;
 
+#[tokio::test]
+async fn native_queries_select_original_stdout_and_keep_its_complete_spill() -> Result<()> {
+    let (_directory, _state, harness, publisher) = native_fixture().await?;
+    publisher
+        .stage_once(
+            OperationId::new(),
+            "query.txt",
+            b"line0\nline1\nline2\nMiXeD\nmixed\nMIXED\n",
+            "text/plain",
+            "query.txt",
+            crate::conversation::ContentAccess::default(),
+        )?
+        .await?;
+    let grants = Capabilities::new(
+        harness
+            .signed
+            .capabilities()
+            .iter()
+            .chain(["tool:call:shell"]),
+    );
+    let denied = Capabilities::new(grants.iter().filter(|grant| *grant != "tool:call:shell"));
+    let context = |grants| -> Result<_> {
+        let runtime = crate::runtime::Bindings {
+            scope: RuntimeScope::new(grants, harness.limits.clone())?,
+            ..crate::runtime::Bindings::local()
+        }
+        .build()?;
+        runtime
+            .agent_context(
+                &Capabilities::default(),
+                crate::runtime::ContentBindings {
+                    volume: harness.journal.clone(),
+                    reader: harness.client_reader()?,
+                    writer: Some(Publisher::new(
+                        harness.files.clone(),
+                        &harness.journal,
+                        &harness.verifier,
+                        &harness.signed,
+                        harness.limits.file_bytes,
+                        None,
+                    )?),
+                },
+            )
+            .map(Arc::new)
+    };
+    let task = context(grants)?;
+    let denied = context(denied)?;
+    let mut original = crate::tools::catalog()
+        .find(|tool| tool.name == "shell")
+        .ok_or_else(|| Error::NotFound("stock shell".into()))?
+        .bind()?;
+    original.executor = publisher.tools.clone();
+    let original = Arc::new(original);
+    for profile in [
+        crate::model::NativeToolProfile::Anthropic,
+        crate::model::NativeToolProfile::Google,
+    ] {
+        let revisions = profile.tools()?;
+        let revision = revisions
+            .iter()
+            .find(|revision| revision.capability == "search")
+            .ok_or_else(|| Error::NotFound("native search".into()))?;
+        let mut declarations = crate::tools::native::NativeDeclarations::new(profile, None)?;
+        let (tool, _custody) = declarations.bind_variant(revision, original.clone())?;
+        let cc = profile == crate::model::NativeToolProfile::Anthropic;
+        let operation_id = OperationId::new();
+        let invocation = ToolInvocation {
+            operation_id,
+            call_id: "native-query".into(),
+            name: tool.definition.name.clone(),
+            arguments: if cc {
+                serde_json::json!({"pattern":"^line","path":"query.txt","output_mode":"content","-n":false,"head_limit":1,"offset":1})
+            } else {
+                serde_json::json!({"pattern":"mixed","dir_path":"query.txt"})
+            },
+        };
+        // Generated file input, with output from the actual registered process
+        // executor and installed rg binary; no tool transcript is a fixture.
+        let result = tool
+            .executor
+            .execute(
+                invocation.clone(),
+                Some(ToolContext::new(
+                    task.clone(),
+                    operation_id,
+                    "native-query",
+                )?),
+            )
+            .await?;
+        assert_eq!(result.value["exit_code"], 0);
+        assert_eq!(result.value["omitted_bytes"], 0);
+        if cc {
+            assert_eq!(result.value["stdout"], "line1\n");
+            let spill = result.value["spill"]
+                .as_str()
+                .ok_or_else(|| Error::NotFound("complete query output".into()))?;
+            let bytes = {
+                let state = lock_owned(StateArc::clone(&publisher.tools.state)).await;
+                let (mount, relative) = state.mounts.resolve(std::path::Path::new(spill))?;
+                let path = mount
+                    .native_root
+                    .as_ref()
+                    .map_or_else(|| state.mounts.root.join(spill), |root| root.join(relative));
+                std::fs::read(path).map_err(storage)?
+            };
+            assert_eq!(bytes, b"line0\nline1\nline2\n");
+        } else {
+            assert_eq!(result.value["stdout"], "4:MiXeD\n5:mixed\n6:MIXED\n");
+        }
+        // The original command authority still controls a cached operation.
+        // A schema adapter cannot satisfy this through another executor.
+        assert!(matches!(
+            tool.executor
+                .execute(
+                    invocation,
+                    Some(ToolContext::new(
+                        denied.clone(),
+                        operation_id,
+                        "native-query"
+                    )?),
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
+    Ok(())
+}
+
 async fn native_fixture() -> Result<(
     tempfile::TempDir,
     tempfile::TempDir,
