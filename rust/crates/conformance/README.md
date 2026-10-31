@@ -109,6 +109,10 @@ The default selects all 17 rows. Selection uses the same drivers, floor
 calibration and population setup; unrelated operation families are skipped.
 Dependent fixture operations remain outside the selected intervals. Reports
 name the requested operation set, and a subset never claims full core coverage.
+`--populations 1,1000` selects a subset of the qualification populations through
+the same setup and drivers. The default is `1,1000,100000`. Reports retain the
+selected population set; incomplete sets cannot qualify the three-population
+counting obligation.
 
 The native floor report also retains a timer-only observation control. Ratios
 include sampler cost; rows flag targets below the measured timestamp resolution.
