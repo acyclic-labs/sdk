@@ -74,7 +74,7 @@ test("Machines retains exact leases through original RPC and duplex body owners"
   });
   const outcome = <T>(value: Promise<T>) => value.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }));
   const request = { protocol: { major: 1, minor: 3 } };
-  const command = { ...request, machine: { value: new Uint8Array(16).fill(1) }, argv: ["synthetic-command"], timeoutMs: 60_000 };
+  const command = { ...request, machine: { value: new Uint8Array(16).fill(1) }, argv: ["synthetic-command"], timeoutMs: 60_000n };
   try {
     for (const count of [1, 100, 1000]) await Promise.all(Array.from({ length: count }, () => client.machines.create(request)));
     expect(calls).toBe(1101);
