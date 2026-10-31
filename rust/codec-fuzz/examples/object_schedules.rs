@@ -1,18 +1,36 @@
 //! Replay selected real-storage inputs and report their actual touched units.
-use acyclic_codec_fuzz::object_schedule::{Terminal, check};
+use acyclic_codec_fuzz::object_schedule::{Terminal, check, seeds};
 use acyclic_native_runtime::testing::DurableFault;
 use acyclic_objects::MediumError;
 use std::{collections::BTreeMap, error::Error};
 
 fn replay() -> Result<(), Box<dyn Error>> {
     let inputs: Vec<_> = std::env::args_os().skip(1).collect();
-    if inputs.is_empty() {
-        return Err("missing input files; recovery: cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0".into());
+    if inputs.first().is_some_and(|input| input == "--seed") {
+        let [_, name] = inputs.as_slice() else {
+            return Err("seed selection needs one name; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+        };
+        let (_, bytes) = seeds()
+            .into_iter()
+            .find(|(candidate, _)| name == candidate.as_str())
+            .ok_or("unknown writer seed; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0")?;
+        return replay_inputs(std::iter::once(Ok(bytes)));
     }
+    if inputs.is_empty() {
+        return Err("missing input files; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
+    }
+    replay_inputs(inputs.into_iter().map(|input| {
+        std::fs::read(input).map_err(|error| format!("read replay input failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0").into())
+    }))
+}
+
+fn replay_inputs(
+    inputs: impl Iterator<Item = Result<Vec<u8>, Box<dyn Error>>>,
+) -> Result<(), Box<dyn Error>> {
     let mut coverage = BTreeMap::new();
     let (mut cases, mut max_writes, mut max_boundaries, mut max_requested) = (0, 0, 0, 0);
     for input in inputs {
-        let bytes = std::fs::read(&input)?;
+        let bytes = input?;
         let report = check(&bytes)?.ok_or("input has no admitted full generation identity")?;
         let fault = match report.fault.fault {
             DurableFault::Before => "before",
@@ -63,7 +81,7 @@ fn replay() -> Result<(), Box<dyn Error>> {
 fn main() {
     if let Err(error) = replay() {
         eprintln!(
-            "real Medium replay failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- corpus/object_schedule/medium-false-0-0-0"
+            "real Medium replay failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0"
         );
         std::process::exit(1);
     }
