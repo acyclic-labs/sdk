@@ -3463,3 +3463,12 @@ its into_result projection. The narrow public Linux wake-drain correction and
 its actual-OS control are released for that composition. This source checkpoint
 does not claim that the native API or IOCP physical retirement obligation is
 closed.
+
+## Original child-readiness caller composition
+
+The original publicly released caller commit `8c29e9612a29859249c7739de16ad35628ddabe9` is composed without unrelated Harness changes. It consumes the same initial and resumed readiness result before the original refresh/physical cleanup/claim settlement. Normal success adds no task, thread, channel, allocation, syscall, payload copy, timer, round trip or durability barrier. A ready child consumes its retained future once rather than discarding it; only failure formats the existing first-failure string. Existing ordered map/set costs remain logarithmic, not a whole-owner O(1) claim. This exact caller source is uncompiled/unrun and its adaptation to the canonical native outcome contract remains open.
+
+| Source site | Kind | Disposition | Status |
+| --- | --- | --- | --- |
+| `rust/crates/harness/src/local/host_process/children.rs:395` at `11702912d959fd9d2bdf052029ab30bda857a14d` | Authorized atomic child-readiness caller | Compose the original public8c29 initial-arm projection: retain the same future, consume Ready(Err) or original registration error into Running.failure, and queue the same settlement pass. No synthetic exit/EOF or rearm of the failed source. Canonical ProcessWaitOutcome projection remains a separate open owner-composition row. | Actioned |
+| `rust/crates/harness/src/local/host_process/children.rs:412` at `11702912d959fd9d2bdf052029ab30bda857a14d` | Authorized atomic child-readiness caller | Compose the original public8c29 resumed projection: poll the same armed future before refresh, retain Pending and its waker, consume the first ready error once, then use original refresh/physical release/claim settlement. This replaces dropping the error-bearing future before observing it. Consumer runtime negatives remain unrun. | Actioned |
