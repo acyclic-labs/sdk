@@ -62,6 +62,7 @@ dependencies = [
  "acyclic-observability",
  "acyclic-proto-build",
  "arc-swap",
+ "base64 0.23.1",
  "ed25519-dalek",
  "futures",
  "js-sys",
@@ -69,6 +70,7 @@ dependencies = [
  "rustls",
  "rustls-platform-verifier",
  "serde",
+ "serde_json",
  "sha2 0.11.1",
  "subtle",
  "thiserror",
@@ -152,6 +154,7 @@ dependencies = [
  "cap-std",
  "cc",
  "crc-fast",
+ "ed25519-dalek",
  "futures",
  "hex",
  "icu_casemap",
@@ -185,6 +188,7 @@ dependencies = [
  "vmm-sys-util",
  "windows",
  "writeable",
+ "zeroize",
 ]
 
 [[package]]
@@ -228,6 +232,7 @@ dependencies = [
  "acyclic-differential",
  "acyclic-fs",
  "acyclic-host-platform",
+ "acyclic-model-render",
  "acyclic-native-runtime",
  "acyclic-objects",
  "acyclic-observability",
@@ -316,6 +321,14 @@ dependencies = [
  "tsify",
  "uuid",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "acyclic-model-render"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
