@@ -10,9 +10,7 @@ pub(crate) fn native_watch_fixture(
 ) -> Result<Box<dyn SourceWatch>, DemandError> {
     let ownership = SourcePayloadOwnership::new(original)?;
     let bytes = std::mem::size_of::<NativeWatch>() as u64;
-    let claim = <crate::NativeMaterializationWork as crate::native_host::NativeHostWork>::claim(
-        original, bytes,
-    )?;
+    let claim = crate::demand::SourceDemandReadWork::claim(original, bytes)?;
     ownership.retain(claim, original)?;
     Ok(Box::new(NativeWatch {
         watch,

@@ -82,7 +82,7 @@ pub(super) fn start_native_mount_prepared_with_meter(
     source: Arc<dyn MountFilesystem>,
     allow_nonempty: bool,
     work: &NativeMaterializationWork,
-    storage: PreparedNativeMountStart,
+    mut storage: PreparedNativeMountStart,
     destination_custody: Option<crate::NativeAllocation>,
 ) -> Result<NativeMountSession, NativeMountError> {
     // The existing driver loop accepts its lifetime before this stack factory
@@ -119,6 +119,13 @@ pub(super) fn start_native_mount_prepared_with_meter(
                 work,
                 &mut packet.destination_guard,
                 false,
+            )?;
+            storage.prepare_view_destination(
+                packet
+                    .destination_guard
+                    .as_mut()
+                    .ok_or(NativeMountError::ControlPending)?,
+                work,
             )
         },
     );

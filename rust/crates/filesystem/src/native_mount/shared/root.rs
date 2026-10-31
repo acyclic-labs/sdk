@@ -112,7 +112,7 @@ fn default_view_roots() -> Result<crate::HeldRoot, NativeMountError> {
 // Darwin currently owns one native session per view. Keep its destinations
 // under the admitted namespace, while its existing destination fence and
 // startup recovery retain mount custody. The host never selects this backend.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn with_native_view_root<T>(
     admission: Option<&crate::HeldRoot>,
     use_root: impl FnOnce(&crate::HeldRoot) -> Result<T, NativeMountError>,
@@ -182,7 +182,7 @@ static ISSUED: Mutex<IssuedNames> = Mutex::new(IssuedNames {
 pub(crate) struct IssuedDestination {
     path: PathBuf,
     claim: Option<u64>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", test))]
     created: Option<crate::native_host::HostRoot>,
 }
 
@@ -190,11 +190,51 @@ impl IssuedDestination {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+    /// Transfer directory removal into the original birth-funded fence before mounting.
+    pub(in crate::native_mount) fn prepare_cleanup(
+        &mut self,
+        _guard: &mut super::super::MountDestinationGuard,
+        _work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        #[cfg(any(target_os = "macos", test))]
+        if self.created.is_some() {
+            _guard.prepare_destination_cleanup(&self.path, _work)?;
+            // The same held-parent fence now owns the sole directory removal.
+            drop(self.created.take());
+        }
+        Ok(())
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(in crate::native_mount) fn create(
+        admission: Option<&crate::HeldRoot>,
+    ) -> Result<Self, NativeMountError> {
+        // A Darwin view is its own native mount, which needs an existing
+        // directory. Create the fresh name exclusively in the held root,
+        // never through a link; durability buys nothing for a mount point.
+        let name = PathBuf::from(format!(
+            "{:032x}",
+            u128::from_be_bytes(crate::MountId::new().into_bytes())
+        ));
+        // Hold the parent before creating, so nothing created goes unowned.
+        let (parent, path) = with_native_view_root(admission, |root| {
+            let parent = root
+                .root
+                .try_clone(&mut crate::native_host::ordinary_work())?;
+            parent.create_dir(&name, &mut crate::native_host::ordinary_work())?;
+            Ok((parent, root.path().join(&name)))
+        })?;
+        Ok(Self {
+            path,
+            claim: None,
+            created: Some(parent),
+        })
+    }
 }
 
 impl Drop for IssuedDestination {
     fn drop(&mut self) {
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", test))]
         if let (Some(parent), Some(leaf)) = (self.created.take(), self.path.file_name()) {
             // Removal through the held parent never follows a replaced path,
             // and rmdir never removes a live mount point or authored content.
@@ -223,7 +263,7 @@ fn issue_destination(root: &Path, claim: bool) -> Result<IssuedDestination, Nati
     Ok(IssuedDestination {
         path,
         claim: claim.then_some(serial),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", test))]
         created: None,
     })
 }
@@ -235,26 +275,7 @@ pub(crate) fn shared_view_destination(
 ) -> Result<IssuedDestination, NativeMountError> {
     #[cfg(target_os = "macos")]
     {
-        // A Darwin view is its own native mount, which needs an existing
-        // directory. Create the fresh name exclusively in the held root,
-        // never through a link; durability buys nothing for a mount point.
-        let name = PathBuf::from(format!(
-            "{:032x}",
-            u128::from_be_bytes(crate::MountId::new().into_bytes())
-        ));
-        // Hold the parent before creating, so nothing created goes unowned.
-        let (parent, path) = with_native_view_root(admission, |root| {
-            let parent = root
-                .root
-                .try_clone(&mut crate::native_host::ordinary_work())?;
-            parent.create_dir(&name, &mut crate::native_host::ordinary_work())?;
-            Ok((parent, root.path().join(&name)))
-        })?;
-        Ok(IssuedDestination {
-            path,
-            claim: None,
-            created: Some(parent),
-        })
+        IssuedDestination::create(admission)
     }
     #[cfg(not(target_os = "macos"))]
     {

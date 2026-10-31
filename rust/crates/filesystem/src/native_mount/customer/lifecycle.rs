@@ -40,21 +40,6 @@ pub(crate) fn prepare_destination_cleanup(
     Ok(())
 }
 
-/// Hands a task view's issued destination to its live session, which drops
-/// it after the view's native namespace retires.
-pub(crate) fn own_view_destination(
-    session: &Mutex<Option<NativeMountSession>>,
-    destination: crate::native_mount::IssuedDestination,
-) {
-    if let Some(session) = session
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_mut()
-    {
-        session.own_view_destination(destination);
-    }
-}
-
 pub(crate) fn with_live_session(
     session: &Mutex<Option<NativeMountSession>>,
     operation: impl FnOnce(&NativeMountSession) -> Result<(), NativeMountError>,

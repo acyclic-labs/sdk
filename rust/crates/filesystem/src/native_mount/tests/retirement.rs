@@ -313,3 +313,81 @@ fn stopped_watch_cancellation_releases_the_driver_and_session_fences()
     }
     Ok(())
 }
+
+#[test]
+fn failed_view_startup_retains_directory_until_original_physical_retirement()
+-> Result<(), Box<dyn std::error::Error>> {
+    registry::initialize()?;
+    for (handoff, driver_owned) in [(true, false), (true, true), (false, true)] {
+        let root = tempfile::tempdir()?;
+        let admitted = crate::hold_root(root.path())?;
+        let issued = IssuedDestination::create(Some(&admitted))?;
+        let destination = issued.path().to_path_buf();
+        let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(cause, _)| cause)?;
+        let mut prepared =
+            PreparedNativeMountStart::new(&work)?.with_view_destination(Some(issued));
+        let mut guard = None;
+        MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+        if handoff {
+            prepared.prepare_view_destination(guard.as_mut().ok_or("missing fence")?, &work)?;
+        }
+        let mut owner = NativeMountSession::new(
+            NativeMountRequest {
+                mount_id: MountId::new(),
+                volume_id: VolumeId::new(),
+                destination: destination.clone(),
+                writable: false,
+                shared: false,
+            },
+            None,
+            None,
+        );
+        owner.destination_guard = guard;
+        owner.namespace_detach_confirmed = true;
+        let mut packet = NativeMountRetirement {
+            retained_source: None,
+            startup_source_watch: None,
+            terminal_source_failure: None,
+            destination_guard: driver_owned
+                .then(|| owner.destination_guard.take())
+                .flatten(),
+            #[cfg(windows)]
+            warm_namespace: None,
+        };
+        let cause = std::fs::read(root.path().join("absent-startup-input"))
+            .expect_err("actual missing startup input");
+        let code = cause.raw_os_error();
+        let mut failed = prepared.failed(cause.into(), owner);
+        assert!(
+            matches!(failed.error(), NativeMountError::Io(cause) if cause.raw_os_error() == code)
+        );
+        // The negative restores post-start ownership: returning the failure
+        // drops the issuance before the driver's physical retirement.
+        assert_eq!(destination.is_dir(), handoff);
+        let before = work.receipt();
+        work.cancellation().cancel();
+        let wait = CancellationToken::new();
+        wait.cancel();
+        if driver_owned {
+            drop(failed);
+            assert_eq!(destination.is_dir(), handoff);
+            packet.retire(
+                Some(&wait),
+                crate::native_mount::retirement::SourceRetirementWait::Physical,
+            )?;
+            assert!(packet.is_retired());
+        } else {
+            failed
+                .owner_mut()
+                .stop_with_context(&NativeSessionStopWork::AcceptedWait(&wait))?;
+        }
+        assert!(!destination.exists());
+        // One accepted directory removal plus the original three fence writes.
+        assert_eq!(
+            work.receipt().backend_write_operations - before.backend_write_operations,
+            if handoff { 4 } else { 3 }
+        );
+    }
+    Ok(())
+}
