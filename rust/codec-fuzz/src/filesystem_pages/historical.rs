@@ -4,6 +4,11 @@ use acyclic_fs::{
     kernel::*,
 };
 use sha2::{Digest as _, Sha256};
+mod original;
+
+pub(super) fn seeds() -> Result<Vec<(&'static str, Vec<u8>)>, Box<dyn std::error::Error>> {
+    futures::executor::block_on(original::seeds())
+}
 
 const DOMAIN: &[u8] = b"acyclic-fs-original-generation-record-v1\0";
 

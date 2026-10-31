@@ -325,7 +325,11 @@ fn capture() -> Result<(), Box<dyn Error>> {
             "filesystem_pages",
             name,
             &bytes,
-            "filesystem::kernel canonical encoders",
+            if name.starts_with("historical-") {
+                "kernel::encode_original_generation_evidence after LogicalObjectStore<MemoryObjects> writes and prove_generation_closure; original creation/retention writers and exact original caller-context controls (preparation only)"
+            } else {
+                "filesystem::kernel canonical encoders"
+            },
             &mut manifest,
         )?;
     }
