@@ -1054,9 +1054,14 @@ impl ProcessTree {
                     Err(CaptureOutcome::new(handler, result))
                 }
             },
-            Err(failure) => {
+            Err(mut failure) => {
                 // Cleanup of an unstarted capture may block; it runs on the
-                // pool like every other turn.
+                // pool like every other turn. Observe the original physical
+                // result before dropping its owner, as a running pump does.
+                if let Err(error) = self.capture_terminate(None) {
+                    failure.error = error;
+                }
+                failure.cleanup_completed = self.is_reaped();
                 drop(self);
                 Err(CaptureOutcome::new(handler, Err(failure)))
             }
