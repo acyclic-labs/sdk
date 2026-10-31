@@ -159,7 +159,29 @@ impl LocalHarness {
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let (selected, _) = workspace.selected_view().await?;
                     let view = selected.as_ref().unwrap_or_else(|| workspace.view());
-                    let cwd = Some(workspace.path.as_path());
+                    // A selected branch can use a separate physical mount. Reuse
+                    // that admitted handle; never report the base mount for it.
+                    let selected_mount = if let Some(view) = &selected
+                        && workspace.mounted.is_some()
+                    {
+                        workspace
+                            .state
+                            .lock()
+                            .await
+                            .workspace
+                            .as_ref()
+                            .filter(|(id, _)| *id == view.workspace().id())
+                            .map(|(_, mounted)| Arc::clone(mounted))
+                    } else {
+                        None
+                    };
+                    let cwd = if selected.is_none() || workspace.mounted.is_none() {
+                        Some(workspace.path.as_path())
+                    } else {
+                        selected_mount
+                            .as_ref()
+                            .map(|mounted| mounted.path.as_path())
+                    };
                     let compatibility = acyclic_fs::GitCompatStore::load(
                         &workspace.store,
                         workspace.view().workspace().id(),

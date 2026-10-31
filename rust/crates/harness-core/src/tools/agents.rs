@@ -511,7 +511,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a named child in a fork of your volumes. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
+                "Spawn a named child in a fork of your volumes and settled conversation. Give it a self-contained task and file ownership. Returns its name and path. Its changes stay on branch agents/<name> until you merge them; use send for messages, wait for its report, and fs to inspect and merge its branch",
             )?,
         ),
         (
