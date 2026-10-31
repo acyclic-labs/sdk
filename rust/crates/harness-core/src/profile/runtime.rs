@@ -170,7 +170,7 @@ impl Profiles {
     /// The default top-level role is data in the orchestrator file. It cannot
     /// be replaced by a caller's tool list or a raw model selection.
     pub fn root(&self) -> Result<AgentProfilePin> {
-        let pin = self.pin("orchestrator")?;
+        let pin = self.role_pin("orchestrator")?;
         if pin.context != SpawnContext::TopLevel {
             return Err(invalid("orchestrator role must be top level"));
         }
@@ -238,7 +238,8 @@ impl Profiles {
         Ok(())
     }
 
-    fn pin(&self, name: &str) -> Result<AgentProfilePin> {
+    /// Returns the validated immutable role pin for startup provider binding.
+    pub fn role_pin(&self, name: &str) -> Result<AgentProfilePin> {
         self.pins
             .get(name)
             .cloned()
@@ -258,6 +259,6 @@ impl SpawnProfiles for Profiles {
             .get(role)
             .ok_or_else(|| invalid("child role is absent"))?;
         parent.admit_child(child)?;
-        self.pin(role)
+        self.role_pin(role)
     }
 }

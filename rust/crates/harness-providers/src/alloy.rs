@@ -45,10 +45,15 @@ impl Registry {
         let models = models
             .into_iter()
             .map(|mut model| {
-                model.capacity = capacity;
-                Arc::new(model)
+                model.selection_capacity = Some(capacity);
+                let mut revision = blake3::Hasher::new();
+                revision.update(b"acyclic.alloy-selection-bound.v1\0");
+                serde_json::to_writer(&mut revision, &(&model.model.revision, capacity))
+                    .map_err(|_| invalid("cannot encode alloy selection bound"))?;
+                model.model.revision = format!("alloy-v1:{}", revision.finalize().to_hex());
+                Ok(Arc::new(model))
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(ResolvedAlloy {
             spec,
             models,
@@ -58,6 +63,31 @@ impl Registry {
 }
 
 impl ResolvedAlloy {
+    /// Binds every member at its original hard capacity once for this role.
+    /// The existing common selection reservation remains an additional bound.
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) fn bind_profiles(
+        &self,
+        profiles: &acyclic_harness_core::profile::Profiles,
+        pin: &acyclic_harness_core::agent::AgentProfilePin,
+    ) -> Result<Self> {
+        let models = self
+            .spec
+            .models
+            .iter()
+            .zip(&self.models)
+            .map(|(key, model)| {
+                let profile = profiles.for_model(pin, key)?;
+                Ok(Arc::new(model.as_ref().clone().with_profile(&profile)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            spec: self.spec.clone(),
+            models,
+            capacity: self.capacity,
+        })
+    }
+
     /// Capacity used by compaction, independent of which member is selected.
     pub fn capacity(&self) -> ModelContextCapacity {
         self.capacity

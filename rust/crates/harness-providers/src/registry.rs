@@ -191,6 +191,7 @@ impl Registry {
             estimator: std::sync::Arc::new(crate::accounting::TokenEstimator::new(config.adapter)),
             model,
             profile: None,
+            selection_capacity: None,
             config,
             capacity,
             key,

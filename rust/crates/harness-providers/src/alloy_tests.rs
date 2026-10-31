@@ -134,6 +134,8 @@ fn all_policies_resolve_to_real_models_and_reject_unsupported_members() -> Resul
         let alloy = registry.resolve_alloy(spec(select), required())?;
         let selected = alloy.select(turn(2));
         assert_eq!(selected.model().provider, expected);
+        let physical = registry.catalog()[expected].models["fixture"].capacity;
+        assert_eq!(selected.capacity, physical);
         assert_eq!(
             selected.context_capacity(selected.model())?,
             alloy.capacity()

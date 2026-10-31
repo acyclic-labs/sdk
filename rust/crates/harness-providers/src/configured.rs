@@ -50,7 +50,7 @@ impl ProfileModels for Providers {
         operation: OperationId,
         ordinal: u64,
     ) -> Result<(Model, Arc<dyn ModelProvider>)> {
-        let provider = if let Some(alloy) = self.alloys.get(&profile.model) {
+        let provider = if let Some(alloy) = self.alloys.get(&profile.role) {
             alloy
                 .select(AlloyTurn {
                     operation_id: operation,
@@ -60,7 +60,7 @@ impl ProfileModels for Providers {
                 .clone()
         } else {
             self.single
-                .get(&profile.model)
+                .get(&profile.role)
                 .cloned()
                 .ok_or_else(|| crate::invalid("role model has no admitted provider"))?
         };
@@ -91,6 +91,10 @@ impl Registry {
             }
             roles.push(role);
         }
+        let selections: Vec<_> = roles
+            .iter()
+            .map(|role| (role.name().to_owned(), role.model().to_owned()))
+            .collect();
         let mut files = HashMap::new();
         for role in &roles {
             load_files(&root, role.model(), &mut files)?;
@@ -135,8 +139,32 @@ impl Registry {
             EMPTY,
             preset.approval_policy.bind()?,
         )?);
-        let mut config = LocalHarnessConfig::configured(workspace, profiles, Arc::new(providers))?
-            .preset(&preset);
+        // Role overlays are part of the sealed provider identity. Bind once at
+        // startup; durable turns only select the already admitted role/member.
+        let mut bound = Providers {
+            single: HashMap::new(),
+            alloys: HashMap::new(),
+        };
+        for (role, model) in selections {
+            let pin = profiles.role_pin(&role)?;
+            if let Some(alloy) = providers.alloys.get(&model) {
+                bound
+                    .alloys
+                    .insert(role, alloy.bind_profiles(&profiles, &pin)?);
+            } else {
+                let provider = providers
+                    .single
+                    .get(&model)
+                    .ok_or_else(|| crate::invalid("role model has no admitted provider"))?;
+                let profile = profiles.for_model(&pin, &model)?;
+                bound.single.insert(
+                    role,
+                    Arc::new(provider.as_ref().clone().with_profile(&profile)?),
+                );
+            }
+        }
+        let mut config =
+            LocalHarnessConfig::configured(workspace, profiles, Arc::new(bound))?.preset(&preset);
         for selection in preset.approval_policy.models() {
             let provider = Arc::new(self.resolve(selection)?);
             config = config.approval_model(selection, (provider.model().clone(), provider));
