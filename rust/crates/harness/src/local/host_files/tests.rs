@@ -473,6 +473,38 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
         !owner.is_finished(),
         "client failure must not kill the workspace owner"
     );
+    // The owner is still alive: failure of its native exit observation must
+    // retain that cause rather than falsely declaring the owner gone.
+    let (directory, endpoint) = discover(&cwd)?;
+    let observed = Arc::new(Bridge::open(&directory, endpoint)?);
+    let (delivery, response) = mpsc::sync_channel(1);
+    let waiting = observed.wait(WORKSPACE, OperationId::new(), delivery)?;
+    observed
+        .shared
+        .owner_finished(Err(std::io::ErrorKind::BrokenPipe.into()));
+    let first = match response.try_recv().expect("owner observer must settle") {
+        Delivery::Reply(Err(Error::Storage(error))) => error,
+        _ => panic!("owner observation failure must preserve its native cause"),
+    };
+    let failure = lock(&observed.shared.waiters)
+        .failure
+        .clone()
+        .expect("owner observation failure remains available");
+    assert_eq!(first, format!("operation={}; {failure}", waiting.operation));
+    assert!(failure.contains("step=observe native workspace owner exit:"));
+    assert!(failure.ends_with("recovery=graphcoder --host-workspace"));
+    assert!(!lock(&observed.shared.waiters).gone);
+    drop(waiting);
+    observed
+        .shared
+        .owner_finished(Err(std::io::ErrorKind::PermissionDenied.into()));
+    let (late, _) = mpsc::sync_channel(1);
+    assert!(matches!(
+        observed.wait(WORKSPACE, OperationId::new(), late),
+        Err(Error::Storage(error)) if error == failure
+    ));
+    assert!(lock(&observed.shared.waiters).keys.is_empty());
+    assert!(lock(&observed.watching).watched.is_empty());
     let (producer, mut ended) = tokio::sync::mpsc::unbounded_channel();
     drop(producer);
     assert!(matches!(

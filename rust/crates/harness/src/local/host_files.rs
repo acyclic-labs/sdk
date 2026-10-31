@@ -51,6 +51,10 @@ fn notification_failure(error: &notify::Error) -> String {
     format!("step=observe native workspace files: {error}; recovery=acyclic agents")
 }
 
+fn owner_failure(step: &str, error: &std::io::Error) -> String {
+    format!("step={step}: {error}; recovery=graphcoder --host-workspace")
+}
+
 /// The leaves under `directory` a notification names, or `None` when it
 /// cannot name them all: an error, an overflow, or a path elsewhere. Only
 /// then does an endpoint revisit everything it follows.
@@ -156,19 +160,7 @@ struct Shared {
 impl Shared {
     fn note(&self, event: notify::Result<notify::Event>) {
         if let Err(error) = &event {
-            let mut waiters = lock(&self.waiters);
-            if waiters.gone || waiters.failure.is_some() {
-                return;
-            }
-            let failure = notification_failure(error);
-            waiters.failure = Some(failure.clone());
-            for key in waiters.keys.values_mut() {
-                for (operation, waiter) in std::mem::take(&mut key.waiting) {
-                    let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
-                        "operation={operation}; {failure}"
-                    )))));
-                }
-            }
+            self.failed(|| notification_failure(error));
             return;
         }
         if !projection_changed(&event) {
@@ -233,6 +225,34 @@ impl Shared {
             }
         }
     }
+
+    fn failed(&self, failure: impl FnOnce() -> String) {
+        let mut waiters = lock(&self.waiters);
+        if waiters.gone || waiters.failure.is_some() {
+            return;
+        }
+        let failure = failure();
+        waiters.failure = Some(failure.clone());
+        for key in waiters.keys.values_mut() {
+            for (operation, waiter) in std::mem::take(&mut key.waiting) {
+                let _ = waiter.try_send(Delivery::Reply(Err(Error::Storage(format!(
+                    "operation={operation}; {failure}"
+                )))));
+            }
+        }
+    }
+
+    fn owner_finished(&self, outcome: std::io::Result<acyclic_native_runtime::FileLock>) {
+        match outcome {
+            Ok(lock) => {
+                drop(lock);
+                self.gone();
+            }
+            Err(error) => {
+                self.failed(|| owner_failure("observe native workspace owner exit", &error));
+            }
+        }
+    }
 }
 
 /// This process's one connection to one running owner: a watcher over only
@@ -261,13 +281,18 @@ impl Bridge {
         };
         let (lock_file, probe) = (open()?, open()?);
         // A shared lock is free exactly when no owner holds its exclusive one.
-        if acyclic_native_runtime::FileLock::try_acquire(
+        match acyclic_native_runtime::FileLock::try_acquire(
             probe,
             acyclic_native_runtime::FileLockMode::Shared,
-        )
-        .is_ok()
-        {
-            return Err(Error::NotFound(NO_OWNER.into()));
+        ) {
+            Ok(_) => return Err(Error::NotFound(NO_OWNER.into())),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                return Err(Error::Storage(owner_failure(
+                    "probe native workspace owner",
+                    &error,
+                )));
+            }
         }
         let shared = Arc::new(Shared {
             status: directory.join("status"),
@@ -283,11 +308,10 @@ impl Bridge {
             .name("acyclic-host-files-owner".into())
             .spawn(move || {
                 // Blocks until the owner's exclusive lock is released.
-                drop(acyclic_native_runtime::FileLock::acquire(
+                exited.owner_finished(acyclic_native_runtime::FileLock::acquire(
                     lock_file,
                     acyclic_native_runtime::FileLockMode::Shared,
                 ));
-                exited.gone();
             })
             .map_err(storage)?;
         Ok(Self {
