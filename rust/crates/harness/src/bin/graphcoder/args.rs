@@ -34,7 +34,8 @@ pub struct Args {
     #[arg(long)]
     pub settings_root: Option<PathBuf>,
     /// Use shipped defaults and explicit inputs only; ignore user settings,
-    /// native credential discovery and environment model selection.
+    /// native credential discovery and environment model selection. Signing
+    /// custody uses private files in this run's state directory.
     #[arg(long, conflicts_with = "endpoint")]
     pub default_config: bool,
     /// JSON approval policy; defaults to the shipped `GraphCoder` policy data.

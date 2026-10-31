@@ -209,7 +209,18 @@ impl Opening {
             (LocalProject::Workspace(path), true) => Some(owner::Checkout::capture(path)?),
             _ => checkout,
         };
-        let owner = owner::Owner::open(&directory, &self.config.project, checkout.as_ref())?;
+        let custody_directory = self
+            .config
+            .without_user_settings
+            .then(|| directory.join("signing-custody"));
+        let custody = match custody_directory.as_deref() {
+            Some(directory) => {
+                acyclic_native_runtime::signing_key::SigningCustody::PrivateFile(directory)
+            }
+            None => acyclic_native_runtime::signing_key::SigningCustody::Configured,
+        };
+        let owner =
+            owner::Owner::open(&directory, &self.config.project, checkout.as_ref(), custody)?;
         let options = acyclic_fs::LocalOptions::new(match &self.config.project {
             LocalProject::Workspace(_) => directory.join("filesystem"),
             LocalProject::Volume { directory, .. } => directory.clone(),
@@ -231,6 +242,7 @@ impl Opening {
                 .key_ref
                 .as_ref()
                 .ok_or_else(|| Error::Unauthorized("local owner has no signing custody".into()))?,
+            custody,
             Authority {
                 kind: AggregateKind::Task,
                 id: owner.task.to_string(),

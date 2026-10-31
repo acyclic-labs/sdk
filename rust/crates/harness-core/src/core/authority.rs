@@ -349,11 +349,12 @@ impl AuthorityRoot {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bootstrap(
         id: impl Into<String>,
-        custody: &acyclic_native_runtime::signing_key::SigningKeyReference,
+        reference: &acyclic_native_runtime::signing_key::SigningKeyReference,
+        custody: acyclic_native_runtime::signing_key::SigningCustody<'_>,
         audience: Authority,
     ) -> Result<Self> {
-        custody
-            .with_seed(|seed| Self::new(id, *seed, audience))
+        reference
+            .with_seed(custody, |seed| Self::new(id, *seed, audience))
             .map_err(|error| Error::Unauthorized(error.to_string()))
     }
 

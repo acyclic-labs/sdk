@@ -44,7 +44,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
         )
         .unwrap(),
     };
-    let owner = Owner::open(directory.path(), &project, None).unwrap();
+    let owner = Owner::open(directory.path(), &project, None, SigningCustody::Configured).unwrap();
     let plain =
         acyclic_native_runtime::owner_record::SecretBytes(serde_json::to_vec(&owner).unwrap());
     let mut bytes =
@@ -87,7 +87,7 @@ fn every_owner_cut_is_durable(omit_reader_sync: bool) -> bool {
             })
             .map_err(storage)
         } else {
-            Owner::load(&path)
+            Owner::load(&path, SigningCustody::Configured)
         };
         match read {
             Err(Error::NotFound(_)) => assert!(cut < 3),
@@ -148,13 +148,21 @@ fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
     assert_eq!(fs::read(&path).unwrap().first(), Some(&b'{')); // Old plaintext reader control.
     #[cfg(windows)]
     assert!(acyclic_native_runtime::private_file::read(&path, 65_536).is_err());
-    let migrated = Owner::load(&path).unwrap();
+    let before = fs::read(&path).unwrap();
+    let explicit = private.join("explicit-custody");
+    assert!(Owner::load(&path, SigningCustody::PrivateFile(&explicit)).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(
+        !explicit.exists(),
+        "explicit mode imported an ambient legacy seed"
+    );
+    let migrated = Owner::load(&path, SigningCustody::Configured).unwrap();
     assert!(migrated.key.is_none());
     assert!(
         migrated
             .key_ref
             .unwrap()
-            .with_seed(|seed| *seed == [71; 32])
+            .with_seed(SigningCustody::Configured, |seed| *seed == [71; 32])
             .unwrap()
     );
     assert_eq!(migrated.agent, owner.agent);
@@ -172,7 +180,7 @@ fn private_legacy_owner_migrates_once_without_changing_its_original_identity() {
         "migration retained a plaintext seed"
     );
     assert!(metadata.get("key_ref").is_some());
-    let reopened = Owner::load(&path).unwrap();
+    let reopened = Owner::load(&path, SigningCustody::Configured).unwrap();
     assert_eq!(reopened.key_ref, migrated.key_ref);
     assert_eq!(fs::read(&path).unwrap(), protected);
 }
@@ -228,10 +236,11 @@ fn concurrent_owner_migration_cannot_publish_another_callers_provisional_key() -
             FileLockMode::Exclusive,
         )
         .map_err(storage)?;
-        let first = SigningKeyReference::retain(seed).map_err(storage)?;
+        let first =
+            SigningKeyReference::retain(seed, SigningCustody::Configured).map_err(storage)?;
         let first_ref = first.reference();
         TRY_OWNER_LOCK.set(true);
-        let contender = Owner::load(&path);
+        let contender = Owner::load(&path, SigningCustody::Configured);
         TRY_OWNER_LOCK.set(false);
         assert!(
             matches!(contender, Err(Error::Storage(_))),
@@ -239,20 +248,85 @@ fn concurrent_owner_migration_cannot_publish_another_callers_provisional_key() -
         );
         assert_eq!(fs::read(&path).map_err(storage)?.first(), Some(&b'{'));
         drop(first);
-        assert!(first_ref.with_seed(|_| ()).is_err());
+        assert!(
+            first_ref
+                .with_seed(SigningCustody::Configured, |_| ())
+                .is_err()
+        );
         drop(lock);
         {
-            let winner = Owner::load(&path)?;
+            let winner = Owner::load(&path, SigningCustody::Configured)?;
             let reference = winner
                 .key_ref
                 .ok_or_else(|| Error::Invalid("missing published key".into()))?;
             assert!(
                 reference
-                    .with_seed(|stored| stored == seed)
+                    .with_seed(SigningCustody::Configured, |stored| stored == seed)
                     .map_err(storage)?
             );
-            assert_eq!(Owner::load(&path)?.key_ref, Some(reference));
+            assert_eq!(
+                Owner::load(&path, SigningCustody::Configured)?.key_ref,
+                Some(reference)
+            );
         }
     }
+    Ok(())
+}
+
+/// The same selected file store owns creation, reopening and authority bootstrap.
+/// Wrong-store reopening must fail without touching the published owner.
+#[test]
+fn explicit_file_custody_reopens_the_original_owner_without_native_fallback() -> Result<()> {
+    let root = tempfile::tempdir().map_err(storage)?;
+    let directory = super::directory(&root.path().join("state"))?;
+    let selected = directory.join("signing-custody");
+    let custody = SigningCustody::PrivateFile(&selected);
+    let project = LocalProject::Volume {
+        directory: root.path().to_owned(),
+        volume: VolumeRef::new(
+            crate::resources::ProviderRef::new(
+                "local".into(),
+                "filesystem".into(),
+                "2".into(),
+                &mut None,
+            )?,
+            "project".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("project".into()),
+            &mut None,
+        )?,
+    };
+    let owner = Owner::open(&directory, &project, None, custody)?;
+    let path = directory.join("owner.json");
+    let before = fs::read(&path).map_err(storage)?;
+    let reference = owner
+        .key_ref
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("missing original reference".into()))?;
+    let audience = crate::core::Authority {
+        kind: crate::core::AggregateKind::Task,
+        id: owner.task.to_string(),
+    };
+    let _issuer =
+        crate::core::AuthorityRoot::bootstrap("acyclic.local", reference, custody, audience)?;
+    let reopened = Owner::open(&directory, &project, None, custody)?;
+    assert_eq!(reopened.key_ref, owner.key_ref);
+    assert_eq!(reopened.task, owner.task);
+    let wrong = directory.join("other-custody");
+    assert!(
+        Owner::open(
+            &directory,
+            &project,
+            None,
+            SigningCustody::PrivateFile(&wrong)
+        )
+        .is_err()
+    );
+    assert!(Owner::open(&directory, &project, None, SigningCustody::Configured).is_err());
+    assert_eq!(fs::read(&path).map_err(storage)?, before);
+    assert_eq!(
+        Owner::open(&directory, &project, None, custody)?.key_ref,
+        owner.key_ref
+    );
     Ok(())
 }

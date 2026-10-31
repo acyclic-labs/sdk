@@ -215,25 +215,32 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             "invalid settings must refuse before generation"
         );
     }
-    assert_eq!(
-        succeeded(
-            &graphcoder(
-                &fixture,
-                &model.catalog,
-                vec![
-                    "--default-config",
-                    "--operation",
-                    "explicit-defaults",
-                    "-p",
-                    "hello"
-                ],
-                "",
-            )
-            .await
-        ),
-        "fixture answer\n"
-    );
-    assert_eq!(model.generated(), 3);
+    // A fresh explicit owner must use its selected file custody on the first
+    // process and reopen that same custody on replay, ignoring the configured
+    // fixture backend as well as the malformed ambient settings.
+    let explicit = self::fixture();
+    std::fs::write(explicit.settings.join(".codex/config.toml"), "[invalid\n").unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            succeeded(
+                &graphcoder(
+                    &explicit,
+                    &model.catalog,
+                    vec![
+                        "--default-config",
+                        "--operation",
+                        "explicit-defaults",
+                        "-p",
+                        "hello"
+                    ],
+                    "",
+                )
+                .await
+            ),
+            "fixture answer\n"
+        );
+        assert_eq!(model.generated(), 3);
+    }
     model.close().await;
 }
 

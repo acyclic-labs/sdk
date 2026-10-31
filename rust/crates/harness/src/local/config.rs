@@ -266,7 +266,9 @@ impl LocalHarnessConfig {
         self
     }
     /// Uses explicit model/provider bindings and shipped tools without reading
-    /// user model, MCP, search or hook configuration. Durable state is unchanged.
+    /// user model, MCP, search or hook configuration. Signing custody uses the
+    /// original private-file protocol in the selected state directory; reopening
+    /// state requires its original key in that same store.
     #[must_use]
     pub fn without_user_settings(mut self) -> Self {
         self.without_user_settings = true;

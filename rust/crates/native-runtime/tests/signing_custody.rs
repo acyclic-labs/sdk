@@ -2,7 +2,10 @@
 //! interactive credential store or fixture backend.
 #![cfg(not(feature = "test-support"))]
 
-use acyclic_native_runtime::{private_file::PublicationStage, signing_key::SigningKeyReference};
+use acyclic_native_runtime::{
+    private_file::PublicationStage,
+    signing_key::{SigningCustody, SigningKeyReference},
+};
 use std::{io, path::Path, process::Command};
 
 #[test]
@@ -17,9 +20,10 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                     security_framework::os::macos::keychain::SecKeychain::disable_user_interaction(
                     )
                     .map_err(io::Error::other)?;
-                match SigningKeyReference::create() {
+                match SigningKeyReference::create(SigningCustody::Configured) {
                     Ok(key) => {
-                        key.reference().with_seed(|_| ())?;
+                        key.reference()
+                            .with_seed(SigningCustody::Configured, |_| ())?;
                         // Unpublished probe custody is retired by its guard.
                         drop(key);
                         println!("NATIVE_CUSTODY_AVAILABLE");
@@ -34,8 +38,9 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
                 Ok(())
             }
             Some("create") => {
-                let key = SigningKeyReference::create()?;
-                key.reference().with_seed(|_| ())?;
+                let key = SigningKeyReference::create(SigningCustody::Configured)?;
+                key.reference()
+                    .with_seed(SigningCustody::Configured, |_| ())?;
                 std::fs::write(record, serde_json::to_vec(&key.reference())?)?;
                 key.observe_publication(PublicationStage::Installed);
                 Ok(())
@@ -43,7 +48,7 @@ fn explicit_private_custody_reopens_and_refuses_public_access() -> io::Result<()
             Some("read") => {
                 let reference: SigningKeyReference =
                     serde_json::from_slice(&std::fs::read(record)?)?;
-                reference.with_seed(|_| ())
+                reference.with_seed(SigningCustody::Configured, |_| ())
             }
             _ => Err(io::ErrorKind::InvalidInput.into()),
         };
