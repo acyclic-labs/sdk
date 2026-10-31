@@ -240,6 +240,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             step: 1,
             purpose: ModelPurpose::Response,
             event: file.clone(),
+            usage: None,
         },
         ModelStopped {
             step: 1,
@@ -255,6 +256,7 @@ async fn indexed_selectors_preserve_every_event_and_wire_order() -> Result<()> {
             step: 1,
             purpose: ModelPurpose::Summary,
             event: file.clone(),
+            usage: None,
         },
         ModelStopped {
             step: 1,
