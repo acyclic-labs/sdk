@@ -188,12 +188,67 @@ fn request_capacity_and_cached_meter_share_custody_in_either_order() -> TestResu
         let admitted = original.receipt();
         assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
         assert_eq!(original.receipt(), admitted);
-        drop(bytes);
-        drop(meter);
-        work.release_request()?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
+        let mut retained = None;
+        work.retain_request_custody(&mut retained)?;
+        assert_eq!(retained.as_ref().unwrap().bytes(), 16);
+        assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
+        assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
         assert_eq!(original.receipt(), admitted);
+
+        let more = work.vec::<u8>(24)?;
+        let grown = original.receipt();
+        assert_eq!(
+            grown.allocation_operations,
+            admitted.allocation_operations + 1
+        );
+        work.retain_request_custody(&mut retained)?;
+        assert_eq!(retained.as_ref().unwrap().bytes(), 40);
+        assert_eq!(work.request_allocation.as_ref().unwrap().bytes(), 0);
+        assert!(Arc::ptr_eq(&meter, &work.native_meter()?));
+        assert_eq!(original.receipt(), grown);
+        work.retain_request_custody(&mut retained)?;
+        assert_eq!(retained.as_ref().unwrap().bytes(), 40);
+
+        drop(work);
+        drop(meter);
+        assert!(original.live_allocation_bytes() >= baseline + 40);
+        drop(more);
+        drop(bytes);
+        drop(retained);
+        assert_eq!(original.live_allocation_bytes(), baseline);
+        assert_eq!(original.receipt(), grown);
     }
+
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let other = NativeMaterializationWork::new(BUDGET, &cancellation).map_err(|(e, _)| e)?;
+    let baseline = original.live_allocation_bytes();
+    let other_baseline = other.live_allocation_bytes();
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let bytes = work.vec::<u8>(16)?;
+    let mut retained = None;
+    work.retain_request_custody(&mut retained)?;
+    let mut foreign = AuthorityWork::native(&other, &cancellation);
+    let foreign_bytes = foreign.vec::<u8>(24)?;
+    let live = original.live_allocation_bytes();
+    let foreign_live = other.live_allocation_bytes();
+    assert!(matches!(
+        foreign.retain_request_custody(&mut retained),
+        Err(AuthorityStoreError::NativeOriginal(
+            crate::NativeTreeMaterializationError::InvalidLayout
+        ))
+    ));
+    assert_eq!(retained.as_ref().unwrap().bytes(), 16);
+    assert_eq!(foreign.request_allocation.as_ref().unwrap().bytes(), 24);
+    assert_eq!(original.live_allocation_bytes(), live);
+    assert_eq!(other.live_allocation_bytes(), foreign_live);
+    drop(foreign_bytes);
+    drop(foreign);
+    drop(bytes);
+    drop(work);
+    drop(retained);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert_eq!(other.live_allocation_bytes(), other_baseline);
     Ok(())
 }
 

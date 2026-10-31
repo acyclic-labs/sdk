@@ -139,12 +139,16 @@ impl FilesystemCommit {
         self.owner = Some(owner);
     }
 
-    pub(super) fn retain_request_custody(&mut self, work: &mut AuthorityWork<'_>) {
+    pub(super) fn retain_request_custody(
+        &mut self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
         let _ = work;
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.allocation = work.request_allocation.take();
+            work.retain_request_custody(&mut self.allocation)?;
         }
+        Ok(())
     }
 
     pub(super) fn record_holds(
@@ -441,10 +445,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let copied = work.copy_commit(&commit.request)?;
             let mut request = self.with_policy_cuts(copied, &[], work)?;
             acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
+            commit.retain_request_custody(work)?;
             commit.request = request;
             commit.sealed = true;
             commit.bind_owner(owner);
-            commit.retain_request_custody(work);
         }
         Ok(())
     }

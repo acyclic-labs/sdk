@@ -4,6 +4,23 @@ pub(super) const GENERATION_INDEX_DOMAIN: &[u8] = b"fs-generation-v1\0";
 pub(super) const OPERATION_INDEX_DOMAIN: &[u8] = b"fs-operation-v1\0";
 
 impl<'a> AuthorityWork<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn retain_request_custody(
+        &mut self,
+        retained: &mut AuthorityAllocation,
+    ) -> Result<(), AuthorityStoreError> {
+        if let Some(request) = &mut self.request_allocation {
+            // Leave the original read context cached here; only paid request
+            // capacity follows the prepared commit. Absorb refuses before
+            // changing either guard if its accounting context differs.
+            match retained {
+                Some(retained) => retained.absorb(request)?,
+                retained => *retained = Some(request.split_off(request.bytes())?),
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn absorb(&mut self, child: &AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
         if !self.is_native() {
             self.record(child.spent())?;
