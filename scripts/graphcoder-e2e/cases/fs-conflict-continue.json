@@ -77,14 +77,14 @@
             "show",
             "HEAD:seed.txt"
           ],
-          "stdout": "main\n"
+          "text": "main\n"
         },
         {
           "args": [
             "show",
             "topic:seed.txt"
           ],
-          "stdout": "topic\n"
+          "text": "topic\n"
         },
         {
           "args": [
@@ -116,7 +116,7 @@
             "show",
             "HEAD:seed.txt"
           ],
-          "stdout": "resolved\n"
+          "text": "resolved\n"
         }
       ],
       "mode": "qualification"

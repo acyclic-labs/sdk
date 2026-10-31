@@ -41,7 +41,8 @@ export async function workspaceFs(processes, input, fixture, capture) {
           assert.ok(result.stderr.includes(operation.error), result.stderr);
         } else {
           assert.equal(result.code, 0, result.stderr);
-          if (operation.stdout !== undefined) assert.equal(result.stdout, operation.stdout);
+          if (operation.text !== undefined)
+            assert.equal(JSON.parse(result.stdout).Filesystem.Data.value.text, operation.text);
         }
       }
     }
