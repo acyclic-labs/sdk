@@ -41,10 +41,13 @@ impl FileTool {
         };
         self.public_path(file.path(), io)?;
         crate::executor::with_history_io(io, |history| {
-            scope
-                .limits()
-                .validate_file(&file, history)
-                .map_err(Error::tool_input)?;
+            let limits = scope.limits();
+            if matches!(self, Self::Read) {
+                limits.validate_file_metadata(&file, history)
+            } else {
+                limits.validate_file(&file, history)
+            }
+            .map_err(Error::tool_input)?;
             if !crate::runtime::read_granted_with_work(scope.grants(), &file, history)? {
                 return Err(crate::store::guarded_boundary(
                     history,
@@ -107,7 +110,6 @@ impl FileTool {
                         "byte ranges and projections are mutually exclusive",
                     ));
                 }
-                let maximum = scope.limits().file_bytes;
                 let length = match input.0.range {
                     Some(range)
                         if source
@@ -123,10 +125,10 @@ impl FileTool {
                         .as_ref()
                         .map_or(Some(0), |file| Some(file.descriptor().byte_length())),
                 };
-                if length.is_none_or(|length| length > maximum) {
+                if length.is_none() {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
-                        "file selection exceeds text rendering bound",
+                        "file selection exceeds source bounds",
                     ));
                 }
                 return Ok(source);

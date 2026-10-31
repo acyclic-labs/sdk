@@ -210,7 +210,9 @@ fn text_result(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(ToolResult, crate::NativeCustody)> {
     let (start, end) = interval;
-    let (version, _version_hold) = super::version::encode_source(&file, work)?;
+    let _version_hold;
+    let (version, version_hold) = super::version::encode_source(&file, work)?;
+    _version_hold = version_hold;
     let complete = source.len() as u64 == end - start
         && crate::executor::with_history_io(io, |history| {
             crate::executor::json::json_byte_length(
@@ -263,7 +265,9 @@ fn text_budget(
     work: crate::NativeWork<'_>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<u64> {
-    let (version, _hold) = super::version::encode_version(file, work)?;
+    let _hold;
+    let (version, hold) = super::version::encode_version(file, work)?;
+    _hold = hold;
     encoded_text_budget(&version, path, maximum, work, io)
 }
 

@@ -39,21 +39,19 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
         .enable_all()
         .build()
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
+    let source = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 16_384))?;
     let private = runtime.block_on(MemoryHarnessStorage::new(AgentId::new(), 4096))?;
     let workspace = super::super::super::bounded_io::content_workspace(
         &source.host.provider,
         &source.volume,
         None,
     )?;
-    runtime.block_on(source.host.apply(
-        &workspace,
-        None,
-        &[crate::filesystem::WorkspaceMutation::PutFile {
-            path: "/lines.txt".into(),
-            bytes: bytes::Bytes::from("αβ\n".repeat(2000) + "tail").into(),
-        }],
-        &crate::IdempotencyKey::new("indexed-source")?,
+    let file = runtime.block_on(source.stage(
+        OperationId::new(),
+        "lines.txt",
+        ("αβ\n".repeat(2000) + "tail").as_bytes(),
+        "text/plain",
+        "lines.txt",
     ))?;
     let limits = Limits {
         file_bytes: 4096,
@@ -139,6 +137,112 @@ fn cached_line_reads_keep_original_receipts_outside_the_source_volume() -> Resul
             ("generation-bound range", 4096, 4096),
         ]
     );
+
+    // A complete descriptor and an authored token share the same bounded
+    // selection. The full-body read remains an independent negative control.
+    let content_version = serde_json::to_string(&file).unwrap();
+    let complete = runtime.block_on(read(&task, Some(&content_version)))?.0;
+    assert_eq!(complete["text"], expected["text"]);
+    assert_eq!(complete["page"], expected["page"]);
+    assert_eq!(
+        runtime
+            .block_on(task.read_file(&file, None))
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Invalid
+    );
+    let interval = acyclic_fs::ByteRange {
+        offset: 5125,
+        length: 10,
+    };
+    assert_eq!(
+        runtime
+            .block_on(context.read_file_range(&file, interval, None))?
+            .as_ref(),
+        "αβ\nαβ\n".as_bytes()
+    );
+    for range in [
+        acyclic_fs::ByteRange {
+            offset: 0,
+            length: 4097,
+        },
+        acyclic_fs::ByteRange {
+            offset: u64::MAX,
+            length: 1,
+        },
+    ] {
+        assert_eq!(
+            runtime
+                .block_on(context.read_file_range(&file, range, None))
+                .unwrap_err()
+                .code(),
+            crate::wire::ErrorCode::Invalid
+        );
+    }
+    let substituted = crate::conversation::FileRef::new(
+        file.volume().clone(),
+        file.path().to_owned(),
+        file.version().to_owned(),
+        crate::conversation::FileDescriptor::new(
+            [9; 32],
+            file.descriptor().byte_length(),
+            "text/plain".into(),
+        )?,
+        file.display_name().to_owned(),
+        &mut None,
+    )?;
+    assert_eq!(
+        runtime
+            .block_on(context.read_file_range(&substituted, interval, None))
+            .unwrap_err()
+            .code(),
+        crate::wire::ErrorCode::Conflict
+    );
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let tool = crate::tool::files::read()?;
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "native-descriptor-window".into(),
+            name: tool.definition.name.clone(),
+            arguments: json!({"path":"lines.txt","version":content_version,
+                "range":{"start":0,"end":file.descriptor().byte_length()}}),
+        };
+        let context = ToolContext::new(
+            Arc::new(task.clone()),
+            invocation.operation_id,
+            &invocation.call_id,
+        )?;
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(FINITE_CONTENT_BUDGET, &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let _custody;
+        let (result, custody) = runtime.block_on(tool.executor.execute_with_native_context(
+            &context,
+            &invocation,
+            &work,
+        )?)?;
+        _custody = custody;
+        assert!(
+            result.value["page"]["next"]
+                .as_u64()
+                .is_some_and(|next| next > 0 && next < file.descriptor().byte_length())
+        );
+        let projection = tool.projection.project(&invocation, &result, Some(&work))?;
+        tool.definition
+            .validate_projection(&projection.0, limits, None)?;
+        cancellation.cancel();
+        let cancelled =
+            match tool
+                .executor
+                .execute_with_native_context(&context, &invocation, &work)
+            {
+                Ok(future) => runtime.block_on(future).map(|_| ()),
+                Err(error) => Err(error),
+            };
+        assert!(cancelled.is_err());
+    }
 
     // Replacing the files' mutable heads cannot poison the original immutable
     // receipts used by a later seek.

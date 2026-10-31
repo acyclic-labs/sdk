@@ -131,7 +131,7 @@ where
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
             self.verify_exact_file(Some(reference), io)?;
-            if reference.descriptor().byte_length() > self.maximum_bytes
+            if range.length > self.maximum_bytes
                 || range
                     .offset
                     .checked_add(range.length)
@@ -140,7 +140,7 @@ where
                 return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
-                    "range source exceeds provider limit",
+                    "range exceeds source or provider credit",
                 ));
             }
             let owned;
@@ -157,7 +157,6 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    self.maximum_bytes,
                     self.exact_file.is_some(),
                     ceiling,
                     authority_io,
@@ -192,6 +191,13 @@ where
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            if reference.descriptor().byte_length() > maximum_bytes.min(self.maximum_bytes) {
+                return Err(stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "publication exceeds its byte credit",
+                ));
+            }
             if !self.host.published_here(reference, io)? {
                 return self.verify(reference, maximum_bytes, io)?.await;
             }
@@ -209,7 +215,6 @@ where
                 .read_selection_with_access(
                     self.authority.scope(),
                     reference,
-                    maximum_bytes.min(self.maximum_bytes),
                     self.exact_file.is_some(),
                     None,
                     io,

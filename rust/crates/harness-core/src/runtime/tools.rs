@@ -408,10 +408,12 @@ impl std::ops::Deref for ToolContext {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 impl ToolContext {
-    /// Checks effective READ and limits before replay or content IO.
-    pub fn authorize_file_read_with_native_work(
+    /// Checks effective READ and the selected byte credit before content IO.
+    /// `None` admits the complete body; an empty range admits metadata only.
+    pub fn authorize_file_selection_with_native_work(
         &self,
         file: &FileRef,
+        range: Option<acyclic_fs::ByteRange>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.task()
@@ -419,6 +421,7 @@ impl ToolContext {
                 file,
                 self.effective_scope(),
                 self.effective_scope().grants(),
+                range,
                 Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
             )
             .map(|_| ())
