@@ -16,12 +16,6 @@ pub trait Endpoint: ProviderPlatform + Clone + 'static {
     type Deadline: Deadline;
     /// Resolve original credentials before dispatch, never after admission loss.
     fn client(&self) -> impl Future<Output = Result<Self::Client, ProviderError>> + ProviderTask;
-    /// Admit one relative command budget and optional authenticated wall expiry.
-    fn deadline(
-        &self,
-        timeout: Duration,
-        expiry: Option<u64>,
-    ) -> Result<Self::Deadline, ProviderError>;
     /// Admit one absolute file-operation deadline.
     fn absolute_deadline(&self, expiry: u64) -> Result<Self::Deadline, ProviderError>;
 }
@@ -36,6 +30,18 @@ pub trait Deadline: ProviderPlatform + 'static {
     where
         F: Future + ProviderTask,
         F::Output: ProviderTask;
+}
+
+/// Observe the producer until its result or the caller's separately chosen expiry.
+pub(super) async fn run<D: Deadline, F>(deadline: Option<&D>, future: F) -> Option<F::Output>
+where
+    F: Future + ProviderTask,
+    F::Output: ProviderTask,
+{
+    match deadline {
+        Some(deadline) => deadline.run(future).await,
+        None => Some(future.await),
+    }
 }
 
 /// Read one frame without imposing native `Send` on browser response producers.

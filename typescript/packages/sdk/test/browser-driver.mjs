@@ -53,12 +53,14 @@ export async function connectBrowser(endpoint, recovery) {
   let sequence = 0;
   let failure;
   const pending = new Map();
+  const sessions = new Map();
   const listeners = new Set();
   const eventWaiters = new Set();
   const fail = error => {
     failure ??= error;
     for (const handler of pending.values()) handler.reject(failure);
     pending.clear();
+    sessions.clear();
     for (const waiter of eventWaiters) waiter.reject(failure);
     eventWaiters.clear();
   };
@@ -77,15 +79,22 @@ export async function connectBrowser(endpoint, recovery) {
       const handler = pending.get(message.id);
       pending.delete(message.id);
       if (!handler) return;
-      if (message.error === undefined) handler?.resolve(message.result);
+      if (message.error === undefined) {
+        if (handler.method === "Target.attachToTarget") sessions.set(message.result.sessionId, {});
+        handler.resolve(message.result);
+      }
       else handler?.reject(new Error(`browser ${handler.method}: ${typeof message.error === "string"
         ? `${message.error}: ${message.message}`
         : `${message.error.message} (${message.error.code})`}; recovery: ${recovery}`));
       return;
     }
-    if (message.method === "Target.detachedFromTarget") {
-      const sessionId = message.params.sessionId;
-      const error = new Error(`browser page: target detached; recovery: ${recovery}`);
+    if (message.method === "Target.detachedFromTarget" || message.method === "Inspector.targetCrashed"
+      || message.method === "Inspector.detached") {
+      const sessionId = message.method === "Target.detachedFromTarget" ? message.params.sessionId : message.sessionId;
+      const reason = message.method === "Inspector.targetCrashed" ? "target crashed" : "target detached";
+      const error = new Error(`browser page: ${reason}; recovery: ${recovery}`);
+      if (message.method === "Target.detachedFromTarget") sessions.delete(sessionId);
+      else if (sessions.has(sessionId)) sessions.get(sessionId).failure = error;
       for (const [id, handler] of pending) if (handler.sessionId === sessionId) {
         pending.delete(id);
         handler.reject(error);
@@ -101,10 +110,14 @@ export async function connectBrowser(endpoint, recovery) {
     }
     for (const listener of listeners) listener(message);
   });
+  const unavailable = sessionId => failure ?? (sessionId === undefined ? undefined
+    : sessions.has(sessionId) ? sessions.get(sessionId).failure
+    : new Error(`browser page: target detached; recovery: ${recovery}`));
   return {
     recovery,
     send(method, params = {}, sessionId = undefined) {
-      if (failure) return Promise.reject(failure);
+      const error = unavailable(sessionId);
+      if (error) return Promise.reject(error);
       const id = ++sequence;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject, sessionId, method });
@@ -116,7 +129,8 @@ export async function connectBrowser(endpoint, recovery) {
       let waiter;
       const promise = new Promise((resolve, reject) => {
         waiter = { predicate, resolve, reject, sessionId };
-        if (failure) reject(failure);
+        const error = unavailable(sessionId);
+        if (error) reject(error);
         else eventWaiters.add(waiter);
       });
       return { promise, cancel: () => eventWaiters.delete(waiter) };
@@ -159,6 +173,7 @@ function installResult() {
 export const RESULT_SCRIPT = `(${installResult.toString()})();`;
 
 export async function navigateChrome(browser, sessionId, url) {
+  await browser.send("Inspector.enable", {}, sessionId);
   await browser.send("Page.enable", {}, sessionId);
   await browser.send("Runtime.addBinding", { name: "__sdkQualificationComplete" }, sessionId);
   const { identifier } = await browser.send("Page.addScriptToEvaluateOnNewDocument", { source: RESULT_SCRIPT }, sessionId);
