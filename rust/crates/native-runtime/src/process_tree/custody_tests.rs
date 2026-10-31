@@ -731,7 +731,7 @@ fn fence_kills_the_tree_of_a_zombie_warden() {
 #[cfg(target_os = "linux")]
 fn escaping_program(root: &Path) -> Command {
     let mut command = crate::shell_command(
-        r#"setsid sh -c 'echo ACYCLIC_CHILD_PID=$$; exec "$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null' sh "$1" & wait"#,
+        r#"setsid sh -c 'echo ACYCLIC_CHILD_PID=$$; exec "$ACYCLIC_CUSTODY_TEST_EXECUTABLE" --exact process_tree::custody_tests::custody_owner_helper --nocapture >/dev/null' sh & wait"#,
         Some("sh"),
     )
     .expect("resolve fixture shell");
