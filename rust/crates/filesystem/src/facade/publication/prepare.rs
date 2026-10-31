@@ -16,10 +16,12 @@ impl<A, O> VerifiedPublication<A, O> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn native_slot(
         original: &crate::NativeMaterializationWork,
-    ) -> Result<(PublicationClosure<A, O>, crate::NativeAllocation), FsError> {
-        let bytes = usize_to_u64(size_of::<Mutex<Option<Self>>>() + 2 * size_of::<usize>());
-        let allocation = original.claim(bytes, 1, WorkCounters::UNCHARGED)?;
-        Ok((Arc::new(Mutex::new(None)), allocation))
+        cancellation: &CancellationToken,
+    ) -> Result<PublicationClosure<A, O>, FsError> {
+        PublicationClosure::new(
+            Mutex::new(PublicationCustody::empty()),
+            &mut KernelAccounting::native(original, cancellation),
+        )
     }
 }
 

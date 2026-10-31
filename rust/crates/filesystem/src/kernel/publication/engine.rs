@@ -11,7 +11,7 @@ pub(super) async fn publish_generation_async_inner<P, E, F, Fut, G, Dispatch, R>
     preparation: preparation::Preparation<'_, P>,
     accounting: &mut KernelAccounting<'_>,
     callbacks: PublicationCallbacks<'_, F, G, R>,
-) -> Result<(PublicationReceipt, ProofGuard), E>
+) -> Result<RetainedPublication<ProofGuard>, E>
 where
     P: PublicationOwner,
     E: From<crate::FsError> + Send,
@@ -106,17 +106,16 @@ where
         }
     }
     // Only a durable generation's proof may stand in for its closure later.
-    if let Some(pending) = pending {
-        pending.publish(&appended);
-    }
-    Ok((
-        PublicationReceipt {
+    let published = pending.and_then(|pending| pending.publish(&appended));
+    Ok(RetainedPublication {
+        receipt: PublicationReceipt {
             proof: output.0,
             outcome: appended,
             work: accounting.spent(),
         },
-        output.1,
-    ))
+        published,
+        allocation: output.1,
+    })
 }
 
 pub(super) fn publication_error(error: crate::FsError) -> PublicationError {

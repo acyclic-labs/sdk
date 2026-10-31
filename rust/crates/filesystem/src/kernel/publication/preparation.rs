@@ -14,7 +14,7 @@ pub(super) struct Preparation<'a, P> {
 
 pub(super) enum Prepared {
     Ready(PreparedGeneration),
-    Complete((PublicationReceipt, ProofGuard)),
+    Complete(RetainedPublication<ProofGuard>),
 }
 
 // Data retires before its proof guard; both remain inside the projection and
@@ -150,16 +150,17 @@ impl<P: PublicationOwner> Preparation<'_, P> {
         if let Some(resolved) = self.resolved.as_ref()
             && resolved.fingerprint != commit.fingerprint
         {
-            return Ok(Prepared::Complete((
-                PublicationReceipt {
+            return Ok(Prepared::Complete(RetainedPublication {
+                receipt: PublicationReceipt {
                     proof: authentication.proof,
                     outcome: AppendOutcome::IdempotencyConflict {
                         committed_fingerprint: resolved.fingerprint,
                     },
                     work: accounting.spent(),
                 },
-                authentication.guard,
-            )));
+                published: None,
+                allocation: authentication.guard,
+            }));
         }
         prepare_roots(
             &authentication.proof.root,
@@ -168,17 +169,18 @@ impl<P: PublicationOwner> Preparation<'_, P> {
         )?;
         if let Some(resolved) = self.resolved.take() {
             let outcome = AppendOutcome::AlreadyCommitted(resolved);
-            if let Some(pending) = authentication.pending {
-                pending.publish(&outcome);
-            }
-            return Ok(Prepared::Complete((
-                PublicationReceipt {
+            let published = authentication
+                .pending
+                .and_then(|pending| pending.publish(&outcome));
+            return Ok(Prepared::Complete(RetainedPublication {
+                receipt: PublicationReceipt {
                     proof: authentication.proof,
                     outcome,
                     work: accounting.spent(),
                 },
-                authentication.guard,
-            )));
+                published,
+                allocation: authentication.guard,
+            }));
         }
         self.flush(
             Unflushed {
