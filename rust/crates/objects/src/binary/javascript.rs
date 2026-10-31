@@ -213,6 +213,34 @@ pub struct ObjectsV1Request {
 }
 
 impl ObjectsV1Request {
+    /// Observes the original Rust account directly, without a JavaScript port
+    /// round trip or framing trusted in-process cursors.
+    pub fn observe_blobs(blobs: Arc<dyn Blobs>, input: &Uint8Array) -> Result<Self, JsValue> {
+        let input = availability_input(input)?;
+        Ok(Self::observe_source(async move {
+            crate::route::availability(blobs.as_ref(), input).await
+        }))
+    }
+
+    fn observe_source(open: impl Future<Output = Result<Availability, Error>> + 'static) -> Self {
+        let request = futures::stream::once(async move {
+            let observation = open.await?;
+            Ok::<_, Error>(
+                crate::route::availability_frames(observation)
+                    .map(|frame| Ok((frame?.encode_to_vec(), None)))
+                    .boxed_local(),
+            )
+        })
+        .try_flatten()
+        .boxed_local();
+        Self {
+            state: Rc::new(acyclic_stream::pull::PullCursor::new(
+                request,
+                unavailable(),
+            )),
+        }
+    }
+
     /// Own one lazy canonical request against `blobs`. The input is copied
     /// before this returns; the operation starts on the first `next`.
     ///
@@ -264,27 +292,12 @@ impl ObjectsV1Request {
     /// cursor and framing rules used by native clients. Closing cancels opening
     /// as well as a parked change; no second observation source is created.
     pub fn observe(owner: JsValue, input: &Uint8Array) -> Result<Self, JsValue> {
-        let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
+        let input = availability_input(input)?;
         let transport = JavaScriptTransport::new(owner).map_err(js_error)?;
         let client = super::BinaryObjects::new(transport);
-        let request = futures::stream::once(async move {
-            let input = wire::AvailabilityRequest::decode(input.as_slice())
-                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-            let observation = crate::route::availability(&client, input).await?;
-            Ok::<_, Error>(
-                crate::route::availability_frames(observation)
-                    .map(|frame| Ok((frame?.encode_to_vec(), None)))
-                    .boxed_local(),
-            )
-        })
-        .try_flatten()
-        .boxed_local();
-        Ok(Self {
-            state: Rc::new(acyclic_stream::pull::PullCursor::new(
-                request,
-                unavailable(),
-            )),
-        })
+        Ok(Self::observe_source(async move {
+            crate::route::availability(&client, input).await
+        }))
     }
 
     /// Frames a generated gRPC cursor for the shared binary stream decoder.
@@ -308,4 +321,10 @@ impl ObjectsV1Request {
     pub fn close(&self) {
         self.state.close();
     }
+}
+
+fn availability_input(input: &Uint8Array) -> Result<wire::AvailabilityRequest, JsValue> {
+    let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
+    wire::AvailabilityRequest::decode(input.as_slice())
+        .map_err(|_| js_error(wire::ErrorCode::InvalidArgument.into()))
 }

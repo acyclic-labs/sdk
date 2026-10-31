@@ -45,6 +45,7 @@ export interface ObjectsV1BinaryPort {
  * certifies existence, repair, integrity or durability. Close releases the source. */
 export interface ObjectsV1Availability {
   cursor(): wire.AvailabilityCursor;
+  /** One outstanding wait per observation. */
   changed(): Promise<wire.AvailabilityCursor>;
   close(): void;
 }
@@ -112,6 +113,31 @@ function rustRequest(request: RustRequest): ObjectsV1Request {
   };
 }
 
+async function availabilityRequest(digest: wire.Digest, signal: AbortSignal | undefined, open: (input: Uint8Array) => RustRequest): Promise<ObjectsV1Availability> {
+  signal?.throwIfAborted();
+  const input = toBinary(wire.AvailabilityRequestSchema, create(wire.AvailabilityRequestSchema, { digest }));
+  const ready = ensureObjectsWasm(signal);
+  if (ready !== undefined) await ready;
+  signal?.throwIfAborted();
+  const request = rustRequest(open(input));
+  const stop = () => request.close();
+  const close = () => { signal?.removeEventListener("abort", stop); stop(); };
+  signal?.addEventListener("abort", stop, { once: true });
+  if (signal?.aborted) stop();
+  let current: Uint8Array;
+  const next = async () => {
+    try {
+      signal?.throwIfAborted();
+      const reply = await awaitSignal(request.next(), signal);
+      if (reply === null) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+      current = reply.body;
+      return fromBinary(wire.AvailabilityCursorSchema, current.slice());
+    } catch (error) { close(); throw signal?.aborted ? signal.reason : objectsV1Error(error); }
+  };
+  await next();
+  return { cursor: () => fromBinary(wire.AvailabilityCursorSchema, current.slice()), changed: next, close };
+}
+
 /**
  * One canonical route per call. Every reply is checked against its request by
  * the same Rust rules the Rust clients use before it is returned.
@@ -122,28 +148,7 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
   /** Cancellation covers initialization, credential resolution, opening and every
    * later wait. Supply a deadline signal when this observation has a deadline. */
   async availability(digest: wire.Digest, signal?: AbortSignal): Promise<ObjectsV1Availability> {
-    signal?.throwIfAborted();
-    const input = toBinary(wire.AvailabilityRequestSchema, create(wire.AvailabilityRequestSchema, { digest }));
-    const ready = ensureObjectsWasm(signal);
-    if (ready !== undefined) await ready;
-    signal?.throwIfAborted();
-    const request = rustRequest(RustRequest.observe(this, input));
-    const stop = () => request.close();
-    const close = () => { signal?.removeEventListener("abort", stop); stop(); };
-    signal?.addEventListener("abort", stop, { once: true });
-    if (signal?.aborted) stop();
-    let current: Uint8Array;
-    const next = async () => {
-      try {
-        signal?.throwIfAborted();
-        const reply = await awaitSignal(request.next(), signal);
-        if (reply === null) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
-        current = reply.body;
-        return fromBinary(wire.AvailabilityCursorSchema, current.slice());
-      } catch (error) { close(); throw signal?.aborted ? signal.reason : objectsV1Error(error); }
-    };
-    await next();
-    return { cursor: () => fromBinary(wire.AvailabilityCursorSchema, current.slice()), changed: next, close };
+    return availabilityRequest(digest, signal, input => RustRequest.observe(this, input));
   }
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageInitShape<I>): Promise<MessageShape<O>> {
     const ready = ensureObjectsWasm();
@@ -198,5 +203,8 @@ export class MemoryObjectsV1 extends ObjectsV1Provider {
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {
     return rustRequest(this.memory.open(route, input));
+  }
+  override availability(digest: wire.Digest, signal?: AbortSignal): Promise<ObjectsV1Availability> {
+    return availabilityRequest(digest, signal, input => this.memory.observe(input));
   }
 }
