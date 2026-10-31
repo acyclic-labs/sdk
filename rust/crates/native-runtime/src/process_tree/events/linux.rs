@@ -124,6 +124,20 @@ impl Poller {
     }
 
     pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+        self.wait_on(self.epoll.as_raw_fd(), timeout, ready)
+    }
+
+    #[cfg(test)]
+    pub(super) fn failed_wait(&self) -> io::Result<()> {
+        self.wait_on(-1, None, &mut Vec::new())
+    }
+
+    fn wait_on(
+        &self,
+        epoll: RawFd,
+        timeout: Option<Duration>,
+        ready: &mut Vec<u64>,
+    ) -> io::Result<()> {
         let milliseconds = timeout.map_or(-1, |timeout| {
             libc::c_int::try_from(timeout.as_nanos().div_ceil(1_000_000))
                 .unwrap_or(libc::c_int::MAX)
@@ -132,7 +146,7 @@ impl Poller {
         // SAFETY: the owned epoll fd fills at most the initialized array.
         let count = unsafe {
             libc::epoll_wait(
-                self.epoll.as_raw_fd(),
+                epoll,
                 events.as_mut_ptr(),
                 libc::c_int::try_from(events.len()).unwrap_or(libc::c_int::MAX),
                 milliseconds,

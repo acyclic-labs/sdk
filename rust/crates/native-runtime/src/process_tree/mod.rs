@@ -12,7 +12,10 @@ mod capture;
 #[cfg(not(target_arch = "wasm32"))]
 mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
-pub use external_host::run_external_process_host;
+pub use external_host::{
+    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostProgress,
+    run_external_process_host, run_external_process_host_with_progress,
+};
 #[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
@@ -38,7 +41,10 @@ mod stdio;
 pub use stdio::{ProcessPipeReader, ProcessPipeWriter};
 #[cfg(windows)]
 mod spawner;
-pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
+pub use pump::{
+    CaptureHandler, CaptureOutcome, CaptureProgress, CaptureSchedule, CaptureWakes,
+    OwnedCaptureInput,
+};
 #[cfg(windows)]
 mod custodian_admission;
 mod custody;
@@ -73,7 +79,7 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{PendingStdin, drain_pipe, observe_output, pipe_operation_attempt};
+use capture::{PendingStdin, drain_pipe_observed, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]
@@ -128,16 +134,26 @@ pub struct ProcessTree {
 
 /// One armed wait on a process tree's retained pipes and direct child, served
 /// by the shared process-event hub: epoll, kqueue or an I/O completion port.
-/// It holds no thread and fires once.
+/// It holds no thread and retains its first typed terminal outcome.
 pub struct ProcessReadiness(events::Wait);
 
+pub use events::ProcessWaitOutcome;
+
+impl ProcessReadiness {
+    /// Cancels this observation without releasing the original process owner.
+    /// An already settled readiness or service failure remains the outcome.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
 impl std::future::Future for ProcessReadiness {
-    type Output = ();
+    type Output = ProcessWaitOutcome;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<()> {
+    ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.0).poll(context)
     }
 }
@@ -811,10 +827,14 @@ impl ProcessTree {
                         break 'capture Err(error);
                     }
                 }
-                match pump.turn(self, &mut check, &mut observe, meter) {
+                match pump.turn(self, &mut check, &mut observe, &mut |_| {}, meter) {
                     pump::Turn::Done(result) => break result,
                     pump::Turn::Wait => match pump.arm_with_wake(self, wake) {
-                        Ok(wait) => wait.block(),
+                        Ok(wait) => {
+                            if let Err(error) = wait.block().into_result() {
+                                break Err(error);
+                            }
+                        }
                         Err(error) => break Err(error),
                     },
                 }
@@ -876,7 +896,11 @@ impl ProcessTree {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
                             match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
-                                Ok(wait) => wait.block(),
+                                Ok(wait) => {
+                                    if let Err(error) = wait.block().into_result() {
+                                        break Err(error);
+                                    }
+                                }
                                 Err(error) => break Err(error),
                             }
                         }
@@ -1025,8 +1049,7 @@ impl ProcessTree {
                         return Err(io::ErrorKind::TimedOut.into());
                     }
                     process_control_attempt(meter, crate::NativeOperationKind::Read, || {
-                        self.arm_exit(deadline)?.block();
-                        Ok(())
+                        self.arm_exit(deadline)?.block().into_result()
                     })?;
                 }
                 if let Some(child) = self.child.as_mut() {

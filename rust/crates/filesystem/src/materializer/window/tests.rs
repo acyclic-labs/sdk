@@ -75,7 +75,7 @@ async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io:
                     if process.io(&meter)?.pump_stdin()? {
                         return Ok::<_, std::io::Error>(());
                     }
-                    ready.await;
+                    ready.await.into_result()?;
                 }
             })
             .await

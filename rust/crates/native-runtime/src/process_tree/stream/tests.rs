@@ -23,6 +23,13 @@ fn child() -> io::Result<()> {
     writeln!(std::io::stdout(), "CHILD={}", std::process::id())?;
     std::io::stdout().flush()?;
     std::io::stderr().write_all(&[0, 255, 7])?;
+    if mode == "phases" {
+        let mut input = Vec::new();
+        std::io::stdin().read_to_end(&mut input)?;
+        std::io::stdout().write_all(&input)?;
+        std::io::stdout().flush()?;
+        std::process::exit(124);
+    }
     if mode == "credit" {
         std::io::stdout().write_all(&[b'x'; 512 * 1024])?;
     }
@@ -30,6 +37,148 @@ fn child() -> io::Result<()> {
     // readiness probe coordinates the child with its actual stream reader.
     std::io::stdin().read_exact(&mut [0])?;
     std::process::exit(7);
+}
+
+#[derive(Default)]
+struct ProgressCounts {
+    accepted: usize,
+    written: usize,
+    stdin_closed: bool,
+    stdout: usize,
+    stderr: usize,
+    stdout_eof: bool,
+    stderr_eof: bool,
+    exit: Option<std::process::ExitStatus>,
+    retired: bool,
+}
+
+struct ProgressHandler {
+    counts: ProgressCounts,
+    wake: ProcessWake,
+    stop_at_admission: bool,
+}
+
+impl CaptureHandler for ProgressHandler {
+    fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
+        Ok(Some(self.wake.clone()).into())
+    }
+
+    fn check(&mut self) -> io::Result<()> {
+        if self.wake.is_stopped() {
+            Err(io::ErrorKind::Interrupted.into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn observe(&mut self, _: ProcessOutput<'_>) -> io::Result<ProcessInput> {
+        Ok(ProcessInput::default())
+    }
+
+    fn progress(&mut self, progress: CaptureProgress) {
+        assert!(!self.counts.retired);
+        match progress {
+            CaptureProgress::InputAccepted(bytes) => {
+                self.counts.accepted += bytes;
+                if self.stop_at_admission {
+                    self.wake.stop().unwrap();
+                }
+            }
+            CaptureProgress::InputWritten(bytes) => {
+                assert!(!self.counts.stdin_closed);
+                self.counts.written += bytes;
+                assert!(self.counts.written <= self.counts.accepted);
+            }
+            CaptureProgress::StdinClosed => {
+                assert!(!self.counts.stdin_closed);
+                assert_eq!(self.counts.written, self.counts.accepted);
+                self.counts.stdin_closed = true;
+            }
+            CaptureProgress::StdoutRead(bytes) => {
+                assert!(!self.counts.stdout_eof);
+                self.counts.stdout += bytes;
+            }
+            CaptureProgress::StderrRead(bytes) => {
+                assert!(!self.counts.stderr_eof);
+                self.counts.stderr += bytes;
+            }
+            CaptureProgress::StdoutEof => {
+                assert!(!self.counts.stdout_eof);
+                self.counts.stdout_eof = true;
+            }
+            CaptureProgress::StderrEof => {
+                assert!(!self.counts.stderr_eof);
+                self.counts.stderr_eof = true;
+            }
+            CaptureProgress::RootExited(status) => {
+                assert!(self.counts.exit.replace(status).is_none());
+            }
+        }
+    }
+
+    fn retired(&mut self, completed: bool) {
+        assert!(completed);
+        assert!(!self.counts.retired);
+        self.counts.retired = true;
+    }
+}
+
+#[tokio::test]
+async fn capture_progress_preserves_native_exit_and_refuses_admission_as_delivery() -> io::Result<()>
+{
+    for stop_at_admission in [false, true] {
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "process_tree::stream::tests::child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_STREAM_CAPTURE", "phases")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let tree = ProcessTree::spawn(&mut command)?;
+        let input = b"ORIGINAL_INPUT";
+        let handler = ProgressHandler {
+            counts: ProgressCounts::default(),
+            wake: ProcessWake::new()?,
+            stop_at_admission,
+        };
+        let outcome = tree
+            .capture(
+                CaptureSchedule::new(Duration::from_secs(5)),
+                usize::MAX,
+                Some(OwnedCaptureInput::Literal(input.to_vec())),
+                ProcessControl::unbounded()?.bind(handler),
+            )
+            .await?;
+        let counts = outcome.handler.into_inner().counts;
+        assert_eq!(counts.accepted, input.len());
+        assert!(counts.retired);
+        if stop_at_admission {
+            let failure = outcome.result.unwrap_err();
+            assert_eq!(failure.error.kind(), io::ErrorKind::Interrupted);
+            assert!(failure.cleanup_completed);
+            assert_eq!(counts.written, 0);
+            assert!(!counts.stdin_closed && !counts.stdout_eof && !counts.stderr_eof);
+            assert!(
+                counts.exit.is_none(),
+                "retirement cannot invent a native exit observation"
+            );
+        } else {
+            let output = outcome.result.map_err(io::Error::other)?;
+            assert_eq!(output.status.code(), Some(124));
+            assert_eq!(counts.exit, Some(output.status));
+            assert_eq!(counts.written, input.len());
+            assert!(counts.stdin_closed && counts.stdout_eof && counts.stderr_eof);
+            assert_eq!(counts.stdout, output.stdout.len());
+            assert_eq!(counts.stderr, output.stderr.len());
+            assert!(output.stdout.ends_with(input));
+            assert_eq!(output.stderr, [0, 255, 7]);
+        }
+    }
+    Ok(())
 }
 
 type Addresses = Arc<Mutex<VecDeque<(bool, usize, usize)>>>;

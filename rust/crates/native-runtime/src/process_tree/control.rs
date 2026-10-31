@@ -1,5 +1,7 @@
 //! Shared command cancellation and authenticated wall-clock expiry.
-use super::{CaptureHandler, CaptureWakes, ProcessInput, ProcessOutput, ProcessWake, io};
+use super::{
+    CaptureHandler, CaptureProgress, CaptureWakes, ProcessInput, ProcessOutput, ProcessWake, io,
+};
 use crate::WallAlarm;
 use std::sync::Arc;
 
@@ -123,6 +125,9 @@ impl<H: CaptureHandler> CaptureHandler for ControlledCapture<H> {
     fn observe(&mut self, output: ProcessOutput<'_>) -> io::Result<ProcessInput> {
         self.inner.observe(output)
     }
+    fn progress(&mut self, progress: CaptureProgress) {
+        self.inner.progress(progress);
+    }
     fn retired(&mut self, cleanup_completed: bool) {
         self.inner.retired(cleanup_completed);
     }
@@ -151,7 +156,7 @@ mod tests {
         let source =
             Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) });
         // Only the actual expiry producer can complete this wait.
-        events::arm(&[source], None)?.block();
+        events::arm(&[source], None)?.block().into_result()?;
         assert_eq!(
             control.check().unwrap_err().kind(),
             io::ErrorKind::Interrupted

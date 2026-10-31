@@ -182,9 +182,12 @@ impl ProcessTree {
                         Err(error) => break 'capture Err(error),
                     };
                     match control_first(control, sender.reserve()).await {
-                        Some(Ok(permit)) => break permit,
-                        Some(Err(_)) => break 'capture Err(receiver_lost()),
-                        None => {
+                        Ok(Ok(permit)) => break permit,
+                        Ok(Err(_)) => break 'capture Err(receiver_lost()),
+                        Err(outcome) => {
+                            if let Err(error) = outcome.into_result() {
+                                break 'capture Err(error);
+                            }
                             let (checked, returned) =
                                 crate::run_blocking_io(move || capture.check(), None)?.await?;
                             capture = returned;
@@ -224,12 +227,16 @@ impl ProcessTree {
                         Ok(wait) => wait,
                         Err(error) => break Err(error),
                     };
-                    if let Some(sender) = sender.as_ref() {
-                        if control_first(sender.closed(), wait).await.is_none() {
-                            break Err(receiver_lost());
+                    let outcome = if let Some(sender) = sender.as_ref() {
+                        match control_first(sender.closed(), wait).await {
+                            Ok(outcome) => outcome,
+                            Err(()) => break Err(receiver_lost()),
                         }
                     } else {
-                        wait.await;
+                        wait.await
+                    };
+                    if let Err(error) = outcome.into_result() {
+                        break Err(error);
                     }
                 }
             }
@@ -243,17 +250,14 @@ fn receiver_lost() -> io::Error {
 }
 
 // The stop source wins a simultaneous credit/readiness notification.
-async fn control_first<C: Future<Output = ()>, F: Future>(
-    control: C,
-    work: F,
-) -> Option<F::Output> {
+async fn control_first<C: Future, F: Future>(control: C, work: F) -> Result<F::Output, C::Output> {
     let mut control = pin!(control);
     let mut work = pin!(work);
     poll_fn(|context| {
-        if control.as_mut().poll(context).is_ready() {
-            return Poll::Ready(None);
+        if let Poll::Ready(outcome) = control.as_mut().poll(context) {
+            return Poll::Ready(Err(outcome));
         }
-        work.as_mut().poll(context).map(Some)
+        work.as_mut().poll(context).map(Ok)
     })
     .await
 }

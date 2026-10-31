@@ -7,7 +7,7 @@ use std::cell::UnsafeCell;
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use windows_sys::Win32::Foundation::{
@@ -32,9 +32,6 @@ const EXIT_KEY: usize = 1;
 const PIPE_KEY: usize = 2;
 /// The largest stdin chunk one overlapped write carries.
 const WRITE_CHUNK: usize = 64 * 1024;
-
-/// The port the registered exit callbacks post to.
-static PORT: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 pub(super) struct Poller {
     port: OwnedHandle,
@@ -61,10 +58,17 @@ impl Drop for Registration {
 }
 
 unsafe extern "system" fn exited(context: *mut c_void, _timed_out: bool) {
+    let Ok(hub) = super::hub() else {
+        return;
+    };
     // SAFETY: the port outlives the process, and the context is only the
     // token value; nothing dereferences it.
     unsafe {
-        PostQueuedCompletionStatus(PORT.load(Ordering::Acquire), 0, EXIT_KEY, context.cast());
+        if PostQueuedCompletionStatus(hub.poller.port.as_raw_handle(), 0, EXIT_KEY, context.cast())
+            == 0
+        {
+            hub.fail(io::Error::last_os_error());
+        }
     }
 }
 
@@ -330,7 +334,6 @@ impl Poller {
         }
         // SAFETY: a successful call returns one owned port handle.
         let port = unsafe { OwnedHandle::from_raw_handle(port) };
-        PORT.store(port.as_raw_handle(), Ordering::Release);
         Ok(Self { port })
     }
 
@@ -377,6 +380,15 @@ impl Poller {
     }
 
     pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+        Self::wait_on(self.port.as_raw_handle(), timeout, ready)
+    }
+
+    #[cfg(test)]
+    pub(super) fn failed_wait(&self) -> io::Result<()> {
+        Self::wait_on(INVALID_HANDLE_VALUE, None, &mut Vec::new())
+    }
+
+    fn wait_on(port: HANDLE, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
         let milliseconds = timeout.map_or(INFINITE, |timeout| {
             u32::try_from(timeout.as_nanos().div_ceil(1_000_000))
                 .unwrap_or(INFINITE - 1)
@@ -388,7 +400,7 @@ impl Poller {
         // SAFETY: the owned port fills at most the initialized array.
         if unsafe {
             GetQueuedCompletionStatusEx(
-                self.port.as_raw_handle(),
+                port,
                 entries.as_mut_ptr(),
                 u32::try_from(entries.len()).unwrap_or(u32::MAX),
                 &raw mut removed,

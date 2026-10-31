@@ -143,6 +143,19 @@ impl Poller {
     }
 
     pub(super) fn wait(&self, timeout: Option<Duration>, ready: &mut Vec<u64>) -> io::Result<()> {
+        Self::wait_on(self.queue.as_raw_fd(), timeout, ready)
+    }
+
+    #[cfg(test)]
+    pub(super) fn failed_wait(&self) -> io::Result<()> {
+        Self::wait_on(-1, None, &mut Vec::new())
+    }
+
+    fn wait_on(
+        queue: std::os::fd::RawFd,
+        timeout: Option<Duration>,
+        ready: &mut Vec<u64>,
+    ) -> io::Result<()> {
         let timeout = timeout.map(|timeout| libc::timespec {
             tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
             tv_nsec: libc::c_long::from(timeout.subsec_nanos()),
@@ -153,7 +166,7 @@ impl Poller {
         // timeout that outlives the call.
         let count = unsafe {
             libc::kevent(
-                self.queue.as_raw_fd(),
+                queue,
                 std::ptr::null(),
                 0,
                 events.as_mut_ptr(),
@@ -172,6 +185,11 @@ impl Poller {
             };
         }
         for event in events.iter().take(usize::try_from(count).unwrap_or(0)) {
+            if event.flags & libc::EV_ERROR != 0 && event.data != 0 {
+                return Err(io::Error::from_raw_os_error(
+                    i32::try_from(event.data).map_err(io::Error::other)?,
+                ));
+            }
             if event.filter != libc::EVFILT_USER {
                 ready.push(event.udata.addr() as u64);
             }

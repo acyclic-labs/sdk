@@ -73,6 +73,10 @@ pub(super) struct PendingStdin<'a> {
 }
 
 impl<'a> PendingStdin<'a> {
+    pub(super) fn accepted_bytes(&self) -> usize {
+        self.bytes.len()
+    }
+
     #[cfg(windows)]
     pub(super) fn waiting_bytes(&self) -> Option<&[u8]> {
         self.bytes
@@ -149,6 +153,15 @@ impl<'a> PendingStdin<'a> {
         tree: &mut ProcessTree,
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
+        self.poll_observed(tree, meter, &mut |_| {})
+    }
+
+    pub(super) fn poll_observed(
+        &mut self,
+        tree: &mut ProcessTree,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        progress: &mut impl FnMut(CaptureProgress),
+    ) -> io::Result<bool> {
         let mut progressed = false;
         if self.written < self.bytes.len() {
             let suffix = self
@@ -192,6 +205,9 @@ impl<'a> PendingStdin<'a> {
                 return Err(io::Error::other("invalid process write length"));
             }
             self.written += actual;
+            if actual != 0 {
+                progress(CaptureProgress::InputWritten(actual));
+            }
             progressed |= actual != 0;
             #[cfg(unix)]
             recorded_bytes?;
@@ -209,7 +225,14 @@ impl<'a> PendingStdin<'a> {
             }
         }
         if self.complete && self.written == self.bytes.len() && !self.stopped {
+            let open = tree
+                .child
+                .as_ref()
+                .is_some_and(|child| child.stdin.is_some());
             tree.capture_close_stdin(meter)?;
+            if open {
+                progress(CaptureProgress::StdinClosed);
+            }
             if self.terminate_on_completion {
                 tree.capture_terminate_descendants(meter)?;
             }
@@ -270,6 +293,7 @@ impl<'a> PendingStdin<'a> {
         &mut self,
         chunk: &[u8],
         observe: &mut impl FnMut(&[u8]) -> io::Result<ProcessInput>,
+        progress: &mut impl FnMut(CaptureProgress),
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<()> {
         let action = observe(chunk)?;
@@ -294,6 +318,7 @@ impl<'a> PendingStdin<'a> {
                 }
                 meter.admit_examination(0, action.bytes.len() as u64)?;
                 bytes.extend_from_slice(&action.bytes);
+                progress(CaptureProgress::InputAccepted(action.bytes.len()));
                 meter.record_examination(0, action.bytes.len() as u64)?;
             } else {
                 let bytes = self.bytes.to_mut();
@@ -301,6 +326,7 @@ impl<'a> PendingStdin<'a> {
                     .try_reserve(total - bytes.len())
                     .map_err(io::Error::other)?;
                 bytes.extend_from_slice(&action.bytes);
+                progress(CaptureProgress::InputAccepted(action.bytes.len()));
             }
         }
         self.complete = action.complete;
@@ -332,11 +358,14 @@ impl std::error::Error for ProcessCaptureFailure {
     }
 }
 
-pub(super) fn drain_pipe<T: Read + platform::Pipe>(
+pub(super) fn drain_pipe_observed<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
     remaining: &mut usize,
     meter: Option<&dyn crate::NativeReadMeter>,
+    read: impl FnOnce(usize) -> CaptureProgress,
+    eof: CaptureProgress,
+    progress: &mut impl FnMut(CaptureProgress),
 ) -> io::Result<bool> {
     let Some(reader) = pipe.as_mut() else {
         return Ok(false);
@@ -387,6 +416,9 @@ pub(super) fn drain_pipe<T: Read + platform::Pipe>(
         output.set_len(before + retained);
     }
     *remaining -= retained;
+    if actual != 0 {
+        progress(read(actual));
+    }
     recorded_bytes?;
     let (read, recorded_operation) = transfer?;
     recorded_operation?;
@@ -398,6 +430,7 @@ pub(super) fn drain_pipe<T: Read + platform::Pipe>(
                     Ok(())
                 })?;
             closed?;
+            progress(eof);
             recorded?;
         }
         Some(read) => {
