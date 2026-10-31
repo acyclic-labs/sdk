@@ -373,8 +373,19 @@ async fn one_session_discovers_installs_calls_and_reconciles_without_replay() ->
     let remote: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
     let mut registry = ToolRegistry::default();
-    catalog.install(&mut registry, None, &remote, &projection, 8, 16_384)?;
-    assert_eq!(registry.definitions(None)?[0].name, "mcp.configured.echo");
+    // An unrelated ambiguous selection must not require resolving or copying it.
+    for revision in ["1", "2"] {
+        let mut unrelated = crate::tool::files::read()?;
+        unrelated.definition.name = "mcp.other.echo".into();
+        unrelated.definition.revision = revision.into();
+        registry.register((unrelated, None), &mut None, None)?;
+    }
+    assert!(registry.definitions(None).is_err());
+    catalog.install(&mut registry, None, &remote, &projection, None, None)?;
+    assert_eq!(
+        registry.definitions_in_namespace("mcp.configured.", None)?[0].name,
+        "mcp.configured.echo"
+    );
     let tool = registry
         .get("mcp.configured.echo", None, None)?
         .ok_or_else(|| invalid("installed tool missing"))?;
