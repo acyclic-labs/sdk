@@ -6,11 +6,12 @@ use acyclic_stream::{
 use futures::channel::oneshot;
 use std::sync::Mutex;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Fault {
     Load,
     Refuse,
     Unknown,
+    Commit,
 }
 
 struct Cut {
@@ -23,6 +24,7 @@ struct Cut {
 struct Provider {
     inner: MemoryStream,
     cut: Mutex<Option<Cut>>,
+    cuts: AtomicUsize,
 }
 
 impl Provider {
@@ -43,6 +45,7 @@ impl Provider {
             .as_ref()
             .is_some_and(|cut| matches!(cut.fault, Fault::Load) == load)
         {
+            self.cuts.fetch_add(1, Ordering::SeqCst);
             cut.take()
         } else {
             None
@@ -79,6 +82,7 @@ impl StreamProvider for Provider {
                         Err(StreamError::Unavailable)
                     }
                     Fault::Refuse => Err(StreamError::AccessDenied),
+                    Fault::Commit => self.inner.write(request).await,
                     Fault::Load => unreachable!("load cut taken by write"),
                 };
             }
@@ -107,15 +111,31 @@ impl StreamProvider for Provider {
 /// and resource completion channels. Every held wait has its producer here.
 #[tokio::test]
 async fn pause_retains_decision_cleanup_and_unknown_after_waiter_loss() -> TestResult {
-    active_cleanup_and_queued_controls().await?;
+    for abandon_at_transition in [false, true] {
+        for resource_producer_lost in [false, true] {
+            active_cleanup_and_queued_controls(abandon_at_transition, resource_producer_lost)
+                .await?;
+        }
+    }
     completed_unread_failure().await?;
     failed_pause_reports_before_held_delivery().await?;
     replacement_and_producer_loss().await?;
-    for fault in [Fault::Load, Fault::Refuse, Fault::Unknown] {
+    let mut covered = 0u16;
+    for (index, fault) in [Fault::Load, Fault::Refuse, Fault::Unknown, Fault::Commit]
+        .into_iter()
+        .enumerate()
+    {
         for abandon in [false, true] {
-            publication_cut(fault, abandon).await?;
+            for producer_lost in [false, true] {
+                publication_cut(fault, abandon, producer_lost).await?;
+                covered |= 1 << (index * 4 + usize::from(abandon) * 2 + usize::from(producer_lost));
+            }
         }
     }
+    assert_eq!(covered, u16::MAX, "missing original dependency schedule");
+    eprintln!(
+        "pause dependency schedules: publication=16/16, cleanup/resource=4/4; publication cut visits=1, transitions=0..1"
+    );
     Ok(())
 }
 
@@ -226,7 +246,10 @@ async fn completed_unread_failure() -> TestResult {
     Ok(())
 }
 
-async fn active_cleanup_and_queued_controls() -> TestResult {
+async fn active_cleanup_and_queued_controls(
+    abandon_at_transition: bool,
+    resource_producer_lost: bool,
+) -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-owner", &[b"emit"]).await?;
@@ -245,13 +268,20 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
     assert_eq!(handler.active.load(Ordering::SeqCst), 1);
     let (entered, parked) = oneshot::channel();
     let (release, released) = oneshot::channel();
+    let resource_outcome = Arc::new(AtomicUsize::new(0));
+    let settled = Arc::clone(&resource_outcome);
     let transition = async move {
         let _ = entered.send(());
-        released.await
+        let outcome = released.await;
+        settled.store(if outcome.is_ok() { 1 } else { 2 }, Ordering::SeqCst);
+        outcome
     };
     let mut pause = Box::pin(runtime.pause_with(&address, true, transition));
     assert!(futures::poll!(pause.as_mut()).is_pending());
-    drop(pause); // Original bug: this discarded the only control owner.
+    let mut pause = Some(pause);
+    if !abandon_at_transition {
+        drop(pause.take()); // Caller loss while original cleanup is active.
+    }
     assert!(!runtime.release(&address));
     handler.gate.add_permits(1);
     let (delivered, entered) = futures::join!(delivery, parked);
@@ -259,6 +289,7 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
     // must await its actual cleanup in either case.
     let _delivery_outcome = delivered;
     entered.map_err(|_| "pause owner was cancelled with its waiter")?;
+    drop(pause); // Alternatively lose the caller after the durable decision.
     assert_eq!(
         runtime
             .store
@@ -284,10 +315,19 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
     handler.gate.add_permits(1);
     runtime.drain_actor(&unrelated).await?;
     assert_eq!(records(&*provider, "out/pause-unrelated").await?.len(), 1);
-    release
-        .send(())
-        .map_err(|_| "resource transition lost its owner")?;
+    if resource_producer_lost {
+        drop(release);
+    } else {
+        release
+            .send(())
+            .map_err(|_| "resource transition lost its owner")?;
+    }
     late.await?;
+    assert_eq!(
+        resource_outcome.load(Ordering::SeqCst),
+        if resource_producer_lost { 2 } else { 1 },
+        "original resource completion must settle before a queued control"
+    );
     assert_eq!(resumed.load(Ordering::SeqCst), 1);
     assert_eq!(
         runtime
@@ -321,7 +361,7 @@ async fn active_cleanup_and_queued_controls() -> TestResult {
     Ok(())
 }
 
-async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
+async fn publication_cut(fault: Fault, abandon: bool, producer_lost: bool) -> TestResult {
     let provider = Arc::new(Provider::default());
     let store = Store::new(Arc::clone(&provider), root()?);
     let address = spawn_with(&store, "pause-cut", &[b"emit"]).await?;
@@ -335,27 +375,42 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
     assert!(futures::poll!(pause.as_mut()).is_pending());
     entered.await?;
     assert!(!runtime.release(&address));
+    let complete = || -> TestResult {
+        if producer_lost {
+            drop(release);
+        } else {
+            release.send(()).map_err(|_| "lost owned provider cut")?;
+        }
+        Ok(())
+    };
+    let committed = !producer_lost && matches!(fault, Fault::Unknown | Fault::Commit);
+    let succeeded = !producer_lost && matches!(fault, Fault::Commit);
+    let known_failure =
+        matches!(fault, Fault::Load) || (!producer_lost && matches!(fault, Fault::Refuse));
     let outcome = if abandon {
         drop(pause);
-        release.send(()).map_err(|_| "lost owned provider cut")?;
+        complete()?;
         // Same original control lock joins the task's completion. Its retained
         // error is returned before a later caller can perform a new transition.
         let slot = runtime.slot(&address).ok_or("lost placement")?;
         let control = slot.control.lock().await;
-        assert!(
+        assert_eq!(
             slot.delivery_control
                 .lock()
                 .expect("control lock")
                 .failure
                 .is_some(),
-            "abandoned error lost its original outcome"
+            !succeeded,
+            "abandoned operation lost its original outcome: {fault:?}, producer_lost={producer_lost}"
         );
         drop(control);
-        assert!(
-            !runtime.release(&address),
-            "unobserved outcome lost on hibernation"
-        );
-        if !matches!(fault, Fault::Unknown) {
+        if !succeeded {
+            assert!(
+                !runtime.release(&address),
+                "unobserved outcome lost on hibernation"
+            );
+        }
+        if known_failure {
             runtime.wake(&address);
             runtime.drain_actor(&address).await?;
             assert_eq!(
@@ -366,16 +421,19 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
         }
         runtime.pause(&address, true).await
     } else {
-        release.send(()).map_err(|_| "lost owned provider cut")?;
+        complete()?;
         pause.await
     };
-    assert_eq!(transitions.load(Ordering::SeqCst), 0);
-    match fault {
-        Fault::Load | Fault::Refuse => {
-            assert!(matches!(
-                outcome,
-                Err(Error::Stream(StreamError::AccessDenied))
-            ));
+    assert_eq!(provider.cuts.load(Ordering::SeqCst), 1);
+    assert_eq!(transitions.load(Ordering::SeqCst), usize::from(succeeded));
+    match (known_failure, succeeded) {
+        (true, _) => {
+            let expected = if producer_lost {
+                StreamError::Unavailable
+            } else {
+                StreamError::AccessDenied
+            };
+            assert!(matches!(outcome, Err(Error::Stream(error)) if error == expected));
             assert_eq!(
                 runtime
                     .store
@@ -386,14 +444,8 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
                 Some(false)
             );
             runtime.wake(&address);
-            runtime.drain_actor(&address).await?;
-            assert_eq!(
-                records(&*provider, "out/pause-cut").await?.len(),
-                1,
-                "a failed pause must progress without an external resume"
-            );
         }
-        Fault::Unknown => {
+        (false, false) => {
             let Err(Error::Unknown {
                 publication,
                 source: StreamError::Unavailable,
@@ -402,20 +454,52 @@ async fn publication_cut(fault: Fault, abandon: bool) -> TestResult {
                 return Err("lost original Unknown publication".into());
             };
             let before = runtime.store.load(&address).await?;
-            assert_eq!(before.state().map(State::paused), Some(true));
+            assert_eq!(before.state().map(State::paused), Some(committed));
+            // A lost write producer leaves an uncertain, unapplied request;
+            // a lost reply leaves that same keyed request already committed.
+            // Submit the retained original in either case, then require an
+            // exact second replay without a new durable decision.
+            let replay = publication.request().clone();
             runtime.store.submit(*publication).await?;
+            let settled = runtime.store.load(&address).await?;
+            assert_eq!(settled.state().map(State::paused), Some(true));
+            if committed {
+                assert_eq!(settled.anchor, before.anchor);
+            } else {
+                assert_ne!(settled.anchor, before.anchor);
+            }
+            PreparedPublish::settle(&provider.commit(replay).await?)?;
             assert_eq!(
                 runtime.store.load(&address).await?.anchor,
-                before.anchor,
+                settled.anchor,
                 "the original keyed decision must replay the same commit"
             );
-            runtime.drain_actor(&address).await?;
-            assert!(records(&*provider, "out/pause-cut").await?.is_empty());
-            runtime.pause(&address, false).await?;
-            runtime.drain_actor(&address).await?;
-            assert_eq!(records(&*provider, "out/pause-cut").await?.len(), 1);
+        }
+        (false, true) => {
+            outcome?;
+            assert_eq!(
+                runtime
+                    .store
+                    .load(&address)
+                    .await?
+                    .state()
+                    .map(State::paused),
+                Some(true),
+                "accepted publication must finish after observer loss"
+            );
         }
     }
+    if !known_failure {
+        runtime.drain_actor(&address).await?;
+        assert!(records(&*provider, "out/pause-cut").await?.is_empty());
+        runtime.pause(&address, false).await?;
+    }
+    runtime.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/pause-cut").await?.len(),
+        1,
+        "known failure must progress without resume; settled pause must resume exactly once"
+    );
     let reopened = Runtime::new(
         Store::new(Arc::clone(&provider), root()?),
         Arc::new(Package::new()?),
