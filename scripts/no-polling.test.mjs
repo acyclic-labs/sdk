@@ -184,6 +184,27 @@ test('host language sources cannot hide a wait behind a non-comment slash', () =
  }
 });
 
+test('quoted host programs and native wait deadlines require exact review', () => {
+ // Intentional policy mutations, not fabricated OS output or provider captures.
+ for (const [file, source] of [
+  ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { Thread.Sleep(1); } }\''],
+  ['scripts/control.ps1', 'Add-Type \'class Control { void Wait() { ready.WaitOne(25); } }\''],
+  ['scripts/control.cs', 'void Run() { Compile("WaitForSingleObject(handle, 1000)"); }'],
+  [script, 'runHost("SpinWait.SpinUntil(ready, 100)");'],
+ ]) {
+  assert.ok(newPollingSites(file, '', source).some(site => site.kind === 'embedded-timer-or-retry'), file);
+ }
+ const file = 'scripts/control.cs';
+ const source = 'void Join() { WaitForSingleObject(handle, INFINITE); }';
+ const sites = pollingSites(file, source);
+ assert.ok(sites.length);
+ const accepted = sites.map(site => disposition(site, 'event-wait', 'original process exit',
+  'original native WAIT_FAILED result', 'close the original owned wait handle'));
+ assert.deepEqual(newPollingSites(file, '', source, accepted), []);
+ assert.ok(newPollingSites(file, '', source.replace('INFINITE', '1000'), accepted).length);
+ assert.ok(newPollingSites(file, '', source.replace('handle', 'otherHandle'), accepted).length);
+});
+
 test('unchanged baseline sites do not authorize another occurrence', () => {
  const source = 'async function operation() { await Bun.sleep(1); }\n';
  assert.deepEqual(newPollingSites(script, source, source), []);
