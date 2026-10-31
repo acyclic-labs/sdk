@@ -376,16 +376,14 @@ impl Capabilities {
         if !self.iter().any(is_filesystem_capability) {
             return true;
         }
-        let mut parents = ancestor
-            .iter()
-            .filter(|label| label.starts_with(SCOPE_PREFIX));
+        let mut parents = ancestor.with_prefix(SCOPE_PREFIX);
         let Some(parent) = parents.next() else {
-            return !self.iter().any(|label| label.starts_with(SCOPE_PREFIX));
+            return self.with_prefix(SCOPE_PREFIX).next().is_none();
         };
         if parents.next().is_some() {
             return false;
         }
-        let mut children = self.iter().filter(|label| label.starts_with(SCOPE_PREFIX));
+        let mut children = self.with_prefix(SCOPE_PREFIX);
         let Some(child) = children.next() else {
             return false;
         };
@@ -406,15 +404,28 @@ impl Capabilities {
         let Ok(Some(child)) = acyclic_fs::access::Capability::from_scope_label(value) else {
             return false;
         };
-        self.0.iter().any(|value| {
-            acyclic_fs::access::Capability::from_scope_label(value)
-                .is_ok_and(|parent| parent.is_some_and(|parent| child.is_attenuation_of(&parent)))
-        })
+        self.with_prefix(acyclic_fs::access::SCOPE_PREFIX)
+            .any(|value| {
+                acyclic_fs::access::Capability::from_scope_label(value).is_ok_and(|parent| {
+                    parent.is_some_and(|parent| child.is_attenuation_of(&parent))
+                })
+            })
     }
 
     /// Iterates in canonical lexical order.
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(String::as_str)
+    }
+
+    /// Borrows one lexical range in O(log G + matching labels), without copying.
+    pub(crate) fn with_prefix<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item = &'a str> {
+        self.0
+            .range::<str, _>((
+                std::ops::Bound::Included(prefix),
+                std::ops::Bound::Unbounded,
+            ))
+            .map(String::as_str)
+            .take_while(move |label| label.starts_with(prefix))
     }
 
     /// Returns the deterministic intersection of two grants.
@@ -715,6 +726,93 @@ mod tests {
         assert!(resolved.contains("read"));
         assert!(!resolved.contains("write"));
         assert!(!resolved.contains("shell"));
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[test]
+    fn filesystem_selection_preserves_ceilings_without_scanning_unrelated_grants() -> Result<()> {
+        use crate::store::history::HistoryIo as _;
+        use acyclic_fs::access::{Action, Capability};
+
+        fn inspect(
+            grants: &Capabilities,
+            items: u64,
+            cancelled: bool,
+        ) -> Result<acyclic_fs::OperationReceipt<Option<&str>>> {
+            let stop = acyclic_fs::CancellationToken::new();
+            let mut io =
+                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(items, 4096),
+                    &stop,
+                )?);
+            if cancelled {
+                stop.cancel();
+            }
+            let result = crate::core::filesystem_scope_label(grants, &mut Some(&mut io));
+            io.finish(result).map_err(|failure| failure.error)
+        }
+
+        let parent = Capability::whole_volume(None, &[Action::Read, Action::Write]);
+        let read = Capability::whole_volume(Some("selected".into()), &[Action::Read]);
+        let child = parent.clone().attenuate(read.layers[0].clone(), Some(5));
+        let parent = parent
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let child = child
+            .to_scope_label()
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let narrow = Capabilities::new([child.as_str()]);
+        for count in [1, 100, 1000] {
+            let unrelated = || {
+                (0..count).flat_map(|index| [format!("a:tool:{index}"), format!("z:tool:{index}")])
+            };
+            let grants = Capabilities::new(unrelated().chain([parent.clone()]));
+            let selected = inspect(&grants, 2, false)?;
+            assert_eq!(selected.value, Some(parent.as_str()));
+            assert_eq!(selected.work.items_examined, 2);
+            assert_eq!(selected.work.allocation_operations, 0);
+            assert_eq!(selected.work.bytes_copied, 0);
+            assert_eq!(grants.intersect(&narrow), narrow);
+            assert!(narrow.is_subset_of(&grants));
+            assert!(!grants.is_subset_of(&narrow));
+            assert!(
+                !grants
+                    .without(&Capabilities::new([parent.as_str()]))
+                    .contains(&parent)
+            );
+
+            // The former whole-set walk cannot complete on the same funding.
+            let stop = acyclic_fs::CancellationToken::new();
+            let mut old =
+                crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(
+                    acyclic_fs::performance::work_budget(2, 4096),
+                    &stop,
+                )?);
+            assert!(
+                grants
+                    .iter()
+                    .try_for_each(|_| {
+                        old.codec_charge(crate::executor::json::JsonCodecCharge::Inspect {
+                            items: 1,
+                        })
+                    })
+                    .is_err()
+            );
+            let absent = Capabilities::new(unrelated());
+            assert_eq!(inspect(&absent, 1, false)?.value, None);
+            assert!(inspect(&absent, 1, true).is_err());
+
+            let ambiguous = Capabilities::new(grants.iter().chain([child.as_str()]));
+            assert!(matches!(
+                inspect(&ambiguous, 3, false),
+                Err(Error::Unauthorized(_))
+            ));
+            assert!(ambiguous.intersect(&narrow).iter().next().is_none());
+        }
+        let malformed = Capabilities::new(["filesystem:invalid"]);
+        assert!(!malformed.includes(&child));
+        assert!(!narrow.is_subset_of(&malformed));
+        Ok(())
     }
 
     #[test]

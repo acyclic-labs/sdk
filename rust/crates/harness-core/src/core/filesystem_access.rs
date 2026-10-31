@@ -29,22 +29,24 @@ pub(crate) fn filesystem_scope_label<'a>(
     capabilities: &'a crate::Capabilities,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<Option<&'a str>> {
+    if let Some(io) = work.as_deref_mut() {
+        io.check_cancellation()?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+    }
     let mut result = None;
-    for label in capabilities.iter() {
+    for label in capabilities.with_prefix(acyclic_fs::access::SCOPE_PREFIX) {
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
             io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        if label.starts_with(acyclic_fs::access::SCOPE_PREFIX) {
-            if result.is_some() {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Unauthorized,
-                    "scope has multiple filesystem grants",
-                ));
-            }
-            result = Some(label);
+        if result.is_some() {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "scope has multiple filesystem grants",
+            ));
         }
+        result = Some(label);
     }
     Ok(result)
 }
@@ -153,15 +155,7 @@ pub(crate) fn contains_content_grant_with_work<T: serde::Serialize + ?Sized>(
     if let Some(io) = work.as_deref_mut() {
         io.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
     }
-    if !grants
-        .0
-        .range::<str, _>((
-            std::ops::Bound::Included(prefix),
-            std::ops::Bound::Unbounded,
-        ))
-        .next()
-        .is_some_and(|grant| grant.starts_with(prefix))
-    {
+    if grants.with_prefix(prefix).next().is_none() {
         return Ok(false);
     }
     let digest = crate::executor::json::canonical_json_digest(
