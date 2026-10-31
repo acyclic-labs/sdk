@@ -315,9 +315,10 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
     );
     let mut other_owner = tokio::spawn(Box::pin(serve(Arc::clone(&other_local))));
     let other_descriptor = other_checkout.path().join(DIRECTORY).join("owner.json");
-    while !other_descriptor.is_file() {
-        projection_event(&mut changes, &mut other_owner).await?;
-    }
+    projection_settled(&mut changes, &mut other_owner, || {
+        Ok(other_descriptor.is_file())
+    })
+    .await?;
     watcher.unwatch(other_checkout.path()).map_err(storage)?;
     let other_cwd = std::fs::canonicalize(other_checkout.path()).map_err(storage)?;
     let opening_registry = Arc::clone(&registry);
