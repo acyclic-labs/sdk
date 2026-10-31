@@ -393,7 +393,7 @@ impl ToolExecutor for FileTool {
         }) {
             return Err(unauthorized());
         }
-        let (file, _custody) = self.preflight_with_context(scope, invocation, work, context)?;
+        let (file, _custody) = self.preflight(scope, context, invocation, work)?;
         let path = invocation
             .arguments
             .get("path")
@@ -512,11 +512,11 @@ impl ToolExecutor for FileTool {
             let source = if matches!(self, Self::Write) {
                 (None, None)
             } else {
-                self.preflight_with_context(
+                self.preflight(
                     context.effective_scope(),
+                    Some(context),
                     invocation,
                     Some(work),
-                    Some(context),
                 )?
             };
             let receipt =
@@ -618,12 +618,8 @@ impl ToolExecutor for FileTool {
                     &invocation,
                     None,
                 )?;
-                let source = self.preflight_with_context(
-                    context.effective_scope(),
-                    &invocation,
-                    None,
-                    Some(&context),
-                )?;
+                let source =
+                    self.preflight(context.effective_scope(), Some(&context), &invocation, None)?;
                 let receipt = context
                     .observe_tool_source_file_once(
                         invocation.operation_id,

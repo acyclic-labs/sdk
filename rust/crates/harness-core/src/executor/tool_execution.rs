@@ -919,7 +919,7 @@ mod refusal_admission_tests {
                     };
                     assert_eq!(
                         execution
-                            .admit_tool_invocation(admitted, &invocation)?
+                            .admit_tool_invocation(admitted, &invocation, None)?
                             .is_ok(),
                         call_granted && read_granted
                     );

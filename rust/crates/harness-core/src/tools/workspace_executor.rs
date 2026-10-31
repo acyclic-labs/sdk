@@ -93,7 +93,12 @@ impl ToolExecutor for WorkspaceExecutor {
                 "script projection lacks its task; recovery: retain the original tool context",
             )
         })?;
-        workspace(context, work)?.prepare_shell_script(source, input, Some(context), work)
+        context
+            .task()
+            .harness
+            .target(None)?
+            .executor
+            .prepare_shell_script(source, input, Some(context), work)
     }
 
     fn authorize(

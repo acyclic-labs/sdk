@@ -146,6 +146,7 @@ impl ShellInput {
             command: target.prepare_script(source, &[input]),
             cwd: None,
             timeout_ms: None,
+            target: None,
         };
         input.validate()?;
         Ok(input)

@@ -126,7 +126,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             arguments: json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap(),"range":{"start":start,"end":end}}),
         };
         let error = FileTool::Read
-            .preflight(&scope, &invocation, Some(&original))
+            .preflight(&scope, None, &invocation, Some(&original))
             .unwrap_err();
         assert_recoverable(error, &original);
     }
@@ -146,7 +146,7 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             arguments,
         };
         let error = FileTool::Read
-            .preflight(&ungranted, &invocation, Some(&original))
+            .preflight(&ungranted, None, &invocation, Some(&original))
             .unwrap_err();
         assert!(error.is_tool_failure());
         assert_recoverable(error, &original);

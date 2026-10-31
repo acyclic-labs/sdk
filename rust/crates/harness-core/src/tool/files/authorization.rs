@@ -4,18 +4,9 @@ impl FileTool {
     pub(in crate::tool) fn preflight(
         &self,
         scope: &RuntimeScope,
-        invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
-    ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
-        self.preflight_with_context(scope, invocation, work, None)
-    }
-
-    pub(in crate::tool) fn preflight_with_context(
-        &self,
-        scope: &RuntimeScope,
-        invocation: &ToolInvocation,
-        work: crate::NativeWork<'_>,
         context: Option<&ToolContext>,
+        invocation: &ToolInvocation,
+        work: crate::NativeWork<'_>,
     ) -> Result<(Option<FileRef>, crate::NativeCustody)> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owned_io = work
