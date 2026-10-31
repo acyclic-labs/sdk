@@ -30,6 +30,12 @@ proptest! {
         let wire = CapabilityProto::decode(encoded.as_slice()).unwrap();
         let canonical = wire.encode_canonical();
         prop_assert_eq!(canonical.as_slice(), encoded.as_slice());
+        let proof = match wire.proof.as_ref().unwrap() {
+            TipProofProto::Secret(bytes) => TipProofRef::Secret(bytes.as_slice().try_into().unwrap()),
+            TipProofProto::Sealed(bytes) => TipProofRef::Sealed(bytes.as_slice().try_into().unwrap()),
+        };
+        let borrowed = encode_capability(&wire.blocks, proof);
+        prop_assert_eq!(borrowed.as_slice(), encoded.as_slice());
         // Version admission precedes even a missing/malformed nested body and
         // allocates no blocks, proof or canonical-comparison buffer.
         for version in [0, 1, 3, u32::MAX] {
