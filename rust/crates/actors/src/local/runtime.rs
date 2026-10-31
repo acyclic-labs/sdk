@@ -411,7 +411,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 drop(delivery);
                 if matches!(result, Err(Error::Conflict)) {
                     self.release(actor);
-
                 }
                 result
             }

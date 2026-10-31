@@ -64,3 +64,8 @@ SecretRef import with the current Actor fork and selected-entry fields.
 The Rust and independent Buf pipelines above were run on that source; the
 Rust capture was copied to both Rust descriptor paths. No descriptor bytes
 were combined by hand.
+The current source composition also includes fork admission fields introduced
+by `4228d02213`. The three retained main captures above still require canonical
+regeneration for that schema with the retry counter removed. The earlier
+2026-10-31 capture receipt describes its predecessor schema; it does not
+qualify these composed fixtures.

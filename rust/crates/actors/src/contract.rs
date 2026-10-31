@@ -224,9 +224,6 @@ pub fn validate_fork(request: &wire::ForkActorRequest) -> Result<(), ContractErr
     {
         return Err(ContractError::InvalidArgument);
     }
-    if request.subscriptions.len() > MAX_SUBSCRIPTIONS {
-        return Err(ContractError::LimitExceeded);
-    }
     let mut seen = HashSet::new();
     if !request
         .subscriptions
