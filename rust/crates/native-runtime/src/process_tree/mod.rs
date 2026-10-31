@@ -92,9 +92,7 @@ fn set_capture_clock(now: Option<Instant>) {
     CAPTURE_CLOCK.with(|clock| clock.set(now));
 }
 pub use capture::{CaptureInput, ProcessCaptureFailure, ProcessInput, ProcessOutput};
-use capture::{
-    PendingStdin, drain_pipe, drain_pipe_observed, observe_output, pipe_operation_attempt,
-};
+use capture::{PendingStdin, drain_pipe_observed, observe_output, pipe_operation_attempt};
 #[cfg(unix)]
 mod prepared;
 #[cfg(unix)]

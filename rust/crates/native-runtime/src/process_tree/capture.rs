@@ -360,23 +360,6 @@ impl std::error::Error for ProcessCaptureFailure {
     }
 }
 
-pub(super) fn drain_pipe<T: Read + platform::Pipe>(
-    pipe: &mut Option<T>,
-    output: &mut Vec<u8>,
-    remaining: &mut usize,
-    meter: Option<&dyn crate::NativeReadMeter>,
-) -> io::Result<bool> {
-    drain_pipe_observed(
-        pipe,
-        output,
-        remaining,
-        meter,
-        CaptureProgress::StdoutRead,
-        CaptureProgress::StdoutEof,
-        &mut |_| {},
-    )
-}
-
 pub(super) fn drain_pipe_observed<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
