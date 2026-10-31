@@ -6,13 +6,13 @@ use super::*;
 pub struct ExecutionClaims(acyclic_fs::OperationClaims);
 
 #[cfg(feature = "filesystem")]
-type Storage<'a> = Option<crate::filesystem::DecodeReservation<'a>>;
+type Storage = Option<crate::filesystem::PreparationCustody>;
 #[cfg(not(feature = "filesystem"))]
-type Storage<'a> = std::marker::PhantomData<&'a PreparationIo>;
+type Storage = ();
 
 /// Owns a live attempt until its execution future has finished or is dropped.
 pub struct ExecutionClaim<'a> {
-    _claim: acyclic_fs::OperationClaim<'a, Storage<'a>>,
+    _claim: acyclic_fs::OperationClaim<'a>,
 }
 
 impl ExecutionClaims {
@@ -21,7 +21,7 @@ impl ExecutionClaims {
         &'a self,
         namespace: [u8; 32],
         operation: OperationId,
-        io: Option<&'a PreparationIo>,
+        io: Option<&PreparationIo>,
     ) -> Result<ExecutionClaim<'a>> {
         claim(&self.0, namespace, operation, io)
     }
@@ -31,7 +31,7 @@ pub(crate) fn claim<'a>(
     claims: &'a acyclic_fs::OperationClaims,
     namespace: [u8; 32],
     operation: OperationId,
-    io: Option<&'a PreparationIo>,
+    io: Option<&PreparationIo>,
 ) -> Result<ExecutionClaim<'a>> {
     let mut key = [0; 48];
     key[..32].copy_from_slice(&namespace);
@@ -40,20 +40,22 @@ pub(crate) fn claim<'a>(
         .claim(
             key,
             || crate::model::charge_items(io, 1),
-            |bytes| {
+            |bytes, allocations| -> Result<Storage> {
                 #[cfg(feature = "filesystem")]
                 {
                     io.map(|io| {
-                        let storage = io.guard_owned(bytes)?;
-                        io.allocation_attempt(bytes)?;
-                        Ok::<_, Error>(storage)
+                        for _ in 0..allocations {
+                            io.allocation_attempt(bytes)?;
+                        }
+                        io.retain_owned(bytes)?;
+                        io.take_owned_custody(bytes)
                     })
                     .transpose()
                 }
                 #[cfg(not(feature = "filesystem"))]
                 {
-                    let _ = (io, bytes);
-                    Ok::<_, Error>(std::marker::PhantomData)
+                    let _ = (io, bytes, allocations);
+                    Ok(())
                 }
             },
         )?
@@ -65,4 +67,30 @@ pub(crate) fn claim<'a>(
             )
         })?;
     Ok(ExecutionClaim { _claim: claim })
+}
+
+#[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claim_nodes_keep_original_native_funding_after_the_preparation_frame_drops() -> Result<()> {
+        let native = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let baseline = native.live_allocation_bytes();
+        let claims = ExecutionClaims::default();
+        let io = PreparationIo::from_native_work(&native)?;
+        let first = claims.claim([1; 32], OperationId::from_bytes([1; 16]), Some(&io))?;
+        let second = claims.claim([1; 32], OperationId::from_bytes([2; 16]), Some(&io))?;
+        drop(io);
+        assert!(native.live_allocation_bytes() > baseline);
+        drop(first);
+        assert!(native.live_allocation_bytes() > baseline);
+        drop(second);
+        assert_eq!(native.live_allocation_bytes(), baseline);
+        Ok(())
+    }
 }

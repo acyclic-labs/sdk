@@ -1076,6 +1076,7 @@ dependencies = [
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
+ "acyclic-collections",
  "acyclic-auth",
  "acyclic-contract-derive",
  "acyclic-grpc-observability",
