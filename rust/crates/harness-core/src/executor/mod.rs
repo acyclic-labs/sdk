@@ -51,7 +51,12 @@ mod content;
 mod dispatch;
 mod live_reply;
 pub use live_reply::LiveReply;
+mod model_cost;
 mod model_observation;
+pub use model_cost::{
+    ModelCostEstimate, ModelPriceError, ModelPriceRecord, ModelUsageProjection, ModelUsageTotals,
+    TokenPrice, UsageTotal,
+};
 pub(crate) mod model_usage;
 #[cfg(feature = "filesystem")]
 pub(crate) use model_usage::validate as validate_model_usage;

@@ -243,7 +243,10 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
             1,
             "replay must replace the export without duplicating calls"
         );
-        let row = &rows[0];
+        assert_eq!(rows[0]["version"], 2);
+        assert!(rows[0]["estimated_cost"]["token_nano_units"].is_null());
+        assert!(rows[0]["estimated_cost"]["price_revision"].is_null());
+        let row = &rows[0]["usage"];
         assert_eq!(row["provider"], "graphcoder-qual");
         assert_eq!(row["model"], "tiny");
         assert_eq!(row["completed"], true);
@@ -269,7 +272,7 @@ async fn a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly() {
     )
     .await;
     let row: Value = serde_json::from_str(succeeded(&streamed).trim()).unwrap();
-    assert_eq!(row["completed"], true);
+    assert_eq!(row["usage"]["completed"], true);
     assert!(String::from_utf8_lossy(&streamed.stderr).contains("fixture answer"));
     assert_eq!(model.generated(), 3);
     model.close().await;
