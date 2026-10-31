@@ -80,6 +80,17 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
     });
     result?;
     assert_eq!(calls, [libc::F_BARRIERFSYNC]);
+    for flush in [
+        crate::flush_file_all as fn(&File) -> io::Result<()>,
+        crate::flush_file_data,
+    ] {
+        let (result, calls) = observe(&[], false, || flush(&file));
+        result?;
+        assert_eq!(calls, [libc::F_FULLFSYNC]);
+        let (result, calls) = observe(&[libc::EINTR], false, || flush(&file));
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
+        assert_eq!(calls, [libc::F_FULLFSYNC]);
+    }
     Ok(())
 }
 

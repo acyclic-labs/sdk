@@ -52,26 +52,21 @@ fn flush_file_policy(file: &File, _data_only: bool) -> io::Result<()> {
     crate::sync_descriptor_once(file.as_handle())
 }
 
-#[cfg(target_os = "linux")]
-fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
-    use std::os::fd::AsFd as _;
-    // Preserve std's policy and Interrupted retry, exposing each actual attempt
-    // to the same observer used by the metered file operations.
-    loop {
-        let result = if data_only {
-            crate::held_sync::sync_data_descriptor_once(file.as_fd(), Durability::Full)
-        } else {
-            crate::sync_descriptor_once(file.as_fd())
-        };
-        match result {
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            result => return result,
-        }
+#[cfg(not(windows))]
+pub(super) fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if data_only {
+        use std::os::fd::AsFd as _;
+        return crate::held_sync::sync_data_descriptor_once(file.as_fd(), Durability::Full);
     }
-}
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn flush_file_policy(file: &File, data_only: bool) -> io::Result<()> {
+    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    {
+        use std::os::fd::AsFd as _;
+        #[cfg(target_vendor = "apple")]
+        let _ = data_only;
+        crate::sync_descriptor_once(file.as_fd())
+    }
+    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
     if data_only {
         file.sync_data()
     } else {

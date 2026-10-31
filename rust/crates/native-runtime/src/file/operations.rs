@@ -154,13 +154,7 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                 #[cfg(target_os = "linux")]
                 {
                     use std::os::fd::AsFd as _;
-                    loop {
-                        match crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability)
-                        {
-                            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                            result => return result,
-                        }
-                    }
+                    return crate::held_sync::sync_data_descriptor_once(file.as_fd(), durability);
                 }
                 #[cfg(not(any(windows, target_os = "linux", target_vendor = "apple")))]
                 {

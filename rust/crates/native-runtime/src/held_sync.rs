@@ -111,7 +111,7 @@ pub fn order_descriptor_once(
     sync_descriptor_requested_once(descriptor, crate::Durability::Barrier)
 }
 
-/// One data-only Linux attempt; its caller owns Interrupted retry.
+/// One data-only Linux attempt; its caller observes the original result.
 #[cfg(target_os = "linux")]
 #[allow(
     unsafe_code,
