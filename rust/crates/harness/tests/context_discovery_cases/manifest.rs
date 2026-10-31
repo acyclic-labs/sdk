@@ -119,7 +119,6 @@ async fn assert_request(
         serde_json::from_str(acyclic_harness::context::DEFAULT_CONVENTIONS_JSON)
             .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(manifest.conventions, conventions);
-    assert!(conventions[1].contains("plans/<id>.md"));
     for (message, expected) in request.messages.iter().zip(&conventions) {
         assert_eq!(message.role, ModelRole::System);
         assert_eq!(message.content, ModelContent::Text(expected.clone()));

@@ -140,7 +140,7 @@ module epochs {
 
   val partition = Agents.forall(a => {
     val v = s.views.get(a)
-    val covered = 0.to(v.cursor - 1)
+    val covered = if (v.summary == 0) Set() else 0.to(through(v.summary) - 1)
     val verbatim = v.cursor.to(v.head - 1)
     v.cursor >= 0 and v.cursor <= v.head and
       covered.intersect(verbatim) == Set() and
@@ -148,10 +148,19 @@ module epochs {
   })
   val sharedPrefix = Agents.forall(a => {
     val v = s.views.get(a)
-    (v.summary == 0 or (within(a, v.summary) and through(v.summary) == v.cursor and s.jobs.get(v.summary) == 2)) and
+    ((v.summary == 0 and v.cursor == 0) or
+      (v.summary != 0 and within(a, v.summary) and through(v.summary) == v.cursor and s.jobs.get(v.summary) == 2)) and
       (v.pending == 0 or (within(a, v.pending) and through(v.pending) <= v.head))
   })
   val safety = partition and sharedPrefix
+
+  // A cursor-only swap loses the item even though its two numeric ranges join.
+  // This action is deliberately excluded from the production step relation.
+  action omitSummary = s' = {
+    ...s, views: s.views.set(0, { ...s.views.get(0), cursor: 1 })
+  }
+  run missingSummaryNegativeControl = init.then(append(0)).then(omitSummary)
+    .expect(not(safety))
 
   run raceAndCrash = init
     .then(append(0)).then(append(0)).then(prepare(0, 2))
