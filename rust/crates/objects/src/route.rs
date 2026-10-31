@@ -77,6 +77,91 @@ pub async fn put_blob(
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
 
+/// Verifies each member's digest, publishes the members through the one
+/// batch driver, then waits for durability once for the whole batch.
+///
+/// # Errors
+/// `Unavailable` when the provider answers another number of members. Each
+/// member's own failure is its result instead.
+pub async fn put_blobs(
+    blobs: &dyn Blobs,
+    request: wire::PutBlobsRequest,
+) -> Result<Served<wire::PutBlobsResponse>, Error> {
+    let mut outcomes: Vec<Option<Result<crate::Put, Error>>> =
+        Vec::with_capacity(request.puts.len());
+    let mut admitted = Vec::with_capacity(request.puts.len());
+    for put in request.puts {
+        match member(put) {
+            Ok(member) => {
+                admitted.push(member);
+                outcomes.push(None);
+            }
+            Err(error) => outcomes.push(Some(Err(error))),
+        }
+    }
+    let mut published = blobs.put_batch_sealed(admitted).await.into_iter();
+    for outcome in &mut outcomes {
+        if outcome.is_none() {
+            *outcome = Some(published.next().ok_or(wire::ErrorCode::Unavailable)?);
+        }
+    }
+    let mut outcomes: Vec<_> = outcomes.into_iter().flatten().collect();
+    let durable: Vec<Digest> = outcomes
+        .iter()
+        .flatten()
+        .filter_map(|put| put.verified().map(|verified| verified.digest))
+        .collect();
+    if !durable.is_empty()
+        && let Err(error) = blobs.flush(Some(&durable)).await
+    {
+        // No member it covered is acknowledged; repeating one is safe.
+        for outcome in &mut outcomes {
+            if outcome.as_ref().is_ok_and(|put| put.verified().is_some()) {
+                *outcome = Err(error);
+            }
+        }
+    }
+    let revision = covering(outcomes.iter().flatten());
+    let results = outcomes
+        .iter()
+        .map(|outcome| wire::PutResult {
+            outcome: Some(match outcome {
+                Ok(put) => wire::put_result::Outcome::Put(convert::wire_put(put)),
+                Err(error) => wire::put_result::Outcome::Error(error.code.into()),
+            }),
+        })
+        .collect();
+    Ok((wire::PutBlobsResponse { results }, revision))
+}
+
+/// One batch member, hashed once here at the trust boundary.
+fn member(put: wire::PutBlobRequest) -> Result<(crate::Sealed, Vec<Digest>), Error> {
+    let expected = convert::digest(put.digest.as_ref())?;
+    let body = crate::Sealed::new(put.body.into());
+    if Digest::sealed(&body) != expected {
+        return Err(wire::ErrorCode::DigestMismatch.into());
+    }
+    Ok((body, convert::digests(&put.references)?))
+}
+
+/// The one revision covering every member's: the latest of one authority.
+/// Members committed under several authorities have no single revision.
+fn covering<'a>(puts: impl Iterator<Item = &'a crate::Put>) -> Option<Revision> {
+    let mut covering: Option<Revision> = None;
+    for revision in puts.filter_map(put_revision) {
+        match &mut covering {
+            None => covering = Some(revision),
+            Some(held) if held.same_authority(&revision) => {
+                if revision.index > held.index {
+                    *held = revision;
+                }
+            }
+            Some(_) => return None,
+        }
+    }
+    covering
+}
+
 /// A remote put is acknowledged durable: its client has no commit to defer
 /// the flush to.
 async fn durable(blobs: &dyn Blobs, put: &crate::Put) -> Result<(), Error> {
@@ -264,6 +349,7 @@ pub async fn invoke_at(
     }
     Ok(match route {
         "blobs/put" => encode(put_blob(blobs, decode(input)?).await?),
+        "blobs/put-batch" => encode(put_blobs(blobs, decode(input)?).await?),
         "blobs/put-manifest" => encode(put_manifest(blobs, decode(input)?).await?),
         "blobs/get" => encode(get_blob(blobs, decode(input)?).await?),
         "blobs/head" => encode(head_blob(blobs, decode(input)?).await?),
@@ -297,6 +383,15 @@ pub fn verify(route: &str, input: Bytes, output: Bytes) -> Result<(), Error> {
             let request: wire::PutBlobRequest = decode(input)?;
             let digest = convert::digest(request.digest.as_ref())?;
             convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
+        }
+        "blobs/put-batch" => {
+            let request: wire::PutBlobsRequest = decode(input)?;
+            let expected = request
+                .puts
+                .iter()
+                .map(|put| Ok((convert::digest(put.digest.as_ref())?, put.body.len() as u64)))
+                .collect::<Result<Vec<_>, Error>>()?;
+            convert::verified_puts(&reply(output)?, &expected, None).map(drop)
         }
         "blobs/put-manifest" => {
             let request: wire::PutManifestRequest = decode(input)?;

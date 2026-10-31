@@ -87,6 +87,14 @@ export abstract class ObjectsV1Provider implements ObjectsV1BinaryPort {
     const digest = await blobDigest(body);
     return this.call("blobs/put", wire.PutBlobRequestSchema, wire.PutResponseSchema, { digest, body, references: [...references] });
   }
+  /**
+   * Publishes many blobs in one call. Results answer members in order; a member that references or repeats an
+   * earlier member starts once it settled, and a failed member (`error`) leaves every other member as reported.
+   */
+  async putBlobs(puts: readonly { readonly body: Uint8Array; readonly references?: readonly wire.Digest[] }[]): Promise<wire.PutResult[]> {
+    const members = await Promise.all(puts.map(async ({ body, references = [] }) => ({ digest: await blobDigest(body), body, references: [...references] })));
+    return (await this.call("blobs/put-batch", wire.PutBlobsRequestSchema, wire.PutBlobsResponseSchema, { puts: members })).results;
+  }
   putManifest(manifest: MessageInitShape<typeof wire.ManifestSchema>) { return this.call("blobs/put-manifest", wire.PutManifestRequestSchema, wire.PutResponseSchema, { manifest }); }
   get(value: MessageInitShape<typeof wire.GetBlobRequestSchema>) { return this.call("blobs/get", wire.GetBlobRequestSchema, wire.GetBlobResponseSchema, value); }
   head(digest: wire.Digest) { return this.call("blobs/head", wire.HeadBlobRequestSchema, wire.BlobInfoSchema, { digest }); }

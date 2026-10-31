@@ -1434,6 +1434,104 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
     Ok(())
 }
 
+/// One remote put member: the digest it claims, its body and references.
+#[cfg(objects_server)]
+fn wire_member(claimed: &[u8], body: &[u8], references: &[Digest]) -> crate::wire::PutBlobRequest {
+    crate::wire::PutBlobRequest {
+        digest: Some(Digest::of(claimed).into()),
+        body: body.to_vec().into(),
+        references: references.iter().copied().map(Into::into).collect(),
+    }
+}
+
+#[cfg(objects_server)]
+#[tokio::test]
+async fn a_remote_put_batch_waits_for_durability_once_and_fails_members_alone()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::wire::{self, put_response, put_result};
+    use prost::Message as _;
+    let store = Store::new(Counting::default());
+    let blobs = store.account(b"account")?;
+    // The account's once-per-open incarnation flush is not the batch's.
+    blobs.flush(None).await?;
+    store.medium().take();
+    let parent = Digest::of(b"batch parent");
+    let request = wire::PutBlobsRequest {
+        puts: vec![
+            wire_member(b"batch parent", b"batch parent", &[]),
+            wire_member(b"claimed body", b"another body", &[]),
+            wire_member(b"batch child", b"batch child", &[parent]),
+            wire_member(b"dangling", b"dangling", &[Digest::of(b"never stored")]),
+            wire_member(b"batch parent", b"batch parent", &[]),
+        ],
+    };
+    let invoke = || async {
+        let input = bytes::Bytes::from(request.encode_to_vec());
+        let reply = crate::route::invoke(&blobs, "blobs/put-batch", input.clone()).await?;
+        crate::route::verify("blobs/put-batch", input, reply.clone().into())?;
+        let outcomes: Vec<_> = wire::PutBlobsResponse::decode(reply.as_slice())?
+            .results
+            .into_iter()
+            .map(|result| match result.outcome {
+                Some(put_result::Outcome::Put(put)) => match put.outcome {
+                    Some(put_response::Outcome::Created(_)) => "created",
+                    Some(put_response::Outcome::AlreadyExists(_)) => "exists",
+                    _ => "unknown",
+                },
+                Some(put_result::Outcome::Error(code)) => {
+                    ErrorCode::try_from(code).map_or("unspecified", |code| code.as_str_name())
+                }
+                None => "absent",
+            })
+            .collect();
+        Ok::<_, Box<dyn std::error::Error>>(outcomes)
+    };
+    assert_eq!(
+        invoke().await?,
+        [
+            "created",
+            "ERROR_CODE_DIGEST_MISMATCH",
+            "created",
+            "ERROR_CODE_MISSING_REFERENCE",
+            "exists"
+        ]
+    );
+    // One durability wait covers every committed member, which stay
+    // committed beside the failed ones.
+    assert_eq!(store.medium().take().get("flush"), Some(&1));
+    blobs.head(Digest::of(b"batch child")).await?;
+    assert_eq!(
+        blobs
+            .head(Digest::of(b"dangling"))
+            .await
+            .map_err(|error| error.code),
+        Err(ErrorCode::NotFound)
+    );
+    // Negative control: the same members put one call each wait once each.
+    for body in [b"single one".as_slice(), b"single two"] {
+        let put = wire_member(body, body, &[]);
+        crate::route::invoke(&blobs, "blobs/put", put.encode_to_vec().into()).await?;
+    }
+    assert_eq!(store.medium().take().get("flush"), Some(&2));
+    // A repeated batch writes and flushes nothing: its conditional creates
+    // only observe the keys already there.
+    assert_eq!(
+        invoke().await?,
+        [
+            "exists",
+            "ERROR_CODE_DIGEST_MISMATCH",
+            "exists",
+            "ERROR_CODE_MISSING_REFERENCE",
+            "exists"
+        ]
+    );
+    let repeated = store.medium().take();
+    for operation in ["replace", "remove", "remove_if", "flush"] {
+        assert_eq!(repeated.get(operation), None, "{repeated:?}");
+    }
+    Ok(())
+}
+
 /// A volatile medium standing for one process over a disk: a write is
 /// visible at once and survives a crash only once flushed. After `budget`
 /// mutating operations the process dies, failing every later one. Unless

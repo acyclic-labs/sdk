@@ -51,6 +51,26 @@ message PutBlobRequest {
   // Typed edges recorded in the envelope. Every target must already exist.
   repeated Digest references = 3;
 }
+// Many puts in one call, split only by the transport's frame size. Each
+// member is the PutBlob it carries, individually atomic and idempotent: a
+// member repeating a stored blob writes nothing. A member that references or
+// repeats an earlier member starts once that member settled; the rest
+// overlap. Results answer members one to one, in request order, and a failed
+// member never undoes another. Every successful result is durable once the
+// response returns: the batch waits for durability once, not once per member.
+message PutBlobsRequest {
+  repeated PutBlobRequest puts = 1;
+}
+message PutResult {
+  oneof outcome {
+    PutResponse put = 1;
+    // This member's failure; it leaves every other member as reported.
+    ErrorCode error = 2;
+  }
+}
+message PutBlobsResponse {
+  repeated PutResult results = 1;
+}
 message Part {
   Digest digest = 1;
   uint64 length = 2;
@@ -155,6 +175,7 @@ message AvailabilityCursor {
 service BlobsService {
   rpc Availability(AvailabilityRequest) returns (stream AvailabilityCursor) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/blobs" }; }
   rpc PutBlob(PutBlobRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
+  rpc PutBlobs(PutBlobsRequest) returns (PutBlobsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
   rpc PutManifest(PutManifestRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
   rpc GetBlob(GetBlobRequest) returns (GetBlobResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/blobs" }; }
   rpc HeadBlob(HeadBlobRequest) returns (BlobInfo) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/blobs" }; }

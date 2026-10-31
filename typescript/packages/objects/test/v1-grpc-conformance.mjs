@@ -17,7 +17,7 @@ import { lifecycle } from "./v1-lifecycle.mjs";
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const file = fileURLToPath(import.meta.url);
 const routes = {
-  PutBlob: "blobs/put", PutManifest: "blobs/put-manifest", GetBlob: "blobs/get", HeadBlob: "blobs/head", DeleteBlob: "blobs/delete",
+  PutBlob: "blobs/put", PutBlobs: "blobs/put-batch", PutManifest: "blobs/put-manifest", GetBlob: "blobs/get", HeadBlob: "blobs/head", DeleteBlob: "blobs/delete",
   ListBlobs: "blobs/list", Retain: "blobs/retain", Release: "blobs/release", Collect: "blobs/collect", Usage: "blobs/usage",
 };
 if (process.argv.includes("--client")) {

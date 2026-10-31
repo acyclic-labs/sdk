@@ -11,7 +11,7 @@ import { MemoryObjectsV1, blobDigest, verified } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json, verify_objects_v1 } from "../generated/wasm/acyclic_objects_wasm.js";
 
-const expectedRoutes = ["blobs/put", "blobs/put-manifest", "blobs/get", "blobs/head", "blobs/delete", "blobs/list", "blobs/retain", "blobs/release", "blobs/collect", "blobs/usage"];
+const expectedRoutes = ["blobs/put", "blobs/put-batch", "blobs/put-manifest", "blobs/get", "blobs/head", "blobs/delete", "blobs/list", "blobs/retain", "blobs/release", "blobs/collect", "blobs/usage"];
 const fail = (code) => error => error.code === code;
 const json = (name, schema, value) => Buffer.from(encode_objects_v1_json(name, toBinary(schema, create(schema, value)), 1 << 20));
 const replying = payload => async () => new Response(payload, { headers: { "content-type": "application/json" } });

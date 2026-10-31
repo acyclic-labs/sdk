@@ -13,6 +13,7 @@ must not forward credentials. No client automatically retries a mutation.
 | Route | Request | Success response |
 | --- | --- | --- |
 | blobs/put | PutBlobRequest | PutResponse |
+| blobs/put-batch | PutBlobsRequest | PutBlobsResponse |
 | blobs/put-manifest | PutManifestRequest | PutResponse |
 | blobs/get | GetBlobRequest | GetBlobResponse |
 | blobs/head | HeadBlobRequest | BlobInfo |
@@ -41,6 +42,27 @@ before exposing it: a put must name exactly the published digest and length,
 a read must cover exactly the selected range of the requested digest, and a
 page must stay ascending after its cursor within its limit. Any other reply
 fails as UNAVAILABLE.
+
+`blobs/put-batch` carries many puts in one call, split only by the
+transport's frame size; it has no member count limit. Each member is the
+PutBlobRequest it carries, with the same guarantees: individually atomic,
+digest-checked, and idempotent, so a member repeating a stored blob writes
+nothing. A member that references or repeats an earlier member starts only
+once that member settled; other members overlap. The response holds one
+result per member, in request order: its PutResponse, or its own ErrorCode.
+A failed member never undoes another, so committed members stay committed.
+Every successful member is durable when the response returns, after one
+durability wait for the whole batch; if that wait fails, every member it
+covered reports the failure and repeating the batch is safe. The response
+revision covers every committed member. A reply answering any member with
+another digest or length, or answering another number of members, fails the
+whole call as UNAVAILABLE. The HTTP client's one wire budget bounds both
+directions: it splits a batch so that each call's request and its largest
+possible acknowledgement fit the budget, both computed from the canonical JSON
+encoding. A member too large to share a call goes alone, exactly as its single
+put would. Calls go in request order, so `n` members cost at most
+`ceil(n / k)` calls, where `k` is the most members whose acknowledgement the
+budget can always hold, and more only when their request bytes need it.
 
 ## Errors
 

@@ -80,11 +80,9 @@ impl<T: Transport> BinaryObjects<T> {
         length: u64,
     ) -> Result<Put, Error> {
         let (reply, revision) = self.call(route, input).await?;
-        let mut put = convert::verified_put(&reply, digest, length).map_err(|_| unavailable())?;
-        if let Put::Created { verified } | Put::AlreadyExists { verified } = &mut put {
-            verified.revision = revision;
-        }
-        Ok(put)
+        Ok(convert::verified_put(&reply, digest, length)
+            .map_err(|_| unavailable())?
+            .committed_at(revision))
     }
 }
 
@@ -113,6 +111,24 @@ impl<T: Transport> Blobs for BinaryObjects<T> {
             length,
         )
         .await
+    }
+
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        let members = requests.len();
+        if members == 0 {
+            return Vec::new();
+        }
+        let (request, expected) = convert::put_blobs(requests);
+        let replied = async {
+            let (reply, revision) = self.call("blobs/put-batch", request).await?;
+            convert::verified_puts(&reply, &expected, revision.as_ref()).map_err(|_| unavailable())
+        };
+        replied
+            .await
+            .unwrap_or_else(|error| vec![Err(error); members])
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {

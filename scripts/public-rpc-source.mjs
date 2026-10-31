@@ -21,6 +21,9 @@ function body(source, declaration) {
 const objectMethods = {
   PutBlob: "put", GetBlob: "get", HeadBlob: "head", DeleteBlob: "delete", ListBlobs: "list",
 };
+// A Blobs method named otherwise than its operation: the batch rides the
+// shared batch entry point every provider overrides.
+const objectRustMethods = { PutBlobs: "put_batch_sealed" };
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
 const rustImpl = (source, header) => source.match(new RegExp(`${header}\\s*\\{([\\s\\S]*?)^\\}`, "m"))?.[1] ?? "";
@@ -60,7 +63,7 @@ export function createSourceInspector(root, read = path => {
     const rustBase = `rust/crates/${family}/src/`;
     const tsBase = `typescript/packages/${family}/src/`;
     const operation = objects ? objectMethods[rpc.name] ?? rpc.localName : rpc.localName;
-    const rustName = snake(operation);
+    const rustName = (objects ? objectRustMethods[rpc.name] : undefined) ?? snake(operation);
     const rustRoot = source(`${rustBase}lib.rs`);
     const grpc = source(`${rustBase}${stream ? "grpc/client.rs" : "grpc.rs"}`);
     const http = source(`${rustBase}http.rs`);

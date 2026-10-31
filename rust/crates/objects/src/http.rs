@@ -25,6 +25,96 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     Ok(value)
 }
 
+/// The canonical JSON acknowledgement of a batch put, bounded per member:
+/// `(single, step)` such that a reply answering `k >= 1` members is at most
+/// `single + (k - 1) * step` bytes, whatever each member's outcome. Computed
+/// once from the encoder itself over every outcome, with the widest length.
+fn put_batch_acknowledgement() -> Option<(usize, usize)> {
+    use wire::{put_response::Outcome as Put, put_result::Outcome};
+    static BOUND: std::sync::OnceLock<Option<(usize, usize)>> = std::sync::OnceLock::new();
+    *BOUND.get_or_init(|| {
+        let verified = wire::Verified {
+            digest: Some(Digest::of(b"").into()),
+            length: u64::MAX,
+        };
+        let mut outcomes = vec![
+            Outcome::Put(wire::PutResponse {
+                outcome: Some(Put::Created(verified.clone())),
+            }),
+            Outcome::Put(wire::PutResponse {
+                outcome: Some(Put::AlreadyExists(verified)),
+            }),
+            Outcome::Put(wire::PutResponse {
+                outcome: Some(Put::Unknown(true)),
+            }),
+        ];
+        outcomes.extend(
+            (0..=i32::from(u8::MAX))
+                .filter(|code| wire::ErrorCode::try_from(*code).is_ok())
+                .map(Outcome::Error),
+        );
+        let reply = |outcome: &Outcome, members: usize| {
+            json::encode(
+                "PutBlobsResponse",
+                &wire::PutBlobsResponse {
+                    results: vec![
+                        wire::PutResult {
+                            outcome: Some(outcome.clone()),
+                        };
+                        members
+                    ],
+                },
+            )
+            .ok()
+            .map(|bytes| bytes.len())
+        };
+        let mut bound = (0, 0);
+        for outcome in &outcomes {
+            let (one, two) = (reply(outcome, 1)?, reply(outcome, 2)?);
+            bound = (bound.0.max(one), bound.1.max(two.checked_sub(one)?));
+        }
+        Some(bound)
+    })
+}
+
+/// The canonical JSON request of a batch put, bounded per member: `(frame,
+/// member, reference)` such that a request carrying members of `len_i` body
+/// bytes and `refs_i` references is at most `frame + Σ request_member(...)`
+/// bytes. Computed once from the encoder itself: a member is measured with a
+/// three-byte body and one reference, and each further body triple or
+/// reference adds its own measured width.
+fn put_batch_request() -> Option<(usize, usize, usize)> {
+    static BOUND: std::sync::OnceLock<Option<(usize, usize, usize)>> = std::sync::OnceLock::new();
+    *BOUND.get_or_init(|| {
+        let member = |references: usize| wire::PutBlobRequest {
+            digest: Some(Digest::of(b"").into()),
+            body: bytes::Bytes::from_static(&[0xff; 3]),
+            references: vec![Digest::of(b"").into(); references],
+        };
+        let request = |members: usize, references: usize| {
+            json::encode(
+                "PutBlobsRequest",
+                &wire::PutBlobsRequest {
+                    puts: vec![member(references); members],
+                },
+            )
+            .ok()
+            .map(|bytes| bytes.len())
+        };
+        let one = request(1, 1)?;
+        let step = request(2, 1)?.checked_sub(one)?;
+        let reference = request(1, 2)?.checked_sub(one)?;
+        Some((one.checked_sub(step)?, step, reference))
+    })
+}
+
+/// One member's share of [`put_batch_request`]'s bound: its measured width,
+/// plus base64 beyond the measured triple, plus references beyond the first.
+fn request_member((_, step, reference): (usize, usize, usize), len: usize, refs: usize) -> usize {
+    step.saturating_add((len.div_ceil(3).saturating_mul(4)).saturating_sub(4))
+        .saturating_add(refs.saturating_sub(1).saturating_mul(reference))
+}
+
 fn unavailable() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
@@ -286,6 +376,52 @@ impl Blobs for HttpObjects {
             convert::verified_put(&reply, digest, body.len() as u64)
         })
         .await
+    }
+
+    async fn put_batch_sealed(
+        &self,
+        requests: Vec<(crate::Sealed, Vec<Digest>)>,
+    ) -> Vec<Result<Put, Error>> {
+        // The client's one wire budget bounds every message it exchanges: a
+        // call carries only as many members as both its request and its
+        // acknowledgement fit, and a member too large to share a call goes
+        // alone, exactly as its single put would. Chunks go in request order,
+        // so a member's references in an earlier chunk have settled before
+        // it is sent.
+        let per_call = put_batch_acknowledgement().map_or(1, |(single, step)| {
+            1 + self.maximum.saturating_sub(single) / step.max(1)
+        });
+        let request = put_batch_request();
+        let mut results = Vec::with_capacity(requests.len());
+        let mut requests = requests.into_iter().peekable();
+        while requests.peek().is_some() {
+            let mut chunk = Vec::new();
+            let mut used = request.map_or(0, |(frame, ..)| frame);
+            while let Some((body, references)) = requests.peek() {
+                let cost = request.map_or(usize::MAX, |bound| {
+                    request_member(bound, body.bytes().len(), references.len())
+                });
+                if !chunk.is_empty()
+                    && (chunk.len() == per_call || used.saturating_add(cost) > self.maximum)
+                {
+                    break;
+                }
+                used = used.saturating_add(cost);
+                chunk.extend(requests.next());
+            }
+            let members = chunk.len();
+            results.extend(
+                crate::operation::admit(self.context.as_ref(), async {
+                    let (request, expected) = convert::put_blobs(chunk);
+                    let reply: wire::PutBlobsResponse =
+                        self.call("blobs/put-batch", &request).await?;
+                    convert::verified_puts(&reply, &expected, None)
+                })
+                .await
+                .unwrap_or_else(|error| vec![Err(error); members]),
+            );
+        }
+        results
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
