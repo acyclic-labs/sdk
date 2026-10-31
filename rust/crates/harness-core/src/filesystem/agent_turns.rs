@@ -912,6 +912,26 @@ async fn selected_notices<P: StreamProvider + ?Sized>(
             }
             None
         }
+        ModelContent::Parts(mut parts)
+            if matches!(parts.first(), Some(ModelContentPart::Notices { .. })) =>
+        {
+            // Move the original attachment vector; do not clone its files or
+            // derive authority from references mentioned in notice JSON.
+            parts.rotate_left(1);
+            let Some(ModelContentPart::Notices { notices }) = parts.pop() else {
+                return Err(Error::Invalid("notice input lost its event block".into()));
+            };
+            for notice in notices {
+                pending
+                    .push(notice)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+            }
+            match parts.len() {
+                0 => None,
+                1 => parts.pop().map(ModelContent::Part),
+                _ => Some(ModelContent::Parts(parts)),
+            }
+        }
         other => Some(other),
     };
     let notices = pending.finish();

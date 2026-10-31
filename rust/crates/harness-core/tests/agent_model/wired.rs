@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, Tasks, TurnLimits},
     filesystem::{TurnAdmission, TurnExecutors},
-    model::{Model, ModelContent, ModelRequest, ModelRole},
+    model::{Model, ModelContent, ModelContentPart, ModelRequest, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
@@ -987,6 +987,30 @@ async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first(
                 .any(|message| message.content.file_refs().any(|file| *file == result)),
             "{arrival:?}: the root's context lacks its child's result"
         );
+        let child = AgentPath::root(&id(base)).child(&id(base + 1))?;
+        let notices: Vec<_> = requests[2]
+            .messages
+            .iter()
+            .flat_map(|message| message.content.parts())
+            .filter_map(|part| match part {
+                ModelContentPart::Notices { notices } => Some(notices),
+                _ => None,
+            })
+            .flatten()
+            .filter(|notice| notice.kind == "child.finished")
+            .collect();
+        assert_eq!(notices.len(), 1, "{arrival:?}: one original completion");
+        assert_eq!(notices[0].source, child.as_str());
+        assert_eq!(
+            notices[0].body,
+            serde_json::to_value(ChildDone {
+                child,
+                outcome: AgentOutcome::Succeeded {
+                    result: Some(Box::new(result.clone())),
+                },
+            })?
+        );
+        assert!(notices[0].wake);
     }
     Ok(())
 }

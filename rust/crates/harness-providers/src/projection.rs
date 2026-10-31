@@ -152,7 +152,8 @@ pub(crate) fn body_named<'a>(
         .as_ref()
         .and_then(|profile| profile.baseline_effort());
     for message in &request.messages {
-        if let ModelContent::Part(ModelContentPart::Notices { notices }) = &message.content {
+        let event = message.content.notice_parts();
+        if let Some((notices, attachments)) = event {
             let notice = acyclic_model_render::notice_block(
                 acyclic_model_render::Provenance {
                     family: adapter,
@@ -165,7 +166,9 @@ pub(crate) fn body_named<'a>(
             )
             .map_err(|error| invalid(error.to_string()))?;
             sequence::push(adapter, &mut messages, Message::Notice(notice))?;
-            continue;
+            if attachments.is_empty() {
+                continue;
+            }
         }
         if let ModelContent::Part(ModelContentPart::Configuration { prefix, effort }) =
             &message.content
@@ -344,7 +347,11 @@ fn project_message<'a>(
     if let ModelContent::Text(text) = &message.content {
         project_visible_text(adapter, role, text, &mut texts, &mut ordered, gemini);
     }
-    for part in message.content.parts() {
+    let parts = message
+        .content
+        .notice_parts()
+        .map_or(message.content.parts(), |(_, files)| files);
+    for part in parts {
         match part {
             ModelContentPart::Notices { .. } => {
                 return Err(invalid("notice batch must occupy one message"));
