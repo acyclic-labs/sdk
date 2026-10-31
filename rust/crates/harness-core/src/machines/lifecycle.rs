@@ -28,7 +28,7 @@ use acyclic_stream::{
 };
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
+use tokio::sync::OnceCell;
 
 /// The persisted format of [`MachineBinding`].
 pub const MACHINE_BINDING_VERSION: u32 = 1;
@@ -473,7 +473,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentMachines<P> {
             agent,
             target: target.to_owned(),
             executors,
-            bound: OnceLock::new(),
+            bound: OnceCell::new(),
         }))
     }
 }
@@ -510,19 +510,20 @@ struct OnFirstUse<P: ?Sized> {
     agent: AgentPath,
     target: String,
     executors: Arc<dyn MachineExecutors>,
-    bound: OnceLock<Arc<dyn ToolExecutor>>,
+    bound: OnceCell<Arc<dyn ToolExecutor>>,
 }
 
 impl<P: crate::store::JournalProvider + ?Sized + 'static> OnFirstUse<P> {
     async fn executor(&self) -> Result<Arc<dyn ToolExecutor>> {
-        if let Some(bound) = self.bound.get() {
-            return Ok(Arc::clone(bound));
-        }
-        let target = self.machines.target(&self.target)?;
-        let sandbox = self.machines.machine(&self.agent, &self.target).await?;
-        let observed = target.host.inspect(&sandbox).await?;
-        let executor = self.executors.bind(target, sandbox, observed)?;
-        Ok(Arc::clone(self.bound.get_or_init(|| executor)))
+        self.bound
+            .get_or_try_init(|| async {
+                let target = self.machines.target(&self.target)?;
+                let sandbox = self.machines.machine(&self.agent, &self.target).await?;
+                let observed = target.host.inspect(&sandbox).await?;
+                self.executors.bind(target, sandbox, observed)
+            })
+            .await
+            .map(Arc::clone)
     }
 }
 
@@ -594,5 +595,7 @@ fn agent_error(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
 
+#[cfg(test)]
+mod first_use_tests;
 #[cfg(test)]
 mod tests;
