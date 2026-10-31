@@ -42,10 +42,8 @@ enum Kind<V, A, const N: usize> {
 }
 
 impl<V, A, const N: usize> Node<V, A, N> {
-    fn body(&self) -> &Body<V, A, N> {
-        self.0
-            .as_deref()
-            .expect("a live node owns its original body")
+    fn body(&self) -> Option<&Body<V, A, N>> {
+        self.0.as_deref()
     }
 }
 
@@ -97,7 +95,7 @@ impl<V, A, const N: usize> PersistentIndex<V, A, N> {
     }
 
     fn body(&self) -> Option<&Body<V, A, N>> {
-        self.root.as_ref().map(Node::body)
+        self.root.as_ref().and_then(Node::body)
     }
 
     fn visible_body<W: IndexReadWork>(

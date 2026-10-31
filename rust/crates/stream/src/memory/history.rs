@@ -195,7 +195,7 @@ std::thread_local! { static HISTORY_VISITS: std::cell::Cell<usize> = const { std
 #[cfg(test)]
 std::thread_local! { static HISTORY_METADATA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
-/// Pages that use the sealed fixed-width index.
+// Pages that use the sealed fixed-width index.
 #[cfg(test)]
 std::thread_local! { static HISTORY_SEEKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
