@@ -1,6 +1,15 @@
 use acyclic_stream::{StreamError, StreamPath, StreamWatermarks, wire, wire_codec};
 use bytes::Bytes;
-use std::{collections::VecDeque, mem::size_of};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    mem::size_of,
+};
+
+struct LatestEntry {
+    value: wire::SessionLatestValue,
+    charge: usize,
+    next: u64,
+}
 
 /// Finite display-cache bounds for one selected stream. Transport credit and
 /// recovery remain owned by Streams; these bounds apply to retained render data.
@@ -36,7 +45,12 @@ impl Default for StreamViewPolicy {
 pub struct StreamView {
     policy: StreamViewPolicy,
     records: VecDeque<(wire::Record, usize)>,
-    latest: VecDeque<(wire::SessionLatestValue, usize)>,
+    latest: BTreeMap<Bytes, LatestEntry>,
+    /// Delivery cursors are strictly increasing, so they also order eviction.
+    /// Keys share their one compact allocation with the corresponding value.
+    latest_order: BTreeMap<u64, Bytes>,
+    #[cfg(test)]
+    latest_probes: std::sync::atomic::AtomicUsize,
     bytes: usize,
     next: u64,
     revision: u64,
@@ -60,7 +74,10 @@ impl StreamView {
         Self {
             policy,
             records: VecDeque::new(),
-            latest: VecDeque::new(),
+            latest: BTreeMap::new(),
+            latest_order: BTreeMap::new(),
+            #[cfg(test)]
+            latest_probes: std::sync::atomic::AtomicUsize::new(0),
             bytes: 0,
             next,
             revision,
@@ -80,10 +97,16 @@ impl StreamView {
 
     /// Last delivered opaque value for a key, under this view's ordinary budget.
     pub fn latest_value(&self, key: &[u8]) -> Option<&wire::SessionLatestValue> {
-        self.latest
-            .iter()
-            .find(|(value, _)| value.key.as_ref() == key)
-            .map(|(value, _)| value)
+        #[cfg(test)]
+        self.latest_probes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.latest.get(key).map(|entry| &entry.value)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_latest_probes(&self) -> usize {
+        self.latest_probes
+            .swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Borrows one displayed record without copying its siblings.
@@ -157,35 +180,48 @@ impl StreamView {
                     {
                         return Err(StreamError::InvalidResponse);
                     }
-                    let charge = size_of::<(wire::SessionLatestValue, usize)>()
-                        .checked_add(value.key.len())
+                    let charge = size_of::<(Bytes, LatestEntry)>()
+                        .checked_add(size_of::<(u64, Bytes)>())
+                        .and_then(|n| n.checked_add(value.key.len()))
                         .and_then(|n| n.checked_add(value.value.len()))
                         .ok_or(StreamError::LimitExceeded)?;
                     if charge > self.policy.bytes {
                         return Err(StreamError::LimitExceeded);
                     }
-                    if let Some(index) =
-                        self.latest.iter().position(|(old, _)| old.key == value.key)
-                    {
-                        if let Some((_, old_charge)) = self.latest.remove(index) {
-                            self.bytes -= old_charge;
-                        }
+                    #[cfg(test)]
+                    self.latest_probes
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if let Some(old) = self.latest.remove(value.key.as_ref()) {
+                        self.latest_order.remove(&old.next);
+                        self.bytes -= old.charge;
                     }
                     while self.latest.len() >= self.policy.records
                         || self.bytes > self.policy.bytes - charge
                     {
-                        if let Some((_, old_charge)) = self.latest.pop_front() {
-                            self.bytes -= old_charge;
-                        }
+                        let (_, key) = self
+                            .latest_order
+                            .pop_first()
+                            .ok_or(StreamError::InvalidResponse)?;
+                        let old = self
+                            .latest
+                            .remove(key.as_ref())
+                            .ok_or(StreamError::InvalidResponse)?;
+                        self.bytes -= old.charge;
                     }
-                    self.latest.push_back((
-                        wire::SessionLatestValue {
-                            key: Bytes::copy_from_slice(&value.key),
-                            value: Bytes::copy_from_slice(&value.value),
-                            attention: value.attention,
+                    let key = Bytes::copy_from_slice(&value.key);
+                    self.latest_order.insert(after.next, key.clone());
+                    self.latest.insert(
+                        key.clone(),
+                        LatestEntry {
+                            value: wire::SessionLatestValue {
+                                key,
+                                value: Bytes::copy_from_slice(&value.value),
+                                attention: value.attention,
+                            },
+                            charge,
+                            next: after.next,
                         },
-                        charge,
-                    ));
+                    );
                     self.bytes += charge;
                     self.next = after.next;
                     self.revision = revision;
