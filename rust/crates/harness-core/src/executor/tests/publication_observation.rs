@@ -111,12 +111,7 @@ async fn original_publications_match_receipts_and_preserve_observation_failures(
             ]));
             let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
             let executor = uncompacted_executor(
-                Model::new(
-                    "fixture".into(),
-                    "publications".into(),
-                    "1".into(),
-                    Value::Null,
-                )?,
+                Model::new("fixture".into(), "publications".into(), "1".into())?,
                 model.clone(),
                 ContextPipeline::default(),
                 echo_tools(tool.clone(), json!(true), json!(!rejected), json!(true))?,
