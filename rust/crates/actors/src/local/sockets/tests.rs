@@ -441,12 +441,12 @@ impl HeldCloseExecutor {
     }
 }
 
-/// The actual open producer creates its invocation, socket stream and ledger.
-/// Only the guest acceptance is supplied here; close custody starts afterwards.
-async fn admitted_close_fixture(
+/// Prepare an original actor and socket entry before its Open is submitted.
+async fn close_fixture(
     sockets: &Sockets<MemoryStream>,
     label: &str,
-) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>), Box<dyn std::error::Error>> {
+) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>, SocketOpen), Box<dyn std::error::Error>>
+{
     let shared = &sockets.shared;
     let actor = ActorReference::new(b"account", b"sockets", label.as_bytes())?;
     let inbox = StreamPath::new(format!("close/{label}"))?;
@@ -490,10 +490,7 @@ async fn admitted_close_fixture(
         Entry {
             actor: actor.clone(),
             inbox: None,
-            phase: Phase::Opening {
-                committed: false,
-                pending: None,
-            },
+            phase: Phase::Unborn,
             tags: Vec::new(),
             attachment: None,
             answered_at: None,
@@ -504,6 +501,7 @@ async fn admitted_close_fixture(
             draining: false,
             peer_closed: false,
             completion: None,
+            completed: None,
             _abandon: abandon,
         },
     );
@@ -516,6 +514,17 @@ async fn admitted_close_fixture(
         resume_after: 0,
         reconnected: false,
     };
+    Ok((connection, inbox, last, open))
+}
+
+/// The actual Open creates its invocation, socket stream and ledger. Only the
+/// guest acceptance is supplied here; close custody starts afterwards.
+async fn admitted_close_fixture(
+    sockets: &Sockets<MemoryStream>,
+    label: &str,
+) -> Result<(String, StreamPath, oneshot::Receiver<Bytes>), Box<dyn std::error::Error>> {
+    let (connection, inbox, last, open) = close_fixture(sockets, label).await?;
+    let shared = &sockets.shared;
     assert!(matches!(
         shared.commit_open(&connection, &open).await?,
         Opened::Committed(_)
@@ -547,12 +556,12 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         },
     )?;
     let first = Close::new(1000, "first", SocketCloseInitiator::Peer);
-    shared.peer_close(&connection, first);
+    shared.peer_close(&connection, first)?;
     for _ in 0..100_000 {
         shared.peer_close(
             &connection,
             Close::new(1001, "later", SocketCloseInitiator::Peer),
-        );
+        )?;
         shared.message(
             &connection,
             SocketPayload::Text {
@@ -665,6 +674,171 @@ async fn close_custody_and_peer_terminal_order_use_original_publications() -> Te
         "a refused publication cannot report a successful Close"
     );
     assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
+    assert!(sockets.is_empty());
+
+    for lose_producer in [false, true] {
+        let label = if lose_producer {
+            "lost-opening"
+        } else {
+            "held-opening"
+        };
+        let (connection, inbox, last, open) = close_fixture(&sockets, label).await?;
+        // Hold the original ledger cut before the actual Open can publish.
+        let ledger = shared.ledger.write().await;
+        let (verdict, _reply) = oneshot::channel();
+        let (_keep_abandon, abandoned) = oneshot::channel();
+        let owner = CloseOwner {
+            shared: Arc::clone(shared),
+            connection: connection.clone(),
+            completed: None,
+            retire: true,
+        };
+        executor.spawn(Box::pin(Arc::clone(shared).opening(
+            connection.clone(),
+            open,
+            verdict,
+            abandoned,
+            owner,
+        )));
+        let mut opening = executor.take()?;
+        assert!(futures::poll!(&mut opening).is_pending());
+        let mut first = Box::pin(sockets.drain());
+        assert!(
+            futures::poll!(&mut first).is_pending(),
+            "Open still owns the Close obligation"
+        );
+        drop(first);
+        let mut later = Box::pin(sockets.drain());
+        assert!(futures::poll!(&mut later).is_pending());
+        if lose_producer {
+            drop(opening);
+            assert!(
+                matches!(later.await, Err(error) if matches!(error.as_ref(), Error::Stream(StreamError::Unavailable)))
+            );
+            assert!(last.await.is_err());
+            assert!(matches!(
+                shared
+                    .store
+                    .provider()
+                    .tail(shared.layout.socket(&connection)?)
+                    .await,
+                Err(StreamError::NotFound)
+            ));
+            drop(ledger);
+        } else {
+            drop(ledger);
+            opening.await;
+            assert!(
+                futures::poll!(&mut later).is_pending(),
+                "Open alone does not complete shutdown"
+            );
+            assert_eq!(executor.tasks.lock().unwrap().len(), 1);
+            executor.take()?.await;
+            assert!(later.await.is_ok());
+            assert!(matches!(
+                SocketFrame::decode(&last.await?)?,
+                SocketFrame::Close { code: 1001, .. }
+            ));
+            assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
+            assert_eq!(
+                shared
+                    .store
+                    .provider()
+                    .tail(shared.layout.socket(&connection)?)
+                    .await?,
+                2
+            );
+        }
+        assert!(sockets.is_empty());
+    }
+
+    let (connection, inbox, last) = admitted_close_fixture(&sockets, "record-bound").await?;
+    let inbound = Inbound {
+        shared: Arc::clone(shared),
+        connection: connection.clone(),
+    };
+    let maximum = acyclic_stream::MAX_RECORD_BYTES;
+    let frame = SocketFrame::Message(SocketPayload::Binary {
+        binary: vec![0; maximum - 16].into(),
+    })
+    .encode();
+    assert!(frame.len() <= maximum);
+    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    let reason = "x".repeat(maximum - 32);
+    let frame = SocketFrame::Close {
+        code: 1000,
+        reason: reason.clone(),
+        initiator: SocketCloseInitiator::Peer,
+    }
+    .encode();
+    assert!(frame.len() <= maximum);
+    assert_eq!(inbound.receive(frame), Err(StreamError::InvalidArgument));
+    let actor = shared
+        .lock()
+        .sockets
+        .get(&connection)
+        .ok_or("lost original actor")?
+        .actor
+        .clone();
+    assert!(
+        sockets
+            .web_socket_close(&actor, &WebSocketId(connection.clone()), 1000, &reason)
+            .is_err()
+    );
+    {
+        let table = shared.lock();
+        let entry = table
+            .sockets
+            .get(&connection)
+            .ok_or("lost open after refused frame")?;
+        assert!(entry.inbound.is_empty());
+        assert!(!entry.peer_closed);
+        assert!(matches!(entry.phase, Phase::Open));
+    }
+    assert!(executor.tasks.lock().unwrap().is_empty());
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 1);
+    // Derive the boundary from the actual marked record, including its exact
+    // original connection identity and headers. The protobuf width is unchanged.
+    let seed_len = maximum - 128;
+    let seed = input_record(
+        &connection,
+        SocketInput::Message(SocketPayload::Binary {
+            binary: vec![0; seed_len].into(),
+        }),
+    )?;
+    let overhead = seed.payload_bytes() - seed_len;
+    drop(seed);
+    shared.message(
+        &connection,
+        SocketPayload::Binary {
+            binary: vec![0; maximum - overhead].into(),
+        },
+    )?;
+    {
+        let table = shared.lock();
+        let entry = table
+            .sockets
+            .get(&connection)
+            .ok_or("lost admitted boundary frame")?;
+        assert!(
+            matches!(entry.inbound.front(), Some(PeerEvent::Message(record)) if record.payload_bytes() == maximum)
+        );
+    }
+    executor.take()?.await;
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 2);
+    inbound.receive(
+        SocketFrame::Close {
+            code: 1000,
+            reason: "fits".into(),
+            initiator: SocketCloseInitiator::Peer,
+        }
+        .encode(),
+    )?;
+    executor.take()?.await;
+    assert!(
+        matches!(SocketFrame::decode(&last.await?)?, SocketFrame::Close { code: 1000, reason, .. } if reason == "fits")
+    );
+    assert_eq!(records(&shared.store, &inbox).await?.len(), 3);
     assert!(sockets.is_empty());
     Ok(())
 }

@@ -349,18 +349,18 @@ pub(crate) fn open_invocation(
 /// One marked inbox record for a socket event after Open.
 pub(crate) fn input_record(
     connection: &str,
-    input: &SocketInput,
+    input: SocketInput,
 ) -> Result<AppendRecord, GuestError> {
     let kind = match input {
-        SocketInput::Message(SocketPayload::Text { text }) => InputKind::Text(text.clone()),
-        SocketInput::Message(SocketPayload::Binary { binary }) => InputKind::Binary(binary.clone()),
+        SocketInput::Message(SocketPayload::Text { text }) => InputKind::Text(text),
+        SocketInput::Message(SocketPayload::Binary { binary }) => InputKind::Binary(binary),
         SocketInput::Close {
             code,
             reason,
             initiator,
-        } => InputKind::Close(close_wire(*code, reason, initiator)),
+        } => InputKind::Close(close_wire(code, &reason, &initiator)),
     };
-    Ok(AppendRecord {
+    let record = AppendRecord {
         value: InputWire {
             connection: connection.into(),
             kind: Some(kind),
@@ -375,7 +375,11 @@ pub(crate) fn input_record(
             }],
         )
         .map_err(|_| invalid())?,
-    })
+    };
+    if record.payload_bytes() > acyclic_stream::MAX_RECORD_BYTES {
+        return Err(invalid());
+    }
+    Ok(record)
 }
 
 /// The kind of one marked inbox value, for tests that audit an inbox.
