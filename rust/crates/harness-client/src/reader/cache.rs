@@ -1559,7 +1559,10 @@ mod tests {
                 &StreamPath::new(format!("unrelated/{index}")).unwrap(),
                 Some(Provenance {
                     source: unrelated.clone(),
-                    inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([4; 32]) },
+                    inherited: ForkCut {
+                        forked_at: 1,
+                        commit_id: CommitId::from_bytes([4; 32]),
+                    },
                 }),
             );
         }
@@ -1590,7 +1593,10 @@ mod tests {
             &child,
             Some(Provenance {
                 source: source.clone(),
-                inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([5; 32]) },
+                inherited: ForkCut {
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([5; 32]),
+                },
             }),
         );
         evicted.observe_origin(&source, None);
@@ -1611,7 +1617,10 @@ mod tests {
                 path,
                 Some(Provenance {
                     source: source.clone(),
-                    inherited: ForkCut { forked_at: 1, commit_id: CommitId::from_bytes([6; 32]) },
+                    inherited: ForkCut {
+                        forked_at: 1,
+                        commit_id: CommitId::from_bytes([6; 32]),
+                    },
                 }),
             );
         }

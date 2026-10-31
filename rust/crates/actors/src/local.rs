@@ -192,7 +192,8 @@ impl Snapshot {
     }
 
     fn from_head(path: StreamPath, head: Option<PathHead>) -> Result<Self, Error> {
-        let (tail, last, provenance) = head.map_or((0, None, None), |head| (head.tail, head.last, head.origin));
+        let (tail, last, provenance) =
+            head.map_or((0, None, None), |head| (head.tail, head.last, head.origin));
         if tail == 0 {
             return Ok(Self {
                 path,
