@@ -9,6 +9,8 @@ use crate::mcp::stdio::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+/// Every coordination tool, by the name its MCP server advertises.
+pub const TOOLS: [&str; 6] = ["spawn", "send", "wait", "archive", "cancel", "resume"];
 /// Waits parked at once, bounded like the host's request concurrency.
 const WAITS: usize = 16;
 /// Bound of one request line.
@@ -43,7 +45,7 @@ pub fn serve(host: &str) -> Result<()> {
 
 impl ToolProvider for Coordination {
     fn tools(&self) -> Value {
-        json!({"tools":(["spawn","send","wait","archive","cancel","resume"].map(|name| {
+        json!({"tools":(TOOLS.map(|name| {
             let prompt=matches!(name,"spawn"|"send"|"resume");
             json!({"name":name,"description":format!("{name} a separate native session in an admitted harness view. Native tools and policy are preserved. Native subagents are unmanaged."),"inputSchema":{"type":"object","properties":{"reference":{"type":"string"},"prompt":{"type":"string"}},"required":if prompt {vec!["reference","prompt"]} else {vec!["reference"]},"additionalProperties":false}})
         }))})

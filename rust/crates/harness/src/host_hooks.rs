@@ -30,8 +30,13 @@ pub fn check_codex_version(output: &str) -> crate::Result<()> {
     Ok(())
 }
 
-/// Claude lifecycle boundaries used for workspace coordination.
-pub const CLAUDE_EVENTS: [&str; 3] = ["SessionStart", "Stop", "SessionEnd"];
+/// Claude lifecycle boundaries used for workspace coordination, and the
+/// permission prompt the harness approval chain answers for its own tools.
+pub const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "Stop", "SessionEnd", "PermissionRequest"];
+
+/// The only tools whose Claude permission prompts reach the harness: those
+/// of the plugin's coordination server. Every other prompt stays Claude's.
+pub const CLAUDE_PERMISSION_MATCHER: &str = "mcp__plugin_acyclic_acyclic-sessions__.*";
 
 /// Command hooks for an installed executable, quoted as one shell argument.
 ///
@@ -49,6 +54,9 @@ fn command_hooks(executable: &str) -> BTreeMap<&'static str, Vec<Value>> {
         .into_iter()
         .map(|event| {
             let mut group = Map::new();
+            if event == "PermissionRequest" {
+                group.insert("matcher".into(), json!(CLAUDE_PERMISSION_MATCHER));
+            }
             group.insert(
                 "hooks".into(),
                 json!([{

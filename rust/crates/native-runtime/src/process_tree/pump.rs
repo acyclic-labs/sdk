@@ -1,4 +1,4 @@
-//! One bounded capture, advanced in turns that never sleep.
+//! One capture, advanced in turns that never sleep.
 //!
 //! A turn moves every byte that is ready, observes exit and checks intent.
 //! When nothing more can move, it returns, and the caller arms one wait on
@@ -17,18 +17,31 @@ pub struct CaptureSchedule {
     /// Also run the check this often while nothing else happens. `None`
     /// checks only when output, input, exit or the deadline wakes capture.
     pub check_every: Option<Duration>,
-    /// Original deadline, fixed before submission. `None` denotes overflow
-    /// and is refused before capture; it never starts a fresh worker budget.
+    /// Original deadline, fixed before submission. `None` is unbounded.
     pub deadline: Option<Instant>,
+    deadline_overflow: bool,
 }
 
 impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
+        let deadline = capture_now().checked_add(timeout);
         Self {
             check_every: None,
-            deadline: capture_now().checked_add(timeout),
+            deadline,
+            deadline_overflow: deadline.is_none(),
+        }
+    }
+
+    /// Waits only on original pipe, process-exit and owner-control events.
+    /// No deadline or periodic readiness check is registered.
+    #[must_use]
+    pub const fn unbounded() -> Self {
+        Self {
+            check_every: None,
+            deadline: None,
+            deadline_overflow: false,
         }
     }
 
@@ -38,6 +51,7 @@ impl CaptureSchedule {
         Self {
             check_every: None,
             deadline: Some(deadline),
+            deadline_overflow: false,
         }
     }
 
@@ -138,7 +152,7 @@ impl<H: CaptureHandler> CaptureOutcome<H> {
 }
 
 pub(super) struct Pump<'a> {
-    deadline: Instant,
+    deadline: Option<Instant>,
     check_every: Option<Duration>,
     next_check: Instant,
     remaining: usize,
@@ -197,12 +211,13 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = schedule.deadline.ok_or_else(|| {
-            ProcessCaptureFailure::before_capture(io::Error::new(
+        if schedule.deadline_overflow {
+            return Err(ProcessCaptureFailure::before_capture(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "process deadline overflow",
-            ))
-        })?;
+            )));
+        }
+        let deadline = schedule.deadline;
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -282,12 +297,14 @@ impl<'a> Pump<'a> {
                 }
             })
             .collect::<Vec<_>>();
-        let deadline = Instant::now() + self.deadline.saturating_duration_since(capture_now());
-        events::arm(&sources, Some(deadline))
+        let deadline = self
+            .deadline
+            .map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
+        events::arm(&sources, deadline)
     }
 
     pub(super) fn check_deadline(&self) -> io::Result<()> {
-        if capture_now() >= self.deadline {
+        if self.deadline.is_some_and(|at| capture_now() >= at) {
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 "process output deadline exceeded; effects may have occurred",
@@ -371,6 +388,20 @@ impl<'a> Pump<'a> {
                 observe_output(ProcessOutput::Stderr(chunk), observe)?;
             }
             progressed |= drained?;
+            // Exchange replies can only arrive on stdout. EOF withdraws that
+            // producer even when the root remains alive with stderr open.
+            if self.stdout.is_none()
+                && let Some(input) = self.input.as_ref().filter(|input| !input.complete)
+            {
+                return Err(io::Error::new(
+                    if input.undelivered() {
+                        io::ErrorKind::BrokenPipe
+                    } else {
+                        io::ErrorKind::UnexpectedEof
+                    },
+                    "process stdout ended before exchange completion; effects may have occurred",
+                ));
+            }
             if self.status.is_none()
                 && let Some(exit) = tree.try_wait(meter)?
             {
@@ -400,13 +431,15 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = match self.check_every {
-            Some(_) => self.next_check.min(self.deadline),
-            None => self.deadline,
+        let wake_at = match (self.check_every, self.deadline) {
+            (Some(_), Some(at)) => Some(self.next_check.min(at)),
+            (Some(_), None) => Some(self.next_check),
+            (None, at) => at,
         };
         // The capture clock is frozen in some tests; the hub runs on wall
         // time, so arm the same remaining interval from now.
-        let wake_at = Instant::now() + wake_at.saturating_duration_since(capture_now());
+        let wake_at =
+            wake_at.map(|at| Instant::now() + at.saturating_duration_since(capture_now()));
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         {
@@ -445,7 +478,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
         #[cfg(windows)]
         {
@@ -482,7 +515,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
     }
 

@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 
 mod tools;
-pub use tools::serve;
+pub use tools::{TOOLS, serve};
 
 /// Byte bound of one native event line and of a retained answer's source.
 const EVENT_LIMIT: usize = 65_536;

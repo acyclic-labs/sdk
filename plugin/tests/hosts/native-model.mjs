@@ -11,15 +11,15 @@ import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost} from './native-host.mjs';
 
 // Native policy arguments the root runs under and every managed child inherits
-// (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection. Only
-// the coordination tools the case calls are approved, by each host's native
-// per-tool approval; sandbox and approval policy stay unchanged.
+// (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
+// Sandbox and approval policy stay unchanged. Codex asks the plugin's
+// permission hook, which the owner's approval policy answers; Claude Code
+// approves the same coordination tools by its native allow list.
 async function launch(host,{url,root,packageRoot,workspace,env,tools,prompt}) {
  if(host==='codex') {
   const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
-   ...tools.flatMap(name=>['--config',`plugins."acyclic@acyclic".mcp_servers."acyclic-sessions".tools.${name}.approval_mode="approve"`]),
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
   return {policy,args:[...policy,'exec','--json',prompt]};
  }
@@ -76,8 +76,13 @@ export async function installedHost({host,processes,fixture,capture,tools,prompt
    assert.ok((await readFile(extension,'utf8')).includes(JSON.stringify(toNamespacedPath(await realpath(executable)))),'native extension does not bind admitted shipping binary');
   }
   step='start shipping workspace owner';
+  // The harness approval chain the native permission hook asks: the case's
+  // coordination tools only; exhausting it refuses every other one.
+  const approvals=join(root,'approval-policy.json');
+  await writeFile(approvals,JSON.stringify({approvers:[{kind:'rules',principal:'acceptance',
+   rules:tools.map(tool=>({tool,verdict:'allow'})),fallback:'ask'}]}));
   await startWorkspaceOwner({scope:processes,binary:fixture.binary,workspace,state:join(root,'state'),env,root,
-   capture:record=>capture({role:'owner',...record})});
+   args:['--approval-policy',approvals],capture:record=>capture({role:'owner',...record})});
   step='initialize workspace Git';
   const initialized=await run(env.E2E_GIT_BINARY??'git',['init','--quiet']);
   assert.equal(initialized.code,0,initialized.stderr);

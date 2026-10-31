@@ -133,11 +133,22 @@ async fn run(
             .host_state_directory
             .as_ref()
             .ok_or("host state directory absent")?;
+        // Native hosts keep their own approvals; the configured policy
+        // answers only their permission prompts for coordination tools.
+        let policy = match &args.approval_policy {
+            Some(path) => Some(serde_json::from_slice::<
+                acyclic_harness::approvals::ApprovalPolicy,
+            >(&std::fs::read(path)?)?),
+            None => None,
+        };
         let local = Arc::new(
             phase(|| {
-                LocalHarness::open(
-                    LocalHarnessConfig::native_host(&args.workspace).state_directory(directory),
-                )
+                let config =
+                    LocalHarnessConfig::native_host(&args.workspace).state_directory(directory);
+                LocalHarness::open(match policy {
+                    Some(policy) => config.approval_policy(policy),
+                    None => config,
+                })
             })
             .await?,
         );

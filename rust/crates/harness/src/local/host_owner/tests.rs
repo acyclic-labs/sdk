@@ -633,3 +633,94 @@ async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result
     assert_eq!(replayed["status"]["turn"], 1);
     Ok(())
 }
+
+/// A host's permission prompt reaches the owner's approval chain only for a
+/// coordination tool: rules decide in order and exhaustion refuses, while a
+/// human stage and every host tool leave the prompt to the host.
+#[tokio::test]
+async fn permission_prompts_reach_the_approval_chain_only_for_coordination_tools() -> Result<()> {
+    use crate::approvals::{ApprovalPolicy, ApprovalRule, Approver, RuleVerdict};
+    let rules = |tool: &str, verdict| Approver::Rules {
+        principal: format!("rules-{tool}"),
+        rules: vec![ApprovalRule {
+            tool: Some(tool.into()),
+            arguments: None,
+            selectors: Vec::new(),
+            target: None,
+            verdict,
+        }],
+        fallback: RuleVerdict::Ask,
+    };
+    let prompt = |owner: &HostWorkspaceOwner, host: &str, tool: &str| {
+        let answer = owner.permission(
+            host,
+            &json!({"tool_name": tool, "tool_input": {"reference": "child"}}),
+        );
+        answer
+            .pointer("/hookSpecificOutput/decision/behavior")
+            .cloned()
+    };
+    let owner = |policy: ApprovalPolicy| async move {
+        let (checkout, state) = (
+            tempfile::tempdir().map_err(storage)?,
+            tempfile::tempdir().map_err(storage)?,
+        );
+        let local = LocalHarness::open(
+            LocalHarnessConfig::native_host(checkout.path())
+                .state_directory(state.path().join("owner"))
+                .approval_policy(policy),
+        )
+        .await?;
+        Ok::<_, Error>((HostWorkspaceOwner::new(Arc::new(local))?, (checkout, state)))
+    };
+    let (ruled, _checkout) = owner(ApprovalPolicy {
+        approvers: vec![
+            rules("spawn", RuleVerdict::Allow),
+            rules("wait", RuleVerdict::Deny),
+        ],
+    })
+    .await?;
+    assert_eq!(
+        prompt(&ruled, "codex", "mcp__acyclic-sessions__spawn"),
+        Some(json!("allow"))
+    );
+    assert_eq!(
+        prompt(&ruled, "codex", "mcp__acyclic_sessions__spawn"),
+        Some(json!("allow"))
+    );
+    assert_eq!(
+        prompt(
+            &ruled,
+            "claude-code",
+            "mcp__plugin_acyclic_acyclic-sessions__spawn"
+        ),
+        Some(json!("allow"))
+    );
+    // The second stage refuses; a tool no stage names exhausts the chain.
+    assert_eq!(
+        prompt(&ruled, "codex", "mcp__acyclic-sessions__wait"),
+        Some(json!("deny"))
+    );
+    assert_eq!(
+        prompt(&ruled, "codex", "mcp__acyclic-sessions__archive"),
+        Some(json!("deny"))
+    );
+    // Negative controls: host tools, foreign servers and other hosts' names.
+    for (host, tool) in [
+        ("codex", "shell"),
+        ("codex", "mcp__other__spawn"),
+        ("codex", "mcp__acyclic-sessions__unknown"),
+        ("codex", "mcp__plugin_acyclic_acyclic-sessions__spawn"),
+        ("claude-code", "mcp__acyclic-sessions__spawn"),
+        ("pi", "mcp__acyclic-sessions__spawn"),
+    ] {
+        assert_eq!(prompt(&ruled, host, tool), None, "{host} {tool}");
+    }
+    // A human stage before any decision leaves the prompt to the host.
+    let (human, _checkout) = owner(ApprovalPolicy::default()).await?;
+    assert_eq!(
+        prompt(&human, "codex", "mcp__acyclic-sessions__spawn"),
+        None
+    );
+    Ok(())
+}

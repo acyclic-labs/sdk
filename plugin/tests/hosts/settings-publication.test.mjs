@@ -74,7 +74,7 @@ for (const host of ["claude-code", "pi"]) for (const selection of ["settings arg
         const document = JSON.parse(installed);
         assert.deepEqual(document.permissions, foreign.permissions);
         assert.equal(document.fixtureMarker, foreign.fixtureMarker);
-        assert.deepEqual(Object.keys(document.hooks).sort(), ["SessionEnd", "SessionStart", "Stop"]);
+        assert.deepEqual(Object.keys(document.hooks).sort(), ["PermissionRequest", "SessionEnd", "SessionStart", "Stop"]);
         assert.deepEqual(document.hooks.Stop[0], foreign.hooks.Stop[0]);
       }
       await invoke("install");

@@ -50,7 +50,9 @@ pub struct ProcessInput {
 /// Input supplied to the bounded process-capture loop.
 #[derive(Clone, Copy)]
 pub enum CaptureInput<'a> {
-    /// A streaming exchange with bounded queued input.
+    /// A streaming exchange with bounded queued input. Its stdout producer
+    /// must deliver the observer's `complete` acknowledgement; EOF first is
+    /// a typed failure and reaps the original tree, even if it remains alive.
     Exchange {
         /// Bytes written before observing output.
         initial: &'a [u8],

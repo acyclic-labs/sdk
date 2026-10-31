@@ -42,6 +42,19 @@
           }
         ]
       }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "mcp__plugin_acyclic_acyclic-sessions__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/../bin/acyclic\" __hook claude-code PermissionRequest",
+            "timeout": 120,
+            "statusMessage": "Acyclic is asking the harness approval policy"
+          }
+        ]
+      }
     ]
   },
   "mcpServers": {
