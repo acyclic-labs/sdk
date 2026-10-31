@@ -119,7 +119,6 @@ impl Registry {
             .get(name)
             .map(|entry| entry.capacity)
             .ok_or_else(|| invalid("register the selected model context capacity"))?;
-        let model = Model::new(provider.into(), name.into(), "provider-v1".into())?;
         let credential = self.selected_credential(provider, &config)?;
         let key = match &credential {
             Credential::Key(key) => Some(key.clone()),
@@ -158,6 +157,29 @@ impl Registry {
         if !authenticated && config.authentication != Authentication::Optional {
             return Err(invalid("model provider API key is unavailable"));
         }
+        // Bind the effective selected route, not the whole catalog. An edit to
+        // another model cannot rotate this identity, while an endpoint, header,
+        // counter, authority or selected-capacity change cannot reuse it.
+        let mut revision = blake3::Hasher::new();
+        revision.update(b"acyclic.provider-selection.v1\0");
+        serde_json::to_writer(
+            &mut revision,
+            &(
+                config.adapter,
+                &config.authentication,
+                &config.base_url,
+                &config.headers,
+                &config.token_counter,
+                config.models.get(name),
+                credential_scope,
+            ),
+        )
+        .map_err(|_| invalid("cannot encode selected provider identity"))?;
+        let model = Model::new(
+            provider.into(),
+            name.into(),
+            format!("provider-v1:{}", revision.finalize().to_hex()),
+        )?;
         let transport = crate::deadline::Bounded::new(transport, config.timeouts);
         Ok(ResolvedModel {
             files: self.files.clone(),
