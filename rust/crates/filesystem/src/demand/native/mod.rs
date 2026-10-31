@@ -30,6 +30,9 @@ include!("metadata.rs");
 
 mod queue;
 
+/// Credential custody over this provider's original source observation.
+pub mod credential;
+
 #[cfg(unix)]
 type DemandPath = PathBuf;
 #[cfg(windows)]
