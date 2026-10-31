@@ -170,8 +170,24 @@ fn retained_cause(terminal: &Terminal) -> Option<&InjectedStorageFault> {
 /// Select one actual physical site, inject one fault, and reopen the real log.
 /// No returned outcome is supplied by a replacement store or replay model.
 pub fn check(bytes: &[u8]) -> Result<Option<Report>, Box<dyn Error>> {
+    let mut report = None;
+    check_sites(bytes, false, |value| report = Some(value))?;
+    Ok(report)
+}
+
+/// Exercise every site in one original successful trace without retaining a
+/// history of reports or repeating the successful baseline operation.
+pub fn check_each_site(bytes: &[u8], observe: impl FnMut(Report)) -> Result<bool, Box<dyn Error>> {
+    check_sites(bytes, true, observe)
+}
+
+fn check_sites(
+    bytes: &[u8],
+    all_sites: bool,
+    mut observe: impl FnMut(Report),
+) -> Result<bool, Box<dyn Error>> {
     let Some(case) = Case::parse(bytes) else {
-        return Ok(None);
+        return Ok(false);
     };
     acyclic_native_runtime::initialize_native_io_services()?;
     let runtime = tokio::runtime::Builder::new_current_thread().build()?;
@@ -182,7 +198,7 @@ pub fn check(bytes: &[u8]) -> Result<Option<Report>, Box<dyn Error>> {
         );
         let baseline_root = tempfile::tempdir()?;
         let baseline_medium = case.prepare(baseline_root.path(), &key).await?;
-        let baseline = execute(&case, &baseline_medium, &key, None).await?;
+        let mut baseline = execute(&case, &baseline_medium, &key, None).await?;
         assert!(
             matches!(
                 baseline.terminal,
@@ -200,87 +216,101 @@ pub fn check(bytes: &[u8]) -> Result<Option<Report>, Box<dyn Error>> {
         drop(baseline_medium);
 
         let cut = (case.ordinal % baseline.writes.len() as u64) as usize;
-        let root = tempfile::tempdir()?;
-        let medium = case.prepare(root.path(), &key).await?;
-        let actual = execute(&case, &medium, &key, Some(cut)).await?;
-        let fault = actual
-            .fault
-            .expect("selected original physical site was reached");
-        assert_eq!(fault.ordinal, cut);
-        assert_eq!(fault.fault, case.fault);
-        assert_eq!(fault.operation, baseline.writes[cut].operation);
-        // The controller latches the first fault: later physical calls cannot
-        // escape it. Count actual touched calls rather than a wall-time budget.
-        assert_eq!(actual.writes.len(), cut + 1);
-        for (observed, original) in actual.writes.iter().zip(&baseline.writes) {
-            assert_eq!(observed.operation, original.operation);
-            assert_eq!(observed.requested, original.requested);
-        }
-        if matches!(
-            actual.terminal,
-            Terminal::Mutation(Err(_)) | Terminal::Flush(Err(_))
-        ) {
-            assert_eq!(
-                retained_cause(&actual.terminal),
-                Some(&fault),
-                "the original caller retains the first physical cause: {:?}",
-                actual.terminal
-            );
-        }
-        let visible = medium.read(&key, None).await;
-        if let Ok(value) = &visible {
-            assert!(
-                *value == case.before() || *value == case.after(),
-                "torn bytes became visible: {value:?}"
-            );
-        }
-        drop(medium);
-        let reopened = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
-        let recovered = reopened.read(&key, None).await?;
-        assert!(
-            recovered == case.before() || recovered == case.after(),
-            "recovery exposed a torn mutation: {recovered:?}"
-        );
-        match &actual.terminal {
-            Terminal::Mutation(Ok(true)) | Terminal::Flush(_) => {
-                assert_eq!(
-                    recovered,
-                    case.after(),
-                    "a successful visible mutation was lost"
-                );
+        let cuts = if all_sites {
+            0..baseline.writes.len()
+        } else {
+            cut..cut + 1
+        };
+        let last_cut = cuts.end - 1;
+        for cut in cuts {
+            let root = tempfile::tempdir()?;
+            let medium = case.prepare(root.path(), &key).await?;
+            let actual = execute(&case, &medium, &key, Some(cut)).await?;
+            let fault = actual
+                .fault
+                .expect("selected original physical site was reached");
+            assert_eq!(fault.ordinal, cut);
+            assert_eq!(fault.fault, case.fault);
+            assert_eq!(fault.operation, baseline.writes[cut].operation);
+            // The controller latches the first fault: later physical calls cannot
+            // escape it. Count actual touched calls rather than a wall-time budget.
+            assert_eq!(actual.writes.len(), cut + 1);
+            for (observed, original) in actual.writes.iter().zip(&baseline.writes) {
+                assert_eq!(observed.operation, original.operation);
+                assert_eq!(observed.requested, original.requested);
             }
-            Terminal::Mutation(Ok(false) | Err(MediumError::Failed(_))) => {
+            if matches!(
+                actual.terminal,
+                Terminal::Mutation(Err(_)) | Terminal::Flush(Err(_))
+            ) {
                 assert_eq!(
-                    recovered,
-                    case.before(),
-                    "no-effect result hid an original visible effect: {:?}; fault {fault:?}",
+                    retained_cause(&actual.terminal),
+                    Some(&fault),
+                    "the original caller retains the first physical cause: {:?}",
                     actual.terminal
                 );
-                if let Ok(value) = &visible {
+            }
+            let visible = medium.read(&key, None).await;
+            if let Ok(value) = &visible {
+                assert!(
+                    *value == case.before() || *value == case.after(),
+                    "torn bytes became visible: {value:?}"
+                );
+            }
+            drop(medium);
+            let reopened =
+                LocalMedium::open(root.path(), LocalObjectsLimits::default(), None).await?;
+            let recovered = reopened.read(&key, None).await?;
+            assert!(
+                recovered == case.before() || recovered == case.after(),
+                "recovery exposed a torn mutation: {recovered:?}"
+            );
+            match &actual.terminal {
+                Terminal::Mutation(Ok(true)) | Terminal::Flush(_) => {
                     assert_eq!(
-                        *value,
-                        case.before(),
-                        "no-effect result hid a visible mutation"
+                        recovered,
+                        case.after(),
+                        "a successful visible mutation was lost"
                     );
                 }
+                Terminal::Mutation(Ok(false) | Err(MediumError::Failed(_))) => {
+                    assert_eq!(
+                        recovered,
+                        case.before(),
+                        "no-effect result hid an original visible effect: {:?}; fault {fault:?}",
+                        actual.terminal
+                    );
+                    if let Ok(value) = &visible {
+                        assert_eq!(
+                            *value,
+                            case.before(),
+                            "no-effect result hid a visible mutation"
+                        );
+                    }
+                }
+                Terminal::Mutation(Err(MediumError::Ambiguous(_))) => {}
             }
-            Terminal::Mutation(Err(MediumError::Ambiguous(_))) => {}
+            observe(Report {
+                generation: case.generation,
+                operation: match case.mutation {
+                    Mutation::Create => "create",
+                    Mutation::Replace => "replace",
+                    Mutation::Remove => "remove-if",
+                },
+                baseline: if cut == last_cut {
+                    std::mem::take(&mut baseline.writes)
+                } else {
+                    baseline.writes.clone()
+                },
+                writes: actual.writes,
+                boundaries: actual.boundaries,
+                fault,
+                terminal: actual.terminal,
+                visible,
+                recovered,
+            });
         }
-        Ok(Some(Report {
-            generation: case.generation,
-            operation: match case.mutation {
-                Mutation::Create => "create",
-                Mutation::Replace => "replace",
-                Mutation::Remove => "remove-if",
-            },
-            baseline: baseline.writes,
-            writes: actual.writes,
-            boundaries: actual.boundaries,
-            fault,
-            terminal: actual.terminal,
-            visible,
-            recovered,
-        }))
+        Ok(true)
     })
 }
 

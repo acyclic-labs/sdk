@@ -1,11 +1,13 @@
 //! Replay selected real-storage inputs and report their actual touched units.
-use acyclic_codec_fuzz::object_schedule::{Terminal, check, seeds};
+use acyclic_codec_fuzz::object_schedule::{Report, Terminal, check, check_each_site, seeds};
 use acyclic_native_runtime::testing::DurableFault;
 use acyclic_objects::MediumError;
 use std::{collections::BTreeMap, error::Error};
 
 fn replay() -> Result<(), Box<dyn Error>> {
     let inputs: Vec<_> = std::env::args_os().skip(1).collect();
+    let all_sites = inputs.first().is_some_and(|input| input == "--all-sites");
+    let inputs = if all_sites { &inputs[1..] } else { &inputs[..] };
     if inputs.first().is_some_and(|input| input == "--seed") {
         let names = &inputs[1..];
         if names.is_empty() {
@@ -18,24 +20,23 @@ fn replay() -> Result<(), Box<dyn Error>> {
                 .find(|(candidate, _)| name == candidate.as_str())
                 .map(|(_, bytes)| bytes.clone())
                 .ok_or_else(|| "unknown writer seed; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into())
-        }));
+        }), all_sites);
     }
     if inputs.is_empty() {
         return Err("missing input files; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0".into());
     }
-    replay_inputs(inputs.into_iter().map(|input| {
+    replay_inputs(inputs.iter().map(|input| {
         std::fs::read(input).map_err(|error| format!("read replay input failed: {error}; recovery: cargo run --features storage-schedules --example object_schedules -- --seed medium-false-0-0-0").into())
-    }))
+    }), all_sites)
 }
 
 fn replay_inputs(
     inputs: impl Iterator<Item = Result<Vec<u8>, Box<dyn Error>>>,
+    all_sites: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut coverage = BTreeMap::new();
     let (mut cases, mut max_writes, mut max_boundaries, mut max_requested) = (0, 0, 0, 0);
-    for input in inputs {
-        let bytes = input?;
-        let report = check(&bytes)?.ok_or("input has no admitted full generation identity")?;
+    let mut record = |report: Report| {
         let fault = match report.fault.fault {
             DurableFault::Before => "before",
             DurableFault::After => "after",
@@ -71,6 +72,16 @@ fn replay_inputs(
             .map(|write| write.requested as u128)
             .sum();
         max_requested = max_requested.max(requested);
+    };
+    for input in inputs {
+        let bytes = input?;
+        if all_sites {
+            if !check_each_site(&bytes, &mut record)? {
+                return Err("input has no admitted full generation identity".into());
+            }
+        } else {
+            record(check(&bytes)?.ok_or("input has no admitted full generation identity")?);
+        }
     }
     println!(
         "cases={cases} covered-fault-outcomes={} max-physical-calls={max_writes} max-owned-boundaries={max_boundaries} max-requested-bytes={max_requested}",
