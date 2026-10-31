@@ -9,6 +9,8 @@ mod gemini;
 mod limits_tests;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod message_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod optional_properties;
 mod reasoning;
 mod responses;
 pub(crate) use reasoning::family;
@@ -303,7 +305,7 @@ impl<'work> State<'work> {
 
     fn identity(&mut self, value: &Value) -> Result<()> {
         for field in ["id", "model"] {
-            if let Some(value) = value.get(field) {
+            if let Some(value) = crate::protocol::present(value.get(field)) {
                 self.budget.member(&mut self.metadata, field, value)?;
             }
         }
