@@ -14,9 +14,9 @@ pub(super) fn project(
     authorization: &acyclic_stream::session::ResourceAuthorization,
 ) -> Result<FollowUpdate, StreamError> {
     let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
+    let context = crate::PublicationContext::from_bytes(&changes.context)?;
     if !acyclic_stream::is_changes(&record.headers)
-        || changes.context.len() != 56
-        || !appended_by_context(&record, &changes.context, scope)
+        || !appended_by_context(&record, &context, scope)
         || changes.entries.len() != record.headers.keys().len()
         || changes
             .entries
@@ -41,7 +41,7 @@ pub(super) fn project(
     let now = authorization.now_unix_seconds()?;
     let mut visible = Vec::with_capacity(changes.entries.len());
     for entry in changes.entries {
-        let path = crate::publication_changes::entry::path(
+        let entry_facts = crate::PublicationEntry::from_parts(
             &entry.key,
             &entry.operation,
             &entry.metadata,
@@ -51,12 +51,12 @@ pub(super) fn project(
         // The lossless full path is authoritative. A 1-KiB indexed key must
         // never authorize a longer path or an alternate native representation.
         let prepared = trie
-            .prepare_namespace(&path)
+            .prepare_namespace(&entry_facts.path)
             .map_err(|_| StreamError::AccessDenied)?;
         if !prepared.decide(Action::List, now).allowed {
             continue;
         }
-        let name = canonical_resource(volume, &path, config)?;
+        let name = canonical_resource(volume, &entry_facts.path, config)?;
         if authorization
             .authorize(
                 &name,
@@ -97,15 +97,13 @@ pub(super) fn project(
 /// A record's context names the volume whose changes stream appended it.
 /// That is this volume's, or for a forked volume an ancestor's whose changes
 /// it shares; Streams, not the record, names the appending stream.
-fn appended_by_context(record: &Record, context: &[u8], scope: [u8; 16]) -> bool {
-    let Some(appender) = context
-        .get(..16)
-        .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
-    else {
-        return false;
-    };
+fn appended_by_context(
+    record: &Record,
+    context: &crate::PublicationContext,
+    scope: [u8; 16],
+) -> bool {
     let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
-    crate::publication_changes::changes_path_text(scope, VolumeId::from_bytes(appender), &mut text)
+    crate::publication_changes::changes_path_text(scope, context.volume, &mut text)
         .is_some_and(|path| path == record.origin.as_str())
 }
 
@@ -251,11 +249,15 @@ mod tests {
         });
         let authorization =
             acyclic_stream::session::testing::resource_authorization(&encoded, &name).unwrap();
-        let mut context = volume.into_bytes().to_vec();
-        context.extend_from_slice(&[8; 32]);
-        context.extend_from_slice(&1u64.to_le_bytes());
+        let context = crate::PublicationContext {
+            volume,
+            generation: crate::GenerationId::new(crate::Digest::from_bytes([8; 32])),
+            authority_sequence: crate::Sequence::new(1),
+            records_after: 2,
+        }
+        .encode();
         let appended =
-            AppendRecord::changes(&context, std::slice::from_ref(&entry), vec![]).unwrap();
+            AppendRecord::changes(context.as_ref(), std::slice::from_ref(&entry), vec![]).unwrap();
         let record = Record {
             sequence: 3,
             value: appended.value,
@@ -309,11 +311,37 @@ mod tests {
             &capability,
         )
         .unwrap();
-        // The same record and credential are disclosed once the exact owner deny is removed.
-        assert!(matches!(
-            project(record, volume, [0; 16], config, &allowing, &authorization).unwrap(),
-            FollowUpdate::Record(_)
-        ));
+        // Inherited records retain the ancestor appender while authorization
+        // still applies to the executing volume's resources.
+        for appender in [volume, VolumeId::from_bytes([14; 16])] {
+            let mut inherited = crate::PublicationContext::from_bytes(context.as_ref()).unwrap();
+            inherited.volume = appender;
+            let context = inherited.encode();
+            let appended =
+                AppendRecord::changes(context.as_ref(), std::slice::from_ref(&entry), vec![])
+                    .unwrap();
+            let mut record = record.clone();
+            record.value = appended.value;
+            record.headers = appended.headers;
+            record.origin = changes_stream([0; 16], appender);
+            let projected = project(
+                record.clone(),
+                volume,
+                [0; 16],
+                config,
+                &allowing,
+                &authorization,
+            )
+            .unwrap();
+            let FollowUpdate::Record(projected) = projected else {
+                panic!("authorized changes remain a record");
+            };
+            assert_eq!(projected.origin, record.origin);
+            assert_eq!(projected.sequence, record.sequence);
+            assert_eq!(projected.commit_id, record.commit_id);
+            let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
+            assert_eq!(changes.context.as_ref(), context.as_ref());
+        }
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();
             malformed.metadata = malformed.metadata.slice(..cut);

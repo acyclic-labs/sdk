@@ -543,6 +543,7 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
 -> Result<(), Box<dyn std::error::Error>> {
     struct PanicsAfterRelease {
         entered: std::sync::mpsc::Sender<()>,
+        lost: std::sync::mpsc::Sender<()>,
         release: Mutex<bool>,
         changed: Condvar,
     }
@@ -572,6 +573,10 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
             }
             panic!("controlled native callback unwind");
         }
+        fn delivery_lost(&self) {
+            self.lost.send(()).expect("live loss observer");
+            panic!("controlled terminal callback unwind");
+        }
     }
     let root = tempfile::tempdir()?;
     let host =
@@ -583,8 +588,10 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
         &cancellation,
     )));
     let (entered, receive) = std::sync::mpsc::channel();
+    let (lost, receive_loss) = std::sync::mpsc::channel();
     let sink = Arc::new(PanicsAfterRelease {
         entered,
+        lost,
         release: Mutex::new(false),
         changed: Condvar::new(),
     });
@@ -609,15 +616,37 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     assert!(matches!(denied, Err(DemandError::WorkerUnavailable)));
     assert!(!pending_terminal);
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.is_stopped() && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
+    receive_loss.recv_timeout(std::time::Duration::from_secs(5))?;
+    // Loss alone does not prove physical retirement. The same service pass
+    // must finish before the controller is allowed to join its completion.
+    let reading = watch
+        .shared
+        .reading
+        .raw
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let (reading, _) = watch
+        .shared
+        .reading_changed
+        .wait_timeout_while(reading, std::time::Duration::from_secs(5), |_| {
+            !watch.shared.completed.load(Ordering::Acquire)
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    assert!(
+        watch.is_stopped(),
+        "the original service retires its resources"
+    );
+    drop(reading);
+    watch.stop_accepted_cleanup()?;
     assert!(
         watch.is_stopped(),
         "callback unwind is not itself terminal evidence"
     );
-    watch.stop_with_cleanup_wait(&CancellationToken::new())?;
+    watch.delivery_lost();
+    assert!(
+        receive_loss.try_recv().is_err(),
+        "one terminal notification"
+    );
     assert!(watch.shared.physically_cleared());
     assert!(
         watch

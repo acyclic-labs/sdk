@@ -191,8 +191,42 @@ fn write_record(record: &FileRecord, output: &mut Vec<u8>) {
     output.extend_from_slice(record.metadata.digest.as_bytes());
 }
 
-/// The reader: the Session follow's projection and the tests decode entries.
-#[cfg(any(test, feature = "session"))]
+/// Lossless path and presence facts decoded by the filesystem publication codec.
+///
+/// These facts do not grant access. Obtain entries through the authorized change
+/// provider and retain the original record's origin, sequence and commit identity.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PublicationEntry {
+    /// Complete native path; the bounded index key alone may be truncated or folded.
+    pub path: NamespacePath,
+    /// Whether a file record existed at this path before the publication.
+    pub before_present: bool,
+    /// Whether a file record exists at this path after the publication.
+    pub after_present: bool,
+}
+
+impl PublicationEntry {
+    /// Decodes one entry with the same codec used by authorized change follows.
+    ///
+    /// `create`, `remove` and `update` imply absent/present, present/absent and
+    /// present/present respectively. `publish` has no path-local records and is
+    /// valid only with an empty key and metadata. Use the volume's original config.
+    ///
+    /// # Errors
+    /// Returns `InvalidArgument` for an unknown operation, invalid native path,
+    /// malformed file records, noncanonical framing or trailing bytes.
+    pub fn from_parts(
+        key: &[u8],
+        operation: &str,
+        metadata: &[u8],
+        config: VolumeConfig,
+    ) -> Result<Self, acyclic_stream::StreamError> {
+        read::entry(key, operation, metadata, config)
+            .map_err(|_| acyclic_stream::StreamError::InvalidArgument)
+    }
+}
+
+/// The reader shared by the public projection, authorized follow and controls.
 mod read {
     use super::*;
     use crate::kernel::FileKind;
@@ -240,17 +274,18 @@ mod read {
         }
     }
 
-    /// The lossless full path of one entry. It, not the 1-KiB indexed key, is
-    /// authoritative: a truncated key never stands for a longer path, because
-    /// only an untruncated key may carry the names.
-    pub(crate) fn path(
+    pub(super) fn entry(
         key: &[u8],
         operation: &str,
         metadata: &[u8],
         config: VolumeConfig,
-    ) -> Result<NamespacePath, Malformed> {
+    ) -> Result<PublicationEntry, Malformed> {
         if operation == "publish" && metadata.is_empty() && key.is_empty() {
-            return NamespacePath::new(vec![], config.limits).map_err(|_| Malformed);
+            return Ok(PublicationEntry {
+                path: NamespacePath::new(vec![], config.limits).map_err(|_| Malformed)?,
+                before_present: false,
+                after_present: false,
+            });
         }
         let expected = presence(operation).ok_or(Malformed)?;
         let mut reader = Reader(metadata);
@@ -299,10 +334,24 @@ mod read {
         if !reader.0.is_empty() {
             return Err(Malformed);
         }
-        NamespacePath::new(components, config.limits).map_err(|_| Malformed)
+        Ok(PublicationEntry {
+            path: NamespacePath::new(components, config.limits).map_err(|_| Malformed)?,
+            before_present: expected[0],
+            after_present: expected[1],
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn path(
+        key: &[u8],
+        operation: &str,
+        metadata: &[u8],
+        config: VolumeConfig,
+    ) -> Result<NamespacePath, Malformed> {
+        entry(key, operation, metadata, config).map(|entry| entry.path)
     }
 }
-#[cfg(any(test, feature = "session"))]
+#[cfg(test)]
 pub(crate) use read::path;
 
 #[cfg(test)]

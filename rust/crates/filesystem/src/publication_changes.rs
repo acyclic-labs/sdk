@@ -12,6 +12,9 @@ use crate::{
 };
 use std::sync::Arc;
 
+mod context;
+pub use context::PublicationContext;
+
 struct ChangeData {
     volume: VolumeId,
     config: VolumeConfig,
@@ -357,6 +360,8 @@ impl PublicationChanges {
 mod authority;
 #[cfg(any(test, feature = "distributed"))]
 pub(crate) mod entry;
+#[cfg(any(test, feature = "distributed"))]
+pub use entry::PublicationEntry;
 
 fn change_error(error: crate::WorkspaceError) -> FsError {
     match error {

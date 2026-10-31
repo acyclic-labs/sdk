@@ -78,7 +78,7 @@ impl NativeSourceWatch {
         } else if !retiring {
             work.admit(suffix)?;
         }
-        self.shared.delivery.exact.store(false, Ordering::Release);
+        self.shared.delivery.notify_lost();
         if native {
             // The born owner retires here, on its active credit: the hub
             // never waits on a stop, and a stop never waits on the hub.
@@ -275,7 +275,7 @@ impl Shared {
             return;
         }
         self.stopping.store(true, Ordering::Release);
-        self.delivery.exact.store(false, Ordering::Release);
+        self.delivery.notify_lost();
         let mut work = self.delivery.callback_work();
         loop {
             let terminal = !self.cleanup_pending();

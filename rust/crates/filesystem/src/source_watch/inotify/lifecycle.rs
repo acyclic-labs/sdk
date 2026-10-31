@@ -296,7 +296,7 @@ impl NativeSourceWatch {
             .read_events_and_deliver(std::time::Duration::MAX, &mut work)
             .map(|_| ())
             .map_err(|error| {
-                self.shared.delivery.exact.store(false, Ordering::Release);
+                self.shared.delivery.notify_lost();
                 crate::native_host::ordinary_error(error)
             })
     }
@@ -489,7 +489,7 @@ impl NativeSourceWatch {
         if self.shared.delivery.original.is_none() || !self.shared.completed.load(Ordering::Acquire)
         {
             result = result.and(self.shared.clear_measured(work));
-            self.shared.delivery.exact.store(false, Ordering::Release);
+            self.shared.delivery.notify_lost();
             self.shared
                 .completed
                 .store(self.shared.physically_cleared(), Ordering::Release);
@@ -625,7 +625,7 @@ impl Shared {
         if let Err(error) = result {
             self.delivery.failed_with_work(error, &mut work);
         }
-        self.delivery.exact.store(false, Ordering::Release);
+        self.delivery.notify_lost();
         if !self.physically_cleared() {
             self.reading_changed.notify_all();
             return;
