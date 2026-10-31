@@ -150,7 +150,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selected_compaction_publishes_only_the_signed_working_cut() -> Result<()> {
+    async fn profile_compaction_honors_watermark_and_shared_provider_capacity() -> Result<()> {
+        use crate::profile::{ModelProfile, Profiles, ProjectLayer, RoleFile};
+        let profiles = Arc::new(Profiles::new(
+            [ModelProfile::parse(
+                "---\nversion: 1\ntools: []\nreasoning: {mode: disabled}\ncache: automatic\nwatermark_tokens: 12000\n---\n",
+                "---\nversion: 1\nkey: synthetic/counter\n---\n",
+                ModelContextCapacity {
+                    context_tokens: 32_768,
+                    output_tokens: Some(8_192),
+                },
+                "renderer-v1",
+            )?],
+            [RoleFile::parse(
+                "---\nversion: 1\nname: orchestrator\nmodel: synthetic/counter\ncontext: top_level\nmay_spawn: []\n---\n",
+            )?],
+            ProjectLayer::parse("---\nversion: 1\n---\n")?,
+            "---\nversion: 1\n---\n",
+            crate::approvals::ApprovalPolicy::default().bind()?,
+        )?);
+        let pin = profiles.role_pin("orchestrator")?;
         let (journal, _issuer) = super::super::test_support::journal().await?;
         let selected = crate::projection::SelectedModelContext {
             selection: crate::conversation::ModelContextSelection {
@@ -161,11 +180,11 @@ mod tests {
             messages: vec![
                 ModelMessage {
                     role: ModelRole::User,
-                    content: ModelContent::Text("old user".repeat(4_000)),
+                    content: ModelContent::Text("old user".repeat(1_000)),
                 },
                 ModelMessage {
                     role: ModelRole::Assistant,
-                    content: ModelContent::Text("old answer".repeat(2_800)),
+                    content: ModelContent::Text("old answer".repeat(700)),
                 },
                 ModelMessage {
                     role: ModelRole::User,
@@ -180,8 +199,8 @@ mod tests {
                 ScriptedTurn::Text("done".into()),
             ])
             .with_context_capacity(ModelContextCapacity {
-                context_tokens: 65_536,
-                output_tokens: Some(4_096),
+                context_tokens: 16_384,
+                output_tokens: Some(1_024),
             })
             .with_token_counter(|request| {
                 let messages = request
@@ -213,7 +232,8 @@ mod tests {
                 recent_tokens: 1,
                 ..Default::default()
             },
-        ));
+        ))
+        .with_profile(profiles, pin)?;
         let input = TurnInput {
             operation_id: OperationId::new(),
             input: selected.messages.last().unwrap().content.clone(),
@@ -223,6 +243,9 @@ mod tests {
         let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
         assert_eq!(provider.request_count(), 2);
+        for index in 0..2 {
+            assert_eq!(provider.request(index).unwrap().max_output_tokens, None);
+        }
         assert_eq!(executor.execute(input.clone(), &journal).await?, output);
         assert_eq!(
             provider.request_count(),
