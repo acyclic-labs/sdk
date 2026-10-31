@@ -31,6 +31,20 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
+    /// Borrows this exact declaration through the sole model schema projection.
+    /// The name comes from the provider's canonical alias binder; no schema or
+    /// description is copied. Execution continues through the original registry.
+    pub fn model_declaration<'a>(
+        &'a self,
+        name: std::borrow::Cow<'a, str>,
+    ) -> acyclic_model_render::ToolDeclaration<'a, super::schema::ModelInput<'a>> {
+        acyclic_model_render::ToolDeclaration::Function {
+            name,
+            description: &self.description,
+            parameters: super::schema::model_input(&self.input_schema),
+        }
+    }
+
     /// Constructs a definition from borrowed schema literals on the original ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(

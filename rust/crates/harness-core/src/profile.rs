@@ -11,6 +11,9 @@ use std::{collections::BTreeSet, io::Write};
 #[cfg(test)]
 mod tests;
 
+mod binding;
+pub use binding::{BoundTools, ToolBinding};
+
 /// One capability's model-specific shape, in declaration order.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -94,12 +94,42 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         BTreeMap::new(),
     )
     .unwrap();
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let io = crate::executor::PreparationIo::from_budget(
+        acyclic_fs::performance::work_budget(1_000_000, 1_000_000),
+        &cancellation,
+    )?;
+    let intent = crate::OperationId::new();
+    let provenance = item.provenance().clone();
+    let envelope = crate::conversation::envelope::Envelope::new(
+        intent,
+        [7; 32],
+        crate::conversation::envelope::Payload::Wire { item },
+        &io,
+    )?;
+    let encoded = envelope.encode(&io, 65_536)?;
+    let changed_version =
+        std::str::from_utf8(&encoded)
+            .unwrap()
+            .replacen("\"version\":1", "\"version\":2", 1);
+    assert!(
+        crate::conversation::envelope::Envelope::decode(changed_version.as_bytes(), &io).is_err()
+    );
+    for position in [0, 1] {
+        let source = crate::conversation::envelope::SourcePosition::from_record(
+            &acyclic_stream::StreamPath::new("context/changes")?,
+            position,
+            [3; 32],
+            &io,
+        );
+        assert_eq!(source.is_ok(), position == 1);
+    }
     let reference = crate::executor::stage_json(
         journal.as_ref(),
-        crate::OperationId::new(),
+        intent,
         "original-item",
-        &item,
-        None,
+        &envelope,
+        Some(&io),
     )
     .await?;
     for native in [false, true] {
@@ -113,12 +143,21 @@ async fn immutable_wire_item_uses_original_journal_load_and_releases_custody() -
         } else {
             crate::executor::PreparationIo::from_budget(budget, &cancellation)?
         };
-        let (loaded, hold) =
-            crate::executor::load_json::<WireItem>(journal.as_ref(), &reference, Some(&io)).await?;
-        assert_eq!(loaded.wire().get(), raw);
-        assert_eq!(loaded.provenance(), item.provenance());
+        let (loaded, hold) = crate::executor::load_json::<crate::conversation::envelope::Envelope>(
+            journal.as_ref(),
+            &reference,
+            Some(&io),
+        )
+        .await?;
+        assert_eq!(loaded.intent(), intent);
+        assert_eq!(loaded.profile(), [7; 32]);
+        let crate::conversation::envelope::Payload::Wire { item } = loaded.payload() else {
+            panic!("wire envelope")
+        };
+        assert_eq!(item.wire().get(), raw);
+        assert_eq!(item.provenance(), &provenance);
         assert!(
-            acyclic_model_render::seg(Family::Chat, "original-service", &loaded)
+            acyclic_model_render::seg(Family::Chat, "original-service", item)
                 .unwrap()
                 .is_none()
         );
