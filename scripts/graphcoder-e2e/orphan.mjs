@@ -3,10 +3,12 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const [mode] = process.argv.slice(2);
-const url = `${process.env.E2E_MOCK_URL}/orphan-ready`;
+const [mode, endpoint] = process.argv.slice(2);
+if (!endpoint || !["tree", "leaf"].includes(mode))
+  throw new Error("usage: orphan.mjs tree|leaf <mock-url> (explicit endpoint required)");
+const url = `${endpoint}/orphan-ready`;
 if (mode === "tree") {
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "leaf"],
+  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "leaf", endpoint],
     { windowsHide: true, stdio: "inherit" });
   child.on("error", error => { throw error; });
   child.on("exit", code => { process.exitCode = code ?? 1; });
@@ -15,4 +17,4 @@ if (mode === "tree") {
     body: JSON.stringify({ pid: process.pid, parent_pid: process.ppid }) });
   await response.text();
   throw new Error("orphan probe was released instead of fenced");
-} else throw new Error("usage: orphan.mjs tree|leaf (E2E_MOCK_URL required)");
+}
