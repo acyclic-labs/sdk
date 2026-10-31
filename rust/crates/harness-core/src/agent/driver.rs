@@ -54,7 +54,8 @@ pub struct OpenTurn {
     pub input: Option<ModelContent>,
     /// The roster this turn announces, staged, and its digest: present only
     /// when it differs from the one the agent last announced
-    /// ([`AgentState::roster`]); the input above already leads with it.
+    /// ([`AgentState::roster`]). It is decided once, when the turn starts,
+    /// and `selected` carries it as its own message before the input.
     pub roster: Option<(FileRef, [u8; 32])>,
 }
 
@@ -255,10 +256,11 @@ fn encode(input: &impl Serialize) -> Result<Vec<u8>, Error> {
         .map_err(|_| Error::Record("turn input does not encode"))
 }
 
-/// The driver's checkpoint of a turn in progress: the input that started it
-/// and how many of its effect segments already committed. A turn commits its
-/// recorded effects whenever a later call waits on them (see
-/// [`super::TurnEffects::holds`]) and continues in the next segment.
+/// The driver's checkpoint of a turn in progress: the input that started it,
+/// the roster it announced, and how many of its effect segments already
+/// committed. A turn commits its recorded effects whenever a later call waits
+/// on them (see [`super::TurnEffects::holds`]) and continues in the next
+/// segment.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
@@ -266,6 +268,10 @@ struct Checkpoint {
     input: TurnInput,
     #[serde(default)]
     segment: u32,
+    /// Kept for the whole turn, so a resumed turn sends the request it
+    /// started with; a roster change meanwhile is the next turn's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    roster: Option<(FileRef, [u8; 32])>,
 }
 
 /// The input of the turn a step continues (kept in the checkpoint) and its
@@ -284,6 +290,7 @@ fn starting(agent: &AgentState, input: Option<Queued>) -> Result<(Queued, u32), 
                 inbox,
                 input,
                 segment,
+                ..
             } = checkpoint(agent)?.ok_or(Error::Record("resume without a turn in progress"))?;
             Ok((Queued { inbox, input }, segment))
         }
@@ -311,6 +318,16 @@ fn checkpoint(agent: &AgentState) -> Result<Option<Checkpoint>, Error> {
 /// When the turn's checkpoint is malformed.
 pub fn turn_segment(agent: &AgentState) -> Result<u32, Error> {
     Ok(checkpoint(agent)?.map_or(0, |checkpoint| checkpoint.segment))
+}
+
+/// The roster announcement of `agent`'s turn in progress, decided when it
+/// started (`Some(None)`: it announced none); `None` when a new turn starts
+/// and decides its own.
+///
+/// # Errors
+/// When the turn's checkpoint is malformed.
+pub fn turn_roster(agent: &AgentState) -> Result<Option<Option<(FileRef, [u8; 32])>>, Error> {
+    Ok(checkpoint(agent)?.map(|checkpoint| checkpoint.roster))
 }
 
 /// Model-visible content of a turn input: a message or event file as a file
@@ -374,36 +391,16 @@ pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
     })
 }
 
-/// `content` led by the roster announcement `roster` names, if any.
+/// The model message announcing the roster staged as `roster`: one file and
+/// nothing else, its own message before the announcing turn's input. So it
+/// takes nothing from any input's attachment or render budget; the static
+/// `shell` description says how to read it.
 #[must_use]
-pub fn announce(roster: Option<&FileRef>, content: ModelContent) -> ModelContent {
-    let Some(roster) = roster else {
-        return content;
-    };
-    let mut parts = vec![
-        ModelContentPart::Text {
-            text: super::ROSTER_LEAD.to_owned(),
-        },
-        ModelContentPart::File {
-            file: roster.clone(),
-            policy: FileProjectionPolicy::BoundedFull,
-        },
-    ];
-    match content {
-        ModelContent::Text(text) => parts.push(ModelContentPart::Text { text }),
-        ModelContent::Part(part) => parts.push(part),
-        ModelContent::Parts(rest) => parts.extend(rest),
-    }
-    ModelContent::Parts(parts)
-}
-
-/// The model-visible content of a settled entry: its input, led by the
-/// roster it announced.
-///
-/// # Errors
-/// When the input does not encode.
-pub fn entry_input(entry: &ConversationEntry) -> Result<ModelContent, Error> {
-    Ok(announce(entry.targets.as_ref(), model_input(&entry.input)?))
+pub fn roster_message(roster: &FileRef) -> ModelContent {
+    ModelContent::Part(ModelContentPart::File {
+        file: roster.clone(),
+        policy: FileProjectionPolicy::BoundedFull,
+    })
 }
 
 fn host_error(error: crate::Error) -> Error {
@@ -662,6 +659,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children: 0,
                         outs,
@@ -689,6 +687,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children,
                         outs: Vec::new(),
@@ -727,6 +726,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             inbox,
                             input,
                             segment,
+                            roster: open.roster.clone(),
                         })?),
                         reserved_children,
                         outs,

@@ -105,7 +105,7 @@ impl StockExecution<'_> {
             .map_err(|reason| stock_boundary(self.io, Invalid, reason))?;
         #[cfg(all(feature = "hooks", feature = "filesystem", not(target_arch = "wasm32")))]
         let (invocation, mut pre_hook) = {
-            let mut output = self
+            let mut output = match self
                 .tool_hook(
                     operation_id,
                     crate::hooks::HookSite::BeforeTool,
@@ -113,7 +113,28 @@ impl StockExecution<'_> {
                     None,
                     recorded.started().is_some(),
                 )
-                .await?;
+                .await
+            {
+                Ok(output) => output,
+                // A home target that cannot run the hooks refuses the call
+                // before anything ran, exactly as an unavailable call target
+                // does below.
+                Err(refusal @ Error::Target(_)) if recorded.started().is_none() => {
+                    let content = self
+                        .settle_tool_refusal(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation,
+                            ToolCallRejection::Failed(refusal),
+                        )
+                        .await?;
+                    return self.push_tool_result(&invocation, content, prior_messages);
+                }
+                // A started call whose hook target went away may have run.
+                Err(Error::Target(_)) => return Err(Error::Indeterminate(operation_id)),
+                Err(error) => return Err(error),
+            };
             let mut effective = invocation;
             if !output.blocks()
                 && let Some(arguments) = output.updated_input.take()
