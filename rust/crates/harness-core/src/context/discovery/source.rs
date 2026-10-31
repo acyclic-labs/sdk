@@ -303,19 +303,71 @@ pub async fn discover_skills_from<S: SkillReader>(
         if entry.kind != DiscoveryKind::File {
             return Err(Error::Invalid("skill entry is not a file".into()));
         }
-        let (prefix, pinned) = source
-            .skill_prefix(
-                &child(&directory, name),
-                &revision,
-                work.limits.header_bytes,
-            )
-            .await?;
-        if prefix.len() > work.limits.header_bytes as usize {
-            return Err(Error::Storage("prefix reader exceeded bound".into()));
-        }
-        result.push(parse_skill_metadata(&prefix, pinned)?);
+        result.push(
+            read_skill_metadata(source, &child(&directory, name), &revision, work.limits).await?,
+        );
     }
     Ok(result)
+}
+
+async fn read_skill_metadata<S: SkillReader>(
+    source: &mut S,
+    path: &str,
+    revision: &S::Revision,
+    limits: ContextDiscoveryLimits,
+) -> Result<SkillMetadata> {
+    limits.validate()?;
+    let (prefix, pinned) = source
+        .skill_prefix(path, revision, limits.header_bytes)
+        .await?;
+    if prefix.len() > limits.header_bytes as usize {
+        return Err(Error::Storage("prefix reader exceeded bound".into()));
+    }
+    parse_skill_metadata(&prefix, pinned)
+}
+
+impl ContextRoot {
+    /// Reads only the metadata of an immediate skill entry changed at `generation`.
+    /// Unrelated paths perform no provider calls. Removal is represented by the
+    /// publication's removal entry, rather than a read against a newer head.
+    pub async fn skill_metadata_at(
+        &self,
+        reader: &dyn ContentResidencyVerifier,
+        path: &str,
+        generation: &GenerationRef,
+        name: &str,
+        limits: ContextDiscoveryLimits,
+    ) -> Result<Option<SkillMetadata>> {
+        self.validate(&mut None)?;
+        validate_content_path(name, &mut None)?;
+        if name.contains('/') {
+            return Err(Error::Invalid("skill entry must be one filename".into()));
+        }
+        let relative = if self.directory.is_empty() {
+            path
+        } else if let Some(relative) = path
+            .strip_prefix(&self.directory)
+            .and_then(|tail| tail.strip_prefix('/'))
+        {
+            relative
+        } else {
+            return Ok(None);
+        };
+        let Some((directory, entry)) = relative.split_once('/') else {
+            return Ok(None);
+        };
+        if directory.is_empty() || entry != name {
+            return Ok(None);
+        }
+        let metadata = read_skill_metadata(
+            &mut VolumeDiscovery { reader, root: self },
+            path,
+            generation,
+            limits,
+        )
+        .await?;
+        Ok(Some(metadata))
+    }
 }
 
 /// Permission-checked immutable-volume adapter, also used by browser and TS hosts.
@@ -413,6 +465,12 @@ impl SkillReader for VolumeDiscovery<'_> {
         maximum: u32,
     ) -> BoxProviderFuture<'a, Result<(Vec<u8>, PinnedContextPath)>> {
         Box::pin(async move {
+            let pinned = PinnedContextPath {
+                root: self.root.clone(),
+                generation: revision.clone(),
+                path: path.into(),
+            };
+            pinned.validate(&mut None)?;
             let prefix = self
                 .reader
                 .read_private_prefix(
@@ -424,14 +482,7 @@ impl SkillReader for VolumeDiscovery<'_> {
                     crate::conversation::ContentAccess::default(),
                 )?
                 .await?;
-            Ok((
-                prefix.to_vec(),
-                PinnedContextPath {
-                    root: self.root.clone(),
-                    generation: revision.clone(),
-                    path: path.into(),
-                },
-            ))
+            Ok((prefix.to_vec(), pinned))
         })
     }
 }

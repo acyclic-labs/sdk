@@ -1,5 +1,22 @@
 use super::*;
 
+/// Initial assets for the ordinary writable skill volume. Installation is one
+/// stable filesystem operation; changing these bytes must not replace user edits.
+pub const BUILTIN_SKILLS: &[(&str, &[u8])] = &[
+    (
+        "context-checkpoint",
+        include_bytes!("../../skills/context-checkpoint/SKILL.md"),
+    ),
+    (
+        "candidate-search",
+        include_bytes!("../../skills/candidate-search/SKILL.md"),
+    ),
+    (
+        "advisor-consultation",
+        include_bytes!("../../skills/advisor-consultation/SKILL.md"),
+    ),
+];
+
 /// Frontmatter only; the body is not fetched or injected by discovery.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
