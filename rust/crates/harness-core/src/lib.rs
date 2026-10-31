@@ -89,6 +89,9 @@ mod obs;
 #[cfg(feature = "oidc")]
 pub mod oidc;
 pub mod preset;
+/// Pure resolution of versioned model and role files at epoch admission.
+#[cfg(feature = "filesystem")]
+pub mod profile;
 pub mod projection;
 pub mod registry;
 pub mod resources;
