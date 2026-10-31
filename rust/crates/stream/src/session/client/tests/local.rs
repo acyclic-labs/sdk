@@ -5,12 +5,26 @@ use super::*;
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {
     for records in [1, 2, 8] {
         let provider = Arc::new(MemoryStream::default());
-        let payload = OwnedBytes::from(b"delta".to_vec());
+        let input = if records == 2 {
+            crate::AppendRecord::changes(
+                b"delta",
+                &[wire::ChangeEntry {
+                    key: b"key".as_slice().into(),
+                    operation: "write".into(),
+                    metadata: Default::default(),
+                }],
+                Vec::new(),
+            )?
+        } else {
+            crate::AppendRecord::latest(OwnedBytes::from(b"delta".to_vec()), "key", false)?
+        };
+        let payload = input.value.clone();
         let backing = payload.backing().ok_or("missing original capacity")?;
+        let headers = input.headers.clone();
         provider
             .append(AppendRequest {
                 path: StreamPath::new("events")?,
-                records: vec![payload.clone().into(); records],
+                records: vec![input; records],
                 if_tail: None,
                 idempotency_key: crate::IdempotencyKey::unique(),
             })
@@ -28,6 +42,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             .await?;
         let first = next(&mut ordinary).await?;
         assert_eq!(first.sequence, 0);
+        assert_eq!(first.headers, headers);
         assert_eq!(
             first.value.backing(),
             Some(backing.clone()),
@@ -41,6 +56,81 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
             Some(backing.clone())
         );
         drop(typed);
+        let mut frames = client.subscribe(super::application::subscription()).await?;
+        let frame = loop {
+            let frame = frames.next().await.ok_or("frame source ended")??;
+            if matches!(&frame.wire().body, Some(Body::Data(data)) if matches!(&data.item, Some(Item::Record(_))))
+            {
+                break frame;
+            }
+        };
+        let mut decoded = None;
+        let allocations = acyclic_test_support::measure(|| {
+            decoded = Some(frame.decode_record(Some(&path)));
+        });
+        let decoded = decoded.ok_or("projection did not run")??;
+        assert_eq!(decoded, first);
+        let original = frame.original_record().ok_or("missing captured custody")?;
+        assert!(std::ptr::eq(
+            decoded.headers.keys().as_ptr(),
+            original.headers.keys().as_ptr()
+        ));
+        let moved = Frame {
+            wire: frame.wire().clone(),
+            record: Some(original.clone()),
+        }
+        .into_record(&path)?;
+        assert!(std::ptr::eq(
+            moved.headers.keys().as_ptr(),
+            original.headers.keys().as_ptr()
+        ));
+        if records != 2 {
+            assert_eq!(allocations.count_total, 0, "owned projection allocated");
+        }
+        assert!(frame.decode_record(None).is_err());
+        assert!(
+            frame
+                .decode_record(Some(&StreamPath::new("elsewhere")?))
+                .is_err()
+        );
+        let Some(Body::Data(data)) = &frame.wire().body else {
+            return Err("missing captured data".into());
+        };
+        let Some(Item::Record(record)) = &data.item else {
+            return Err("missing captured record".into());
+        };
+        let mut baseline = None;
+        let before = acyclic_test_support::measure(|| {
+            baseline = Some(wire_codec::record(record.clone(), Some(&path)));
+        });
+        assert_eq!(baseline.ok_or("baseline did not run")??, first);
+        assert!(before.count_total > allocations.count_total);
+        eprintln!(
+            "record_projection records={records} before_allocations={} after_allocations={}",
+            before.count_total, allocations.count_total
+        );
+        let mut invalid = frame.wire().clone();
+        let Some(Body::Data(data)) = &mut invalid.body else {
+            return Err("missing captured data".into());
+        };
+        let Some(Item::Record(record)) = &mut data.item else {
+            return Err("missing captured record".into());
+        };
+        record.commit_id = Bytes::new();
+        assert!(Frame::from(invalid).decode_record(Some(&path)).is_err());
+        if records == 2 {
+            // Mutate the actual captured provider record as a faulty producer
+            // could: immutable headers alone do not prove the public body.
+            let mut original = decoded;
+            original.value = OwnedBytes::from_static(b"\x80");
+            let invalid = Frame {
+                wire: frame.wire().clone(),
+                record: Some(original),
+            };
+            assert!(invalid.decode_record(Some(&path)).is_err());
+            assert!(invalid.into_record(&path).is_err());
+        }
+        drop(frames);
         let mut finite = client
             .read(crate::ReadRequest {
                 key: None,
