@@ -250,6 +250,32 @@ where
         })
     }
 
+    fn holds_with_io<'a>(
+        &'a self,
+        operation: OperationId,
+        io: Option<&'a super::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, bool>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let Some(io) = io else {
+                return self.holds(operation).await;
+            };
+            let names = self.files.list_with_io(&self.directory, io).await?;
+            for name in names {
+                io.charge(acyclic_fs::WorkCounters {
+                    items_examined: 1,
+                    ..Default::default()
+                })?;
+                if !name
+                    .strip_suffix(".json")
+                    .is_some_and(|call| crate::agent::is_call_of(call, operation))
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
     fn holds(&self, operation: OperationId) -> BoxProviderFuture<'_, Result<bool>> {
         Box::pin(async move {
             Ok(self.files.list(&self.directory).await?.iter().any(|name| {
@@ -463,6 +489,77 @@ mod tests {
                     .await?,
                 Some(native.clone())
             );
+
+            assert!(effects.holds_with_io(own, Some(&io))?.await?);
+            assert!(!alone.holds_with_io(own, Some(&io))?.await?);
+            let policy = Arc::new(crate::approvals::AgentApprovalPolicy::new(
+                crate::approvals::ApprovalPolicy::accept_all("rules"),
+                None,
+                Default::default(),
+                crate::conversation::Limits::default(),
+            )?);
+            let approvals = crate::approvals::AgentApprovals::new(files.clone(), policy);
+            let interaction = crate::interaction::Interaction::approval(
+                "review".into(),
+                own,
+                [7; 32],
+                crate::interaction::ApprovalSubject::Opaque {},
+            )?;
+            let approval_id = crate::InteractionId::from_bytes([11; 16]);
+            approvals
+                .open_with_io(approval_id, &interaction, Some(&io))
+                .await?;
+            assert_eq!(
+                approvals.dispatch_with_io(approval_id, Some(&io)).await?,
+                Some(crate::interaction::InteractionOutcome::Approved {})
+            );
+            // Reopening retains exactly the original request; changed action bytes
+            // cannot be accepted as an acknowledgement or replace its decision.
+            approvals
+                .open_with_io(approval_id, &interaction, Some(&io))
+                .await?;
+            let changed = crate::interaction::Interaction::approval(
+                "different action".into(),
+                own,
+                [8; 32],
+                crate::interaction::ApprovalSubject::Opaque {},
+            )?;
+            let mismatch = approvals
+                .open_with_io(approval_id, &changed, Some(&io))
+                .await;
+            assert!(matches!(
+                mismatch,
+                Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    ..
+                })
+            ));
+            let human = crate::approvals::AgentApprovals::new(
+                files.clone(),
+                Arc::new(crate::approvals::AgentApprovalPolicy::new(
+                    Default::default(),
+                    None,
+                    Default::default(),
+                    crate::conversation::Limits::default(),
+                )?),
+            );
+            let human_id = crate::InteractionId::from_bytes([12; 16]);
+            human
+                .open_with_io(human_id, &interaction, Some(&io))
+                .await?;
+            assert_eq!(human.dispatch_with_io(human_id, Some(&io)).await?, None);
+            human
+                .decide(
+                    human_id,
+                    crate::approvals::ApprovalResponder::Human("human"),
+                    true,
+                    None,
+                )
+                .await?;
+            assert_eq!(
+                human.dispatch_with_io(human_id, Some(&io)).await?,
+                Some(crate::interaction::InteractionOutcome::Approved {})
+            );
             let receipt = original.receipt();
             assert!(receipt.backend_read_operations > 0);
             assert!(receipt.backend_write_operations > 0);
@@ -473,7 +570,33 @@ mod tests {
             );
             // Cancelling the original operation ends this invocation at its
             // cancellation event; no receipt or replacement is made.
+            use futures::FutureExt as _;
+            let pending =
+                crate::approvals::until_stopped(Some(&io), std::future::pending::<Result<()>>());
+            futures::pin_mut!(pending);
+            assert!(pending.as_mut().now_or_never().is_none());
             cancellation.cancel();
+            assert!(matches!(
+                pending.await,
+                Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ..
+                })
+            ));
+            let cancelled_approval = approvals
+                .open_with_io(
+                    crate::InteractionId::from_bytes([13; 16]),
+                    &interaction,
+                    Some(&io),
+                )
+                .await;
+            assert!(matches!(
+                cancelled_approval,
+                Err(Error::NativeWork {
+                    cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
+                    ..
+                })
+            ));
             let cancelled = match effects.record_with_io("0000000005-e", &native, Some(&io)) {
                 Ok(operation) => operation.await,
                 Err(error) => Err(error),

@@ -46,3 +46,6 @@ pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
     }
     crate::executor::json::json_byte_length(source, u64::MAX, work).map(|_| ())
 }
+
+#[cfg(feature = "filesystem")]
+pub(crate) use walk::admit_tree_storage;

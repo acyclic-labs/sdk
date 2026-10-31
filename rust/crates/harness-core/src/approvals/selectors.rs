@@ -56,35 +56,92 @@ impl ApprovalSelector {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn matches(&self, arguments: &Value) -> bool {
-        match self {
-            Self::Equal { pointer, value } => arguments.pointer(pointer) == Some(value),
-            Self::Pattern { pointer, pattern } => arguments
-                .pointer(pointer)
+        self.matches_with_io(arguments, None).unwrap_or(false)
+    }
+
+    pub(super) fn matches_with_io(
+        &self,
+        arguments: &Value,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        super::io::step(io, 1)?;
+        Ok(match self {
+            Self::Equal { pointer, value } => selected(arguments, pointer, io)? == Some(value),
+            Self::Pattern { pointer, pattern } => selected(arguments, pointer, io)?
                 .and_then(Value::as_str)
                 .is_some_and(|text| pattern_matches(pattern, text)),
             Self::PathWithin { pointer, root } => {
-                let path = arguments
-                    .pointer(pointer)
-                    .and_then(Value::as_str)
-                    .and_then(portable_path);
-                path.zip(portable_path(root))
+                let path = match selected(arguments, pointer, io)?.and_then(Value::as_str) {
+                    Some(path) => portable_path_with_io(path, io)?,
+                    None => None,
+                };
+                path.zip(portable_path_with_io(root, io)?)
                     .is_some_and(|(path, root)| path.is_within(&root))
             }
-        }
+        })
     }
 }
 
+// The canonical serde pointer implementation decodes each segment through two
+// string replacements. Fund those original temporary allocations before entry;
+// keep its one grammar and object/array traversal implementation.
+fn selected<'a>(
+    arguments: &'a Value,
+    pointer: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Option<&'a Value>> {
+    crate::executor::with_history_io(io, |work| {
+        if let Some(work) = work.as_deref_mut() {
+            work.check_cancellation()?;
+            work.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: pointer.len() as u64,
+                items: 1,
+            })?;
+            for token in pointer.split('/').skip(1) {
+                let bytes = token.len() as u64;
+                if bytes != 0 {
+                    for _ in 0..2 {
+                        work.retain_owned(bytes)?;
+                        work.allocation_attempt(bytes)?;
+                        work.copy_bytes(bytes)?;
+                    }
+                }
+            }
+        }
+        Ok::<_, Error>(())
+    })?;
+    Ok(arguments.pointer(pointer))
+}
+
 fn portable_path(path: &str) -> Option<acyclic_fs::path::PortablePath> {
+    portable_path_with_io(path, None).ok().flatten()
+}
+
+fn portable_path_with_io(
+    path: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Option<acyclic_fs::path::PortablePath>> {
+    super::io::step(io, path.len() as u64)?;
     if path.is_empty() || path.contains('\\') {
-        return None;
+        return Ok(None);
     }
     let absolute = if path.starts_with('/') {
-        path.to_owned()
+        super::io::copy(path, io)?
     } else {
-        format!("/{path}")
+        super::io::text(format_args!("/{path}"), io)?
     };
-    acyclic_fs::path::PortablePath::parse(&absolute, acyclic_fs::VolumeLimits::default()).ok()
+    // PortablePath validates borrowed text then copies that text once.
+    crate::executor::with_history_io(io, |work| {
+        if let Some(work) = work.as_deref_mut() {
+            work.retain_owned(absolute.len() as u64)?;
+            work.allocation_attempt(absolute.len() as u64)?;
+            work.copy_bytes(absolute.len() as u64)?;
+        }
+        Ok::<_, Error>(())
+    })?;
+    Ok(acyclic_fs::path::PortablePath::parse(&absolute, acyclic_fs::VolumeLimits::default()).ok())
 }
 
 // Each literal search consumes its matched prefix. Unlike regex backtracking,

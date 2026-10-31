@@ -199,3 +199,26 @@ fn json_heap(value: &serde_json::Value, depth: usize) -> Result<u64> {
         ),
     }
 }
+
+/// Reserves the existing std tree's node envelope before a fresh result is built.
+/// Payload storage is transferred separately by each admitted key/value producer.
+#[cfg(feature = "filesystem")]
+pub(crate) fn admit_tree_storage<T>(
+    entries: usize,
+    io: &crate::executor::PreparationIo,
+) -> Result<()> {
+    if entries == 0 {
+        return Ok(());
+    }
+    let nodes = 1 + entries.saturating_sub(1) / 5;
+    let bytes = tree_node_bytes::<T>()?;
+    io.retain_owned(
+        bytes
+            .checked_mul(nodes as u64)
+            .ok_or_else(|| io.invalid("tree ownership overflows"))?,
+    )?;
+    for _ in 0..nodes {
+        io.allocation_attempt(bytes)?;
+    }
+    Ok(())
+}

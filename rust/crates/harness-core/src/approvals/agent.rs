@@ -42,6 +42,40 @@ pub fn request_id(id: InteractionId) -> String {
     text
 }
 
+fn request_id_with_io(
+    id: InteractionId,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<String> {
+    let bytes = id.into_bytes();
+    let mut hex = [0; 32];
+    for (index, byte) in bytes.iter().enumerate() {
+        hex[2 * index] = b"0123456789abcdef"[(byte >> 4) as usize];
+        hex[2 * index + 1] = b"0123456789abcdef"[(byte & 15) as usize];
+    }
+    super::io::text(
+        format_args!("approval-{}", std::str::from_utf8(&hex).expect("hex")),
+        io,
+    )
+}
+
+fn request_path_with_io(id: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
+    super::io::text(format_args!("approvals/{id}/request.json"), io)
+}
+
+fn decision_path_with_io(
+    id: &str,
+    principal: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<String> {
+    super::io::text(
+        format_args!(
+            "approvals/{id}/decisions/{}.json",
+            super::io::principal_file(principal, io)?
+        ),
+        io,
+    )
+}
+
 fn request_path(id: &str) -> String {
     format!("approvals/{id}/request.json")
 }
@@ -90,6 +124,24 @@ impl AgentApprovalPolicy {
             .await?
             .ok_or_else(|| Error::NotFound("approval request is not open".into()))
     }
+
+    async fn request_with_io(
+        &self,
+        files: &dyn ApprovalFiles,
+        id: &str,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        files
+            .read_with_io(&request_path_with_io(id, io)?, self.limits.file_bytes, io)?
+            .await?
+            .ok_or_else(|| {
+                super::io::error(
+                    io,
+                    crate::wire::ErrorCode::NotFound,
+                    "approval request is not open",
+                )
+            })
+    }
 }
 
 /// The approvals of one running turn: its journal's interaction owner.
@@ -125,7 +177,7 @@ impl AgentApprovals {
     }
 
     /// Holds each `wait` call of the turn until the children it names settle
-    /// (see [`crate::tools::awaited`]); the turn commits that wait
+    /// (see [`crate::tools::awaited_with_io`]); the turn commits that wait
     /// instead of holding its delivery.
     #[must_use]
     pub fn awaiting(mut self, children: Arc<dyn crate::agent::TurnChildren>) -> Self {
@@ -163,22 +215,36 @@ impl AgentApprovals {
     /// reaches every child, message and archive they make; else
     /// [`Self::outcome`].
     pub async fn dispatch(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+        self.dispatch_with_io(id, None).await
+    }
+
+    pub(crate) async fn dispatch_with_io(
+        &self,
+        id: InteractionId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<InteractionOutcome>> {
+        super::io::step(io, 1)?;
         if self.effects.is_none() && self.children.is_none() {
-            return self.outcome(id).await;
+            return self.outcome_with_io(id, io).await;
         }
-        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
-        let Ok(Interaction::Approval {
+        let bytes = self
+            .policy
+            .request_with_io(&*self.files, &request_id_with_io(id, io)?, io)
+            .await?;
+        let Interaction::Approval {
             operation_id,
             subject,
             ..
-        }) = serde_json::from_slice::<Interaction>(&bytes)
+        } = super::io::decode::<Interaction>(&bytes, io)?
         else {
-            return Err(Error::Conflict(
-                "approval request is not an approval".into(),
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Conflict,
+                "approval request is not an approval",
             ));
         };
         if let Some(effects) = &self.effects {
-            let held = effects.holds(operation_id).await?;
+            let held = effects.holds_with_io(operation_id, io)?.await?;
             self.yielded.store(held, Ordering::Release);
             if held {
                 self.wait(None)?;
@@ -191,7 +257,8 @@ impl AgentApprovals {
                 tool, arguments, ..
             },
         ) = (&self.children, &subject)
-            && let Some(awaited) = crate::tools::awaited(&**children, tool, arguments).await?
+            && let Some(awaited) =
+                crate::tools::awaited_with_io(&**children, tool, arguments, io).await?
         {
             self.wait(None)?;
             *self
@@ -200,7 +267,7 @@ impl AgentApprovals {
                 .map_err(|_| Error::Storage("approvals lock".into()))? = Some(awaited);
             return Ok(None);
         }
-        self.outcome(id).await
+        self.outcome_with_io(id, io).await
     }
 
     /// The request the turn now waits on, and whether the parent decides it.
@@ -219,18 +286,31 @@ impl AgentApprovals {
 
     /// Opens the request file of approval `id` exactly once.
     pub async fn open(&self, id: InteractionId, interaction: &Interaction) -> Result<()> {
+        self.open_with_io(id, interaction, None).await
+    }
+
+    pub(crate) async fn open_with_io(
+        &self,
+        id: InteractionId,
+        interaction: &Interaction,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        super::io::step(io, 1)?;
         if !matches!(interaction, Interaction::Approval { .. }) {
-            return Err(Error::Unsupported(
-                "agents open only approval interactions".into(),
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "agents open only approval interactions",
             ));
         }
-        let request = request_id(id);
-        let bytes = crate::contract::canonical_json_bytes(interaction)?;
-        super::files::create_exact(
+        let request = request_id_with_io(id, io)?;
+        let bytes = super::io::encode(interaction, self.policy.limits.file_bytes, true, io)?;
+        super::files::create_exact_with_io(
             &*self.files,
-            &request_path(&request),
-            bytes,
+            &request_path_with_io(&request, io)?,
+            &bytes,
             self.policy.limits.file_bytes,
+            io,
         )
         .await?;
         Ok(())
@@ -239,20 +319,30 @@ impl AgentApprovals {
     /// The decided outcome of `id`, running due automatic stages; `None` while a
     /// human or parent decision is outstanding.
     pub async fn outcome(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
-        let request = request_id(id);
+        self.outcome_with_io(id, None).await
+    }
+
+    pub(crate) async fn outcome_with_io(
+        &self,
+        id: InteractionId,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Option<InteractionOutcome>> {
+        let request = request_id_with_io(id, io)?;
         let policy = &*self.policy;
-        let bytes = policy.request(&*self.files, &request).await?;
-        let view = ApprovalRequest::new(&request, &bytes, policy.limits.file_bytes)?;
-        // Each automatic review is durable before the traversal moves past it,
-        // so the chain advances at most once per approver.
+        let bytes = policy.request_with_io(&*self.files, &request, io).await?;
+        let view = ApprovalRequest::new_with_io(&request, &bytes, policy.limits.file_bytes, io)?;
+        // Each automatic review is durable before this cursor advances. Never
+        // reread preceding stages or their immutable request to make progress.
+        let mut start = 0;
         for _ in 0..=policy.policy.approvers.len() {
-            let stage = super::next_agent_stage(
+            let stage = super::chain::next_stage_with_io(
                 &policy.policy,
                 policy.digest,
-                policy.parent.clone(),
+                policy.parent.as_ref(),
                 &view,
                 &*self.files,
-                0,
+                start,
+                io,
             )
             .await?;
             let (approver, expected) = match stage {
@@ -269,28 +359,47 @@ impl AgentApprovals {
                 } => (approver, expected),
             };
             if matches!(approver, Approver::Rules { .. } | Approver::Llm { .. }) {
-                super::automatic_agent_review(
+                let review = super::automatic::automatic_review_with_io(
                     &policy.models,
                     &*self.files,
                     &view,
                     approver,
                     expected,
                     policy.limits,
+                    io,
                 )
                 .await?;
+                if review.verdict != RuleVerdict::Ask {
+                    self.wait(None)?;
+                    return Ok(Some(if review.verdict == RuleVerdict::Allow {
+                        InteractionOutcome::Approved {}
+                    } else {
+                        InteractionOutcome::Denied {}
+                    }));
+                }
+                start = review.stage + 1;
                 continue;
             }
-            let path = decision_path(&request, &expected.principal);
-            let Some(decided) = self.files.read(&path, policy.limits.file_bytes).await? else {
+            let path = decision_path_with_io(&request, &expected.principal, io)?;
+            let Some(decided) = self
+                .files
+                .read_with_io(&path, policy.limits.file_bytes, io)?
+                .await?
+            else {
                 self.wait(Some((request, matches!(approver, Approver::Parent))))?;
                 return Ok(None);
             };
-            let decision = ApprovalDecisionFile::decode(&decided, policy.limits.file_bytes)?;
+            let decision: ApprovalDecisionFile = super::io::decode(&decided, io)?;
+            crate::executor::with_history_io(io, |work| decision.validate_with_work(work))?;
             if decision.principal != expected.principal
                 || decision.request_sha256 != expected.request_sha256
                 || decision.expected_version != VERSION
             {
-                return Err(Error::Conflict("approval decision binding differs".into()));
+                return Err(super::io::error(
+                    io,
+                    crate::wire::ErrorCode::Conflict,
+                    "approval decision binding differs",
+                ));
             }
             self.wait(None)?;
             return Ok(Some(if decision.approved() {
@@ -299,7 +408,11 @@ impl AgentApprovals {
                 InteractionOutcome::Declined {}
             }));
         }
-        Err(Error::Conflict("approval chain did not settle".into()))
+        Err(super::io::error(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "approval chain did not settle",
+        ))
     }
 
     /// `responder` decides approval `id` through this owner's files and

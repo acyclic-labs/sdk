@@ -1,7 +1,7 @@
 //! Automatic approvers shared by all host compositions.
 use super::{ApprovalFiles, ApprovalRequest, ApprovalReviewFile, Approver, RuleVerdict};
 use crate::{
-    Error, Result,
+    Result,
     conversation::Limits,
     interaction::Interaction,
     model::{Model, ModelProvider},
@@ -21,38 +21,61 @@ pub async fn automatic_review(
     expected: ApprovalReviewFile,
     limits: Limits,
 ) -> Result<ApprovalReviewFile> {
+    automatic_review_with_io(models, files, request, approver, expected, limits, None).await
+}
+
+pub(super) async fn automatic_review_with_io(
+    models: &BTreeMap<String, (Model, Arc<dyn ModelProvider>)>,
+    files: &dyn ApprovalFiles,
+    request: &ApprovalRequest<'_>,
+    approver: &Approver,
+    expected: ApprovalReviewFile,
+    limits: Limits,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<ApprovalReviewFile> {
+    super::io::step(io, 1)?;
     let principal = match approver {
         Approver::Rules { principal, .. } | Approver::Llm { principal, .. } => principal,
         _ => {
-            return Err(Error::Invalid(
-                "external approver requires a signed decision".into(),
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "external approver requires a signed decision",
             ));
         }
     };
     if expected.principal != *principal
-        || expected.request_sha256 != super::chain::fingerprint(request.bytes())?
+        || expected.request_sha256 != super::chain::fingerprint_with_io(request.bytes(), io)?
     {
-        return Err(Error::Conflict(
-            "automatic approval stage binding differs".into(),
+        return Err(super::io::error(
+            io,
+            crate::wire::ErrorCode::Conflict,
+            "automatic approval stage binding differs",
         ));
     }
     let (verdict, reason) = match approver {
         Approver::Rules {
             rules, fallback, ..
         } => {
-            let interaction: Interaction =
-                serde_json::from_slice(request.bytes()).map_err(storage)?;
+            let interaction: Interaction = super::io::decode(request.bytes(), io)?;
             let verdict = match &interaction {
                 Interaction::Approval { subject, .. } => {
-                    super::ApprovalRule::evaluate_subject(rules, *fallback, subject)
+                    super::ApprovalRule::evaluate_subject_with_io(rules, *fallback, subject, io)?
                 }
                 _ => RuleVerdict::Ask,
             };
-            (verdict, Some("configured approval rules".into()))
+            (
+                verdict,
+                Some(super::io::copy("configured approval rules", io)?),
+            )
         }
         Approver::Llm { model, prompt, .. } => {
             let (model, provider) = models.get(model).ok_or_else(|| {
-                Error::Unsupported("independent approver model is not bound".into())
+                super::io::error(
+                    io,
+                    crate::wire::ErrorCode::Unsupported,
+                    "independent approver model is not bound",
+                )
             })?;
             llm::review_model(
                 files,
@@ -61,12 +84,15 @@ pub async fn automatic_review(
                 (model, provider.as_ref()),
                 prompt,
                 limits,
+                io,
             )
             .await?
         }
         Approver::Human { .. } | Approver::Parent => {
-            return Err(Error::Invalid(
-                "external approver requires a signed decision".into(),
+            return Err(super::io::error(
+                io,
+                crate::wire::ErrorCode::Invalid,
+                "external approver requires a signed decision",
             ));
         }
     };
@@ -77,16 +103,14 @@ pub async fn automatic_review(
     };
     // Retain every review, including a decisive one, before the owner settles
     // or escalates. A racing writer must agree on the exact bound review.
-    super::files::create_exact(
+    let bytes = super::io::encode(&review, request.maximum_bytes(), false, io)?;
+    super::files::create_exact_with_io(
         files,
-        &request.review_path(&review.principal),
-        serde_json::to_vec(&review).map_err(storage)?,
+        &request.review_path_with_io(&review.principal, io)?,
+        &bytes,
         request.maximum_bytes(),
+        io,
     )
     .await?;
     Ok(review)
-}
-
-fn storage(error: impl std::fmt::Display) -> Error {
-    Error::Storage(error.to_string())
 }

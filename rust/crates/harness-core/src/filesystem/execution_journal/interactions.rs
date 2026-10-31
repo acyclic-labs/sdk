@@ -26,7 +26,8 @@ where
         interaction: &Interaction,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
-        self.approvals(io)?.open(id, interaction).await
+        crate::approvals::until_stopped(io, self.approvals(io)?.open_with_io(id, interaction, io))
+            .await
     }
 
     pub(super) async fn interaction_outcome_with_io(
@@ -34,6 +35,6 @@ where
         id: InteractionId,
         io: Option<&PreparationIo>,
     ) -> Result<Option<InteractionOutcome>> {
-        self.approvals(io)?.dispatch(id).await
+        crate::approvals::until_stopped(io, self.approvals(io)?.dispatch_with_io(id, io)).await
     }
 }

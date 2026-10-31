@@ -14,7 +14,9 @@ pub use chain::{
     next_stage as next_agent_stage, validate_agent_decision,
 };
 mod files;
+mod io;
 pub use files::{ApprovalCreate, ApprovalFiles, ApprovalRequest};
+pub(crate) use io::until_stopped;
 mod agent;
 /// Independent models that `llm` approval stages name, by name.
 pub type ApproverModels = std::collections::BTreeMap<
@@ -115,7 +117,7 @@ pub struct ApprovalRule {
 }
 
 /// Policy and model results use the same escalation semantics.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, crate::HeapLayout)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 #[serde(rename_all = "snake_case")]
 pub enum RuleVerdict {
@@ -237,28 +239,72 @@ impl ApprovalRule {
         }
     }
 
+    fn evaluate_subject_with_io(
+        rules: &[Self],
+        fallback: RuleVerdict,
+        subject: &crate::interaction::ApprovalSubject,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<RuleVerdict> {
+        let mut selected = None;
+        for rule in rules {
+            io::step(io, 1)?;
+            let matches = match subject {
+                crate::interaction::ApprovalSubject::Tool {
+                    tool, arguments, ..
+                } => rule.matches_with_io(tool, arguments, io)?,
+                crate::interaction::ApprovalSubject::Opaque {} => {
+                    rule.tool.is_none() && rule.arguments.is_none() && rule.selectors.is_empty()
+                }
+            };
+            if matches {
+                selected = Some(selected.map_or(rule.verdict, |previous| {
+                    Self::combine(previous, rule.verdict)
+                }));
+            }
+        }
+        Ok(selected.unwrap_or(fallback))
+    }
+
     fn decide<'a>(rules: impl Iterator<Item = &'a Self>, fallback: RuleVerdict) -> RuleVerdict {
         rules
             .map(|rule| rule.verdict)
-            .reduce(|left, right| match (left, right) {
-                (RuleVerdict::Deny, _) | (_, RuleVerdict::Deny) => RuleVerdict::Deny,
-                (RuleVerdict::Ask, _) | (_, RuleVerdict::Ask) => RuleVerdict::Ask,
-                _ => RuleVerdict::Allow,
-            })
+            .reduce(Self::combine)
             .unwrap_or(fallback)
+    }
+
+    fn combine(left: RuleVerdict, right: RuleVerdict) -> RuleVerdict {
+        match (left, right) {
+            (RuleVerdict::Deny, _) | (_, RuleVerdict::Deny) => RuleVerdict::Deny,
+            (RuleVerdict::Ask, _) | (_, RuleVerdict::Ask) => RuleVerdict::Ask,
+            _ => RuleVerdict::Allow,
+        }
     }
 
     /// Matches the exact subject that the interaction owner published.
     pub fn matches(&self, tool: &str, arguments: &Value) -> bool {
-        self.tool.as_deref().is_none_or(|expected| expected == tool)
-            && self
+        self.matches_with_io(tool, arguments, None).unwrap_or(false)
+    }
+
+    fn matches_with_io(
+        &self,
+        tool: &str,
+        arguments: &Value,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<bool> {
+        if !self.tool.as_deref().is_none_or(|expected| expected == tool)
+            || !self
                 .arguments
                 .as_ref()
                 .is_none_or(|expected| expected == arguments)
-            && self
-                .selectors
-                .iter()
-                .all(|selector| selector.matches(arguments))
+        {
+            return Ok(false);
+        }
+        for selector in &self.selectors {
+            if !selector.matches_with_io(arguments, io)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -336,7 +382,7 @@ impl ToolPolicy for ApprovalGate {
 }
 
 /// Immutable audit of one policy stage, retained before escalation or settlement.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 pub struct ApprovalReviewFile {
     /// Stage's configured identity.
