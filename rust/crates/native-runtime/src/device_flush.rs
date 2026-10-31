@@ -435,7 +435,7 @@ mod apple {
         #[test]
         fn a_waiting_process_recovers_when_the_drain_holder_exits() -> io::Result<()> {
             let id = (u64::from(std::process::id()) << 32) | 0xdead_fade;
-            let path = std::env::temp_dir().join(format!("acyclic-device-v1-{id:016x}.drain"));
+            let path = counter_path(id)?;
             let result = (|| {
                 let shared = shared(id)?;
                 let before = shared.started.load(Ordering::SeqCst);
