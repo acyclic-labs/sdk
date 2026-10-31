@@ -86,10 +86,10 @@ fn public_flush_paths_require_fullfsync_and_detect_fsync_negative_control() -> i
     ] {
         let (result, calls) = observe(&[], false, || flush(&file));
         result?;
-        assert_eq!(calls, [libc::F_FULLFSYNC]);
+        assert_eq!(calls, [0, libc::F_FULLFSYNC]);
         let (result, calls) = observe(&[libc::EINTR], false, || flush(&file));
         assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EINTR));
-        assert_eq!(calls, [libc::F_FULLFSYNC]);
+        assert_eq!(calls, [0]);
     }
     Ok(())
 }
@@ -99,7 +99,11 @@ fn interrupted_flush_returns_after_one_admitted_attempt() -> io::Result<()> {
     let file = tempfile::tempfile()?;
     for (durability, first, expected) in [
         (Durability::Full, 0, &[0, libc::F_FULLFSYNC][..]),
-        (Durability::Barrier, libc::F_BARRIERFSYNC, &[libc::F_BARRIERFSYNC][..]),
+        (
+            Durability::Barrier,
+            libc::F_BARRIERFSYNC,
+            &[libc::F_BARRIERFSYNC][..],
+        ),
     ] {
         let mut admissions = 0;
         let (result, calls) = observe(&[libc::EINTR], false, || {

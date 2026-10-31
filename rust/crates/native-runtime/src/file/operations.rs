@@ -141,14 +141,15 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
                 #[cfg(target_vendor = "apple")]
                 return apple::sync_once(file, durability, || Ok(()));
                 #[cfg(not(target_vendor = "apple"))]
-                match durability {
-                    Durability::Full => {
-                        #[cfg(windows)]
-                        return sync_file_unsequenced(file, durability);
-                        #[cfg(not(windows))]
+                {
+                    // Both policies require the platform's full data flush.
+                    #[cfg(windows)]
+                    return sync_file_unsequenced(file, durability);
+                    #[cfg(not(windows))]
+                    {
+                        let _ = durability;
                         super::durable::flush_file_policy(file, true)
                     }
-                    Durability::Barrier => barrier_sync(file),
                 }
             })
         }))
@@ -528,14 +529,6 @@ pub(crate) fn read_at_impl(
         ReadDestination::Slice(data) => file.read_at(data, offset),
         ReadDestination::Spare { .. } => Err(io::ErrorKind::Unsupported.into()),
     }
-}
-
-#[cfg(not(target_vendor = "apple"))]
-pub(crate) fn barrier_sync(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "ordered write barrier is unavailable on this platform",
-    ))
 }
 
 #[cfg(unix)]
