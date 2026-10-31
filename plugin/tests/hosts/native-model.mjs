@@ -15,13 +15,14 @@ import {nativeHost} from './native-host.mjs';
 // Sandbox and approval policy stay unchanged. Codex asks the plugin's
 // permission hook, which the owner's approval policy answers; Claude Code
 // approves the same coordination tools by its native allow list.
-async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt}) {
+export async function launchNativeHost(host,{url,root,packageRoot,workspace,env,tools,nativePermissions,prompt,installed=true,input=false}) {
  if(host==='codex') {
   const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
    '--config',`model_providers.mock.base_url="${url}"`,'--config','model_providers.mock.wire_api="responses"',
    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
-  return {policy,args:[...policy,'exec','--json',prompt]};
+  if(!installed)policy.push('--config','plugins."acyclic@acyclic".enabled=false');
+  return {policy,args:[...policy,'exec','--json',input?'-':prompt]};
  }
  if(host==='claude-code') {
   // Foundry's Messages endpoint with its documented gateway mode: no key,
@@ -31,8 +32,8 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermi
   const settings=join(root,'claude-policy.json');
   await writeFile(settings,JSON.stringify({permissions:{allow:[...tools.map(name=>'mcp__plugin_acyclic_acyclic-sessions__'+name),...nativePermissions]}}));
   const policy=['--model','claude-haiku-5-5','--settings',settings,'--permission-mode','default',
-   '--plugin-dir',join(packageRoot,'claude'),'--add-dir',workspace];
-  return {policy,args:['-p',prompt,'--output-format','stream-json','--verbose',...policy]};
+   ...(installed?['--plugin-dir',join(packageRoot,'claude')]:[]),'--add-dir',workspace];
+  return {policy,args:['-p',...(input?[]:[prompt]),'--output-format','stream-json','--verbose',...policy]};
  }
  env.ACYCLIC_E2E_MODEL_URL=url;
  const policy=['--extension',fileURLToPath(new URL('./keyless-pi-provider.mjs',import.meta.url)),'--provider','fixture','--model','tiny'];
@@ -43,7 +44,7 @@ async function launch(host,{url,root,packageRoot,workspace,env,tools,nativePermi
 // production package, install through the shipping CLI or the host's native
 // plugin directory, open the root through the workspace API, then run the
 // actual host once against the caller's mock endpoint.
-export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer}) {
+export async function installedHost({host,processes,fixture,capture,tools,nativePermissions=[],prompt,answer,execute}) {
  const native=await nativeHost(host,fixture.env);
  const binary=fixture.env.E2E_PLUGIN_BINARY;
  assert.ok(binary&&isAbsolute(binary),'step=admit E2E_PLUGIN_BINARY; recovery=set E2E_PLUGIN_BINARY to its matching prebuilt absolute executable');
@@ -89,9 +90,11 @@ export async function installedHost({host,processes,fixture,capture,tools,native
   step='open native root through the workspace API';
   const opened=await run(executable,['__workspace'],JSON.stringify({kind:'open',host,session:randomUUID()}));
   assert.equal(opened.code,0,opened.stderr);
-  const {policy,args}=await launch(host,{url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt});
+  const configuration={url:fixture.url,root,packageRoot,workspace,env,tools,nativePermissions,prompt};
+  const {policy,args}=await launchNativeHost(host,configuration);
   Object.assign(env,{ACYCLIC_WORKSPACE:workspace,ACYCLIC_TASK:JSON.parse(opened.stdout).task,ACYCLIC_HOST_ARGS:JSON.stringify(policy)});
   step='complete installed native session';
+  if(execute)return await execute({native,configuration,run});
   const completed=await run(native.program,[...native.args,...args]);
   assert.equal(completed.code,0,completed.stderr);
   assert.ok(completed.stdout.includes(answer),'native answer missing');

@@ -1,0 +1,17 @@
+Run against the lockfile-pinned native hosts and three matching prebuilt executables:
+
+```sh
+npm ci --prefix plugin/tests/hosts
+E2E_SOURCE=FULL_SOURCE_COMMIT node plugin/tests/hosts/native-pairs.mjs codex /absolute/graphcoder /absolute/harness-mock-model /absolute/acyclic /absolute/new-output
+E2E_SOURCE=FULL_SOURCE_COMMIT node plugin/tests/hosts/native-pairs.mjs claude-code /absolute/graphcoder /absolute/harness-mock-model /absolute/acyclic /absolute/another-new-output
+```
+
+These commands use only the shipping loopback mock. Installation, original workspace ownership and policy come from the shared installed-host scenario. Both legs use the same exact installation, profile, source, shell command, file bytes and host version. The bare leg disables that plugin through the native host's supported interface. The script requires both model steps exactly once and the real native shell's file effect and final answer. The caller must retain its enclosing original process-custody completion receipt alongside `pair.json`; Node close alone does not prove descendant retirement.
+
+`pair.json` retains both raw process samples. Fixed first observations come from the existing process pump, stdin writer, transcript writer and terminal promises. It records actual stdin write admission/completion, owner-handle finish, stdout/stderr EOF, first transcript write, observed exit and original closed. These boundaries can overlap: file-write completion is not pipe arrival, handle closure is not proof the child consumed EOF, and an enclosing host's status is not a nested root's status. No linear order is imposed on EOF and exit. Missing boundaries, failed terminals, wrong source or unpaired bytes fail admission. The launch-to-closed delta is a process measurement; it is never a warm-turn or shell-execution sample. Setup and case durations remain separate from the process offsets.
+
+The observation state is fixed per active process and retires at its original terminal. No second reader, transcript, process owner, timer or control request is added. The shared pump adds one inline metadata callback per fixed first boundary, with no additional IO or payload copy. Phase projection adds fixed scalar storage and one result object per sample; there are no scans over historical operations. Original channel/EOF/exit producers and physical cleanup remain responsible for progress. Existing real-child controls cover dropped/destroyed output and retained observer failure; the paired control also rejects missing EOF, foreign source, reused operation and unequal result bytes.
+
+Pi's pinned native Responses implementation rejects an empty auth result before HTTP. The fixture now calls that original provider/auth/client path and retains its typed `UNSUPPORTED_NATIVE_KEYLESS_PROVIDER` cause. No sentinel credential or header rewriting is permitted. `node --test plugin/tests/hosts/keyless-pi-provider.test.mjs` checks the original pinned refusal and zero HTTP dispatch; it is not a positive installed-Pi qualification. A native release with a supported keyless interface is required for that positive scenario.
+
+Warm native turn, tool begin/terminal, fork/merge and selected-root phase joins still require their original public host producers. Process samples cannot fill those fields. Real-provider host qualification requires separate authorization and preserves the original profile, credentials, policy and scenario oracles.
