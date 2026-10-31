@@ -74,8 +74,7 @@ pub(super) fn session_endpoint(
     );
     let mut transport = Endpoint::from_shared(endpoint.to_string())
         .map_err(|_| ConnectError)?
-        .tcp_nodelay(true)
-        .connect_timeout(Duration::from_secs(1));
+        .tcp_nodelay(true);
     if endpoint.scheme() == "https" {
         transport = transport
             .tls_config_with_verifier(ClientTlsConfig::new(), verifier.clone())
