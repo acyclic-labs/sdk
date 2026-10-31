@@ -44,6 +44,23 @@ pub fn sync_descriptor_once(
     }
 }
 
+/// Issues exactly one native ordering barrier of `descriptor`: its writes
+/// reach stable storage before any write issued after it on the same device,
+/// and become durable at that device's next full flush. Apple issues
+/// `fcntl(F_BARRIERFSYNC)`; an unsupported barrier returns to the caller,
+/// which can separately admit a full flush. Linux and Windows have no ordering
+/// primitive weaker than the full flush and issue [`sync_descriptor_once`].
+/// Every failure returns to the caller, which owns retry.
+pub fn order_descriptor_once(
+    #[cfg(unix)] descriptor: BorrowedFd<'_>,
+    #[cfg(windows)] descriptor: BorrowedHandle<'_>,
+) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    return crate::apple::order_descriptor_once(descriptor);
+    #[cfg(not(target_vendor = "apple"))]
+    sync_descriptor_once(descriptor)
+}
+
 #[cfg(test)]
 #[path = "held_sync_sources_tests.rs"]
 mod source_tests;

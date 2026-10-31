@@ -760,18 +760,38 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
 
 #[cfg(not(target_vendor = "apple"))]
 #[tokio::test]
-async fn barrier_policy_rejects_targets_without_exact_barrier_semantics()
+async fn barrier_policy_uses_full_flush_and_preserves_exact_replay()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
         durability: LocalDurability::Barrier,
         ..LocalStreamLimits::default()
     };
-    assert!(matches!(
-        LocalStream::open(directory.path(), limits).await,
-        Err(LocalStreamError::Io(error))
-            if error.kind() == std::io::ErrorKind::Unsupported
-    ));
+    let provider = LocalStream::open(directory.path(), limits).await?;
+    let request = AppendRequest {
+        path: StreamPath::new("barrier/fallback")?,
+        records: vec![Bytes::from_static(b"durable fallback").into()],
+        if_tail: None,
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"barrier-fallback"))?,
+    };
+    let original = provider.append(request.clone()).await?;
+    assert_eq!(provider.append(request.clone()).await?, original);
+    drop(provider);
+    let reopened = LocalStream::open(directory.path(), limits).await?;
+    let recovered = reopened.append(request.clone()).await?;
+    let mut expected = original;
+    if let (AppendOutcome::Committed(original), AppendOutcome::Committed(replayed)) =
+        (&mut expected, &recovered)
+    {
+        // Barrier policy rotates the revision authority on reopen even when
+        // this platform implements the barrier with a stronger full flush.
+        assert_eq!(original.revision.scope, replayed.revision.scope);
+        assert_eq!(original.revision.index, replayed.revision.index);
+        assert_ne!(original.revision.incarnation, replayed.revision.incarnation);
+        original.revision.clone_from(&replayed.revision);
+    }
+    assert_eq!(recovered, expected);
+    assert_eq!(reopened.tail(request.path).await?, 1);
     Ok(())
 }
 

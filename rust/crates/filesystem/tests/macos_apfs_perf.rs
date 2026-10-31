@@ -13,7 +13,6 @@ use acyclic_fs::{
     CancellationToken, Fs, LocalOptions, MaterializeOptions, MountPath, PublicationPermit,
     WorkBudget,
 };
-use acyclic_objects::LocalDurability;
 use serde_json::json;
 
 #[path = "support/portable_source.rs"]
@@ -175,11 +174,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     }
 
     let state = tempfile::tempdir()?;
-    let mut local = LocalOptions::new(state.path());
-    if std::env::var_os("ACYCLIC_APFS_BENCH_BARRIER").is_some() {
-        local.objects.durability = LocalDurability::Barrier;
-    }
-    let fs = Fs::local(local).await?;
+    let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let started = Instant::now();
     let demand = open_source(source.path()).await?;
     let lazy = attach(&fs, "macos-apfs-costs", demand).await?;

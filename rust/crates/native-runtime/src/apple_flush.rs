@@ -9,28 +9,23 @@ pub(crate) fn sync_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()>
     syscall_once(descriptor, libc::F_FULLFSYNC)
 }
 
+pub(crate) fn order_descriptor_once(descriptor: BorrowedFd<'_>) -> io::Result<()> {
+    syscall_once(descriptor, libc::F_BARRIERFSYNC)
+}
+
 pub(crate) fn sync_once(
     file: &File,
     durability: Durability,
     mut admit: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
-    if durability == Durability::Full {
-        match syscall(file, libc::F_FULLFSYNC, &mut admit) {
-            Ok(()) => return Ok(()),
-            Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {}
-            Err(error) => return Err(error),
-        }
-    }
-    match syscall(file, libc::F_BARRIERFSYNC, &mut admit) {
-        Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => syscall(file, 0, &mut admit)?,
-        result => result?,
-    }
     match durability {
-        Durability::Barrier => Ok(()),
-        Durability::Full => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "filesystem does not support F_FULLFSYNC; only a write barrier was completed",
-        )),
+        Durability::Full => syscall(file, libc::F_FULLFSYNC, &mut admit),
+        Durability::Barrier => match syscall(file, libc::F_BARRIERFSYNC, &mut admit) {
+            Err(error) if error.raw_os_error() == Some(libc::ENOTSUP) => {
+                syscall(file, libc::F_FULLFSYNC, &mut admit)
+            }
+            result => result,
+        },
     }
 }
 

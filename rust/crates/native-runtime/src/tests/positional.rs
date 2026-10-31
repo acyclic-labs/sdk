@@ -180,22 +180,6 @@ fn inline_overlapped_io_matches_the_driver() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_vendor = "apple"))]
-#[test]
-fn barrier_durability_rejects_targets_without_an_exact_primitive() -> io::Result<()> {
-    let temporary = tempfile::tempdir()?;
-    let file = File::create(temporary.path().join("barrier"))?;
-    assert!(matches!(
-        sync_file(&file, Durability::Barrier, None),
-        Err(error) if error.kind() == io::ErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        sync_data(&file, Durability::Barrier),
-        Err(error) if error.kind() == io::ErrorKind::Unsupported
-    ));
-    Ok(())
-}
-
 #[cfg(target_vendor = "apple")]
 #[test]
 fn apple_batches_preserve_unlinked_open_files() -> io::Result<()> {

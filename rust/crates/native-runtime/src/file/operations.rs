@@ -7,7 +7,11 @@ use crate::*;
 pub enum Durability {
     /// Flush file contents and metadata to stable storage.
     Full,
-    /// Order earlier writes before later writes without forcing the device cache to drain.
+    /// Order earlier writes before later writes on the same device without
+    /// forcing its cache to drain; they become durable at that device's next
+    /// [`Durability::Full`] flush. Apple issues `F_BARRIERFSYNC`. Linux and
+    /// Windows have no ordering primitive weaker than the full flush, so they
+    /// issue the full flush: never weaker than requested.
     Barrier,
 }
 
@@ -22,7 +26,9 @@ pub fn sync_file(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter));
+    return testing::durable_operation(trace_name("file:sync", durability), || {
+        sync_file_impl(file, durability, meter)
+    });
     #[cfg(not(feature = "test-support"))]
     sync_file_impl(file, durability, meter)
 }
@@ -33,10 +39,6 @@ fn sync_file_impl(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
     if let Some(meter) = meter {
-        #[cfg(not(target_vendor = "apple"))]
-        if durability == Durability::Barrier {
-            return barrier_sync(file);
-        }
         #[cfg(target_vendor = "apple")]
         return crate::persistence_syscall(|| {
             apple::sync_once(file, durability, || {
@@ -105,21 +107,33 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
     #[cfg(target_vendor = "apple")]
     return apple::sync_once(file, durability, || Ok(()));
     #[cfg(not(target_vendor = "apple"))]
-    match durability {
-        Durability::Full => {
-            #[cfg(any(windows, target_os = "linux"))]
-            return sync_full(file, None);
-            #[cfg(not(any(windows, target_os = "linux")))]
-            file.sync_all()
-        }
-        Durability::Barrier => barrier_sync(file),
+    {
+        // Every durability is the full flush here; see `Durability::Barrier`.
+        let _ = durability;
+        #[cfg(any(windows, target_os = "linux"))]
+        return sync_full(file, None);
+        #[cfg(not(any(windows, target_os = "linux")))]
+        file.sync_all()
+    }
+}
+
+/// Distinguishes ordering barriers from full flushes in the durable trace, so
+/// a test can count the device drains an operation costs.
+#[cfg(feature = "test-support")]
+fn trace_name(full: &'static str, durability: Durability) -> &'static str {
+    match (full, durability) {
+        (_, Durability::Full) => full,
+        ("file:sync", Durability::Barrier) => "file:sync_barrier",
+        (_, Durability::Barrier) => "file:sync_data_barrier",
     }
 }
 
 /// Flushes file data according to `durability`.
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_data", || sync_data_impl(file, durability));
+    return testing::durable_operation(trace_name("file:sync_data", durability), || {
+        sync_data_impl(file, durability)
+    });
     #[cfg(not(feature = "test-support"))]
     sync_data_impl(file, durability)
 }
@@ -136,15 +150,13 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
             crate::persistence_syscall(|| {
                 #[cfg(target_vendor = "apple")]
                 return apple::sync_once(file, durability, || Ok(()));
-                #[cfg(not(target_vendor = "apple"))]
-                match durability {
-                    Durability::Full => {
-                        #[cfg(windows)]
-                        return sync_file_unsequenced(file, durability);
-                        #[cfg(not(windows))]
-                        file.sync_data()
-                    }
-                    Durability::Barrier => barrier_sync(file),
+                #[cfg(windows)]
+                return sync_file_unsequenced(file, durability);
+                #[cfg(not(any(windows, target_vendor = "apple")))]
+                {
+                    // Every durability is the full flush here; see `Durability::Barrier`.
+                    let _ = durability;
+                    file.sync_data()
                 }
             })
         }))
@@ -508,14 +520,6 @@ pub(crate) fn read_at_impl(
 pub(crate) fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
     use std::os::unix::fs::FileExt as _;
     file.write_all_at(bytes, offset)
-}
-
-#[cfg(not(target_vendor = "apple"))]
-pub(crate) fn barrier_sync(_file: &File) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "ordered write barrier is unavailable on this platform",
-    ))
 }
 
 #[cfg(unix)]

@@ -33,7 +33,10 @@ pub enum LocalDurability {
     /// Flushes file contents and the containing directory.
     #[default]
     FullFlush,
-    /// Uses Apple's `F_BARRIERFSYNC`; opening elsewhere fails.
+    /// Orders every flushed write ahead of any later write on the same
+    /// device without draining its cache (Apple's `F_BARRIERFSYNC`); a flush
+    /// becomes durable at that device's next full flush. Platforms with no
+    /// ordering primitive weaker than the full flush issue the full flush.
     Barrier,
 }
 
@@ -47,7 +50,7 @@ pub struct LocalObjectsLimits {
 /// Opening failure.
 #[derive(Debug, thiserror::Error)]
 pub enum LocalOpenError {
-    /// The options are unsupported on this platform.
+    /// The account cannot be opened over the medium.
     #[error("invalid local Objects options")]
     Invalid,
     /// The root holds something other than a v1 store.
@@ -456,9 +459,6 @@ impl LocalMedium {
         limits: LocalObjectsLimits,
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
-        if limits.durability == LocalDurability::Barrier && !cfg!(target_vendor = "apple") {
-            return Err(LocalOpenError::Invalid);
-        }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
         let key = PersistenceKey::new(root.as_os_str().as_encoded_bytes().as_ptr() as usize, 0);

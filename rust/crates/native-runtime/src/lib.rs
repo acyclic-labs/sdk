@@ -24,7 +24,7 @@ mod held_sync;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
-pub use held_sync::sync_descriptor_once;
+pub use held_sync::{order_descriptor_once, sync_descriptor_once};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod lines;
 #[cfg(not(target_arch = "wasm32"))]

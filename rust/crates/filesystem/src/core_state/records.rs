@@ -575,9 +575,15 @@ fn write_journaled_in<T: Serialize>(
     } else {
         write_buffered_json(&mut temporary, value)?;
     }
+    // The rename below must not reach the device ahead of these contents;
+    // the directory's full flush after it makes both durable at once.
     match work {
-        Some(work) => crate::native_host::sync_file_held(&temporary.file, &mut &*work)?,
-        None => acyclic_native_runtime::flush_file_all(&temporary.file)?,
+        Some(work) => crate::native_host::order_file_held(&temporary.file, &mut &*work)?,
+        None => acyclic_native_runtime::sync_file(
+            &temporary.file,
+            acyclic_native_runtime::Durability::Barrier,
+            None,
+        )?,
     }
     drop(temporary);
 

@@ -427,6 +427,37 @@ pub(crate) fn sync_directory_held<W: NativeHostWork>(
     )
 }
 
+/// Orders `file`'s writes ahead of every later write on its device with one
+/// metered native barrier; the device's next full flush makes them durable.
+pub(crate) fn order_file_held<W: NativeHostWork>(
+    #[cfg(unix)] file: &impl std::os::fd::AsFd,
+    #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,
+    work: &mut W,
+) -> Result<(), W::Error> {
+    let ordered = retry_io(
+        work,
+        WorkCounters {
+            durability_operations: 1,
+            ..WorkCounters::UNCHARGED
+        },
+        || {
+            #[cfg(unix)]
+            return acyclic_native_runtime::order_descriptor_once(file.as_fd());
+            #[cfg(windows)]
+            acyclic_native_runtime::order_descriptor_once(file.as_handle())
+        },
+    );
+    match ordered {
+        Err(error)
+            if cfg!(target_vendor = "apple")
+                && W::io_error_kind(&error) == Some(io::ErrorKind::Unsupported) =>
+        {
+            sync_file_held(file, work)
+        }
+        result => result,
+    }
+}
+
 pub(crate) fn sync_file_held<W: NativeHostWork>(
     #[cfg(unix)] file: &impl std::os::fd::AsFd,
     #[cfg(windows)] file: &impl std::os::windows::io::AsHandle,

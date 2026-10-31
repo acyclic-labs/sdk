@@ -121,29 +121,18 @@ fn held_flush_uses_the_same_native_attempt_without_retry_or_fallback() -> io::Re
 }
 
 #[test]
-fn only_enotsup_falls_back_and_full_never_acknowledges_the_fallback() -> io::Result<()> {
+fn unsupported_barrier_admits_its_full_fallback_and_full_never_weakens() -> io::Result<()> {
     let file = tempfile::tempfile()?;
-    for (errors, expected) in [
-        (
-            vec![libc::ENOTSUP],
-            vec![libc::F_FULLFSYNC, libc::F_BARRIERFSYNC],
-        ),
-        (
-            vec![libc::ENOTSUP, libc::ENOTSUP],
-            vec![libc::F_FULLFSYNC, libc::F_BARRIERFSYNC, 0],
-        ),
-    ] {
-        let mut admissions = 0;
-        let (result, calls) = observe(&errors, false, || {
-            sync_once(&file, Durability::Full, || {
-                admissions += 1;
-                Ok(())
-            })
-        });
-        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
-        assert_eq!(calls, expected);
-        assert_eq!(admissions, expected.len());
-    }
+    let mut admissions = 0;
+    let (result, calls) = observe(&[libc::ENOTSUP], false, || {
+        sync_once(&file, Durability::Full, || {
+            admissions += 1;
+            Ok(())
+        })
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    assert_eq!(calls, [libc::F_FULLFSYNC]);
+    assert_eq!(admissions, 1);
     for error in [libc::EIO, libc::EINVAL, libc::EBADF, libc::EACCES] {
         let (result, calls) = observe(&[error], false, || {
             crate::sync_file(&file, Durability::Full, None)
@@ -151,10 +140,33 @@ fn only_enotsup_falls_back_and_full_never_acknowledges_the_fallback() -> io::Res
         assert_eq!(result.unwrap_err().raw_os_error(), Some(error));
         assert_eq!(calls, [libc::F_FULLFSYNC]);
     }
+    let mut admissions = 0;
     let (result, calls) = observe(&[libc::ENOTSUP], false, || {
-        crate::sync_file(&file, Durability::Barrier, None)
+        sync_once(&file, Durability::Barrier, || {
+            admissions += 1;
+            Ok(())
+        })
     });
     result?;
-    assert_eq!(calls, [libc::F_BARRIERFSYNC, 0]);
+    assert_eq!(calls, [libc::F_BARRIERFSYNC, libc::F_FULLFSYNC]);
+    assert_eq!(admissions, 2);
+    let mut admissions = 0;
+    let (result, calls) = observe(&[libc::ENOTSUP], false, || {
+        sync_once(&file, Durability::Barrier, || {
+            admissions += 1;
+            if admissions == 2 {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
+            Ok(())
+        })
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+    assert_eq!(calls, [libc::F_BARRIERFSYNC]);
+    assert_eq!(admissions, 2);
+    let (result, calls) = observe(&[libc::ENOTSUP], false, || {
+        crate::order_descriptor_once(file.as_fd())
+    });
+    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
+    assert_eq!(calls, [libc::F_BARRIERFSYNC]);
     Ok(())
 }

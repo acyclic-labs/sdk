@@ -7,10 +7,12 @@ use super::*;
 pub struct LocalOptions {
     /// Durable root containing canonical Stream and Objects provider state.
     pub root: PathBuf,
-    /// Durable hierarchical Stream provider limits.
+    /// Durable hierarchical Stream provider limits. Its durability is the
+    /// root's: a publication is acknowledged once its Stream frame is flushed
+    /// this way. The Objects provider beside it only orders the objects a
+    /// publication references ahead of that frame, and flushes fully only
+    /// when the two live on different devices.
     pub stream: acyclic_stream::LocalStreamLimits,
-    /// Durable immutable Objects provider options.
-    pub objects: acyclic_objects::local::LocalObjectsLimits,
     /// Largest immutable object admitted.
     pub maximum_object_bytes: u64,
     /// Bounded disposable immutable-object accelerator shared by every handle.
@@ -25,7 +27,6 @@ impl LocalOptions {
         Self {
             root: root.into(),
             stream: acyclic_stream::LocalStreamLimits::default(),
-            objects: acyclic_objects::local::LocalObjectsLimits::default(),
             maximum_object_bytes: 64 * 1024 * 1024,
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
@@ -71,6 +72,58 @@ async fn canonical_local_root(
 ))]
 #[path = "local_root_tests.rs"]
 mod local_root_tests;
+
+/// How the root's Objects provider flushes.
+///
+/// Every Objects flush in this composition is a publication's
+/// `flush_before_publish`: the objects become reachable only through the
+/// Stream frame the publication appends next, and that frame is acknowledged
+/// only after the Stream's own flush. So an Objects flush has to order the
+/// objects ahead of the frame, never make them durable by itself: an ordering
+/// barrier (`F_BARRIERFSYNC` on Apple) suffices, and the Stream flush that
+/// acknowledges the frame drains the device cache holding both. That holds
+/// only while both live on one device; across devices neither ordering nor
+/// the drain carries over, so the objects flush fully there. Platforms with
+/// no ordering primitive weaker than the full flush issue the full flush.
+#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+pub(super) async fn publication_object_durability(
+    root: &Path,
+    owner: Option<OwnershipAnchor>,
+) -> Result<acyclic_objects::local::LocalDurability, FsError> {
+    let (stream, objects) = (root.join("stream"), root.join("objects"));
+    let shared = acyclic_native_runtime::run_blocking_io(
+        move || {
+            // Cancellation must not remove an externally owned root while this worker uses it.
+            let _owner = owner;
+            std::fs::create_dir_all(&stream)?;
+            std::fs::create_dir_all(&objects)?;
+            same_device(&stream, &objects)
+        },
+        None,
+    )
+    .map_err(FsError::LocalRoot)?
+    .await
+    .map_err(FsError::LocalRoot)?
+    .map_err(FsError::LocalRoot)?;
+    Ok(if shared {
+        acyclic_objects::local::LocalDurability::Barrier
+    } else {
+        acyclic_objects::local::LocalDurability::FullFlush
+    })
+}
+
+#[cfg(all(any(test, feature = "local"), unix))]
+fn same_device(first: &Path, second: &Path) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt as _;
+    Ok(std::fs::metadata(first)?.dev() == std::fs::metadata(second)?.dev())
+}
+
+// Windows has no ordering flush weaker than `FlushFileBuffers`, so either
+// answer issues the same full flush.
+#[cfg(all(any(test, feature = "local"), windows))]
+fn same_device(_: &Path, _: &Path) -> std::io::Result<bool> {
+    Ok(true)
+}
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub(super) fn prepare_local_root_open(
@@ -232,10 +285,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         let LocalOptions {
             root,
             stream,
-            objects,
             maximum_object_bytes,
             object_cache,
         } = options;
+        let objects = acyclic_objects::local::LocalObjectsLimits {
+            durability: publication_object_durability(&root, lifecycle.clone()).await?,
+        };
         let open_stream = async {
             Ok::<_, FsError>(std::sync::Arc::new(match &lifecycle {
                 Some(ownership) => {
