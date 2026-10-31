@@ -487,7 +487,7 @@ impl RootHints {
                 #[cfg(any(target_os = "macos", windows))]
                 HostChange::Unconfirmed => None,
                 #[cfg(windows)]
-                HostChange::File(_) => None,
+                HostChange::Observed { path, .. } => Some(path.as_path()),
             };
             let beneath = |host: &Path| {
                 relative.is_some_and(|relative| {
@@ -1081,13 +1081,14 @@ impl WindowsRootSink {
                 ..WorkCounters::default()
             })?;
             match change {
-                HostChange::Rebound(path) | HostChange::Altered(path) => {
+                HostChange::Rebound(path)
+                | HostChange::Altered(path)
+                | HostChange::Observed { path, .. } => {
                     // The Windows reader reports wide paths only. A path here
                     // is still a hint: over-reporting never loses a change.
                     let names = path.components().map(host_hint_name);
                     self.deliver_names_measured(names, None, work)?;
                 }
-                HostChange::File(_) => {}
                 HostChange::Everything | HostChange::Unconfirmed => {
                     self.invalidate_measured(work)?;
                 }
@@ -1109,24 +1110,18 @@ impl WindowsRootSink {
             .shared
             .lock()
             .map_err(|_| NativeWatchError::StatePoisoned)?;
-        let mut file = 1;
-        for change in changes {
-            work.started_io(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::default()
-            })?;
-            if let HostChangeWide::File(identity) = change {
-                file = usize::try_from(*identity).map_err(|_| WorkError::Overflow)?;
-                break;
-            }
-        }
         for change in changes {
             work.started_io(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::default()
             })?;
             match change {
-                HostChangeWide::Path { action, path } => {
+                HostChangeWide::Path { action, path, file } => {
+                    let file = file
+                        .map(usize::try_from)
+                        .transpose()
+                        .map_err(|_| WorkError::Overflow)?
+                        .unwrap_or(1);
                     let mut action = *action;
                     if let Some(registered) = &state.registered {
                         work.started_io(WorkCounters {
@@ -1164,7 +1159,6 @@ impl WindowsRootSink {
                         work,
                     )?;
                 }
-                HostChangeWide::File(_) => {}
                 HostChangeWide::Everything | HostChangeWide::Unconfirmed => {
                     work.check()?;
                     state.invalidation = Some(WatchInvalidationReason::NativeRescanRequired);

@@ -235,3 +235,13 @@ pub fn validate_json(input: &str) -> Result<(), wasm_bindgen::JsValue> {
         .map(|_| ())
         .map_err(|error| wasm_bindgen::JsValue::from_str(&error.to_string()))
 }
+
+/// Admit one credential-store address through the same grammar as deployment
+/// admission. Accepted addresses are already canonical and retain their exact
+/// bytes; URL decoding, path normalization and credential resolution never run.
+#[wasm_bindgen(js_name = parseSecretReference)]
+pub fn parse_secret_reference(input: String) -> Result<String, JsValue> {
+    crate::SecretReference::new(input)
+        .map(String::from)
+        .map_err(|error| entry_error(error.into()))
+}

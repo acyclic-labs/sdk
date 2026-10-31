@@ -30,4 +30,6 @@ Keep the same intent root and canonical published request when reconciling a los
 
 Publication validates the selected configuration and declared bytes before any account request. Only the selected closure is retained; missing or substituted modules fail before publication. Original Objects publication and retention revisions remain in the returned acknowledgements. Cancellation closes the original request through the shared pull owner.
 
+After the same initialization, `parseSecretReference` from `@acyclic-labs/workers/manifest` admits a standalone credential-store address through the deployment parser's Rust grammar. It returns the exact canonical address, such as `secrets:/models/primary`; malformed addresses throw `ManifestError` with `path: "reference"` and `rule: "secret-reference"`. It performs no credential lookup and accepts no URL decoding, path aliases or credential values.
+
 The public conformance case uses the real shipping Rust WASM account and selected compiled modules. It checks exact request/source identity, changed sibling closure identity, separate deployment retention, account isolation and refusal before effects. Deployment and execution require the original Actors service and host; this case qualifies the publisher.

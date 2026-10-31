@@ -314,7 +314,7 @@ pub fn publish(
     let mut staged = StagedFile::create_at(temporary.to_path_buf())?;
     observe(PublicationStage::Created)?;
     write(staged.as_file_mut())?;
-    staged.publish_observed(path, mode, &mut observe)
+    staged.publish_observed(path, mode, &mut observe).map(drop)
 }
 
 /// Publish an immutable original credential or report the existing winner.
@@ -351,6 +351,21 @@ pub struct StagedFile {
     cleanup: bool,
 }
 
+/// The original descriptor retained after successful durable publication.
+///
+/// This witnesses this publisher's completion, not current namespace identity
+/// or immutable contents. Another writer may replace the name or modify the
+/// inode. Source freshness still requires the original source observation.
+pub struct PublishedFile(StagedFile);
+
+impl PublishedFile {
+    /// Borrow the same descriptor used for staging and durable publication.
+    /// No reopen, descriptor duplication or payload read is performed.
+    pub fn as_file(&self) -> &File {
+        self.0.as_file()
+    }
+}
+
 impl StagedFile {
     fn create_at(path: std::path::PathBuf) -> io::Result<Self> {
         Ok(Self {
@@ -380,6 +395,18 @@ impl StagedFile {
 
     /// Durably publish the complete held file through the common implementation.
     pub fn publish(self, path: &Path, mode: crate::RenameMode) -> io::Result<()> {
+        self.publish_retained(path, mode).map(drop)
+    }
+
+    /// Durably publish while retaining the same original descriptor. A failed
+    /// durability barrier or acknowledgement never produces a witness, even
+    /// when the rename installed the file. Such a failure does not prove that
+    /// publication had no effect.
+    pub fn publish_retained(
+        self,
+        path: &Path,
+        mode: crate::RenameMode,
+    ) -> io::Result<PublishedFile> {
         self.publish_observed(path, mode, &mut |_| Ok(()))
     }
 
@@ -388,7 +415,7 @@ impl StagedFile {
         path: &Path,
         mode: crate::RenameMode,
         observe: &mut impl FnMut(PublicationStage) -> io::Result<()>,
-    ) -> io::Result<()> {
+    ) -> io::Result<PublishedFile> {
         if path == self.path {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -402,7 +429,8 @@ impl StagedFile {
         if let Some(error) = installed_error {
             return Err(error);
         }
-        observe(PublicationStage::Published)
+        observe(PublicationStage::Published)?;
+        Ok(PublishedFile(self))
     }
 }
 

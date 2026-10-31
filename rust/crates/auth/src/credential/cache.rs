@@ -88,6 +88,14 @@ impl CredentialSnapshot {
         })
     }
 
+    /// Bind this owned snapshot to a source observation authenticated by its
+    /// custodian. This moves the secret without copying it; the revision itself
+    /// grants no permission and must never be taken from a guest or request.
+    pub fn with_revision(mut self, revision: CredentialRevision) -> Self {
+        self.revision = revision;
+        self
+    }
+
     /// Borrow secret bytes only for the admitted transport request.
     pub fn token(&self) -> &str {
         &self.token
@@ -364,6 +372,18 @@ impl CredentialCache {
     /// Custodian push invalidation (external CLI/account/policy/audience change).
     /// Revision observation must also change or become unavailable before reuse.
     pub fn invalidate(&self) -> Result<(), CredentialCacheError> {
+        self.invalidate_current(true)
+    }
+
+    /// Fence existing leases after a nonterminal source change, while retaining
+    /// the original unfinished refresh and exact server rejection. That refresh
+    /// must establish its own current source revision before returning. Producer
+    /// loss must use `invalidate` instead so pending work is aborted and woken.
+    pub fn source_changed(&self) -> Result<(), CredentialCacheError> {
+        self.invalidate_current(false)
+    }
+
+    fn invalidate_current(&self, abort_pending: bool) -> Result<(), CredentialCacheError> {
         let flight = {
             let mut state = self
                 .0
@@ -371,8 +391,14 @@ impl CredentialCache {
                 .lock()
                 .map_err(|_| CredentialCacheError::Unavailable)?;
             self.0.current.store(None);
-            self.0.rejected.store(None);
-            state.take()
+            if abort_pending {
+                self.0.rejected.store(None);
+            }
+            if abort_pending || state.as_ref().is_some_and(|flight| flight.published) {
+                state.take()
+            } else {
+                None
+            }
         };
         if let Some(flight) = flight {
             flight.abort.abort();

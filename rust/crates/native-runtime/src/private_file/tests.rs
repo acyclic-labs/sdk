@@ -1,5 +1,5 @@
 use super::*;
-use std::io::{Read as _, Write as _};
+use std::io::{Read as _, Seek as _, Write as _};
 
 #[cfg(unix)]
 #[test]
@@ -101,6 +101,25 @@ fn every_publication_cut_exposes_only_complete_private_records() -> io::Result<(
             assert!(!path.exists());
         }
     }
+    let root = tempfile::tempdir()?;
+    let path = root.path().join("owner");
+    let mut staged = StagedFile::create(root.path(), "original-")?;
+    staged.as_file_mut().write_all(b"original publication")?;
+    let retained = staged.publish_retained(&path, crate::RenameMode::NoReplace)?;
+    let mut replacement = StagedFile::create(root.path(), "replacement-")?;
+    replacement
+        .as_file_mut()
+        .write_all(b"replacement publication")?;
+    replacement.publish(&path, crate::RenameMode::Replace)?;
+    let mut held = retained.as_file();
+    held.rewind()?;
+    let mut bytes = Vec::new();
+    held.read_to_end(&mut bytes)?;
+    assert_eq!(bytes, b"original publication");
+    // Negative control: reopening the selected name observes a different owner.
+    assert_eq!(fs::read(&path)?, b"replacement publication");
+    drop(retained);
+    assert_eq!(fs::read(&path)?, b"replacement publication");
     Ok(())
 }
 

@@ -224,29 +224,20 @@ impl Shared {
                 } else {
                     None
                 };
-                let changes = [
-                    HostChangeWide::Path { action, path },
-                    HostChangeWide::File(file.unwrap_or(0)),
-                ];
-                let delivered = if file.is_some() {
-                    changes.as_slice()
-                } else {
-                    std::slice::from_ref(&changes[0])
-                };
                 if let Some((_, _, to, _)) = paired {
                     work.started_io(ITEM)?;
                     let pair = [
-                        HostChangeWide::Path { action, path },
+                        HostChangeWide::Path { action, path, file },
                         HostChangeWide::Path {
                             action: 5,
                             path: to,
+                            file,
                         },
-                        HostChangeWide::File(file.unwrap_or(0)),
                     ];
-                    self.delivery
-                        .deliver_wide(&pair[..if file.is_some() { 3 } else { 2 }], work)?;
+                    self.delivery.deliver_wide(&pair, work)?;
                 } else {
-                    self.delivery.deliver_wide(delivered, work)?;
+                    self.delivery
+                        .deliver_wide(&[HostChangeWide::Path { action, path, file }], work)?;
                 }
                 let consumed = paired.map_or(
                     next,

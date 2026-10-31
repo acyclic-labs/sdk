@@ -75,7 +75,7 @@ impl Recorded {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .extend(changes.iter().map(|change| match change {
-                super::HostChangeWide::Path { action, path } => {
+                super::HostChangeWide::Path { action, path, .. } => {
                     let path = PathBuf::from(std::ffi::OsString::from_wide(path));
                     if *action == 3 {
                         HostChange::Altered(path)
@@ -83,7 +83,6 @@ impl Recorded {
                         HostChange::Rebound(path)
                     }
                 }
-                super::HostChangeWide::File(file) => HostChange::File(*file),
                 super::HostChangeWide::Everything => HostChange::Everything,
                 super::HostChangeWide::Unconfirmed => HostChange::Unconfirmed,
             }));
