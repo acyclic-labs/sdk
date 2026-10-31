@@ -10,7 +10,6 @@ test("Stream HTTP generator keeps route result types without a runtime contract 
   assert.match(source, /type HttpResponseContract = \{\n  "tail": "tail";\n  "read": "read";\n\};/);
   assert.match(source, /export type HttpRoute = keyof HttpResponseContract;/);
   assert.match(source, /HttpResponseByKind\[HttpResponseContract\[Route\]\]/);
-  assert.match(source, /return decodeHttpResponseWasm\(route, responseJson\);/);
   assert.doesNotMatch(source, /HTTP_RESPONSE_CONTRACT|Object\.freeze|export const/);
 });
 

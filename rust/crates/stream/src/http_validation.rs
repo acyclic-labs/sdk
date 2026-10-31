@@ -54,9 +54,7 @@ fn validate_revision(value: &Value) -> Result {
 
 fn path(value: &Value) -> Result {
     let value = string(value)?;
-    crate::StreamPath::new(value)
-        .map(|_| ())
-        .map_err(|_| "invalid path")
+    crate::StreamPath::validate(value).map_err(|_| "invalid path")
 }
 
 fn bytes(value: &Value) -> Result<Vec<u8>> {
@@ -78,7 +76,7 @@ fn key(value: &Value) -> Result {
         .ok_or("invalid idempotency key")
 }
 
-fn validate_record(value: &Value) -> Result {
+fn validate_record_body(value: &Value) -> Result {
     let item = object(value)?;
     u64_string(field(item, "sequence")?)?;
     let value = bytes(field(item, "value")?)?;
@@ -109,8 +107,18 @@ fn validate_record(value: &Value) -> Result {
     }
     id(field(item, "commitId")?)?;
     u64_string(field(item, "committedAtMicros")?)?;
-    if let Some(origin) = item.get("origin") {
-        crate::StreamPath::new(string(origin)?).map_err(|_| "invalid record origin")?;
+    Ok(())
+}
+
+fn validate_record(value: &Value) -> Result {
+    validate_record_body(value)?;
+    path(field(object(value)?, "origin")?)
+}
+
+fn validate_owned_record(value: &Value) -> Result {
+    validate_record_body(value)?;
+    if object(value)?.contains_key("origin") {
+        return Err("owned record must elide its origin");
     }
     Ok(())
 }
@@ -263,7 +271,7 @@ fn validate_mutation(value: &Value) -> Result {
                 return Err("invalid append positions");
             }
             for record in array(field(item, "records")?)? {
-                validate_record(record)?;
+                validate_owned_record(record)?;
             }
         }
         "fork" => {
@@ -283,7 +291,7 @@ fn validate_mutation(value: &Value) -> Result {
             }
             if let Some(records) = item.get("records") {
                 for record in array(records)? {
-                    validate_record(record)?;
+                    validate_owned_record(record)?;
                 }
             }
         }
@@ -336,7 +344,13 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 path(field(observation, "path")?)?;
                 let record = field(observation, "record")?;
                 if !record.is_null() {
-                    validate_record(record)?;
+                    validate_record_body(record)?;
+                    if let Some(origin) = object(record)?.get("origin") {
+                        path(origin)?;
+                        if string(origin)? == string(field(observation, "path")?)? {
+                            return Err("selected record must elide its origin");
+                        }
+                    }
                 }
             }
             validate_revision(field(item, "snapshot")?)?;
@@ -420,7 +434,12 @@ pub fn validate(route: &str, value: &Value) -> Result {
         Some("read") => {
             let item = object(value)?;
             for record in array(field(item, "records")?)? {
-                validate_record(record)?;
+                validate_record_body(record)?;
+                // The request's followed path supplies an omitted origin.
+                // The typed projection checks that contextual spelling.
+                if let Some(origin) = object(record)?.get("origin") {
+                    path(origin)?;
+                }
             }
             // The applied revision the host served the page at, when it
             // tracks revisions: a later read on a lagging replica floors here.

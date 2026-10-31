@@ -73,7 +73,7 @@ pub fn validate_append_request(input: &[u8]) -> String {
 /// Validate one canonical Stream path using the same parser used by every
 #[wasm_bindgen(js_name = validatePath)]
 pub fn validate_path(path: &str) -> String {
-    crate::StreamPath::new(path)
+    crate::StreamPath::validate(path)
         .map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
@@ -173,7 +173,7 @@ mod http {
             _ => return Err("invalid_argument"),
         };
         match crate::http_response::value(route, input)? {
-            Some(value) => decode(route, &value),
+            Some(value) => decode(route, &value, None),
             None => Ok(JsValue::UNDEFINED),
         }
     }
@@ -274,8 +274,18 @@ mod http {
         Ok(result.into())
     }
 
-    fn record_js(value: &Value) -> Result<JsValue> {
+    fn record_js(value: &Value, followed: Option<&str>) -> Result<JsValue> {
         let item = object(value)?;
+        let origin = match item.get("origin") {
+            Some(origin) => {
+                let origin = string(origin)?;
+                if followed == Some(origin) {
+                    return Err("followed record must elide its origin");
+                }
+                origin
+            }
+            None => followed.ok_or("context-free record must spell its origin")?,
+        };
         id(field(item, "commitId")?)?;
         let result = Object::new();
         set(&result, "sequence", &bigint_js(field(item, "sequence")?)?)?;
@@ -298,10 +308,7 @@ mod http {
                 Ok(result.into())
             })?,
         )?;
-        if let Some(origin) = item.get("origin") {
-            path(origin)?;
-            set(&result, "origin", &string_js(origin)?)?;
-        }
+        set(&result, "origin", &JsValue::from_str(origin))?;
         Ok(result.into())
     }
 
@@ -323,7 +330,7 @@ mod http {
                 let result = Object::new();
                 set(&result, "path", &string_js(field(child, "path")?)?)?;
                 if let Some(record) = child.get("tailRecord") {
-                    set(&result, "tailRecord", &record_js(record)?)?;
+                    set(&result, "tailRecord", &record_js(record, None)?)?;
                 }
                 if let Some(origin) = child.get("origin") {
                     set(&result, "origin", &origin_js(origin)?)?;
@@ -504,7 +511,9 @@ mod http {
                 set(
                     &result,
                     "records",
-                    &array_js(field(item, "records")?, record_js)?,
+                    &array_js(field(item, "records")?, |record| {
+                        record_js(record, Some(string(field(item, "path")?)?))
+                    })?,
                 )?;
             }
             "fork" => {
@@ -539,7 +548,9 @@ mod http {
                     set(
                         &result,
                         "records",
-                        &array_js(field(item, "records")?, record_js)?,
+                        &array_js(field(item, "records")?, |record| {
+                            record_js(record, Some(string(field(item, "destination")?)?))
+                        })?,
                     )?;
                 }
             }
@@ -637,7 +648,7 @@ mod http {
         set(&result, "durable", &bigint_js(field(item, "durable")?)?)?;
         let last = field(item, "last")?;
         if !last.is_null() {
-            set(&result, "last", &record_js(last)?)?;
+            set(&result, "last", &record_js(last, None)?)?;
         }
         let origin = field(item, "origin")?;
         if !origin.is_null() {
@@ -655,8 +666,11 @@ mod http {
         Ok(result.into())
     }
 
-    pub(super) fn decode(route: &str, value: &Value) -> Result<JsValue> {
+    pub(super) fn decode(route: &str, value: &Value, followed: Option<&str>) -> Result<JsValue> {
         crate::http_validation::validate(route, value)?;
+        if let Some(followed) = followed {
+            crate::StreamPath::validate(followed).map_err(|_| "invalid followed path")?;
+        }
         match crate::HTTP_RESPONSE_CONTRACT
             .iter()
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
@@ -687,7 +701,11 @@ mod http {
                         )?;
                         let record = field(observation, "record")?;
                         if !record.is_null() {
-                            set(&selected, "record", &record_js(record)?)?;
+                            set(
+                                &selected,
+                                "record",
+                                &record_js(record, Some(string(field(observation, "path")?)?))?,
+                            )?;
                         }
                         Ok(selected.into())
                     })?,
@@ -723,7 +741,9 @@ mod http {
                 set(
                     &result,
                     "records",
-                    &array_js(field(item, "records")?, record_js)?,
+                    &array_js(field(item, "records")?, |record| {
+                        record_js(record, followed)
+                    })?,
                 )?;
                 if let Some(applied) = item.get("applied").filter(|value| !value.is_null()) {
                     set(&result, "applied", &revision_js(applied)?)?;
