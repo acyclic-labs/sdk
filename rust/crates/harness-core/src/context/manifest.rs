@@ -32,7 +32,7 @@ pub struct ContextManifest {
     pub tools: Vec<ToolDefinition>,
 }
 
-/// The default GOAL.md and plans/ conventions, as their JSON source text.
+/// The shared plans/ and goal-loop conventions, as their JSON source text.
 #[doc(hidden)]
 pub const DEFAULT_CONVENTIONS_JSON: &str = include_str!("instructions.json");
 
@@ -43,26 +43,10 @@ impl ContextManifest {
         selected_skills: Vec<String>,
         tools: &ToolRegistry,
     ) -> Result<Self> {
-        Self::for_files(discovery, selected_skills, tools, true, true)
-    }
-
-    #[doc(hidden)]
-    pub fn for_files(
-        discovery: DiscoveredContext,
-        selected_skills: Vec<String>,
-        tools: &ToolRegistry,
-        goal: bool,
-        plans: bool,
-    ) -> Result<Self> {
         let defaults: [&str; 2] = serde_json::from_str(DEFAULT_CONVENTIONS_JSON)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Self {
-            conventions: defaults
-                .into_iter()
-                .zip([goal, plans])
-                .filter(|(_, enabled)| *enabled)
-                .map(|(text, _)| text.to_owned())
-                .collect(),
+            conventions: defaults.into_iter().map(str::to_owned).collect(),
             environment: None,
             discovery,
             selected_skills,

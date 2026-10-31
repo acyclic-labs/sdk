@@ -129,17 +129,9 @@ impl TurnContext for LocalContext {
                 .writer
                 .as_ref()
                 .ok_or_else(|| Error::Invalid("agent turn has no private writer".into()))?;
-            let prompt = match input {
-                ModelContent::Text(text) => Some(text.as_str()),
-                ModelContent::Part(_) | ModelContent::Parts(_) => None,
-            };
             let manifest = match &local.context_manifest {
                 Some(manifest) => manifest.clone(),
-                None => {
-                    local
-                        .stage_context_manifest_with(turn, prompt, &**writer)?
-                        .await?
-                }
+                None => local.stage_context_manifest_with(turn, &**writer)?.await?,
             };
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
