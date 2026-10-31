@@ -33,10 +33,6 @@ const MAXIMUM_LAZY_DIRECTORY_CURSORS: usize = 1_024;
 
 const DIRECTORY_PROMOTION_PAGE: u32 = 256;
 
-const MAXIMUM_PROMOTION_RETRIES: usize = 3;
-
-const MAXIMUM_INTERRUPTED_LISTINGS: usize = 3;
-
 struct CursorEntry<T> {
     generation: (u64, u64),
     cursor: T,

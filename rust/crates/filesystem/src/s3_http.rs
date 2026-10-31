@@ -65,8 +65,6 @@ pub struct FilesystemS3Limits {
     pub maximum_multipart_part_bytes: u64,
     /// Minimum size of every completed part except the final part.
     pub minimum_multipart_part_bytes: u64,
-    /// Maximum optimistic Stream retries under concurrent multipart activity.
-    pub maximum_multipart_cas_retries: u32,
 }
 
 /// Administrative bounds for discovering active multipart object roots before immutable-object reclamation.
@@ -112,7 +110,6 @@ impl Default for FilesystemS3Limits {
             maximum_multipart_records: 20_003,
             maximum_multipart_part_bytes: 5 * 1024 * 1024 * 1024,
             minimum_multipart_part_bytes: 5 * 1024 * 1024,
-            maximum_multipart_cas_retries: 32,
         }
     }
 }
@@ -129,7 +126,6 @@ impl FilesystemS3Limits {
             || self.maximum_multipart_records < self.maximum_multipart_parts.saturating_add(3)
             || self.maximum_multipart_part_bytes == 0
             || self.minimum_multipart_part_bytes > self.maximum_multipart_part_bytes
-            || self.maximum_multipart_cas_retries == 0
             || self.response_chunk_bytes > self.maximum_request_bytes
         {
             return Err(s3s::s3_error!(InvalidArgument));
