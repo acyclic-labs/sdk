@@ -120,7 +120,11 @@ pub(crate) fn mutation_from_wire(
     }
 }
 
-pub(crate) fn observation_from_wire(
+/// Validate a retained retry observation for a caller-owned transport adapter.
+///
+/// Callers must separately check that the returned `idempotency_key` matches
+/// the requested key before treating it as that retry's outcome.
+pub fn observation_from_wire(
     value: wire::IdempotencyObservation,
 ) -> Result<IdempotencyObservation, StreamError> {
     let request_digest = <[u8; 32]>::try_from(value.request_digest.as_ref())
@@ -168,9 +172,8 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
     }
 }
 
-pub(crate) fn append_outcome_from_wire(
-    value: wire::AppendResponse,
-) -> Result<AppendOutcome, StreamError> {
+/// Validate an append outcome through the same decoder as the SDK client.
+pub fn append_outcome_from_wire(value: wire::AppendResponse) -> Result<AppendOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::append_response::Outcome::Committed(receipt) => {
             Ok(AppendOutcome::Committed(append_receipt(&receipt)?))
@@ -181,9 +184,8 @@ pub(crate) fn append_outcome_from_wire(
     }
 }
 
-pub(crate) fn commit_outcome_from_wire(
-    value: wire::CommitResponse,
-) -> Result<CommitOutcome, StreamError> {
+/// Validate a conditional commit outcome, including every conflicting cut.
+pub fn commit_outcome_from_wire(value: wire::CommitResponse) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
         wire::commit_response::Outcome::Committed(receipt) => {
             Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
@@ -462,7 +464,8 @@ pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
     }
 }
 
-pub(crate) fn envelope_from_wire(
+/// Validate a complete committed envelope for a caller-owned transport adapter.
+pub fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
     Ok(CommittedEnvelope {
