@@ -1,8 +1,8 @@
-import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
+import { awaitSignal, credentialProvider, resolveCredential, watchCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
-import { ObjectsV1Error, ObjectsV1Provider, objectsRequest, type ObjectsV1Request } from "./v1.js";
+import { ObjectsV1Error, ObjectsV1Provider, objectsRequest, objectsStreamRequest, type ObjectsV1Request } from "./v1.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "@acyclic-labs/actors/observe";
 
@@ -11,7 +11,8 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
-  /** The caller's deadline for one call, in milliseconds; defaults to 30 s. */
+  /** Unary/opening timeout in milliseconds; defaults to 30 s. Availability has
+   * no idle timeout. Its caller can supply an absolute deadline signal. */
   readonly timeoutMs?: number;
 }
 const STATUS: Readonly<Record<number, wire.ErrorCode>> = {
@@ -44,31 +45,61 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
   }
   open(route: string, input: Uint8Array): ObjectsV1Request {
+    if (route === "blobs/availability") {
+      const client = this;
+      return objectsStreamRequest(input, async function* (bytes, controller) {
+        const ready = ensureObjectsWasm(controller.signal);
+        if (ready !== undefined) await ready;
+        yield* client.send(route, bytes, controller);
+      });
+    }
     return objectsRequest(input, async (bytes, controller) => {
       const ready = ensureObjectsWasm(controller.signal);
       if (ready !== undefined) await ready;
       return observed(this.observer, "objects", route,
-        sizes => this.send(route, bytes, controller, sizes));
+        async sizes => {
+          const source = this.send(route, bytes, controller, sizes);
+          try {
+            const reply = await source.next();
+            if (reply.done) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+            return reply.value;
+          } finally { await source.return(); }
+        });
     });
   }
-  private async send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): Promise<Uint8Array> {
+  private async *send(route: string, input: Uint8Array, controller: AbortController, sizes?: OperationSizes): AsyncGenerator<Uint8Array, void> {
+    controller.signal.throwIfAborted();
+    const streaming = route === "blobs/availability";
     const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, Number.MAX_SAFE_INTEGER);
     if (sizes) sizes.requestBytes = request.byteLength;
-    const timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), this.timeoutMs);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let admitted: CredentialRequest | undefined;
+    const watch = watchCredential(this.credential, controller.signal, () => new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED));
+    const signal = watch?.signal ?? controller.signal;
+    const timeout = setTimeout(() => controller.abort(new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED)), this.timeoutMs);
     try {
-      const lease = await resolveCredential(this.credential, controller.signal).catch(() => { throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
+      const lease = await resolveCredential(this.credential, signal).catch(error => { throw signal.aborted ? signal.reason : new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
       checkCredential(lease);
-      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
+      const response = await awaitSignal(this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json", ...(streaming ? { accept: "application/x-protobuf" } : {}) }, body: request as Uint8Array<ArrayBuffer> }), signal);
       if (response.status === 401) lease.reject();
+      checkCredential(lease);
+      reader = response.body?.getReader();
+      if (streaming && response.status === 200) {
+        if (response.headers.get("content-type") !== "application/x-protobuf" || reader === undefined) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+        clearTimeout(timeout);
+        while (true) {
+          const { done, value } = await awaitSignal(reader.read(), signal);
+          checkCredential(lease);
+          if (done) throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
+          yield value;
+        }
+      }
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
       const chunks: Uint8Array[] = [];
       let size = 0;
-      reader = response.body?.getReader();
       if (reader !== undefined) while (true) {
-        const { done, value } = await reader.read();
+        const { done, value } = await awaitSignal(reader.read(), signal);
         if (response.status === 200) checkCredential(lease);
         if (done) break;
         size += value.byteLength;
@@ -90,14 +121,17 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       catch { throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE); }
       checkCredential(lease);
       admitted = lease;
-      return decoded;
+      yield decoded;
     } catch (error) {
-      throw controller.signal.aborted ? controller.signal.reason : error;
+      throw signal.aborted ? signal.reason : error;
     } finally {
       clearTimeout(timeout);
-      await reader?.cancel().catch(() => {});
-      reader?.releaseLock();
-      if (admitted) checkCredential(admitted);
+      try { if (admitted) checkCredential(admitted); }
+      finally {
+        watch?.close();
+        void reader?.cancel().catch(() => {});
+        reader?.releaseLock();
+      }
     }
   }
 }

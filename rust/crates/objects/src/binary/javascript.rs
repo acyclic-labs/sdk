@@ -2,7 +2,7 @@
 use super::{Reply, Transport};
 use crate::{Availability, Blobs, Digest, Error, wire};
 use bytes::Bytes;
-use futures::StreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use js_sys::{Function, Promise, Reflect, Uint8Array};
 use prost::Message as _;
 use std::{rc::Rc, sync::Arc};
@@ -95,11 +95,45 @@ impl JavaScriptTransport {
         let open = method(&owner, "open")?;
         Ok(Self { owner, open })
     }
+
+    fn request(&self, route: &str, input: &[u8]) -> Result<Request, Error> {
+        let input = Uint8Array::from(input);
+        let owner = self
+            .open
+            .call2(&self.owner, &JsValue::from_str(route), &input)
+            .map_err(original_error)?;
+        Ok(Request {
+            close: method(&owner, "close")?,
+            owner,
+        })
+    }
 }
 
 struct Request {
     owner: JsValue,
     close: Function,
+}
+
+impl Request {
+    async fn next(&self) -> Result<Option<JsValue>, Error> {
+        let promise: Promise = method(&self.owner, "next")?
+            .call0(&self.owner)
+            .map_err(original_error)?
+            .dyn_into()
+            .map_err(|_| unavailable())?;
+        let reply = JsFuture::from(promise).await.map_err(original_error)?;
+        Ok((!reply.is_null()).then_some(reply))
+    }
+}
+
+fn reply_body(reply: &JsValue) -> Result<Bytes, Error> {
+    let body: Uint8Array = Reflect::get(reply, &"body".into())
+        .map_err(original_error)?
+        .dyn_into()
+        .map_err(|_| unavailable())?;
+    let (body, ()) =
+        acyclic_stream::javascript_bytes::snapshot(&body, |_| Ok(())).map_err(original_error)?;
+    Ok(body.into())
 }
 
 impl Drop for Request {
@@ -113,27 +147,9 @@ impl Drop for Request {
 impl Transport for JavaScriptTransport {
     async fn invoke(&self, route: &str, input: Bytes) -> Result<Reply, Error> {
         // JS receives owned request bytes, never a view into movable Rust memory.
-        let input = Uint8Array::from(input.as_ref());
-        let owner = self
-            .open
-            .call2(&self.owner, &JsValue::from_str(route), &input)
-            .map_err(original_error)?;
-        let request = Request {
-            close: method(&owner, "close")?,
-            owner,
-        };
-        let promise: Promise = method(&request.owner, "next")?
-            .call0(&request.owner)
-            .map_err(original_error)?
-            .dyn_into()
-            .map_err(|_| unavailable())?;
-        let reply = JsFuture::from(promise).await.map_err(original_error)?;
-        let body: Uint8Array = Reflect::get(&reply, &"body".into())
-            .map_err(original_error)?
-            .dyn_into()
-            .map_err(|_| unavailable())?;
-        let (body, ()) = acyclic_stream::javascript_bytes::snapshot(&body, |_| Ok(()))
-            .map_err(original_error)?;
+        let request = self.request(route, &input)?;
+        let reply = request.next().await?.ok_or_else(unavailable)?;
+        let body = reply_body(&reply)?;
         let revision = Reflect::get(&reply, &"revision".into()).map_err(original_error)?;
         let revision = if revision.is_undefined() {
             None
@@ -148,11 +164,43 @@ impl Transport for JavaScriptTransport {
                     .map_err(|_| unavailable())?,
             )
         };
-        Ok((body.into(), revision))
+        Ok((body, revision))
     }
 
-    async fn availability(&self, _digest: Digest) -> Result<Availability, Error> {
-        Err(wire::ErrorCode::Unsupported.into())
+    async fn availability(&self, digest: Digest) -> Result<Availability, Error> {
+        use acyclic_stream::wire_codec::session::FrameDecoder;
+        let request = self.request(
+            "blobs/availability",
+            &wire::AvailabilityRequest {
+                digest: Some(digest.into()),
+            }
+            .encode_to_vec(),
+        )?;
+        let decoder = FrameDecoder::with_decoder(acyclic_stream::MAX_COMMAND_BYTES, |bytes| {
+            wire::AvailabilityCursor::decode(bytes)
+                .map_err(|_| acyclic_stream::StreamError::InvalidResponse)
+        });
+        let mut frames = futures::stream::try_unfold(
+            (request, decoder, Bytes::new()),
+            |(request, mut decoder, mut chunk)| async move {
+                loop {
+                    let mut input = chunk.as_ref();
+                    let frame = decoder.read(&mut input).map_err(|_| unavailable())?;
+                    chunk = chunk.slice(chunk.len() - input.len()..);
+                    if let Some(frame) = frame {
+                        return Ok(Some((frame, (request, decoder, chunk))));
+                    }
+                    let reply = request.next().await?.ok_or_else(unavailable)?;
+                    chunk = reply_body(&reply)?;
+                }
+            },
+        )
+        .boxed_local();
+        let initial = frames.next().await.ok_or_else(unavailable)??.try_into()?;
+        Ok(Availability::new(
+            initial,
+            frames.map(|frame| frame?.try_into()),
+        ))
     }
 }
 
@@ -176,10 +224,23 @@ impl ObjectsV1Request {
         input: &Uint8Array,
     ) -> Result<Self, JsValue> {
         let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
-        let request = futures::stream::once(async move {
-            crate::route::invoke_at(blobs.as_ref(), &route, input.into()).await
-        })
-        .boxed_local();
+        let request = if route == "blobs/availability" {
+            futures::stream::once(async move {
+                Ok::<_, Error>(
+                    crate::route::invoke_stream(blobs.as_ref(), &route, input.into())
+                        .await?
+                        .map(|frame| Ok((frame?, None)))
+                        .boxed_local(),
+                )
+            })
+            .try_flatten()
+            .boxed_local()
+        } else {
+            futures::stream::once(async move {
+                crate::route::invoke_at(blobs.as_ref(), &route, input.into()).await
+            })
+            .boxed_local()
+        };
         Ok(Self {
             state: Rc::new(acyclic_stream::pull::PullCursor::new(
                 request,
@@ -199,6 +260,41 @@ impl ObjectsV1Request {
 
 #[wasm_bindgen]
 impl ObjectsV1Request {
+    /// Validates an original binary port's framed availability with the same
+    /// cursor and framing rules used by native clients. Closing cancels opening
+    /// as well as a parked change; no second observation source is created.
+    pub fn observe(owner: JsValue, input: &Uint8Array) -> Result<Self, JsValue> {
+        let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
+        let transport = JavaScriptTransport::new(owner).map_err(js_error)?;
+        let client = super::BinaryObjects::new(transport);
+        let request = futures::stream::once(async move {
+            let input = wire::AvailabilityRequest::decode(input.as_slice())
+                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+            let observation = crate::route::availability(&client, input).await?;
+            Ok::<_, Error>(
+                crate::route::availability_frames(observation)
+                    .map(|frame| Ok((frame?.encode_to_vec(), None)))
+                    .boxed_local(),
+            )
+        })
+        .try_flatten()
+        .boxed_local();
+        Ok(Self {
+            state: Rc::new(acyclic_stream::pull::PullCursor::new(
+                request,
+                unavailable(),
+            )),
+        })
+    }
+
+    /// Frames a generated gRPC cursor for the shared binary stream decoder.
+    pub fn frame(input: &Uint8Array) -> Result<Vec<u8>, JsValue> {
+        let (input, ()) = acyclic_stream::javascript_bytes::snapshot(input, |_| Ok(()))?;
+        let frame = wire::AvailabilityCursor::decode(input.as_slice())
+            .map_err(|_| js_error(unavailable()))?;
+        Ok(frame.encode_length_delimited_to_vec())
+    }
+
     /// Resolve one original reply, or null when closed or consumed.
     #[wasm_bindgen(unchecked_return_type = "ObjectsV1BinaryReply | null")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {

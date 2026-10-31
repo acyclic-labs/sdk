@@ -30,6 +30,27 @@ async function fixture(beforeReply) {
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
       const input = decode_objects_v1_json(objects_v1_http_type(route, false), Buffer.concat(chunks), 1 << 30);
+      if (route === "blobs/availability") {
+        const source = memory.open(route, input);
+        const closeSource = () => source.close();
+        response.on("close", closeSource);
+        try {
+          response.writeHead(200, { "content-type": "application/x-protobuf" });
+          response.flushHeaders();
+          while (!response.destroyed) {
+            const frame = await source.next();
+            if (frame === null) break;
+            // Fragment the shipping encoder's actual output at every byte.
+            for (const byte of frame.body) response.write(Buffer.from([byte]));
+          }
+        } finally {
+          response.off("close", closeSource);
+          source.close();
+          source.free();
+          response.end();
+        }
+        return;
+      }
       const payload = Buffer.from(encode_objects_v1_json(objects_v1_http_type(route, true), await memory.invoke(route, input), 1 << 30));
       if (beforeReply && !await beforeReply(response)) return;
       response.writeHead(200, { "content-type": "application/json" });
@@ -168,6 +189,27 @@ test("Objects original request cancellation settles a stalled real response", as
 
 test("Objects v1 Rust WASM memory provider serves the whole blob lifecycle", async () => {
   await lifecycle(await MemoryObjectsV1.create());
+});
+
+test("Objects availability follows a real HTTP source without losing an early change", async () => {
+  const server = await fixture();
+  const client = new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" });
+  const body = new Uint8Array([59, 61, 67]);
+  const digest = await blobDigest(body);
+  const stop = new AbortController();
+  let selected;
+  try {
+    selected = await client.availability(digest, stop.signal);
+    const initial = selected.cursor();
+    await client.put(body);
+    const changed = await selected.changed();
+    assert.deepEqual(changed.incarnation, initial.incarnation);
+    assert.ok(changed.sequence > initial.sequence);
+    const pending = selected.changed();
+    stop.abort(new Error("original caller stopped"));
+    await assert.rejects(pending, error => error === stop.signal.reason);
+    assert.deepEqual([...server.seen].sort(), ["blobs/availability", "blobs/put"]);
+  } finally { selected?.close(); await server.close(); }
 });
 
 test("Objects v1 owned binary bindings retain validation and caller bytes", async () => {

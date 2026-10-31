@@ -7,7 +7,9 @@ import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-no
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { BlobsService } from "../generated/proto/objects/v1/objects_pb.js";
-import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, type ObjectsV1Request } from "./v1.js";
+import { ObjectsV1Request as RustRequest } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ensureObjectsWasm } from "./wasm-runtime.js";
+import { ObjectsV1Error, ObjectsV1Provider, objectsV1Error, objectsRequest, objectsStreamRequest, type ObjectsV1Request } from "./v1.js";
 
 /** Node/Bun transport configuration for the Objects service. */
 export interface ObjectsV1GrpcOptions extends CredentialOptions {
@@ -55,6 +57,18 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
   close(): void { this.clients.close(); }
   open(route: string, input: Uint8Array): ObjectsV1Request {
+    if (route === "blobs/availability") {
+      const blobs = this.clients.blobs;
+      return objectsStreamRequest(input, async function* (bytes, controller) {
+        const ready = ensureObjectsWasm(controller.signal);
+        if (ready !== undefined) await ready;
+        try {
+          for await (const cursor of blobs.availability(fromBinary(wire.AvailabilityRequestSchema, bytes), { signal: controller.signal, timeoutMs: 0 })) {
+            yield RustRequest.frame(toBinary(wire.AvailabilityCursorSchema, cursor));
+          }
+        } catch (error) { throw controller.signal.aborted ? controller.signal.reason : grpcError(error); }
+      });
+    }
     return objectsRequest(input, (bytes, controller) => this.send(route, bytes, controller.signal));
   }
   private async send(route: string, input: Uint8Array, signal: AbortSignal): Promise<Uint8Array> {
