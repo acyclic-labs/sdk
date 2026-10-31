@@ -152,7 +152,6 @@ fn physical_bytes(file: &File) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[test]
 fn positional_writes_return_first_failure_and_keep_only_the_physical_prefix() -> io::Result<()> {
     for metered in [false, true] {
         for fault in [Fault::Interrupted, Fault::Zero] {
@@ -215,7 +214,6 @@ fn positional_writes_return_first_failure_and_keep_only_the_physical_prefix() ->
     Ok(())
 }
 
-#[test]
 fn bounded_reads_end_on_interruption_without_losing_initialized_prefixes() -> io::Result<()> {
     let mut file = tempfile::tempfile()?;
     write_all_at(&file, OFFSET, PAYLOAD, None)?;
@@ -289,7 +287,6 @@ fn bounded_reads_end_on_interruption_without_losing_initialized_prefixes() -> io
     Ok(())
 }
 
-#[test]
 fn positional_negative_control_std_reissues_the_interrupted_native_call() -> io::Result<()> {
     let file = tempfile::tempfile()?;
     let (result, calls) = probe(
@@ -313,7 +310,6 @@ fn positional_negative_control_std_reissues_the_interrupted_native_call() -> io:
     Ok(())
 }
 
-#[test]
 fn positional_refusal_precedes_physical_dispatch_and_preserves_the_original_file() -> io::Result<()>
 {
     let file = tempfile::tempfile()?;
@@ -359,4 +355,13 @@ fn positional_refusal_precedes_physical_dispatch_and_preserves_the_original_file
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), 0);
     assert_eq!(physical_bytes(&file)?, PAYLOAD);
     Ok(())
+}
+
+#[test]
+fn positional_first_result_preserves_physical_prefixes_and_refuses_before_dispatch()
+-> io::Result<()> {
+    positional_writes_return_first_failure_and_keep_only_the_physical_prefix()?;
+    bounded_reads_end_on_interruption_without_losing_initialized_prefixes()?;
+    positional_negative_control_std_reissues_the_interrupted_native_call()?;
+    positional_refusal_precedes_physical_dispatch_and_preserves_the_original_file()
 }
