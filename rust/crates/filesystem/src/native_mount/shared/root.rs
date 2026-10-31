@@ -197,7 +197,14 @@ impl IssuedDestination {
         _work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         #[cfg(any(target_os = "macos", test))]
-        if self.created.is_some() {
+        if let Some(parent) = self.created.as_ref() {
+            let held = _guard
+                .parent_directory
+                .as_ref()
+                .ok_or(NativeMountError::ControlPending)?;
+            if crate::native_host::directory_identity(held, &mut &*_work)? != parent.identity() {
+                return Err(NativeMountError::InvalidDestination);
+            }
             _guard.prepare_destination_cleanup(&self.path, _work)?;
             // The same held-parent fence now owns the sole directory removal.
             drop(self.created.take());

@@ -389,5 +389,50 @@ fn failed_view_startup_retains_directory_until_original_physical_retirement()
             if handoff { 4 } else { 3 }
         );
     }
+    replaced_view_parent_is_not_adopted()?;
+    Ok(())
+}
+
+fn replaced_view_parent_is_not_adopted() -> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let parent = root.path().join("admitted");
+    std::fs::create_dir(&parent)?;
+    let admitted = crate::hold_root(&parent)?;
+    let issued = IssuedDestination::create(Some(&admitted))?;
+    let destination = issued.path().to_path_buf();
+    let leaf = destination.file_name().ok_or("missing issued leaf")?;
+    let moved = root.path().join("moved");
+    std::fs::rename(&parent, &moved)?;
+    std::fs::create_dir(&parent)?;
+    std::fs::create_dir(&destination)?;
+    let work = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .map_err(|(cause, _)| cause)?;
+    let mut guard = None;
+    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
+    let mut prepared = PreparedNativeMountStart::new(&work)?.with_view_destination(Some(issued));
+    let result = prepared.prepare_view_destination(guard.as_mut().ok_or("missing fence")?, &work);
+    assert!(matches!(result, Err(NativeMountError::InvalidDestination)));
+    drop(prepared);
+    assert!(
+        !moved.join(leaf).exists(),
+        "original issuance lost cleanup custody"
+    );
+    assert!(destination.is_dir(), "replacement directory was adopted");
+    let mut packet = NativeMountRetirement {
+        retained_source: None,
+        startup_source_watch: None,
+        terminal_source_failure: None,
+        destination_guard: guard,
+        #[cfg(windows)]
+        warm_namespace: None,
+    };
+    packet.retire(
+        None,
+        crate::native_mount::retirement::SourceRetirementWait::Physical,
+    )?;
+    assert!(
+        destination.is_dir(),
+        "foreign directory was removed during retirement"
+    );
     Ok(())
 }
