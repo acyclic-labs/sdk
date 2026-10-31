@@ -720,7 +720,7 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
         BlobBuildOptions {
             chunk_bytes: 2,
             page_items: 2,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 3,
         },
         WorkBudget::UNBOUNDED,

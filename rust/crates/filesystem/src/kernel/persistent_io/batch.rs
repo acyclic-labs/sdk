@@ -176,7 +176,7 @@ where
                 plan.sources.push(BatchSource::Cold(object_id));
                 plan.requests.push(ObjectReadRequest {
                     object_id,
-                    maximum_bytes: limits.maximum_page_object_bytes(),
+                    maximum_bytes: limits.maximum_object_bytes,
                 });
             }
         }

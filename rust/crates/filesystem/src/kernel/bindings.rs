@@ -199,6 +199,11 @@ impl acyclic_collections::page::Format for BindingFormat {
 }
 
 impl Format for BindingFormat {
+    fn key_hash(key: &Binding) -> u64 {
+        super::persistent_btree::stable_hash(&key.parent.into_bytes()).rotate_left(1)
+            ^ super::persistent_btree::stable_hash(key.name.as_bytes())
+    }
+
     fn kind() -> ObjectKind {
         ObjectKind::BindingPage
     }

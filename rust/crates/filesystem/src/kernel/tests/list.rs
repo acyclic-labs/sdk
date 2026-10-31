@@ -122,7 +122,7 @@ async fn bounded_listing_exposes_one_authenticated_unvisited_successor()
         Some(ResidencyHint {
             request: crate::ObjectReadRequest {
                 object_id: expected,
-                maximum_bytes: limits.maximum_page_object_bytes(),
+                maximum_bytes: limits.maximum_object_bytes,
             },
             reason: ResidencyReason::DirectorySuccessor,
         })

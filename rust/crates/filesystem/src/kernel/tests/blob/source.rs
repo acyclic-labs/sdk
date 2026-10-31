@@ -9,7 +9,7 @@ async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dy
         BlobBuildOptions {
             chunk_bytes: 2,
             page_items: 2,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 9,
         },
         WorkBudget::UNBOUNDED,
@@ -127,7 +127,7 @@ async fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
     let options = BlobBuildOptions {
         chunk_bytes: 3,
         page_items: 2,
-        page_bytes: 127,
+        page_bytes: 129,
         maximum_blob_bytes: 3,
     };
     let mut source = MeasuredSource {
@@ -208,7 +208,7 @@ async fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     let options = BlobBuildOptions {
         chunk_bytes: 3,
         page_items: 2,
-        page_bytes: 127,
+        page_bytes: 129,
         maximum_blob_bytes: 3,
     };
     let (mut source, capacity) = make_source();
@@ -250,7 +250,7 @@ async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_
     let options = BlobBuildOptions {
         chunk_bytes: 4,
         page_items: 2,
-        page_bytes: 127,
+        page_bytes: 129,
         maximum_blob_bytes: 6,
     };
     let store = MemoryObjectStore::default();
@@ -383,7 +383,7 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
         BlobBuildOptions {
             chunk_bytes: 4,
             page_items: 2,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 1,
         },
         WorkBudget::UNBOUNDED,
@@ -396,7 +396,7 @@ async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dy
     let encoded = AsyncObjectStore::read(
         &store,
         built.root,
-        127,
+        129,
         &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
     )
     .await?;
@@ -437,7 +437,7 @@ async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
         BlobBuildOptions {
             chunk_bytes: 64,
             page_items: 4,
-            page_bytes: 223,
+            page_bytes: 227,
             maximum_blob_bytes: 3,
         },
         WorkBudget::UNBOUNDED,
@@ -467,7 +467,7 @@ async fn streaming_index_memory_is_logarithmic_in_chunk_count()
         BlobBuildOptions {
             chunk_bytes: 1,
             page_items: 1_024,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 4_096,
         },
         WorkBudget::UNBOUNDED,
@@ -485,7 +485,7 @@ async fn streaming_index_memory_is_logarithmic_in_chunk_count()
         },
         DecodeLimits {
             maximum_page_items: 1_024,
-            maximum_page_bytes: 127,
+            maximum_page_bytes: 129,
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
@@ -504,19 +504,19 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         BlobBuildOptions {
             chunk_bytes: 0,
             page_items: 2,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 1,
         },
         BlobBuildOptions {
             chunk_bytes: 1,
             page_items: 1,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 1,
         },
         BlobBuildOptions {
             chunk_bytes: 1,
             page_items: 2,
-            page_bytes: 127,
+            page_bytes: 129,
             maximum_blob_bytes: 0,
         },
     ] {
@@ -542,7 +542,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         BlobBuildOptions {
             chunk_bytes: 1,
             page_items: 2,
-            page_bytes: 126,
+            page_bytes: 128,
             maximum_blob_bytes: 3,
         },
         WorkBudget::UNBOUNDED,
@@ -558,7 +558,7 @@ async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
     let options = BlobBuildOptions {
         chunk_bytes: 2,
         page_items: 2,
-        page_bytes: 127,
+        page_bytes: 129,
         maximum_blob_bytes: 8,
     };
     let mut baseline_source = std::io::Cursor::new(b"abcdefgh");

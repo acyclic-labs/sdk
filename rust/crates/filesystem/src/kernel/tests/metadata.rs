@@ -96,7 +96,7 @@ fn unavailable_zero_and_negative_remain_distinct() -> Result<(), Box<dyn std::er
     );
     assert_eq!(
         hex::encode(encoded),
-        "41435946534d4554010001a481000001e803000001e803000000000001ffffffffffffffff010000000000000000000001030303030303030303030303030303030303030303030303030303030303030300"
+        "41435946534d4554010001a481000001e803000001e803000000000001ffffffffffffffff01000000000000000000000101030303030303030303030303030303030303030303030303030303030303030300"
     );
     Ok(())
 }
@@ -205,8 +205,8 @@ fn every_metadata_presence_tag_fails_closed_when_noncanonical()
         (57, "accessed_ns"),
         (66, "changed_ns"),
         (75, "named_attributes"),
-        (108, "acl"),
-        (141, "security_descriptor"),
+        (109, "acl"),
+        (143, "security_descriptor"),
     ] {
         let mut malformed = encoded.clone();
         malformed[offset] = 2;

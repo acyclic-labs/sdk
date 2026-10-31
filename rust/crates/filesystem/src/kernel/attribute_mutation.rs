@@ -31,6 +31,10 @@ impl Format for AttributeFormat {
         ObjectKind::AttributePage
     }
 
+    fn key_hash(key: &Self::Key) -> u64 {
+        super::persistent_btree::stable_hash(key.as_bytes())
+    }
+
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
@@ -212,6 +216,17 @@ impl persistent_btree::Mutation<AttributeFormat> for AttributeMutation {
 
     fn changes_cardinality(&self) -> bool {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
+    }
+
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        match self {
+            Self::Replace {
+                expected,
+                replacement,
+            } => Ok(AttributeFormat::leaf_item_encoded_length(expected)?
+                != AttributeFormat::leaf_item_encoded_length(replacement)?),
+            _ => Ok(true),
+        }
     }
 
     fn replacement<'a>(

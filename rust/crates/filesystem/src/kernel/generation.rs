@@ -157,8 +157,10 @@ where
     }
     let parent_count =
         usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+    // Every parent copies at least a plain reference's bytes, so an exact
+    // budget passes this check exactly when it covers the copies below.
     observe(ReadAllocationStep::CheckCopy(
-        (parent_count * std::mem::size_of::<GenerationId>()) as u64,
+        (parent_count * ObjectId::PLAIN_ENCODED_LEN) as u64,
     ))?;
     let mut parents = Vec::new();
     super::file_read::reserve_decoded_items(&mut parents, parent_count, &mut observe)?;

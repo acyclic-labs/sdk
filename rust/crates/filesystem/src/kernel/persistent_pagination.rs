@@ -861,7 +861,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             .flatten()
             .map(|object_id| ObjectReadRequest {
                 object_id,
-                maximum_bytes: self.limits.maximum_page_object_bytes(),
+                maximum_bytes: self.limits.maximum_object_bytes,
             });
         if has_more {
             let removed = self

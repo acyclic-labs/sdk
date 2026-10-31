@@ -27,6 +27,10 @@ impl Format for FileTableFormat {
         ObjectKind::FileTablePage
     }
 
+    fn key_hash(key: &Self::Key) -> u64 {
+        super::persistent_btree::stable_hash(&key.into_bytes())
+    }
+
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
@@ -201,6 +205,17 @@ impl persistent_btree::Mutation<FileTableFormat> for FileTableMutation {
 
     fn changes_cardinality(&self) -> bool {
         matches!(self, Self::Insert(_) | Self::Remove { .. })
+    }
+
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        match self {
+            Self::Replace {
+                expected,
+                replacement,
+            } => Ok(FileTableFormat::leaf_item_encoded_length(expected)?
+                != FileTableFormat::leaf_item_encoded_length(replacement)?),
+            _ => Ok(true),
+        }
     }
 
     fn replacement<'a>(

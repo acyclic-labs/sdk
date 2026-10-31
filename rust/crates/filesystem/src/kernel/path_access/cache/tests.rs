@@ -51,9 +51,10 @@ impl ProbeModel {
         }
     }
 
+    // FNV over the canonical reference, as the cache binds the full
+    // reference: kind, digest, and any sealed association.
     fn hash(key: ObjectId) -> usize {
-        key.digest
-            .as_bytes()
+        key.to_bytes()
             .iter()
             .fold(usize::from(key.kind.canonical_tag()), |hash, byte| {
                 (hash ^ usize::from(*byte)).wrapping_mul(16_777_619)

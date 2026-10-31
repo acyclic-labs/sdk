@@ -390,7 +390,7 @@ pub(crate) fn attribute_page_decode_shape(
         bytes,
         DOMAIN,
         VERSION,
-        limits.maximum_page_object_bytes(),
+        limits.maximum_object_bytes,
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
     let (tag, item_count) = decoder.page_header(limits.maximum_page_items, &mut |_| {
@@ -440,13 +440,7 @@ pub fn decode_attribute_page<E>(
 where
     E: From<CanonicalDecodeError>,
 {
-    let mut decoder = Decoder::new(
-        bytes,
-        DOMAIN,
-        VERSION,
-        limits.maximum_page_object_bytes(),
-        observe,
-    )?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
     let (tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     match tag {

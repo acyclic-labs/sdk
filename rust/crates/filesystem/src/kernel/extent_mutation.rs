@@ -318,64 +318,27 @@ fn validate_kind(kind: &ExtentKind, length: u64) -> Result<(), ExtentMutationErr
     Ok(())
 }
 
-fn extent_leaf_chunk_end(
-    extents: &[Extent],
-    start: usize,
-    limits: DecodeLimits,
-) -> Result<(usize, u64), ExtentMutationError> {
-    extent_chunk_end(extents, start, limits, |extent| match extent.kind {
+fn extent_leaf_item_length(extent: &Extent) -> Result<usize, CanonicalDecodeError> {
+    Ok(match extent.kind {
         ExtentKind::Hole | ExtentKind::AllocatedZero => 8 + 8 + 1,
         ExtentKind::Content { object, .. } => 8 + 8 + 1 + object.encoded_len() + 8,
     })
 }
 
-fn extent_internal_chunk_end(
-    children: &[ExtentChild],
-    start: usize,
-    limits: DecodeLimits,
-) -> Result<(usize, u64), ExtentMutationError> {
-    extent_chunk_end(children, start, limits, |child| {
-        8 + 8 + child.page.encoded_len()
-    })
+fn extent_internal_item_length(child: &ExtentChild) -> Result<usize, CanonicalDecodeError> {
+    Ok(8 + 8 + child.page.encoded_len())
 }
 
-fn extent_chunk_end<T>(
-    items: &[T],
-    start: usize,
-    limits: DecodeLimits,
-    encoded_length: impl Fn(&T) -> usize,
-) -> Result<(usize, u64), ExtentMutationError> {
-    const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
-    let maximum_items = usize::try_from(limits.maximum_page_items)
-        .map_err(|_| ExtentMutationError::InvalidLimits)?;
-    let maximum_bytes = usize::try_from(limits.maximum_page_bytes)
-        .map_err(|_| ExtentMutationError::InvalidLimits)?;
-    let mut end = start;
-    let mut bytes = PAGE_HEADER_BYTES;
-    let mut examined = 0_u64;
-    while end < items.len() && end - start < maximum_items {
-        examined = examined.saturating_add(1);
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "the loop guard `end < items.len()` directly establishes `end` is in bounds \
-                      at this point in the loop body"
-        )]
-        let next = bytes
-            .checked_add(encoded_length(&items[end]))
-            .ok_or(ExtentMutationError::PageItemTooLarge)?;
-        if next > maximum_bytes {
-            if end == start {
-                return Err(ExtentMutationError::PageItemTooLarge);
-            }
-            break;
-        }
-        bytes = next;
-        end += 1;
-    }
-    if end == start {
-        return Err(ExtentMutationError::PageItemTooLarge);
-    }
-    Ok((end, examined))
+fn offset_hash(offset: u64) -> u64 {
+    super::persistent_btree::stable_hash(&offset.to_le_bytes())
+}
+
+/// The shared chunker can refuse only invalid limits or an encoder contract.
+fn chunk_error(error: super::persistent_btree::Error<ExtentMutationError>) -> FsError {
+    extent_error(match error {
+        super::persistent_btree::Error::Decode(error) => error.into(),
+        _ => ExtentMutationError::InvalidLimits,
+    })
 }
 
 mod context;
@@ -392,10 +355,10 @@ pub(crate) async fn put_extent_page_with_accounting<S: crate::AsyncObjectStore>(
         page,
         limits.maximum_page_items,
     )?);
-    if length > limits.maximum_page_object_bytes() {
+    if length > limits.maximum_object_bytes {
         return Err(CanonicalDecodeError::ObjectTooLarge {
             observed: length,
-            maximum: limits.maximum_page_object_bytes(),
+            maximum: limits.maximum_object_bytes,
         }
         .into());
     }

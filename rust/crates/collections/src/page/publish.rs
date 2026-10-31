@@ -6,6 +6,8 @@ use super::{Child, Format, PackingError, PackingLimits, PageChunks, PageRef};
 pub trait Work<F: Format> {
     /// Original allocation owner for a cloned first key.
     type First;
+    /// Original admitted unfinished leaf tail.
+    type LeafCarry;
     /// Original admitted child-summary container.
     type Output;
     /// Original admission, encoding or physical IO refusal.
@@ -21,10 +23,15 @@ pub trait Work<F: Format> {
     fn packing_error(error: PackingError<Self::Error>) -> Self::Error;
     /// Reports an invalid original page position.
     fn invalid_input() -> Self::Error;
-    /// Refuses a parent level that cannot reduce its child count.
-    fn nonreducing() -> Self::Error;
-    /// Checks the original admitted height before constructing another level.
-    fn next_height(&self, height: u16) -> Result<u16, Self::Error>;
+    /// Stable format-defined boundary hash; never an identity lookup.
+    fn key_hash(key: &F::Key) -> u64;
+    /// Retains the unfinished leaf in its original allocation owner.
+    fn carry_leaf(&mut self, entries: &[F::Value]) -> Result<Self::LeafCarry, Self::Error>;
+    /// Retains unfinished child summaries in their original allocation owner.
+    fn carry_children(
+        &mut self,
+        children: &[Child<F::Key, F::Reference>],
+    ) -> Result<Self::Output, Self::Error>;
     /// Charges the original examined entries before their next operation.
     fn charge_items(&mut self, count: u64) -> Result<(), Self::Error>;
     /// Allocates the original output once with its original capacity.
@@ -40,10 +47,6 @@ pub trait Work<F: Format> {
         first: Self::First,
         page: F::Reference,
     ) -> Result<(), Self::Error>;
-    /// Borrows the original owned summaries without copying them.
-    fn children(output: &Self::Output) -> &[Child<F::Key, F::Reference>];
-    /// Retires the original summary allocation after its final use.
-    fn retire(&mut self, output: Self::Output) -> Result<(), Self::Error>;
     /// Publishes one original borrowed page. Its physical producer owns the
     /// original admission and settles a lost producer with its typed error.
     fn write(
@@ -56,8 +59,10 @@ pub trait Work<F: Format> {
 pub trait Level<F: Format> {
     /// Original leaf value or child summary.
     type Item;
-    /// Internal pages must prove that the next level reduces before any IO.
-    const INTERNAL: bool;
+    /// The caller's typed unfinished tail owner.
+    type Pending<W: Work<F>>;
+    /// Copies only an unfinished tail under original admission.
+    fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error>;
     /// Borrows the first key without cloning it.
     fn key(item: &Self::Item) -> &F::Key;
     /// Measures the original item through the original encoder.
@@ -71,7 +76,10 @@ pub enum Leaf {}
 
 impl<F: Format> Level<F> for Leaf {
     type Item = F::Value;
-    const INTERNAL: bool = false;
+    type Pending<W: Work<F>> = W::LeafCarry;
+    fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error> {
+        work.carry_leaf(items)
+    }
 
     fn key(item: &Self::Item) -> &F::Key {
         F::key(item)
@@ -91,7 +99,10 @@ pub enum Internal {}
 
 impl<F: Format> Level<F> for Internal {
     type Item = Child<F::Key, F::Reference>;
-    const INTERNAL: bool = true;
+    type Pending<W: Work<F>> = W::Output;
+    fn carry<W: Work<F>>(work: &mut W, items: &[Self::Item]) -> Result<Self::Pending<W>, W::Error> {
+        work.carry_children(items)
+    }
 
     fn key(item: &Self::Item) -> &F::Key {
         &item.first
@@ -106,82 +117,45 @@ impl<F: Format> Level<F> for Internal {
     }
 }
 
-/// Packs and publishes one level using its original admission and IO order.
-///
-/// Leaf output grows under the original reservation immediately before each
-/// write. Internal output is counted and its reduction proved before any write.
-/// Each step consumes a nonempty partition; the only wait is its original page
-/// producer. This core owns no allocation, queue, payload copy or durability cut.
+/// Publishes completed content-defined chunks and returns only the unfinished
+/// right tail to the original owner. The physical page producer is the sole
+/// wait; no new allocation, task, reference codec or durability cut lives here.
 pub async fn write<F, K, W, const HEADER_BYTES: usize, const TARGET_BYTES: usize>(
     work: &mut W,
     items: &[K::Item],
-) -> Result<W::Output, W::Error>
+    level: u16,
+    close: bool,
+    // The exact predecessor tail must join a changed following first item.
+    hold_last: bool,
+) -> Result<(W::Output, Option<K::Pending<W>>), W::Error>
 where
     F: Format,
     K: Level<F>,
     W: Work<F>,
 {
     let limits = work.limits()?;
-    let (mut chunks, examined) =
-        PageChunks::<_, _, HEADER_BYTES, TARGET_BYTES>::new(items, limits, K::length::<W>)
-            .map_err(W::packing_error)?;
-    work.charge_items(examined)?;
-    let mut capacity = 0;
-    if K::INTERNAL {
-        while let Some((_, examined)) = chunks.next_page().map_err(W::packing_error)? {
-            work.charge_items(examined)?;
-            capacity += 1;
+    let mut chunks = PageChunks::<_, _, _, HEADER_BYTES, TARGET_BYTES>::new(
+        items,
+        limits,
+        level,
+        K::length::<W>,
+        |item| W::key_hash(K::key(item)),
+    )
+    .map_err(W::packing_error)?;
+    let mut output = work.allocate(0)?;
+    let mut consumed = 0_usize;
+    while let Some((chunk, _, closed)) = chunks
+        .next_page(|| work.charge_items(1))
+        .map_err(W::packing_error)?
+    {
+        consumed += chunk.len();
+        if (!closed && !close) || (hold_last && consumed == items.len()) {
+            return Ok((output, Some(K::carry(work, chunk)?)));
         }
-        if items.len() > 1 && capacity >= items.len() {
-            return Err(W::nonreducing());
-        }
-        let (next, examined) =
-            PageChunks::<_, _, HEADER_BYTES, TARGET_BYTES>::new(items, limits, K::length::<W>)
-                .map_err(W::packing_error)?;
-        work.charge_items(examined)?;
-        chunks = next;
-    }
-    let mut output = work.allocate(capacity)?;
-    while let Some((chunk, examined)) = chunks.next_page().map_err(W::packing_error)? {
-        work.charge_items(examined)?;
         let first = work.first(K::key(chunk.first().ok_or_else(W::invalid_input)?))?;
-        if !K::INTERNAL {
-            work.reserve(&mut output, items.len())?;
-        }
+        work.reserve(&mut output, items.len())?;
         let page = work.write(&K::page(chunk)).await?;
         work.append(&mut output, first, page)?;
     }
-    Ok(output)
-}
-
-/// Publishes reducing parent levels, retiring each original completed level.
-/// The original height bound refuses malformed nontermination; an empty root
-/// publishes the original empty leaf rather than inventing a reference.
-pub async fn root<F, W, const HEADER_BYTES: usize, const TARGET_BYTES: usize>(
-    work: &mut W,
-    mut summaries: W::Output,
-    mut height: u16,
-) -> Result<F::Reference, W::Error>
-where
-    F: Format,
-    W: Work<F>,
-{
-    if W::children(&summaries).is_empty() {
-        work.retire(summaries)?;
-        return work.write(&PageRef::Leaf(&[])).await;
-    }
-    while W::children(&summaries).len() > 1 {
-        height = work.next_height(height)?;
-        let next =
-            write::<F, Internal, W, HEADER_BYTES, TARGET_BYTES>(work, W::children(&summaries))
-                .await?;
-        work.retire(summaries)?;
-        summaries = next;
-    }
-    let page = W::children(&summaries)
-        .first()
-        .ok_or_else(W::invalid_input)?
-        .page;
-    work.retire(summaries)?;
-    Ok(page)
+    Ok((output, None))
 }

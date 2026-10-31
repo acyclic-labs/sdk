@@ -208,7 +208,7 @@ pub(crate) fn file_table_page_decode_shape(
         bytes,
         DOMAIN,
         VERSION,
-        limits.maximum_page_object_bytes(),
+        limits.maximum_object_bytes,
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
     let (tag, item_count) = decoder.page_header(limits.maximum_page_items, &mut |_| {
@@ -466,13 +466,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<FileTablePage, E> {
-    let mut decoder = Decoder::new(
-        bytes,
-        DOMAIN,
-        VERSION,
-        limits.maximum_page_object_bytes(),
-        observe,
-    )?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
     let (tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     match tag {
         1 => {

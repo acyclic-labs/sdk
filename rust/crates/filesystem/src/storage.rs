@@ -343,11 +343,17 @@ pub struct ObjectStorage {
 impl ObjectId {
     /// Largest canonical object-reference encoding.
     pub const ENCODED_LEN: usize = 113;
+    /// Smallest canonical object-reference encoding: a plain reference.
+    pub const PLAIN_ENCODED_LEN: usize = 33;
 
     /// Canonical bytes occupied by this reference.
     #[must_use]
     pub const fn encoded_len(self) -> usize {
-        if self.storage.is_some() { 113 } else { 33 }
+        if self.storage.is_some() {
+            Self::ENCODED_LEN
+        } else {
+            Self::PLAIN_ENCODED_LEN
+        }
     }
 
     /// Parses one complete canonical reference, leaving subsequent fields unread.

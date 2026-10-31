@@ -5,12 +5,16 @@ use std::ops::Range;
 
 /// The next original child and the mutations bounded by its next sibling.
 pub struct Selected<'a, K, P> {
+    /// Original child position, for exact inherited endpoint ownership.
+    pub index: usize,
     /// The original child, borrowed without cloning its key or reference.
     pub child: &'a Child<K, P>,
     /// The next sibling's key; `None` leaves the caller's inherited upper bound.
     pub upper: Option<&'a K>,
     /// The original sorted mutation positions assigned to this child.
     pub mutations: Range<usize>,
+    /// The following child has a mutation at its exact first key.
+    pub following_first_changes: bool,
 }
 
 /// A monotonically advancing cursor over one page and its selected mutations.
@@ -63,11 +67,23 @@ impl Cursor {
         } else {
             self.mutation_cursor = self.mutation_end;
         }
+        let following_first_changes = if let Some(upper) = upper {
+            if self.mutation_cursor < self.mutation_end {
+                charge_item()?;
+                mutation_key(self.mutation_cursor)? == upper
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         charge_item()?;
         Ok(Some(Selected {
+            index,
             child,
             upper,
             mutations: start..self.mutation_cursor,
+            following_first_changes,
         }))
     }
 }

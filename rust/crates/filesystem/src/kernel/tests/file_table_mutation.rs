@@ -1,9 +1,9 @@
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
-use crate::kernel::decode_file_table_page;
 use crate::kernel::persistent_btree::Mutation;
 use crate::kernel::{FileKind, FilePayload, FileTablePage};
+use crate::kernel::{decode_file_table_page, encode_file_table_page};
 use crate::memory::MemoryObjectStore;
 
 use crate::kernel::Child;
@@ -67,6 +67,54 @@ fn record(byte: u8, metadata_byte: u8) -> FileRecord {
 
 use crate::test_support::put_file_table_page as put;
 
+/// Two-item pages: the item limit closes each page at its second item, so
+/// canonical pages are pairs, whatever the keys hash to.
+fn pair_limits() -> DecodeLimits {
+    DecodeLimits {
+        maximum_page_items: 2,
+        ..DecodeLimits::default()
+    }
+}
+
+/// The canonical table of records 1 3 4 6: leaves `[1 3]` and `[4 6]`.
+async fn two_leaf_table(
+    store: &MemoryObjectStore,
+) -> Result<(ObjectId, [ObjectId; 2]), Box<dyn std::error::Error>> {
+    let empty = put(store, &FileTablePage::Leaf(Vec::new()), 8).await?;
+    let root = apply_file_table_mutations(
+        store,
+        empty,
+        [1, 3, 4, 6]
+            .into_iter()
+            .map(|byte| FileTableMutation::Insert(record(byte, byte)))
+            .collect(),
+        4,
+        pair_limits(),
+        WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await?
+    .value;
+    let bytes = store
+        .read(
+            root,
+            u64::MAX,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
+    let FileTablePage::Internal(children) =
+        decode_file_table_page(&bytes, pair_limits(), &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+    else {
+        return Err("two-leaf table root is not internal".into());
+    };
+    let [left, right] = children.as_slice() else {
+        return Err("two-leaf table root does not hold two leaves".into());
+    };
+    Ok((root, [left.page, right.page]))
+}
+
 async fn three_leaf_table(
     store: &MemoryObjectStore,
 ) -> Result<(ObjectId, [ObjectId; 3]), Box<dyn std::error::Error>> {
@@ -106,22 +154,22 @@ async fn three_leaf_table(
 async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (root, leaves) = three_leaf_table(&store).await?;
+    let (root, leaves) = two_leaf_table(&store).await?;
     let receipt = apply_file_table_mutations(
         &store,
         root,
         vec![
             FileTableMutation::Replace {
-                expected: record(3, 3),
-                replacement: record(3, 8),
+                expected: record(4, 4),
+                replacement: record(4, 8),
             },
             FileTableMutation::Replace {
-                expected: record(4, 4),
-                replacement: record(4, 9),
+                expected: record(6, 6),
+                replacement: record(6, 9),
             },
         ],
         8,
-        DecodeLimits::default(),
+        pair_limits(),
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )
@@ -136,15 +184,15 @@ async fn multiple_record_changes_rewrite_one_leaf_and_shared_root()
         )
         .await?;
     let FileTablePage::Internal(children) =
-        decode_file_table_page(&bytes, DecodeLimits::default(), &mut |_| {
+        decode_file_table_page(&bytes, pair_limits(), &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
         })?
     else {
         return Err("candidate file table is not internal".into());
     };
+    assert_eq!(children.len(), 2);
     assert_eq!(children[0].page, leaves[0]);
     assert_ne!(children[1].page, leaves[1]);
-    assert_eq!(children[2].page, leaves[2]);
     Ok(())
 }
 
@@ -268,17 +316,30 @@ async fn stale_record_precondition_writes_nothing() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1, 1)]), 8).await?;
+    let first = FileTablePage::Leaf(vec![record(1, 1)]);
+    let root = put(&store, &first, 8).await?;
+    // Twice one record's page: each record fits in half, and two pass half,
+    // so the byte bound closes pages at two records, below the item bound.
+    let single = encode_file_table_page(
+        &first,
+        8,
+        |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
+        |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?
+    .len();
     let limits = DecodeLimits {
-        maximum_page_bytes: 120,
+        maximum_page_bytes: u32::try_from(2 * single)?,
         maximum_page_items: 8,
         ..DecodeLimits::default()
     };
     let receipt = apply_file_table_mutations(
         &store,
         root,
-        vec![FileTableMutation::Insert(record(2, 2))],
-        1,
+        vec![
+            FileTableMutation::Insert(record(2, 2)),
+            FileTableMutation::Insert(record(3, 3)),
+        ],
+        2,
         limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
@@ -292,7 +353,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
             &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
         )
         .await?;
-    assert!(root_bytes.len() <= 120);
+    assert!(root_bytes.len() <= 2 * single);
     let FileTablePage::Internal(children) =
         decode_file_table_page(&root_bytes, limits, &mut |_| {
             Ok::<_, crate::kernel::CanonicalDecodeError>(())
@@ -301,6 +362,7 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
         return Err("byte-bounded candidate root is not internal".into());
     };
     assert_eq!(children.len(), 2);
+    let mut sizes = Vec::new();
     for child in children {
         let bytes = store
             .read(
@@ -312,29 +374,54 @@ async fn page_byte_bound_splits_before_item_bound() -> Result<(), Box<dyn std::e
                 ),
             )
             .await?;
-        assert!(bytes.len() <= 120);
-        assert!(matches!(
-            decode_file_table_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-            FileTablePage::Leaf(records) if records.len() == 1
-        ));
+        assert!(bytes.len() <= 2 * single);
+        let FileTablePage::Leaf(records) = decode_file_table_page(&bytes, limits, &mut |_| {
+            Ok::<_, crate::kernel::CanonicalDecodeError>(())
+        })?
+        else {
+            return Err("byte-bounded table child is not a leaf".into());
+        };
+        sizes.push(records.len());
     }
+    assert_eq!(sizes, [2, 1]);
     Ok(())
 }
 
 #[tokio::test]
-async fn item_larger_than_page_bound_rejects_before_writes()
+async fn item_larger_than_page_bound_takes_a_page_and_only_the_object_bound_refuses()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = put(&store, &FileTablePage::Leaf(Vec::new()), 8).await?;
+    let mut limits = DecodeLimits {
+        maximum_page_bytes: 72,
+        ..DecodeLimits::default()
+    };
+    let inserted = apply_file_table_mutations(
+        &store,
+        root,
+        vec![FileTableMutation::Insert(record(1, 1))],
+        1,
+        limits,
+        WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await?;
+    assert_eq!(inserted.work.page_writes, 1);
+    let bytes = store
+        .read(
+            inserted.value,
+            u64::MAX,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
+        )
+        .await?;
+    assert!(bytes.len() > 72);
+    limits.maximum_object_bytes = 72;
     let failure = apply_file_table_mutations(
         &store,
         root,
         vec![FileTableMutation::Insert(record(1, 1))],
         1,
-        DecodeLimits {
-            maximum_page_bytes: 72,
-            ..DecodeLimits::default()
-        },
+        limits,
         WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )

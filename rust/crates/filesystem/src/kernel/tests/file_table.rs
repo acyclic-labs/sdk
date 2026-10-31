@@ -285,7 +285,7 @@ fn inline_regular_payload_is_bounded_allocation_free_and_canonical()
         >(()))?,
         page
     );
-    assert_eq!(encoded.len(), 78);
+    assert_eq!(encoded.len(), 79);
     assert_eq!(
         &encoded[encoded.len() - data.as_bytes().len()..],
         data.as_bytes()

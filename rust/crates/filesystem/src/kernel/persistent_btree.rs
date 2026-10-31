@@ -20,14 +20,28 @@ use std::ops::Range;
 mod support;
 pub use support::Child;
 #[cfg(test)]
-use support::PageChunks;
-#[cfg(test)]
 pub(crate) use support::TARGET_PAGE_BYTES;
-pub(crate) use support::{Error, Format, Mutation, Page, PageRef, children_within, leaf_within};
+pub(crate) use support::{
+    Error, Format, Mutation, Page, PageChunks, PageRef, children_within, leaf_within, stable_hash,
+};
 use support::{
     PAGE_HEADER_BYTES, PAGE_WRITE, append_owned, push_summary, push_value, sort_indexed,
     storage_error, validate,
 };
+
+#[cfg(test)]
+thread_local! {
+    /// Negative control: close each rewritten page where it ends instead of
+    /// carrying it right, as page-local chunking did.
+    pub(crate) static LOCAL_REWRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn local_rewrite() -> bool {
+    #[cfg(test)]
+    return LOCAL_REWRITE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    false
+}
 
 struct NodeRequest<K> {
     page: ObjectId,
@@ -35,6 +49,9 @@ struct NodeRequest<K> {
     upper: Owned<Option<K>>,
     mutations: Range<usize>,
     height: u16,
+    leftmost: bool,
+    rightmost: bool,
+    revisit_tail: bool,
 }
 
 struct InternalFrame<F: Format> {
@@ -43,6 +60,11 @@ struct InternalFrame<F: Format> {
     inherited_upper: Owned<Option<F::Key>>,
     selection: selection::Cursor,
     height: u16,
+    leftmost: bool,
+    rightmost: bool,
+    revisit_tail: bool,
+    // The rewrite began with summaries carried in from the left.
+    carried: bool,
     rewritten: Owned<Vec<Child<F::Key>>>,
 }
 
@@ -166,6 +188,7 @@ where
     M: Mutation<F>,
 {
     type First = Owned<F::Key>;
+    type LeafCarry = Owned<Vec<F::Value>>;
     type Output = Owned<Vec<Child<F::Key>>>;
     type Error = crate::FsError;
 
@@ -173,6 +196,8 @@ where
         Ok(acyclic_collections::page::PackingLimits {
             maximum_items: usize::try_from(self.limits.maximum_page_items)
                 .map_err(|_| Self::error(Error::InvalidLimits))?,
+            maximum_object_bytes: usize::try_from(self.limits.maximum_object_bytes)
+                .unwrap_or(usize::MAX),
             maximum_bytes: usize::try_from(self.limits.maximum_page_bytes)
                 .map_err(|_| Self::error(Error::InvalidLimits))?,
         })
@@ -203,16 +228,26 @@ where
         Self::error(Error::MutationContract)
     }
 
-    fn nonreducing() -> Self::Error {
-        Self::error(Error::PageItemTooLarge)
+    fn key_hash(key: &F::Key) -> u64 {
+        F::key_hash(key)
     }
 
-    fn next_height(&self, height: u16) -> Result<u16, Self::Error> {
-        let height = height
-            .checked_add(1)
-            .filter(|height| *height <= self.limits.maximum_page_height)
-            .ok_or_else(|| Self::error(Error::HeightExceeded))?;
-        Ok(height)
+    fn carry_leaf(&mut self, entries: &[F::Value]) -> Result<Self::LeafCarry, Self::Error> {
+        let mut open = Owned::allocate(entries.len(), self.accounting)?;
+        for entry in entries {
+            let cloned = self.clone_value(entry)?;
+            push_value(&mut open, cloned)?;
+        }
+        Ok(open)
+    }
+
+    fn carry_children(&mut self, children: &[Child<F::Key>]) -> Result<Self::Output, Self::Error> {
+        let mut open = Owned::allocate(children.len(), self.accounting)?;
+        for child in children {
+            let first = self.clone_key(&child.first)?;
+            push_summary(&mut open, first, child.page, self.accounting)?;
+        }
+        Ok(open)
     }
 
     fn charge_items(&mut self, count: u64) -> Result<(), Self::Error> {
@@ -240,14 +275,6 @@ where
         push_summary(output, first, page, self.accounting)
     }
 
-    fn children(output: &Self::Output) -> &[Child<F::Key>] {
-        &output.value
-    }
-
-    fn retire(&mut self, output: Self::Output) -> Result<(), Self::Error> {
-        output.retire(self.accounting)
-    }
-
     fn write(
         &mut self,
         page: &PageRef<'_, F>,
@@ -265,7 +292,22 @@ where
     limits: DecodeLimits,
     accounting: &'accounting mut KernelAccounting<'work>,
     visited: Option<Owned<VisitedObjectSet>>,
-    maximum_seen_height: u16,
+    // Unfinished items, or the predecessor tail of a changed first key,
+    // carried into the next page: leaf values and summaries by depth.
+    carry_values: Owned<Vec<F::Value>>,
+    carries: Owned<Vec<Option<Owned<Vec<Child<F::Key>>>>>>,
+    leaf_depth: Option<u16>,
+    // Same-width point replacements cannot change cuts and keep their exact
+    // original sparse/no-op paths.
+    boundary_changes: bool,
+    // Level of the summaries the root returns, when it is not leaves'.
+    top_level: Option<u16>,
+    // The rightmost summary's page has no left neighbour yet at the levels
+    // from this one up: those single-child pages are written only once a
+    // level has a second page, so the root is never a single-child page.
+    unwrapped_from: Option<u16>,
+    // The page this operation wrote last, which the root needs no reread of.
+    last_written: Option<ObjectId>,
     cancellation: &'a CancellationToken,
     marker: PhantomData<(F, M)>,
 }
@@ -326,15 +368,9 @@ where
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
-    let maximum_visited = mutations
-        .len()
-        .checked_mul(usize::from(limits.maximum_page_height))
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| M::map_error(Error::InvalidLimits))?
-        .min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| M::map_error(Error::InvalidLimits))?,
-        );
+    // Carry may visit right neighbours beyond the selected mutation paths.
+    let maximum_visited = usize::try_from(limits.maximum_visited_pages)
+        .map_err(|_| M::map_error(Error::InvalidLimits))?;
     let visited = if root.is_some() {
         Some(VisitedObjectSet::new_with_accounting(
             maximum_visited,
@@ -343,26 +379,56 @@ where
     } else {
         None
     };
+    let carry_values = Owned::allocate(0, accounting)?;
+    let depths = usize::from(limits.maximum_page_height) + 2;
+    let mut carries = Owned::allocate(depths, accounting)?;
+    carries.value.resize_with(depths, || None);
+    let mut boundary_changes = false;
+    for (_, mutation) in &ordered.value {
+        accounting.charge(WorkCounters {
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        boundary_changes |= mutation
+            .changes_boundary()
+            .map_err(|error| M::map_error(Error::Decode(error)))?;
+    }
     let mut context = Context::<S, F, M> {
         store,
         limits,
         accounting,
         visited,
-        maximum_seen_height: 0,
+        carry_values,
+        carries,
+        leaf_depth: None,
+        boundary_changes,
+        top_level: None,
+        unwrapped_from: None,
+        last_written: None,
         cancellation,
         marker: PhantomData,
     };
     let summaries = match root {
         Some(root) => context.rewrite(root, &ordered.value).await?,
         None => {
-            context.maximum_seen_height = 1;
+            context.leaf_depth = Some(0);
             let values = context.apply_structural_mutations(&[], &ordered.value)?;
-            let result = context.write_leaf_chunks(&values.value).await;
+            let result = context.write_leaf_chunks(&values.value, true, false).await;
             values.retire(context.accounting)?;
-            result?
+            let (summaries, pending) = result?;
+            if pending.is_some() {
+                return Err(M::map_error(Error::MutationContract));
+            }
+            summaries
         }
     };
-    let root = context.finish_root(summaries).await?;
+    let root = context.finish_root(root, summaries).await?;
+    // The rightmost page of every level closes, so nothing stays carried.
+    if !context.carry_values.value.is_empty() || context.carries.value.iter().any(Option::is_some) {
+        return Err(M::map_error(Error::MutationContract));
+    }
+    context.carry_values.retire(context.accounting)?;
+    context.carries.retire(context.accounting)?;
     if let Some(visited) = context.visited.take() {
         visited.retire(context.accounting)?;
     }
@@ -448,6 +514,9 @@ where
             upper: self.empty(None)?,
             mutations: 0..mutations.len(),
             height: 1,
+            leftmost: true,
+            rightmost: true,
+            revisit_tail: false,
         };
         rewrite::run(self, stack, request, mutations).await
     }
@@ -460,7 +529,6 @@ where
         if request.height > self.limits.maximum_page_height {
             return Err(Self::error(Error::HeightExceeded));
         }
-        self.maximum_seen_height = self.maximum_seen_height.max(request.height);
         let inserted = VisitedObjectSet::insert_with_accounting(
             self.visited
                 .as_mut()
@@ -489,11 +557,22 @@ where
                 }
                 request.lower.retire(self.accounting)?;
                 request.upper.retire(self.accounting)?;
+                // A balanced tree holds every leaf at one depth.
+                if *self.leaf_depth.get_or_insert(request.height) != request.height {
+                    return Err(Self::error(Error::MutationContract));
+                }
                 let selected = mutations
                     .get(request.mutations)
                     .ok_or_else(|| Self::error(Error::MutationContract))?;
                 Ok(EnteredNode::Complete(
-                    self.rewrite_leaf(request.page, entries, selected).await?,
+                    self.rewrite_leaf(
+                        request.page,
+                        entries,
+                        selected,
+                        request.rightmost,
+                        request.revisit_tail,
+                    )
+                    .await?,
                 ))
             }
             Page::Internal(children) => {
@@ -506,13 +585,21 @@ where
                     return Err(Self::error(Error::ChildBoundsMismatch));
                 }
                 request.lower.retire(self.accounting)?;
+                let rewritten = match self.take_carry(request.height)? {
+                    Some(carried) => carried,
+                    None => Owned::allocate(0, self.accounting)?,
+                };
                 Ok(EnteredNode::Internal(InternalFrame {
                     original: request.page,
                     children,
                     inherited_upper: request.upper,
                     selection: selection::Cursor::new(request.mutations),
                     height: request.height,
-                    rewritten: Owned::allocate(0, self.accounting)?,
+                    leftmost: request.leftmost,
+                    rightmost: request.rightmost,
+                    revisit_tail: request.revisit_tail,
+                    carried: !rewritten.value.is_empty(),
+                    rewritten,
                 }))
             }
         }
@@ -534,7 +621,16 @@ where
             || self.charge_items(1),
         )? {
             let child = selected.child;
-            if selected.mutations.is_empty() {
+            let child_depth = frame
+                .height
+                .checked_add(1)
+                .ok_or_else(|| Self::error(Error::HeightExceeded))?;
+            let revisit_tail = (self.boundary_changes && selected.following_first_changes)
+                || (frame.revisit_tail && selected.index + 1 == frame.children.value.len());
+            if selected.mutations.is_empty()
+                && !revisit_tail
+                && !self.carrying_at_or_below(child_depth)
+            {
                 let first = self.clone_key(&child.first)?;
                 push_summary(&mut frame.rewritten, first, child.page, self.accounting)?;
                 continue;
@@ -547,22 +643,60 @@ where
                 lower,
                 upper,
                 mutations: selected.mutations,
-                height: frame
-                    .height
-                    .checked_add(1)
-                    .ok_or_else(|| Self::error(Error::HeightExceeded))?,
+                revisit_tail,
+                height: child_depth,
+                leftmost: frame.leftmost && selected.index == 0,
+                rightmost: frame.rightmost && selected.index + 1 == frame.children.value.len(),
             }));
         }
         Ok(None)
+    }
+
+    /// Whether a page carried in from the left waits at `depth` or deeper.
+    fn carrying_at_or_below(&self, depth: u16) -> bool {
+        !self.carry_values.value.is_empty()
+            || self
+                .carries
+                .value
+                .iter()
+                .skip(usize::from(depth))
+                .any(Option::is_some)
+    }
+
+    fn take_carry(
+        &mut self,
+        depth: u16,
+    ) -> Result<Option<Owned<Vec<Child<F::Key>>>>, crate::FsError> {
+        Ok(self
+            .carries
+            .value
+            .get_mut(usize::from(depth))
+            .ok_or_else(|| Self::error(Error::HeightExceeded))?
+            .take())
+    }
+
+    /// The level of the page an internal node at `depth` forms; leaves are 0.
+    fn level_at(&self, depth: u16) -> Result<u16, crate::FsError> {
+        self.leaf_depth
+            .and_then(|leaf| leaf.checked_sub(depth))
+            .ok_or_else(|| Self::error(Error::MutationContract))
     }
 
     async fn finish_frame(
         &mut self,
         frame: InternalFrame<F>,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let result = if frame.rewritten.value.is_empty() {
-            frame.rewritten
-        } else if frame.rewritten.value == frame.children.value {
+        let sole = frame.leftmost && frame.rightmost;
+        let unchanged =
+            !frame.revisit_tail && !frame.carried && frame.rewritten.value == frame.children.value;
+        let mut rewritten = frame.rewritten;
+        if rewritten.value.len() > 1 && self.unwrapped_from.is_some() {
+            let level = self.level_at(frame.height)?;
+            self.wrap_unwrapped(&mut rewritten, level).await?;
+        }
+        let result = if rewritten.value.is_empty() {
+            rewritten
+        } else if unchanged {
             let mut result = Owned::allocate(1, self.accounting)?;
             let first = frame
                 .children
@@ -571,13 +705,44 @@ where
                 .ok_or_else(|| Self::error(Error::MutationContract))?;
             let first = self.clone_key(&first.first)?;
             push_summary(&mut result, first, frame.original, self.accounting)?;
-            frame.rewritten.retire(self.accounting)?;
+            rewritten.retire(self.accounting)?;
+            if sole && self.top_level.is_none() && self.leaf_depth.is_some() {
+                self.top_level = Some(self.level_at(frame.height)?);
+            }
             result
-        } else if frame.height == 1 && frame.rewritten.value.len() == 1 {
-            frame.rewritten
+        } else if sole {
+            // The only page at its level: the root builds every level above
+            // these summaries, so a shrunk tree keeps no single-child pages.
+            if self.top_level.is_none() {
+                let level = self.level_at(frame.height)?;
+                self.top_level = Some(
+                    level
+                        .checked_sub(1)
+                        .ok_or_else(|| Self::error(Error::MutationContract))?,
+                );
+            }
+            rewritten
+        } else if frame.rightmost && rewritten.value.len() == 1 {
+            // A last page holding one child: whether it is the root's only
+            // child is known only once some level gains a second page.
+            if self.unwrapped_from.is_none() {
+                self.unwrapped_from = Some(self.level_at(frame.height)?);
+            }
+            rewritten
         } else {
-            let result = self.write_internal_chunks(&frame.rewritten.value).await?;
-            frame.rewritten.retire(self.accounting)?;
+            let level = self.level_at(frame.height)?;
+            let (result, open) = self
+                .write_internal_chunks(&rewritten.value, level, frame.rightmost, frame.revisit_tail)
+                .await?;
+            if let Some(open) = open {
+                let slot = self
+                    .carries
+                    .value
+                    .get_mut(usize::from(frame.height))
+                    .ok_or_else(|| Self::error(Error::HeightExceeded))?;
+                *slot = Some(open);
+            }
+            rewritten.retire(self.accounting)?;
             result
         };
         frame.children.retire(self.accounting)?;
@@ -590,8 +755,10 @@ where
         original: ObjectId,
         mut entries: Owned<Vec<F::Value>>,
         mutations: &[(usize, &M)],
+        rightmost: bool,
+        revisit_tail: bool,
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
-        let changed;
+        let mut changed;
         if mutations
             .iter()
             .all(|(_, mutation)| !mutation.changes_cardinality())
@@ -603,9 +770,16 @@ where
             entries.retire(self.accounting)?;
             entries = rewritten;
         }
+        if !self.carry_values.value.is_empty() {
+            let empty = Owned::allocate(0, self.accounting)?;
+            let mut carried = std::mem::replace(&mut self.carry_values, empty);
+            append_owned(&mut carried, entries, self.accounting)?;
+            entries = carried;
+            changed = true;
+        }
         let result = if entries.value.is_empty() {
             Owned::allocate(0, self.accounting)?
-        } else if !changed {
+        } else if !changed && !revisit_tail {
             let mut result = Owned::allocate(1, self.accounting)?;
             let first = self.clone_key(F::key(
                 entries
@@ -616,7 +790,13 @@ where
             push_summary(&mut result, first, original, self.accounting)?;
             result
         } else {
-            self.write_leaf_chunks(&entries.value).await?
+            let (result, open) = self
+                .write_leaf_chunks(&entries.value, rightmost, revisit_tail)
+                .await?;
+            if let Some(open) = open {
+                std::mem::replace(&mut self.carry_values, open).retire(self.accounting)?;
+            }
+            result
         };
         entries.retire(self.accounting)?;
         Ok(result)
@@ -698,35 +878,131 @@ where
         Ok(output)
     }
 
+    /// Publishes completed chunks. The exact predecessor's final chunk can
+    /// remain owned even when closed, to join a changed following first key.
     async fn write_leaf_chunks(
         &mut self,
         entries: &[F::Value],
-    ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
+        close: bool,
+        hold_last: bool,
+    ) -> Result<(Owned<Vec<Child<F::Key>>>, Option<Owned<Vec<F::Value>>>), crate::FsError> {
         publish::write::<F, publish::Leaf, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
-            self, entries,
+            self,
+            entries,
+            0,
+            close || local_rewrite(),
+            hold_last && !local_rewrite(),
         )
         .await
     }
 
+    /// Writes closed child pages and retains only the unfinished right tail.
     async fn write_internal_chunks(
         &mut self,
         children: &[Child<F::Key>],
-    ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
+        level: u16,
+        close: bool,
+        hold_last: bool,
+    ) -> Result<(Owned<Vec<Child<F::Key>>>, Option<Owned<Vec<Child<F::Key>>>>), crate::FsError>
+    {
         publish::write::<F, publish::Internal, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
-            self, children,
-        )
-        .await
+            self, children, level, close || local_rewrite(), hold_last && !local_rewrite(),
+        ).await
     }
 
+    /// Builds the levels above the root's summaries until one page remains.
     async fn finish_root(
         &mut self,
-        summaries: Owned<Vec<Child<F::Key>>>,
+        original: Option<ObjectId>,
+        mut summaries: Owned<Vec<Child<F::Key>>>,
     ) -> Result<ObjectId, crate::FsError> {
-        let height = self.maximum_seen_height;
-        publish::root::<F, _, PAGE_HEADER_BYTES, { support::TARGET_PAGE_BYTES }>(
-            self, summaries, height,
-        )
-        .await
+        if summaries.value.is_empty() {
+            summaries.retire(self.accounting)?;
+            return self.write_page(&PageRef::<F>::Leaf(&[])).await;
+        }
+        let mut level = self.top_level.unwrap_or(0);
+        if summaries.value.len() > 1 {
+            self.wrap_unwrapped(&mut summaries, level.saturating_add(1))
+                .await?;
+        }
+        // A lone summary is the root, whatever single-child pages it skipped.
+        self.unwrapped_from = None;
+        while summaries.value.len() > 1 {
+            level = level
+                .checked_add(1)
+                .ok_or_else(|| Self::error(Error::HeightExceeded))?;
+            if level >= self.limits.maximum_page_height {
+                return Err(Self::error(Error::HeightExceeded));
+            }
+            let (next, _) = self
+                .write_internal_chunks(&summaries.value, level, true, false)
+                .await?;
+            // Internal pages take two summaries, so each level shrinks.
+            if next.value.len() >= summaries.value.len() {
+                next.retire(self.accounting)?;
+                summaries.retire(self.accounting)?;
+                return Err(Self::error(Error::PageItemTooLarge));
+            }
+            summaries.retire(self.accounting)?;
+            summaries = next;
+        }
+        let root = summaries
+            .value
+            .first()
+            .ok_or_else(|| Self::error(Error::MutationContract))?
+            .page;
+        summaries.retire(self.accounting)?;
+        if Some(root) == original || Some(root) == self.last_written {
+            return Ok(root);
+        }
+        self.unwrap_exposed_root(root).await
+    }
+
+    /// A page this operation left untouched may reach the top once a shrink
+    /// removes everything beside it, and it may be a single-child page that
+    /// was the rightmost of its level. The root is the first page below it
+    /// with other than one child, as building the contents at once gives.
+    async fn unwrap_exposed_root(
+        &mut self,
+        mut root: ObjectId,
+    ) -> Result<ObjectId, crate::FsError> {
+        for _ in 0..self.limits.maximum_page_height {
+            let page = self.read_page(root).await?;
+            let only = match &page.value {
+                Page::Internal(children) if children.len() == 1 => {
+                    children.first().map(|child| child.page)
+                }
+                _ => None,
+            };
+            page.retire(self.accounting)?;
+            let Some(only) = only else {
+                return Ok(root);
+            };
+            root = only;
+        }
+        Err(Self::error(Error::HeightExceeded))
+    }
+
+    /// Writes the single-child pages the rightmost of `summaries` skipped,
+    /// up to just below `level`, now that its level has a second page.
+    async fn wrap_unwrapped(
+        &mut self,
+        summaries: &mut Owned<Vec<Child<F::Key>>>,
+        level: u16,
+    ) -> Result<(), crate::FsError> {
+        let Some(from) = self.unwrapped_from.take() else {
+            return Ok(());
+        };
+        let last = summaries
+            .value
+            .last_mut()
+            .ok_or_else(|| Self::error(Error::MutationContract))?;
+        for _ in from..level {
+            last.page = self
+                .write_page(&PageRef::<F>::Internal(std::slice::from_ref(last)))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn read_page(&mut self, page: ObjectId) -> Result<Owned<Page<F>>, crate::FsError> {
@@ -782,7 +1058,7 @@ where
         self.accounting.check()?;
         self.accounting.admit(PAGE_WRITE)?;
         let encoded_length = F::page_encoded_length(page, self.limits.maximum_page_items)?;
-        if usize_to_u64(encoded_length) > self.limits.maximum_page_object_bytes() {
+        if usize_to_u64(encoded_length) > self.limits.maximum_object_bytes {
             return Err(Self::error(Error::PageItemTooLarge));
         }
         let (encoded, allocation) =
@@ -820,6 +1096,7 @@ where
             }
             .map_err(storage_error)?;
             drop(encoded);
+            self.last_written = Some(object);
             return Ok(object);
         }
         let hashing = WorkCounters {
@@ -853,6 +1130,7 @@ where
             }
         }
         encoded.retire(self.accounting)?;
+        self.last_written = Some(object);
         Ok(object)
     }
 }

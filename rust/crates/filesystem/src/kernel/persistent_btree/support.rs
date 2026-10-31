@@ -7,6 +7,8 @@ use super::{
 use thiserror::Error;
 pub(crate) trait Format: acyclic_collections::page::Format<Reference = ObjectId> {
     fn kind() -> ObjectKind;
+    /// A stable hash of `key`, which places page boundaries.
+    fn key_hash(key: &Self::Key) -> u64;
     fn decode<E: From<CanonicalDecodeError>>(
         bytes: &[u8],
         limits: DecodeLimits,
@@ -92,6 +94,10 @@ pub(crate) trait Mutation<F: Format> {
 
     fn key(&self) -> &F::Key;
     fn changes_cardinality(&self) -> bool;
+    /// Whether the original expected/replacement can move an encoded cut.
+    fn changes_boundary(&self) -> Result<bool, CanonicalDecodeError> {
+        Ok(self.changes_cardinality())
+    }
     fn replacement<'a>(
         &'a self,
         current: Option<&F::Value>,
@@ -320,45 +326,50 @@ pub(super) const PAGE_WRITE: WorkCounters = WorkCounters {
 pub(crate) const TARGET_PAGE_BYTES: usize = 2 * 1024;
 pub(super) const PAGE_HEADER_BYTES: usize = 8 + 2 + 1 + 4;
 
-#[cfg(test)]
-pub(super) struct PageChunks<'a, T, L> {
-    inner: acyclic_collections::page::PageChunks<'a, T, L, PAGE_HEADER_BYTES, TARGET_PAGE_BYTES>,
+pub(crate) use acyclic_collections::page::stable_hash;
+
+pub(crate) struct PageChunks<'a, T, L, H> {
+    inner: acyclic_collections::page::PageChunks<'a, T, L, H, PAGE_HEADER_BYTES, TARGET_PAGE_BYTES>,
 }
 
-#[cfg(test)]
-impl<'a, T, L> PageChunks<'a, T, L>
+impl<'a, T, L, H> PageChunks<'a, T, L, H>
 where
     L: Fn(&T) -> Result<usize, CanonicalDecodeError>,
+    H: Fn(&T) -> u64,
 {
-    pub(super) fn new<E: std::error::Error>(
+    pub(crate) fn new<E: std::error::Error>(
         items: &'a [T],
         limits: DecodeLimits,
+        level: u16,
         encoded_length: L,
-    ) -> Result<(Self, u64), Error<E>> {
+        key_hash: H,
+    ) -> Result<Self, Error<E>> {
         let limits = acyclic_collections::page::PackingLimits {
             maximum_items: usize::try_from(limits.maximum_page_items)
                 .map_err(|_| Error::InvalidLimits)?,
+            maximum_object_bytes: usize::try_from(limits.maximum_object_bytes)
+                .unwrap_or(usize::MAX),
             maximum_bytes: usize::try_from(limits.maximum_page_bytes)
                 .map_err(|_| Error::InvalidLimits)?,
         };
-        let (inner, examined) = acyclic_collections::page::PageChunks::<
-            _,
-            _,
-            PAGE_HEADER_BYTES,
-            TARGET_PAGE_BYTES,
-        >::new(items, limits, encoded_length)
+        let inner = acyclic_collections::page::PageChunks::new(
+            items,
+            limits,
+            level,
+            encoded_length,
+            key_hash,
+        )
         .map_err(packing_error)?;
-        Ok((Self { inner }, examined))
+        Ok(Self { inner })
     }
 
-    pub(super) fn next<E: std::error::Error>(
+    pub(crate) fn next<E: std::error::Error>(
         &mut self,
-    ) -> Result<Option<(&'a [T], u64)>, Error<E>> {
-        self.inner.next_page().map_err(packing_error)
+    ) -> Result<Option<(&'a [T], u64, bool)>, Error<E>> {
+        self.inner.next_page(|| Ok(())).map_err(packing_error)
     }
 }
 
-#[cfg(test)]
 fn packing_error<E: std::error::Error>(
     error: acyclic_collections::page::PackingError<CanonicalDecodeError>,
 ) -> Error<E> {

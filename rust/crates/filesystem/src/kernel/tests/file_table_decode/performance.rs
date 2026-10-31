@@ -101,7 +101,7 @@ fn check(count: u8, fault: u8) -> Result<(), &'static str> {
     let expected = before
         .checked_add(WorkCounters {
             items_examined: u64::from(count),
-            bytes_copied: 7 + 58 * u64::from(count),
+            bytes_copied: 7 + 59 * u64::from(count),
             allocation_operations: operations,
             peak_allocation_bytes: live + bytes,
             ..WorkCounters::UNCHARGED

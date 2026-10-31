@@ -10,13 +10,7 @@ pub(super) fn decode<E>(
 where
     E: From<CanonicalDecodeError>,
 {
-    let mut decoder = Decoder::new(
-        bytes,
-        DOMAIN,
-        VERSION,
-        limits.maximum_page_object_bytes(),
-        observe,
-    )?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
     let tag = decoder.u8(observe)?;
     let item_count = decoder.u32(observe)?;
     if item_count > limits.maximum_page_items {

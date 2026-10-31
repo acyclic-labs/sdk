@@ -143,13 +143,7 @@ pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
     limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<ExtentPage, E> {
-    let mut decoder = Decoder::new(
-        bytes,
-        DOMAIN,
-        VERSION,
-        limits.maximum_page_object_bytes(),
-        observe,
-    )?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes, observe)?;
     let (page_tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     let page = match page_tag {

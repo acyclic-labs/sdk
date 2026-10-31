@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::persistent_btree::PageChunks;
 
 impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
     pub(super) async fn rewrite(
@@ -274,13 +275,19 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         &mut self,
         extents: &[Extent],
     ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
+        let mut chunks = PageChunks::new::<ExtentMutationError>(
+            extents,
+            self.limits,
+            0,
+            extent_leaf_item_length,
+            |extent: &Extent| offset_hash(extent.offset),
+        )
+        .map_err(chunk_error)?;
         let mut result = Owned::<Vec<ExtentChild>>::allocate(0, self.accounting)?;
-        let mut start = 0;
-        while start < extents.len() {
-            let (end_index, examined) =
-                extent_leaf_chunk_end(extents, start, self.limits).map_err(extent_error)?;
+        while let Some((chunk, examined, _)) =
+            chunks.next::<ExtentMutationError>().map_err(chunk_error)?
+        {
             self.charge_items(examined)?;
-            let chunk = extents.get(start..end_index).ok_or(WorkError::Overflow)?;
             let first = chunk.first().ok_or(WorkError::Overflow)?.offset;
             let end = extent_end(chunk.last().ok_or(WorkError::Overflow)?).map_err(extent_error)?;
             let mut items = Owned::<Vec<Extent>>::allocate(chunk.len(), self.accounting)?;
@@ -299,34 +306,28 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
                 end_offset: end,
                 page: written?,
             });
-            start = end_index;
         }
         Ok(result)
     }
 
+    /// Internal pages always take two summaries, so each level shrinks.
     pub(super) async fn write_internal_chunks(
         &mut self,
         children: &[ExtentChild],
     ) -> Result<Owned<Vec<ExtentChild>>, FsError> {
-        let mut cursor = 0;
-        let mut chunks = 0;
-        while cursor < children.len() {
-            let (end, examined) =
-                extent_internal_chunk_end(children, cursor, self.limits).map_err(extent_error)?;
+        let mut chunks = PageChunks::new::<ExtentMutationError>(
+            children,
+            self.limits,
+            1,
+            extent_internal_item_length,
+            |child: &ExtentChild| offset_hash(child.first_offset),
+        )
+        .map_err(chunk_error)?;
+        let mut result = Owned::<Vec<ExtentChild>>::allocate(0, self.accounting)?;
+        while let Some((chunk, examined, _)) =
+            chunks.next::<ExtentMutationError>().map_err(chunk_error)?
+        {
             self.charge_items(examined)?;
-            chunks += 1;
-            cursor = end;
-        }
-        if children.len() > 1 && chunks >= children.len() {
-            return Err(extent_error(ExtentMutationError::PageItemTooLarge));
-        }
-        let mut result = Owned::<Vec<ExtentChild>>::allocate(chunks, self.accounting)?;
-        let mut start = 0;
-        while start < children.len() {
-            let (end_index, examined) =
-                extent_internal_chunk_end(children, start, self.limits).map_err(extent_error)?;
-            self.charge_items(examined)?;
-            let chunk = children.get(start..end_index).ok_or(WorkError::Overflow)?;
             let first = chunk.first().ok_or(WorkError::Overflow)?.first_offset;
             let end = chunk.last().ok_or(WorkError::Overflow)?.end_offset;
             let mut items = Owned::<Vec<ExtentChild>>::allocate(chunk.len(), self.accounting)?;
@@ -339,12 +340,12 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
             let page = Owned::new(ExtentPage::Internal(value), allocation, bytes);
             let written = self.write_page(&page.value).await;
             page.retire(self.accounting)?;
+            result.ensure_for_push(usize::MAX, self.accounting)?;
             result.value.push(ExtentChild {
                 first_offset: first,
                 end_offset: end,
                 page: written?,
             });
-            start = end_index;
         }
         Ok(result)
     }
@@ -382,7 +383,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, '_, S> {
         let (read, retained) = crate::kernel::file_read::read_object_with_accounting(
             self.store,
             page,
-            self.limits.maximum_page_object_bytes(),
+            self.limits.maximum_object_bytes,
             self.accounting,
             self.cancellation,
         )
