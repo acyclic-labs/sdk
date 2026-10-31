@@ -130,5 +130,26 @@ fn native_file_selection_bounds_use_the_recoverable_preflight_class() -> Result<
             .unwrap_err();
         assert_recoverable(error, &original);
     }
+    let ungranted = RuntimeScope::new(
+        crate::Capabilities::new(["tool:call:read"]),
+        crate::conversation::Limits::default(),
+    )?;
+    for arguments in [
+        json!({"path":file.path(),"version":serde_json::to_string(&file).unwrap()}),
+        json!({"path":"../private"}),
+        json!({"path":".system/private"}),
+    ] {
+        let invocation = ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "ungranted".into(),
+            name: "read".into(),
+            arguments,
+        };
+        let error = FileTool::Read
+            .preflight(&ungranted, &invocation, Some(&original))
+            .unwrap_err();
+        assert!(error.is_tool_failure());
+        assert_recoverable(error, &original);
+    }
     Ok(())
 }

@@ -79,8 +79,8 @@ impl ToolFailureCause {
         })
     }
 
-    /// The cause of a call refused before dispatch: its complete model-visible text, sanitized
-    /// and bounded like every cause, classed by the refusing error.
+    /// The reason a call was refused before dispatch, sanitized and bounded like
+    /// every cause. The shared result renderer adds the tool-failure prefix.
     pub(crate) fn refusal(
         name: &str,
         reason: ToolFailureKind,
@@ -120,12 +120,8 @@ pub(crate) struct ToolFailureText<'a>(pub ToolFailureKind, pub &'a ToolFailureCa
 impl fmt::Display for ToolFailureText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self(reason, cause) = self;
-        if *reason == ToolFailureKind::ExecutorRejected {
+        if *reason == ToolFailureKind::ExecutorRejected || reason.precedes_dispatch() {
             return write!(formatter, "tool execution failed: {}", cause.message);
-        }
-        // A refusal's cause is already its complete text.
-        if reason.precedes_dispatch() {
-            return formatter.write_str(&cause.message);
         }
         write!(
             formatter,
@@ -316,6 +312,9 @@ mod tests {
             let rendered = ToolFailureText(kind, &cause).to_string();
             prop_assert!(!rendered.trim().is_empty());
             prop_assert!(!rendered.chars().any(char::is_control));
+            if kind.precedes_dispatch() || kind == ToolFailureKind::ExecutorRejected {
+                prop_assert!(rendered.starts_with("tool execution failed: "));
+            }
             // The rendered text is exactly what the result admission contract accepts.
             let result = crate::model::ToolResultContent::Error { message: rendered };
             prop_assert!(result.validate_limits(crate::conversation::Limits::default(), &mut None).is_ok());

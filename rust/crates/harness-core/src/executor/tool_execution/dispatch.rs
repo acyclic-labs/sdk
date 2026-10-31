@@ -63,7 +63,7 @@ impl StockExecution<'_> {
             }
             // Keep the original cause and started record for reconciliation. Every
             // definitive refusal settles below, regardless of the tool's adapter.
-            Err(error) if error.uncertain() => return Err(error),
+            Err(error) if !error.is_tool_failure() => return Err(error),
             Err(error) => {
                 return self
                     .reject_tool_call(

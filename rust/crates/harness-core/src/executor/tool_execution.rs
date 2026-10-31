@@ -340,25 +340,9 @@ impl StockExecution<'_> {
     }
 
     /// Admits a call before dispatch. Every refusal a tool reports settles as the call's result;
-    /// only an uncertain harness failure ends the turn. Native and portable tools use the
+    /// harness infrastructure failures end the turn. Native and portable tools use the
     /// same classification, including authorization before an effect starts.
     fn authorize_tool_invocation(
-        &self,
-        tool: &crate::tool::Tool,
-        invocation: &ToolInvocation,
-    ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
-    {
-        match self.admit_tool_invocation(tool, invocation) {
-            Ok(admitted) => Ok(admitted),
-            Err(error) if error.uncertain() => Err(error),
-            Err(violation @ Error::ToolRejected { .. }) => {
-                Ok(Err(ToolCallRejection::InvalidInput(violation)))
-            }
-            Err(error) => Ok(Err(ToolCallRejection::Failed(error))),
-        }
-    }
-
-    fn admit_tool_invocation(
         &self,
         tool: &crate::tool::Tool,
         invocation: &ToolInvocation,
@@ -369,6 +353,25 @@ impl StockExecution<'_> {
             tool.executor.supports_native_execution(work)?;
             tool.projection.supports_native_projection(Some(work))?;
         }
+        match self.admit_tool_invocation(tool, invocation) {
+            Ok(admitted) => Ok(admitted),
+            Err(error) if !error.is_tool_failure() => Err(error),
+            Err(
+                violation @ Error::ToolRejected {
+                    code: crate::wire::ErrorCode::Invalid,
+                    ..
+                },
+            ) => Ok(Err(ToolCallRejection::InvalidInput(violation))),
+            Err(error) => Ok(Err(ToolCallRejection::Failed(error))),
+        }
+    }
+
+    fn admit_tool_invocation(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+    ) -> Result<std::result::Result<(Option<crate::runtime::ToolContext>, String), ToolCallRejection>>
+    {
         let capability = with_history_io(self.io, |work| {
             preparation_format(format_args!("tool:call:{}", tool.definition.name), work)
         })?;
