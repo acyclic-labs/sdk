@@ -97,7 +97,11 @@ pub(super) fn project(
 /// A record's context names the volume whose changes stream appended it.
 /// That is this volume's, or for a forked volume an ancestor's whose changes
 /// it shares; Streams, not the record, names the appending stream.
-fn appended_by_context(record: &Record, context: &crate::PublicationContext, scope: [u8; 16]) -> bool {
+fn appended_by_context(
+    record: &Record,
+    context: &crate::PublicationContext,
+    scope: [u8; 16],
+) -> bool {
     let mut text = [0; crate::publication_changes::CHANGES_PATH_LEN];
     crate::publication_changes::changes_path_text(scope, context.volume, &mut text)
         .is_some_and(|path| path == record.origin.as_str())
@@ -307,16 +311,37 @@ mod tests {
             &capability,
         )
         .unwrap();
-        // The same record and credential are disclosed once the exact owner deny is removed.
-        let projected = project(record.clone(), volume, [0; 16], config, &allowing, &authorization).unwrap();
-        let FollowUpdate::Record(projected) = projected else {
-            panic!("authorized changes remain a record");
-        };
-        assert_eq!(projected.origin, record.origin);
-        assert_eq!(projected.sequence, record.sequence);
-        assert_eq!(projected.commit_id, record.commit_id);
-        let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
-        assert_eq!(changes.context.as_ref(), context.as_ref());
+        // Inherited records retain the ancestor appender while authorization
+        // still applies to the executing volume's resources.
+        for appender in [volume, VolumeId::from_bytes([14; 16])] {
+            let mut inherited = crate::PublicationContext::from_bytes(&context).unwrap();
+            inherited.volume = appender;
+            let context = inherited.encode();
+            let appended =
+                AppendRecord::changes(context.as_ref(), std::slice::from_ref(&entry), vec![])
+                    .unwrap();
+            let mut record = record.clone();
+            record.value = appended.value;
+            record.headers = appended.headers;
+            record.origin = changes_stream([0; 16], appender);
+            let projected = project(
+                record.clone(),
+                volume,
+                [0; 16],
+                config,
+                &allowing,
+                &authorization,
+            )
+            .unwrap();
+            let FollowUpdate::Record(projected) = projected else {
+                panic!("authorized changes remain a record");
+            };
+            assert_eq!(projected.origin, record.origin);
+            assert_eq!(projected.sequence, record.sequence);
+            assert_eq!(projected.commit_id, record.commit_id);
+            let changes = acyclic_stream::decode_changes(projected.value.as_ref()).unwrap();
+            assert_eq!(changes.context.as_ref(), context.as_ref());
+        }
         for cut in [0, 1, entry.metadata.len() - 1] {
             let mut malformed = entry.clone();
             malformed.metadata = malformed.metadata.slice(..cut);
