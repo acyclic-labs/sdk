@@ -1,5 +1,5 @@
 //! The Linux process runner: a small static image, without the C library,
-//! that the native runtime execs once per owner. It clones each custodied
+//! that the native runtime execs for each launch. It clones the custodied
 //! tree's warden as the owner's own child (`CLONE_PARENT`).
 //!
 //! Exec'd, it holds nothing of the owner: no heap, locks, threads or fork
