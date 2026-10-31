@@ -294,6 +294,7 @@ where
     limits: DecodeLimits,
     accounting: &'accounting mut KernelAccounting<'work>,
     visited: Option<Owned<VisitedObjectSet>>,
+    expected_start: Option<&'a F::Key>,
     expected_end: Option<&'a F::Key>,
     // Unfinished items, or the predecessor tail of a changed first key,
     // carried into the next page: leaf values and summaries by depth.
@@ -317,7 +318,7 @@ where
 
 pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
-    (root, expected_end): (ObjectId, Option<&F::Key>),
+    (root, expected_start, expected_end): (ObjectId, Option<&F::Key>, Option<&F::Key>),
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -331,7 +332,7 @@ where
 {
     apply_optional_root_with_accounting::<S, F, M>(
         store,
-        (Some(root), expected_end),
+        (Some(root), expected_start, expected_end),
         mutations,
         maximum_mutations,
         limits,
@@ -343,7 +344,7 @@ where
 
 pub(crate) async fn apply_optional_root_with_accounting<S, F, M>(
     store: &S,
-    (root, expected_end): (Option<ObjectId>, Option<&F::Key>),
+    (root, expected_start, expected_end): (Option<ObjectId>, Option<&F::Key>, Option<&F::Key>),
     mutations: &[M],
     maximum_mutations: u32,
     limits: DecodeLimits,
@@ -401,6 +402,7 @@ where
         limits,
         accounting,
         visited,
+        expected_start,
         expected_end,
         carry_values,
         carries,
@@ -544,6 +546,21 @@ where
             return Err(Self::error(Error::CycleOrAlias));
         }
         let decoded = self.read_page(request.page).await?;
+        // A nonempty root must retain the caller's original first key before
+        // a child supplies its own otherwise self-consistent routing bound.
+        // Empty roots remain valid inputs for the first insertion.
+        if request.height == 1
+            && let Some(expected) = self.expected_start
+        {
+            self.charge_items(1)?;
+            let first = match &decoded.value {
+                Page::Leaf(entries) => entries.first().map(F::key),
+                Page::Internal(children) => children.first().map(|child| &child.first),
+            };
+            if first.is_some_and(|first| first != expected) {
+                return Err(Self::error(Error::ChildBoundsMismatch));
+            }
+        }
         let Owned {
             value: page,
             allocation,

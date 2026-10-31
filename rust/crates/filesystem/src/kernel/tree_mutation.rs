@@ -248,7 +248,7 @@ pub(crate) async fn apply_tree_mutations_with_accounting<S: crate::AsyncObjectSt
 ) -> Result<OperationReceipt<ObjectId>, crate::FsError> {
     persistent_btree::apply_with_accounting::<S, TreeFormat, TreeMutation>(
         store,
-        (root, None),
+        (root, None, None),
         mutations,
         maximum_mutations,
         limits,

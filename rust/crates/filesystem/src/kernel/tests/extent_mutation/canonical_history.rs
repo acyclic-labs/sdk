@@ -105,6 +105,85 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
                 .all(|extent| extent.kind == ExtentKind::Hole)
         );
     }
+    // A missing prefix must refuse at the original root, before its first
+    // child can turn that missing prefix into an accepted routing bound.
+    let missing_prefix = put(
+        &store,
+        &ExtentPage::Internal(vec![ExtentChild {
+            first: 50,
+            page: right,
+        }]),
+        8,
+    )
+    .await?;
+    let nested_missing_prefix = put(
+        &store,
+        &ExtentPage::Internal(vec![ExtentChild {
+            first: 50,
+            page: missing_prefix,
+        }]),
+        8,
+    )
+    .await?;
+    let replacement = ExtentMutation::Replace {
+        offset: 60,
+        length: 10,
+        kind: ExtentKind::AllocatedZero,
+        extend: false,
+    };
+    for root in [right, missing_prefix, nested_missing_prefix] {
+        for mutation in [
+            replacement.clone(),
+            ExtentMutation::Resize { logical_bytes: 75 },
+        ] {
+            let rejected = apply_extent_mutations(
+                &store,
+                (root, 100),
+                &[mutation],
+                1,
+                DecodeLimits::default(),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect_err("the original root must begin at zero");
+            assert!(matches!(
+                rejected.error,
+                ExtentMutationError::ChildBoundsMismatch
+            ));
+            assert_eq!(rejected.work.page_writes, 0);
+            assert_eq!(rejected.work.page_reads, 1);
+        }
+    }
+    // Omitting only the original first-key requirement accepts that same
+    // malformed internal root and leaves its missing prefix in the result.
+    let missing_start_edit = ExtentEdit {
+        route: 59,
+        change: Change::Write(Patch {
+            offset: 60,
+            end: 70,
+            kind: ExtentKind::AllocatedZero,
+        }),
+    };
+    let mut unchecked_start = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let omitted_start = persistent_btree::apply_with_accounting::<_, ExtentFormat, ExtentEdit>(
+        &store,
+        (missing_prefix, None, Some(&100)),
+        &[missing_start_edit],
+        1,
+        DecodeLimits::default(),
+        &mut unchecked_start,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(
+        flatten_extent_tree(&store, omitted_start.value)
+            .await?
+            .first()
+            .map(|extent| extent.offset),
+        Some(50)
+    );
+
     // Removing only the original end proof reproduces the accepted bad tree.
     let truncate = ExtentEdit {
         route: 149,
@@ -113,7 +192,7 @@ async fn range_rewrites_admit_original_work_and_publish_only_completed_chunks()
     let mut unchecked = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     let omitted_end = persistent_btree::apply_with_accounting::<_, ExtentFormat, ExtentEdit>(
         &store,
-        (leaf, None),
+        (leaf, Some(&0), None),
         &[truncate],
         1,
         DecodeLimits::default(),

@@ -145,7 +145,7 @@ pub(crate) async fn apply_extent_mutations_with_accounting<S: crate::AsyncObject
     } else {
         persistent_btree::apply_with_accounting::<S, ExtentFormat, ExtentEdit>(
             store,
-            (root, Some(&old_logical_bytes)),
+            (root, Some(&0), Some(&old_logical_bytes)),
             &edits.value,
             u32::MAX,
             limits,
