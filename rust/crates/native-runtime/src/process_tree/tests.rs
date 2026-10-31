@@ -901,7 +901,7 @@ fn partial_stdin_writes_preserve_exact_bytes_and_explicit_eof() {
         command.args([
             "-NoProfile",
             "-NonInteractive",
-            "-ProcessCommand",
+            "-Command",
             "[Console]::OpenStandardInput().CopyTo([Console]::OpenStandardOutput())",
         ]);
         command
