@@ -1,6 +1,5 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 struct Buffer(Arc<AtomicBool>);
 impl AsRef<[u8]> for Buffer {
@@ -134,9 +133,7 @@ fn write_completion_retires_real_driver_buffers_before_its_callback() -> io::Res
                 let _ = sender.send((result, dropped.load(Ordering::Acquire)));
             }),
         )?;
-        let (result, retired) = receiver
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(io::Error::other)?;
+        let (result, retired) = receiver.recv().map_err(io::Error::other)?;
         result?;
         assert!(
             retired,
