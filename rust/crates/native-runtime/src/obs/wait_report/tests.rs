@@ -25,6 +25,46 @@ fn snapshot(report: &WaitReport) -> String {
 }
 
 #[test]
+fn synchronous_wait_retires_on_reply_producer_loss_and_unwind() {
+    for outcome in ["reply", "producer-dropped", "unwind"] {
+        let report = WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        std::thread::scope(|scope| {
+            // Release lives inside this scope: an assertion failure drops the
+            // sole producer before the scope joins the original receiver.
+            let (release, receiver) = std::sync::mpsc::channel();
+            let (started, entered) = std::sync::mpsc::channel();
+            let work = scope.spawn(move || {
+                tracing::dispatcher::with_default(&dispatch, || {
+                    crate::obs::waiting_sync("channel-close", outcome, || {
+                        started.send(tracing::info_span!("retained-child")).unwrap();
+                        let result = receiver.recv();
+                        if outcome == "unwind" {
+                            panic!("unwind after original producer closes");
+                        }
+                        result
+                    })
+                })
+            });
+            let child = entered.recv().unwrap();
+            assert!(snapshot(&report).contains(&format!("channel-close {outcome} since ")));
+            if outcome == "reply" {
+                release.send(29).unwrap();
+            }
+            drop(release);
+            match (outcome, work.join()) {
+                ("reply", Ok(Ok(value))) => assert_eq!(value, 29),
+                ("producer-dropped", Ok(Err(std::sync::mpsc::RecvError))) | ("unwind", Err(_)) => {}
+                (_, result) => panic!("unexpected synchronous wait result: {result:?}"),
+            }
+            // A retained child must not keep a completed channel wait listed.
+            assert!(snapshot(&report).is_empty());
+            drop(child);
+        });
+    }
+}
+
+#[test]
 fn producer_drop_is_typed_and_foreign_polling_keeps_the_original_report() {
     let report = WaitReport::default();
     let foreign = WaitReport::default();
