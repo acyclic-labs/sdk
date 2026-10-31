@@ -29,7 +29,12 @@ impl CheckoutPublisher {
                     .active
                     .as_ref()
                     .unwrap_or_else(|| self.tools.workspace.view());
-                if reconciliation::recover(&physical, view, &|| async { Ok(()) }).await? {
+                let before_effect = || std::future::ready(Ok(()));
+                let recovered = BoundedContentFuture::new(access.io, || {
+                    reconciliation::recover(&physical, view, &before_effect)
+                })?
+                .await?;
+                if recovered {
                     state.watcher = None;
                 }
                 let State {
