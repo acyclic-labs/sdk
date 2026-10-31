@@ -81,6 +81,33 @@ export async function resourceIdentityConformance(binding: typeof Binding, name:
       }
     });
 
+    test("identity versions refuse before a missing payload", () => {
+      const account = unhex("6163636f756e74"), id = unhex("6964"), namespace = unhex("617070");
+      const pair = new ResourceIdentity(account, id).encode();
+      const actor = new ActorReference(account, namespace, id).encode();
+      const controls = [
+        { encoded: pair, offset: pair.length - 16 - account.length - id.length - 1, decode: ResourceIdentity.decode },
+        { encoded: actor, offset: actor.length - 24 - account.length - namespace.length - id.length - 1, decode: ActorReference.decode },
+      ];
+      for (const { encoded, offset, decode } of controls) {
+        expect(encoded[offset]).toBe(1);
+        const refusesVersion = (header: Uint8Array) => {
+          try {
+            decode(header);
+            throw new Error("unsupported identity version was accepted");
+          } catch (error) {
+            expect((error as Binding.IdentityError).code).toBe("unsupported_identity_version");
+          }
+        };
+        for (const version of [0, 2, 255]) {
+          const header = encoded.slice(0, offset + 1);
+          header[offset] = version;
+          refusesVersion(header);
+        }
+        refusesVersion(encoded.slice(0, offset));
+      }
+    });
+
     test("shared host vectors use account id directly for URL, SNI and signed Host", () => {
       for (const row of vectors.hosts) {
         const identity = new ResourceIdentity(unhex(row.account_hex), unhex(row.id_hex));

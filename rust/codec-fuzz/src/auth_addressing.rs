@@ -99,6 +99,7 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
                 .to_vec(),
         ),
     ];
+    let long_path = format!("/{}", "p".repeat(4096));
     for (index, (pattern, path)) in [
         (format!("https://{}/", host.as_str()), "/"),
         (format!("http://{}/data*", host.as_str()), "/data?q=1"),
@@ -106,6 +107,10 @@ pub fn seeds() -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
         ("*/*".into(), "/data?q=1"),
         (format!("{}/*", host.as_str()), "/data?q=1"),
         (format!("https://{}/data", host.as_str()), "/data?q=1"),
+        (
+            format!("https://{}{long_path}*", host.as_str()),
+            long_path.as_str(),
+        ),
     ]
     .into_iter()
     .enumerate()

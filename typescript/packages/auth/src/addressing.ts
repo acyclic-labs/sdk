@@ -87,6 +87,7 @@ export function validateResourceLabel(label: Uint8Array): void {
 export interface IdentityError extends Error {
   readonly name: "IdentityError";
   readonly code: "empty_account" | "empty_id" | "malformed_identity"
+    | "unsupported_identity_version"
     | "invalid_actor_id" | "invalid_namespace" | "reserved_namespace" | "invalid_location_hint";
 }
 
