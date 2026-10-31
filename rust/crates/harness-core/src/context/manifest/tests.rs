@@ -51,13 +51,15 @@ proptest! {
         text in ".{0,80}", boolean_schema in any::<bool>(),
     ) {
         let original = skill("skills/inspect/SKILL.md".into())?;
+        // Keep the minimized raw-JSON/YAML failure in every generated header.
+        let text = format!("\u{7f}{text}");
         let schema = if boolean_schema { json!(false) } else { json!({"description": text}) };
         let runtime = json!({"opaque": text});
         let header = json!({
             "name": original.name, "description": original.description,
             "input_schema": schema, "runtime": runtime,
         });
-        let prefix = format!("---\n{}\n---\nBODY", serde_json::to_string(&header)?);
+        let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&header)?);
         let declared = parse_skill_metadata(prefix.as_bytes(), original.source.clone())?;
         let fields = declared.call_fields(&mut None)?.ok_or_else(|| TestCaseError::fail("missing callable fields"))?;
         prop_assert_eq!(fields.input_schema, &schema);
@@ -74,7 +76,7 @@ proptest! {
         for missing in ["input_schema", "runtime"] {
             let mut incomplete = header.clone();
             incomplete.as_object_mut().ok_or_else(|| TestCaseError::fail("header is not an object"))?.remove(missing);
-            let prefix = format!("---\n{}\n---\nBODY", serde_json::to_string(&incomplete)?);
+            let prefix = format!("---\n{}\n---\nBODY", serde_saphyr::to_string(&incomplete)?);
             prop_assert!(parse_skill_metadata(prefix.as_bytes(), original.source.clone()).is_err());
             let mut restored = serde_json::to_value(&manifest)?;
             restored["discovery"]["skills"][0]["fields"].as_object_mut()
