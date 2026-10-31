@@ -1,4 +1,7 @@
 //! Source-backed sparse workspaces.
+//!
+//! A binding transition publishes against one observed revision. Contention
+//! returns [`LazyWorkspaceError::Concurrent`] without rebuilding the transition.
 
 use crate::demand::{
     DemandError, DemandSource, SourceCursor, SourceNode, SourceNodeKind, SourceReference,
@@ -10,7 +13,6 @@ use crate::kernel::{
 use crate::kernel::{KernelAccounting, KernelOwnedAllocation, Owned};
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
-use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,

@@ -218,44 +218,42 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         command: GitCommand,
         workspace_tree: GitTreeRef,
     ) -> Result<GitCommandOutput, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let mut state = self.load().await?;
-            if let Some(pending) = state
-                .pending
-                .as_ref()
-                .filter(|pending| !inspected_join(pending))
+        let mut state = self.load().await?;
+        if let Some(pending) = state
+            .pending
+            .as_ref()
+            .filter(|pending| !inspected_join(pending))
+        {
+            return Err(GitCompatError::TransitionPending(pending.id));
+        }
+        let before = state.clone();
+        let output = execute_command::<S::Error>(&mut state, command, workspace_tree)?;
+        if let Some(pending) = &before.pending {
+            if state != before
+                || matches!(&output, GitCommandOutput::Prepared { .. })
+                || matches!(&output, GitCommandOutput::Action(action) if !action.is_read_only())
             {
                 return Err(GitCompatError::TransitionPending(pending.id));
             }
-            let before = state.clone();
-            let output = execute_command::<S::Error>(&mut state, command.clone(), workspace_tree)?;
-            if let Some(pending) = &before.pending {
-                if state != before
-                    || matches!(&output, GitCommandOutput::Prepared { .. })
-                    || matches!(&output, GitCommandOutput::Action(action) if !action.is_read_only())
-                {
-                    return Err(GitCompatError::TransitionPending(pending.id));
-                }
-                return Ok(output);
+            return Ok(output);
+        }
+        let output = match output {
+            GitCommandOutput::Action(action) if !action.is_read_only() => {
+                prepare_transition(&mut state, action, GitPendingMutation::NoOp)
             }
-            let output = match output {
-                GitCommandOutput::Action(action) if !action.is_read_only() => {
-                    prepare_transition(&mut state, action, GitPendingMutation::NoOp)
-                }
-                output => output,
-            };
-            if state == before {
-                return Ok(output);
-            }
-            if let Some(pending) = state.pending.as_mut() {
-                // Prepared work settles under the request that started it.
-                pending.request = self.request_operation();
-            } else {
-                state.record_request(self.request_operation(), self.unanswered(), &output);
-            }
-            if self.publish(state).await? {
-                return Ok(output);
-            }
+            output => output,
+        };
+        if state == before {
+            return Ok(output);
+        }
+        if let Some(pending) = state.pending.as_mut() {
+            // Prepared work settles under the request that started it.
+            pending.request = self.request_operation();
+        } else {
+            state.record_request(self.request_operation(), self.unanswered(), &output);
+        }
+        if self.publish(state).await? {
+            return Ok(output);
         }
         Err(GitCompatError::Contended)
     }

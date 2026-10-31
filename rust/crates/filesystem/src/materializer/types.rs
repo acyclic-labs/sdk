@@ -278,7 +278,7 @@ pub enum MaterializationError<S: std::error::Error + 'static, B: std::error::Err
     /// Persisted progress is malformed or uses an unsupported version.
     #[error("materialization journal is incompatible")]
     IncompatibleJournal,
-    /// Optimistic state contention exceeded the bounded retry policy.
+    /// The conditional publication lost its expected revision.
     #[error("materialization journal remained contended")]
     Contended,
     /// Physical state no longer matches either durable endpoint.

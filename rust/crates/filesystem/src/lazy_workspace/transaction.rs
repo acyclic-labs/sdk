@@ -84,8 +84,7 @@ impl<
         } else {
             PendingLazyRemoveKind::SourceOnly
         };
-        let mut prepared = false;
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        {
             let state = self.state(ctx).await?;
             let shadows = if let LazyLookup::Authored {
                 record, metadata, ..
@@ -117,17 +116,13 @@ impl<
                 }),
                 ..state
             };
-            if self
+            if !self
                 .store
                 .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
                 .await?
             {
-                prepared = true;
-                break;
+                return Err(LazyWorkspaceError::Concurrent);
             }
-        }
-        if !prepared {
-            return Err(LazyWorkspaceError::Concurrent);
         }
         if let PendingLazyRemoveKind::Authored { idempotency_key } = kind {
             let mut transaction = accounted!(ctx, |work, cancel| self
@@ -173,69 +168,67 @@ impl<
         operation: IdempotencyKey,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let state = self
-                .store
-                .load_lazy_workspace(self.workspace.id(), ctx)
-                .await?
-                .ok_or(LazyWorkspaceError::NotFound)?;
-            state.require_ready_fork()?;
-            if state.schema_version != LAZY_STATE_SCHEMA
-                || state.workspace_id != self.workspace.id()
-                || state.source != self.source.reference()
+        let state = self
+            .store
+            .load_lazy_workspace(self.workspace.id(), ctx)
+            .await?
+            .ok_or(LazyWorkspaceError::NotFound)?;
+        state.require_ready_fork()?;
+        if state.schema_version != LAZY_STATE_SCHEMA
+            || state.workspace_id != self.workspace.id()
+            || state.source != self.source.reference()
+        {
+            return Err(LazyWorkspaceError::StaleSource);
+        }
+        if let Some(pending) = &state.pending_remove {
+            return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
+                && state.overlay == pending.prepared_overlay
             {
-                return Err(LazyWorkspaceError::StaleSource);
-            }
-            if let Some(pending) = &state.pending_remove {
-                return if matches!(pending.kind,PendingLazyRemoveKind::Mounted { idempotency_key } if idempotency_key == operation)
-                    && state.overlay == pending.prepared_overlay
-                {
-                    Ok(())
-                } else {
-                    Err(LazyWorkspaceError::Concurrent)
-                };
-            }
-            let mut overlay = state.overlay;
-            for path in paths.iter().chain(selected) {
-                let removed = self.removed_source_version(&state, path, ctx).await?;
-                overlay = self
-                    .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
-                    .await?;
-            }
-            let mut shadows = state.shadows;
-            for (record, metadata) in records {
-                shadows = self
-                    .insert_shadow(
-                        shadows,
-                        record.file_id,
-                        *record,
-                        crate::WorkspaceMetadata::from_engine(*metadata),
-                        ctx,
-                    )
-                    .await?;
-            }
-            let revision = state.revision;
-            let next = LazyWorkspaceState {
-                revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
-                overlay,
-                shadows,
-                pending_remove: Some(PendingLazyRemove {
-                    prior_overlay: state.overlay,
-                    prior_shadows: state.shadows,
-                    prepared_overlay: overlay,
-                    kind: PendingLazyRemoveKind::Mounted {
-                        idempotency_key: operation,
-                    },
-                }),
-                ..state
+                Ok(())
+            } else {
+                Err(LazyWorkspaceError::Concurrent)
             };
-            if self
-                .store
-                .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
-                .await?
-            {
-                return Ok(());
-            }
+        }
+        let mut overlay = state.overlay;
+        for path in paths.iter().chain(selected) {
+            let removed = self.removed_source_version(&state, path, ctx).await?;
+            overlay = self
+                .insert_overlay(overlay, path, LazyOverlayChange::Tombstone { removed }, ctx)
+                .await?;
+        }
+        let mut shadows = state.shadows;
+        for (record, metadata) in records {
+            shadows = self
+                .insert_shadow(
+                    shadows,
+                    record.file_id,
+                    *record,
+                    crate::WorkspaceMetadata::from_engine(*metadata),
+                    ctx,
+                )
+                .await?;
+        }
+        let revision = state.revision;
+        let next = LazyWorkspaceState {
+            revision: revision.checked_add(1).ok_or(crate::WorkError::Overflow)?,
+            overlay,
+            shadows,
+            pending_remove: Some(PendingLazyRemove {
+                prior_overlay: state.overlay,
+                prior_shadows: state.shadows,
+                prepared_overlay: overlay,
+                kind: PendingLazyRemoveKind::Mounted {
+                    idempotency_key: operation,
+                },
+            }),
+            ..state
+        };
+        if self
+            .store
+            .compare_and_swap_lazy_workspace(self.workspace.id(), revision, next, ctx)
+            .await?
+        {
+            return Ok(());
         }
         Err(LazyWorkspaceError::Concurrent)
     }

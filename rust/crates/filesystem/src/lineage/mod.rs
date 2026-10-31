@@ -1,6 +1,8 @@
 //! Durable direct-parent workspace lineage.
+//!
+//! Promoting a planned child publishes against one observed revision. A lost
+//! conditional write returns [`WorkspaceLineageError::Contended`].
 
-use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
     IdempotencyKey, WorkBudget, Workspace, WorkspaceError, WorkspaceId,
@@ -99,7 +101,7 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     /// An existing workspace is already bound to different lineage.
     #[error("workspace lineage conflicts with its durable registration")]
     ConflictingRegistration,
-    /// Optimistic registration contention exceeded the bounded retry policy.
+    /// The conditional publication lost its expected revision.
     #[error("workspace lineage registration remained contended")]
     Contended,
     /// Publication was requested by a workspace other than the direct parent.
@@ -490,32 +492,30 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if !ready.ready || !lineage_shape_is_valid(&ready) {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let existing = self
-                .store
-                .load(ready.workspace_id)
-                .await
-                .map_err(WorkspaceLineageError::Store)?
-                .ok_or(WorkspaceLineageError::IncompatibleState)?;
-            if !lineage_shape_is_valid(&existing) || !same_lineage(&existing, &ready) {
-                return Err(WorkspaceLineageError::ConflictingRegistration);
-            }
-            if existing.ready {
-                return Ok(existing);
-            }
-            let mut replacement = ready.clone();
-            replacement.revision = existing
-                .revision
-                .checked_add(1)
-                .ok_or(WorkspaceLineageError::IncompatibleState)?;
-            if self
-                .store
-                .compare_and_swap(ready.workspace_id, existing.revision, replacement.clone())
-                .await
-                .map_err(WorkspaceLineageError::Store)?
-            {
-                return Ok(replacement);
-            }
+        let existing = self
+            .store
+            .load(ready.workspace_id)
+            .await
+            .map_err(WorkspaceLineageError::Store)?
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        if !lineage_shape_is_valid(&existing) || !same_lineage(&existing, &ready) {
+            return Err(WorkspaceLineageError::ConflictingRegistration);
+        }
+        if existing.ready {
+            return Ok(existing);
+        }
+        let mut replacement = ready.clone();
+        replacement.revision = existing
+            .revision
+            .checked_add(1)
+            .ok_or(WorkspaceLineageError::IncompatibleState)?;
+        if self
+            .store
+            .compare_and_swap(ready.workspace_id, existing.revision, replacement.clone())
+            .await
+            .map_err(WorkspaceLineageError::Store)?
+        {
+            return Ok(replacement);
         }
         Err(WorkspaceLineageError::Contended)
     }

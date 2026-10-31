@@ -1,5 +1,5 @@
 //! Journaled pathwise application and crash recovery.
-use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, next_revision};
+use crate::record_store::next_revision;
 use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
