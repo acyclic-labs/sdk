@@ -131,10 +131,12 @@ mod wall_alarm;
 #[cfg(any(target_os = "linux", target_vendor = "apple", windows))]
 pub use wall_alarm::{AlarmCallback, WallAlarm};
 mod blocking;
+mod blocking_future;
 #[cfg(any(test, feature = "test-support"))]
 #[path = "testing/resources.rs"]
 pub mod resources;
 mod task;
+pub use blocking_future::blocking_future;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub use blocking::{InlineBlocking, run_blocking_io};

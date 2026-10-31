@@ -187,8 +187,8 @@ impl ExecutionEvent {
 }
 
 impl<'a> RecordIndex<'a> {
-    fn bucket(&self, step: Option<u32>, io: Option<&PreparationIo>) -> Result<&[ExecutionRecord]> {
-        match self.keys.get(1, &step_key(step), io)? {
+    fn bucket(&self, key: [u8; 32], io: Option<&PreparationIo>) -> Result<&[ExecutionRecord]> {
+        match self.keys.get(1, &key, io)? {
             None => Ok(&[]),
             Some(index) => self.steps.get(index).map(Vec::as_slice).ok_or_else(|| {
                 stock_boundary(
@@ -292,7 +292,7 @@ impl<'a> RecordIndex<'a> {
         let page_bytes = page.capacity() as u64 * std::mem::size_of::<ExecutionRecord>() as u64;
         let advanced = !page.is_empty();
         for (record, key) in page.into_iter().zip(keys) {
-            let step = step_key(record.event.step());
+            let step = record_bucket_key(&record.event, io)?;
             let bucket_index = if let Some(index) = self.keys.get(1, &step, io)? {
                 index
             } else {
@@ -324,7 +324,7 @@ impl<'a> RecordIndex<'a> {
 
     fn select(
         &self,
-        step: u32,
+        bucket: [u8; 32],
         include_started: bool,
         maximum: usize,
         select: impl Fn(&ExecutionEvent) -> bool,
@@ -332,11 +332,11 @@ impl<'a> RecordIndex<'a> {
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
         let mut selected = Vec::new();
         let started = if include_started {
-            self.bucket(None, io)?
+            self.bucket(step_key(None), io)?
         } else {
             &[]
         };
-        for record in started.iter().chain(self.bucket(Some(step), io)?.iter()) {
+        for record in started.iter().chain(self.bucket(bucket, io)?.iter()) {
             crate::model::charge_items(io, 1)?;
             if select(&record.event) {
                 if selected.len() >= maximum {
@@ -376,6 +376,26 @@ fn step_key(step: Option<u32>) -> [u8; 32] {
     key
 }
 
+pub(crate) fn call_bucket_key(step: u32, call: [u8; 32]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"harness:call-records:v1");
+    hash.update(&step.to_le_bytes());
+    hash.update(&call);
+    *hash.finalize().as_bytes()
+}
+
+fn record_bucket_key(event: &ExecutionEvent, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+    match event {
+        ExecutionEvent::ToolStarted { step, call_id, .. }
+        | ExecutionEvent::ToolCompleted { step, call_id, .. }
+        | ExecutionEvent::ToolFailed { step, call_id, .. } => Ok(call_bucket_key(
+            *step,
+            crate::model::hash_bytes(call_id.as_bytes(), io)?,
+        )),
+        _ => Ok(step_key(event.step())),
+    }
+}
+
 impl StockExecution<'_> {
     pub(super) async fn step_records(
         &self,
@@ -386,10 +406,33 @@ impl StockExecution<'_> {
         maximum: usize,
         select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        self.selected_records(
+            journal,
+            operation,
+            step,
+            None,
+            include_started,
+            maximum,
+            select,
+        )
+        .await
+    }
+
+    pub(super) async fn selected_records(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        call_id: Option<&str>,
+        include_started: bool,
+        maximum: usize,
+        select: impl Fn(&ExecutionEvent) -> bool + Send + Sync,
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
         validate_journal(journal, self.io)?;
         let query = ExecutionRecordQuery {
             operation,
             step,
+            call_id,
             include_started,
             maximum_step_records: ExecutionRecordQuery::step_bound(self.stock.limits),
             maximum,
@@ -418,7 +461,14 @@ impl StockExecution<'_> {
         if let Some(io) = self.io.filter(|_| stock_is_native(self.io)) {
             io.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?;
         }
-        let (tail, records) = index.select(step, include_started, maximum, select, self.io)?;
+        let bucket = call_id
+            .map(|call| {
+                crate::model::hash_bytes(call.as_bytes(), self.io)
+                    .map(|call| call_bucket_key(step, call))
+            })
+            .transpose()?
+            .unwrap_or_else(|| step_key(Some(step)));
+        let (tail, records) = index.select(bucket, include_started, maximum, select, self.io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
             let bytes = records.iter().try_fold(

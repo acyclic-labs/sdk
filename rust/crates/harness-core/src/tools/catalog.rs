@@ -83,8 +83,30 @@ impl ToolSpec {
 
 /// The stock coding catalog, in model registration order. No mutable global state.
 pub fn catalog() -> impl ExactSizeIterator<Item = &'static ToolSpec> {
-    [&SHELL, &FS, &READ, &WRITE, &EDIT].into_iter()
+    #[cfg(not(target_arch = "wasm32"))]
+    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT, &RUN_JS];
+    #[cfg(target_arch = "wasm32")]
+    let specs = [&SHELL, &FS, &READ, &WRITE, &EDIT];
+    specs.into_iter()
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+static RUN_JS: ToolSpec = ToolSpec {
+    name: "run_js",
+    revision: "1",
+    description: "Run JavaScript for multi-step reads, filters and loops over tools. Use await tools[name](arguments), with each tool's existing JSON input schema; tool functions also expose input_schema. The final expression is returned with a compact call log. Intermediate results stay in JavaScript. No host, filesystem, network or environment access exists except granted tools. Inner calls retain their normal approvals and receipts; failures throw Error('tool execution failed: <reason>').",
+    hook_names: &[],
+    binding: ToolBinding::Volume,
+    input: || {
+        Ok(
+            json!({"type":"object", "properties":{"code":{"type":"string"}}, "required":["code"], "additionalProperties":false}),
+        )
+    },
+    output: object,
+    projection_schema: command_projection,
+    executor: |_| Arc::new(super::code_mode::CodeMode),
+    projection: |_| Arc::new(super::code_mode::CodeMode),
+};
 
 static SHELL: ToolSpec = ToolSpec {
     name: super::shell::PLATFORM.name,

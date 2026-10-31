@@ -8,6 +8,8 @@ pub use agents::{
 };
 pub mod shell;
 pub use shell::ShellInput;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod code_mode;
 mod defaults;
 pub use defaults::{defaults, names as default_names};
 pub(crate) mod catalog;

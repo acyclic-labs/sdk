@@ -41,11 +41,14 @@ pub struct Output {
 }
 
 /// Runs one git-facade command against the task-selected workspace.
-pub fn run(
-    workspace: Workspace<'_>,
-    args: &[String],
-) -> impl Future<Output = crate::Result<Output>> {
-    run_with_guard(workspace, args, || std::future::ready(Ok(())))
+pub fn run<'a>(
+    workspace: Workspace<'a>,
+    args: &'a [String],
+) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Output>> {
+    // Keep the facade's large future out of every embedding consumer's layout.
+    Box::pin(run_with_guard(workspace, args, || {
+        std::future::ready(Ok(()))
+    }))
 }
 
 #[doc(hidden)]
