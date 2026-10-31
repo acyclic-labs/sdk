@@ -221,6 +221,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         super::super::tests::file(crate::AgentId::from_bytes([1; 16]), "summary.txt").unwrap();
     let mut reference = Reference::default();
     let mut swapped = false;
+    let mut raced = false;
     let mut interrupted = [false; 3];
     let mut publications = 1;
     // Reach a real swap in every generated case; random suffixes then
@@ -233,7 +234,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         (2, 0, true),
         (2, 0, false),
         (4, 0, true),
-        (4, 0, false),
+        (5, 0, false),
     ];
     for (operation, argument, crash_before_commit) in prefix.into_iter().chain(schedule) {
         let head = reference.items.len() as u64;
@@ -311,10 +312,25 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
                         _ => 2,
                     }] = true;
                 } else {
-                    assert!(matches!(
-                        provider.commit(request).await.unwrap(),
-                        CommitOutcome::Committed(_)
-                    ));
+                    if operation == 5 {
+                        // Both proposals observed the same committed epoch.
+                        // Distinct request identities must linearize as one
+                        // success and one conflict, including joined effects.
+                        let competing = snapshot_request(&candidate, path.clone());
+                        let (left, right) =
+                            futures::join!(provider.commit(request), provider.commit(competing));
+                        assert!(matches!(
+                            (left.unwrap(), right.unwrap()),
+                            (CommitOutcome::Committed(_), CommitOutcome::Conflict(_))
+                                | (CommitOutcome::Conflict(_), CommitOutcome::Committed(_))
+                        ));
+                        raced = true;
+                    } else {
+                        assert!(matches!(
+                            provider.commit(request).await.unwrap(),
+                            CommitOutcome::Committed(_)
+                        ));
+                    }
                     swapped |= candidate.state().generation() > durable.state().generation();
                     publications += 1;
                     reference = expected;
@@ -343,6 +359,7 @@ async fn replay_snapshot_schedule(schedule: Vec<(u8, u8, bool)>) {
         reference.verify(reopened.state());
     }
     assert!(swapped, "generated execution never reached a swap");
+    assert!(raced, "generated execution never raced conditional swaps");
     assert!(
         interrupted.into_iter().all(|reached| reached),
         "generated execution did not interrupt every publication boundary"
