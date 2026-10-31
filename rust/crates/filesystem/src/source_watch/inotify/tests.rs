@@ -617,11 +617,32 @@ fn original_cleanup_wait_retains_inflight_callback_and_retires_after_its_panic()
     assert!(!pending_terminal);
 
     receive_loss.recv_timeout(std::time::Duration::from_secs(5))?;
+    // Loss alone does not prove physical retirement. The same service pass
+    // must finish before the controller is allowed to join its completion.
+    let reading = watch
+        .shared
+        .reading
+        .raw
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let (reading, _) = watch
+        .shared
+        .reading_changed
+        .wait_timeout_while(reading, std::time::Duration::from_secs(5), |_| {
+            !watch.shared.completed.load(Ordering::Acquire)
+        })
+        .unwrap_or_else(PoisonError::into_inner);
+    assert!(
+        watch.is_stopped(),
+        "the original service retires its resources"
+    );
+    drop(reading);
     watch.stop_accepted_cleanup()?;
     assert!(
         watch.is_stopped(),
         "callback unwind is not itself terminal evidence"
     );
+    watch.delivery_lost();
     assert!(
         receive_loss.try_recv().is_err(),
         "one terminal notification"
