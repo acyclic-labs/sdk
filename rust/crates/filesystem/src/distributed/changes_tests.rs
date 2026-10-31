@@ -864,9 +864,9 @@ async fn fork_change_set(
     let (mut listed, mut inherited) = (0, 0);
     for record in &records {
         let changes = acyclic_stream::decode_changes(record.value.as_ref())?;
-        let appender = changes.context.get(..16).ok_or("context missing")?;
+        let appender = crate::PublicationContext::from_bytes(changes.context.as_ref())?.volume;
         if record.origin == own {
-            assert_eq!(appender, fork.id().volume_id().into_bytes());
+            assert_eq!(appender, fork.id().volume_id());
             listed += changes
                 .entries
                 .iter()
@@ -875,7 +875,7 @@ async fn fork_change_set(
         } else {
             // A shared record names its source's stream and volume.
             assert_eq!(record.origin, shared);
-            assert_eq!(appender, workspace.id().volume_id().into_bytes());
+            assert_eq!(appender, workspace.id().volume_id());
             inherited += 1;
         }
     }
