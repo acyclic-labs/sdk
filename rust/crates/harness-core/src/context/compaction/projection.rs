@@ -4,7 +4,7 @@ use crate::context::{
 use crate::{Result, executor::stock_boundary, wire::ErrorCode};
 
 /// Compacts a context on the optional original preparation ledger.
-pub fn compact_projection(
+pub(crate) fn compact_projection(
     context: &Context,
     max_messages: usize,
     summary: Option<ContextSummary>,

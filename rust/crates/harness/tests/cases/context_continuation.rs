@@ -3,7 +3,7 @@
 
 use acyclic_harness::context::{
     CompactionPolicy, CompactionReference, Context, ContextPipeline, ContextPlacement,
-    ModelContextCapacity, ModelTokenCount, compact_projection,
+    ModelContextCapacity, ModelTokenCount,
 };
 use acyclic_harness::conversation::{ContentResidencyVerifier, FileRef, Limits};
 use acyclic_harness::executor::{Executor, StockExecutor, TurnInput};
@@ -169,7 +169,35 @@ async fn fixture() -> Result<Fixture> {
         ModelContent::Text("Summarize the pinned source".into()),
     )
     .await?;
-    let (compacted, reference) = compact_projection(&source, 2, Some(summary), None)?;
+    let bytes = acyclic_harness::canonical_json_bytes_bounded(
+        &source,
+        acyclic_harness::JsonBounds {
+            maximum_bytes: 65_536,
+            maximum_items: 4_096,
+            maximum_depth: 64,
+        },
+        None,
+        &mut |_| Ok(()),
+    )?;
+    let compacted = Context {
+        messages: vec![
+            ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file: summary.output.clone(),
+                    policy: FileProjectionPolicy::BoundedFull,
+                }),
+            },
+            source.messages[2].clone(),
+        ],
+        current_input_index: Some(1),
+        ..Context::default()
+    };
+    let reference = CompactionReference {
+        source_digest: *blake3::hash(&bytes).as_bytes(),
+        maximum_messages: 2,
+        summary: Some(summary),
+    };
     Ok(Fixture {
         storage,
         source,

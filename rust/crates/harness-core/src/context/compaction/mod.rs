@@ -124,4 +124,4 @@ mod tests;
 mod unknown_output_tests;
 
 mod projection;
-pub use projection::compact_projection;
+pub(crate) use projection::compact_projection;
