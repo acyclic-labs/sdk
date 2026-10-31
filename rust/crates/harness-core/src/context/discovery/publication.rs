@@ -40,6 +40,7 @@ struct Member {
 pub struct SkillPublicationCut {
     from: SourceCursor,
     cursor: SourceCursor,
+    executing_volume: VolumeId,
     member: Member,
     changes: Vec<SkillPublicationChange>,
     // Dropped after the payload. This is the original preparation's ownership,
@@ -102,6 +103,7 @@ impl SkillPublicationCut {
                 self.member.origin.as_str(),
                 self.member.commit.as_bytes(),
                 self.member.end,
+                self.executing_volume.into_bytes(),
                 self.member.context.volume.into_bytes(),
                 self.member.context.generation.to_bytes(),
                 self.member.context.authority_sequence.get(),
@@ -286,6 +288,7 @@ impl SkillPublicationSource {
                 self.pending = Some(SkillPublicationCut {
                     from: self.accepted,
                     cursor: self.observed,
+                    executing_volume: self.volume,
                     member: self.member.take().ok_or(StreamError::InvalidArgument)?,
                     changes: std::mem::take(&mut self.changes),
                     _custody: None,
@@ -308,9 +311,9 @@ impl SkillPublicationSource {
         let changes = acyclic_stream::decode_changes(&record.value)?;
         let context = PublicationContext::from_bytes(&changes.context)?;
         let end = context.exclusive_end(record.sequence)?;
-        if context.volume != self.volume {
-            return Err(StreamError::AccessDenied.into());
-        }
+        // ChangeProvider authenticates context.volume against Record.origin
+        // and applies the executing volume's policy. An inherited ancestor's
+        // appending volume can differ from the executing volume legitimately.
         if let Some(member) = &self.member {
             if member.context.volume != context.volume
                 || member.context.generation != context.generation
