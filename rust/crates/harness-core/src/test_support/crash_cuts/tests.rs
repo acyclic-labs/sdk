@@ -13,7 +13,7 @@ fn limits() -> [LocalStreamLimits; 2] {
     [
         LocalStreamLimits::default(),
         LocalStreamLimits {
-            journal_operations: 4,
+            compaction_operations: 4,
             ..LocalStreamLimits::default()
         },
     ]
