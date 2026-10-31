@@ -75,9 +75,9 @@ pub(super) async fn load(
                 .items
                 .first()
                 .zip(history.items.last())
-                .map(|(oldest, newest)| oldest.conversation..=newest.conversation);
+                .map(|(newest, oldest)| oldest.conversation..=newest.conversation);
             lines.push(Line::raw(
-                "Enter a displayed cut to select · PgDn: next · PgUp: first · Esc: close",
+                "Enter a displayed cut to select · PgDn: older · PgUp: newest · Esc: close",
             ));
             Ok(Panel {
                 page: QueryPage::new(

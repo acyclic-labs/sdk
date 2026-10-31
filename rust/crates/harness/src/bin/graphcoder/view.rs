@@ -1,11 +1,12 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts, its streaming answer and its phase, over the shared prompt
 //! editor and screen widgets.
-use acyclic_harness::local::{Event, agent_conversation::Conversation};
+use acyclic_harness::local::{
+    Event,
+    agent_conversation::{Conversation, PreparedHistoryAction},
+};
 use acyclic_harness::{
-    agent::{
-        AgentOutcome, ContextAction, HistoryVolume, IntentId, Phase, RestoreMode, TurnOutcome,
-    },
+    agent::{AgentOutcome, ContextAction, Delivered, IntentId, Phase, RestoreMode, TurnOutcome},
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
@@ -20,6 +21,7 @@ use acyclic_harness::{
         term::{Environment, FrameTerminal, ScreenMode, Tty},
     },
 };
+use acyclic_harness_client::{AgentControlFailure, AgentExchangeError, AgentReply};
 use futures::{StreamExt as _, stream::LocalBoxStream};
 use std::{sync::Arc, time::Instant};
 
@@ -67,12 +69,14 @@ enum Prompt {
     /// An immutable history turn and the original restoration intent.
     Restore {
         at: u64,
-        id: String,
         mode: RestoreMode,
-        expected: Vec<HistoryVolume>,
+        request: PreparedHistoryAction,
     },
     /// A fork keeps its complete original request across an uncertain result.
-    Fork { at: u64, id: String, brief: String },
+    Fork {
+        at: u64,
+        request: PreparedHistoryAction,
+    },
 }
 
 #[derive(Default)]
@@ -686,16 +690,24 @@ pub async fn run(
                                         }
                                         continue;
                                     }
-                                    Some(Prompt::Restore { at, id, mode, expected }) => {
+                                    Some(Prompt::Restore { at, mode, mut request }) => {
                                         if matches!(text.trim(), "y" | "Y" | "yes") {
-                                            match conversation.restore(&id, at, mode, expected.clone()).await {
-                                                Ok(inbox) => {
+                                            match request.execute().await {
+                                                Ok(AgentReply::Delivered { delivery: Delivered::Committed { inbox } }) => {
                                                     view.checkpoints.push(inbox);
                                                     view.pending_dirty = true;
                                                 }
+                                                Ok(AgentReply::Delivered { delivery: Delivered::Closed }) => {
+                                                    view.notice = Some("Restore refused: conversation is archived.".into());
+                                                }
+                                                Ok(_) => return Err("the endpoint answered another history action".into()),
                                                 Err(error) => {
-                                                    view.prompt = Some(Prompt::Restore { at, id, mode, expected });
-                                                    view.notice = Some(format!("Restore not confirmed: {error}. Enter yes to resend the same request."));
+                                                    if matches!(error, AgentExchangeError::Control(AgentControlFailure::Refused { .. })) {
+                                                        view.notice = Some(format!("Restore refused: {error}"));
+                                                    } else {
+                                                        view.notice = Some(format!("Restore not confirmed ({}): {error}. Enter yes to resend the same request.", error.code()));
+                                                        view.prompt = Some(Prompt::Restore { at, mode, request });
+                                                    }
                                                 }
                                             }
                                         }
@@ -709,29 +721,44 @@ pub async fn run(
                                             _ => None,
                                         };
                                         if let Some(mode) = mode {
-                                            let heads = if mode.files() { conversation.project_heads().await } else { Ok(Vec::new()) };
-                                            match heads {
-                                                Ok(expected) => view.prompt = Some(Prompt::Restore { at, id: acyclic_harness::OperationId::new().to_string(), mode, expected }),
+                                            let prepared = async {
+                                                let expected = if mode.files() { conversation.project_heads().await? } else { Vec::new() };
+                                                conversation.prepare_restore(&acyclic_harness::OperationId::new().to_string(), at, mode, expected)
+                                            }.await;
+                                            match prepared {
+                                                Ok(request) => view.prompt = Some(Prompt::Restore { at, mode, request }),
                                                 Err(error) => {
                                                     view.prompt = Some(Prompt::History { at });
-                                                    view.notice = Some(format!("Read current project heads failed: {error}. Enter the restore mode to retry."));
+                                                    view.notice = Some(format!("Prepare restore failed before sending: {error}. Enter the restore mode to retry."));
                                                 }
                                             }
                                         } else if let Some(brief) = text.trim().strip_prefix("fork ").map(str::trim).filter(|brief| !brief.is_empty()) {
-                                            view.prompt = Some(Prompt::Fork { at, id: acyclic_harness::OperationId::new().to_string(), brief: brief.to_owned() });
+                                            match conversation.prepare_fork(&acyclic_harness::OperationId::new().to_string(), at, brief.to_owned()) {
+                                                Ok(request) => view.prompt = Some(Prompt::Fork { at, request }),
+                                                Err(error) => {
+                                                    view.prompt = Some(Prompt::History { at });
+                                                    view.notice = Some(format!("Prepare fork failed before sending: {error}. Enter fork followed by the task brief to retry."));
+                                                }
+                                            }
                                         } else {
                                             view.prompt = Some(Prompt::History { at });
                                             view.notice = Some("Enter files, context, both, or fork followed by the new task brief.".into());
                                         }
                                         continue;
                                     }
-                                    Some(Prompt::Fork { at, id, brief }) => {
+                                    Some(Prompt::Fork { at, mut request }) => {
                                         if matches!(text.trim(), "y" | "Y" | "yes") {
-                                            match conversation.fork_at(&id, at, &brief).await {
-                                                Ok(agent) => view.notice = Some(format!("Fork published: {}", agent.as_str())),
+                                            match request.execute().await {
+                                                Ok(AgentReply::Spawned { agent, delivery: Delivered::Committed { .. } }) => view.notice = Some(format!("Fork published: {}", agent.as_str())),
+                                                Ok(AgentReply::Spawned { delivery: Delivered::Closed, .. }) => view.notice = Some("Fork refused: conversation is archived.".into()),
+                                                Ok(_) => return Err("the endpoint answered another history action".into()),
                                                 Err(error) => {
-                                                    view.prompt = Some(Prompt::Fork { at, id, brief });
-                                                    view.notice = Some(format!("Fork not confirmed: {error}. Enter yes to resend the same request."));
+                                                    if matches!(error, AgentExchangeError::Control(AgentControlFailure::Refused { .. })) {
+                                                        view.notice = Some(format!("Fork refused: {error}"));
+                                                    } else {
+                                                        view.notice = Some(format!("Fork not confirmed ({}): {error}. Enter yes to resend the same request.", error.code()));
+                                                        view.prompt = Some(Prompt::Fork { at, request });
+                                                    }
                                                 }
                                             }
                                         }

@@ -1,13 +1,51 @@
-//! Original history queries and fork commands on the bound agent connection.
-use super::{Conversation, intent, unexpected};
+//! Original history queries and prepared actions on the bound agent connection.
+use super::{Conversation, failed, intent, unexpected};
 use crate::{
-    Error, Result,
-    agent::{AgentPath, Delivered, HistoryCheckpoint},
+    Result,
+    agent::{HistoryCheckpoint, HistoryVolume, RestoreMode},
     model::ModelContent,
 };
-use acyclic_harness_client::{AgentCommand, AgentPageRequest, AgentReply};
+use acyclic_harness_client::{
+    AgentCommand, AgentExchangeError, AgentPageRequest, AgentReply, PreparedAgentInvocation,
+    PreparedCommand,
+};
+use std::sync::Arc;
 
-/// One immutable interval of settled history, in original conversation order.
+/// An exact prepared action and the original authenticated connection that
+/// prepared it. No transport starts until [`Self::execute`]; every attempt
+/// borrows the same canonical command frames and the same credential slot.
+pub struct PreparedHistoryAction {
+    conversation: Arc<Conversation>,
+    invocation: PreparedAgentInvocation<'static>,
+    failure: Option<AgentExchangeError>,
+}
+
+impl PreparedHistoryAction {
+    /// Execute once, retaining the request on every outcome. A decoded refusal
+    /// is definitive; a session failure is not evidence of mutation settlement.
+    /// The last failure remains typed here until another attempt completes;
+    /// Unknown retains the host's original recovery request, not just its text.
+    ///
+    /// # Errors
+    /// A borrowed original session, framing or host failure. No retry is started.
+    pub async fn execute(&mut self) -> std::result::Result<AgentReply, &AgentExchangeError> {
+        match self
+            .conversation
+            .connection
+            .controls
+            .execute(&self.invocation)
+            .await
+        {
+            Ok(reply) => {
+                self.failure = None;
+                Ok(reply)
+            }
+            Err(error) => Err(self.failure.insert(error)),
+        }
+    }
+}
+
+/// One immutable interval of settled history, newest conversation cut first.
 pub struct HistoryPage {
     /// Original descriptors validated by the shared client reply boundary.
     pub items: Vec<HistoryCheckpoint>,
@@ -36,32 +74,57 @@ impl Conversation {
         }
     }
 
-    /// Fork an exact zero-based settled turn with a new task brief. The host's
-    /// original fork publication retains the saved files and context together.
-    /// Retrying uses the same `id`, turn and brief, including after a lost reply.
+    /// Prepare restoration of an exact zero-based settled turn. `expected`
+    /// contains current project heads, captured before confirmation, rather
+    /// than the saved target heads. Preparation sends nothing.
     ///
     /// # Errors
-    /// Original session failure, decoded refusal or malformed reply.
-    pub async fn fork_at(&self, id: &str, at: u64, brief: &str) -> Result<AgentPath> {
-        match self
+    /// Original command validation or preparation failure, before transport.
+    pub fn prepare_restore(
+        self: &Arc<Self>,
+        id: &str,
+        at: u64,
+        mode: RestoreMode,
+        expected: Vec<HistoryVolume>,
+    ) -> Result<PreparedHistoryAction> {
+        self.prepare_history(&AgentCommand::Restore {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+            at,
+            mode,
+            expected,
+        })
+    }
+
+    /// Prepare the original fork publication with the complete owned task
+    /// brief. Retries borrow the prepared bytes without copying the brief.
+    ///
+    /// # Errors
+    /// Original command validation or preparation failure, before transport.
+    pub fn prepare_fork(
+        self: &Arc<Self>,
+        id: &str,
+        at: u64,
+        brief: String,
+    ) -> Result<PreparedHistoryAction> {
+        self.prepare_history(&AgentCommand::Fork {
+            parent: self.agent().clone(),
+            id: intent(id)?,
+            at,
+            brief: ModelContent::Text(brief),
+        })
+    }
+
+    fn prepare_history(self: &Arc<Self>, command: &AgentCommand) -> Result<PreparedHistoryAction> {
+        let invocation = self
             .connection
-            .execute(&AgentCommand::Fork {
-                parent: self.agent().clone(),
-                id: intent(id)?,
-                at,
-                brief: ModelContent::Text(brief.to_owned()),
-            })
-            .await?
-        {
-            AgentReply::Spawned {
-                agent,
-                delivery: Delivered::Committed { .. },
-            } => Ok(agent),
-            AgentReply::Spawned {
-                delivery: Delivered::Closed,
-                ..
-            } => Err(Error::Conflict("conversation is archived".into())),
-            _ => Err(unexpected()),
-        }
+            .controls
+            .prepare(PreparedCommand::new(command).map_err(failed)?)
+            .map_err(failed)?;
+        Ok(PreparedHistoryAction {
+            conversation: Arc::clone(self),
+            invocation,
+            failure: None,
+        })
     }
 }

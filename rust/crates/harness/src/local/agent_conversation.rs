@@ -12,7 +12,7 @@
 //! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 mod history;
-pub use history::HistoryPage;
+pub use history::{HistoryPage, PreparedHistoryAction};
 mod usage;
 use crate::{
     Error, Result,
