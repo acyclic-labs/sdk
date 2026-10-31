@@ -43,7 +43,7 @@ path = "tests/skill_materializer_loom.rs"
 required-features = ["model-checking"]
 
 [features]
-code-mode = ["dep:rquickjs-sys"]
+code-mode = ["filesystem", "dep:rquickjs-sys"]
 conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]

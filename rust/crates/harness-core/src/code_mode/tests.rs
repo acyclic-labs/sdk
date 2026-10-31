@@ -53,8 +53,8 @@ impl CodeHost for Echo {
     fn dispatch(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
-        Box::pin(async move {
+    ) -> Result<NativeFutureBundle<'_, CodeHostResult>> {
+        NativeFutureBundle::new_optional(None, || async move {
             let value = invocation.arguments.clone();
             lock(&self.0).push(invocation);
             Ok(ToolResult { value }.into())
@@ -417,10 +417,10 @@ struct HeldHost {
     released: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 impl CodeHost for HeldHost {
-    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
+    fn dispatch(&self, _: ToolInvocation) -> Result<NativeFutureBundle<'_, CodeHostResult>> {
         let started = lock(&self.started).take();
         let released = lock(&self.released).take();
-        Box::pin(async move {
+        NativeFutureBundle::new_optional(None, || async move {
             started
                 .ok_or_else(|| rejected("duplicate dispatch"))?
                 .send(())
@@ -512,8 +512,8 @@ impl CodeHost for ReverseCompletion {
     fn dispatch(
         &self,
         invocation: ToolInvocation,
-    ) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
-        Box::pin(async move {
+    ) -> Result<NativeFutureBundle<'_, CodeHostResult>> {
+        NativeFutureBundle::new_optional(None, || async move {
             if invocation.arguments["value"] == "first" {
                 let mut completed = self.0.subscribe();
                 if !*completed.borrow() {
@@ -556,9 +556,56 @@ async fn concurrent_host_completion_order_cannot_change_replay_continuations() -
 
 struct Uncertain;
 impl CodeHost for Uncertain {
-    fn dispatch(&self, _: ToolInvocation) -> BoxProviderFuture<'_, Result<CodeHostResult>> {
-        Box::pin(async { Err(Error::Storage("original unacknowledged request".into())) })
+    fn dispatch(&self, _: ToolInvocation) -> Result<NativeFutureBundle<'_, CodeHostResult>> {
+        NativeFutureBundle::new_optional(None, || async {
+            Err(Error::Storage("original unacknowledged request".into()))
+        })
     }
+}
+
+struct AdmissionRefusal {
+    admitted: AtomicUsize,
+    effects: AtomicUsize,
+}
+impl CodeHost for AdmissionRefusal {
+    fn dispatch(&self, _: ToolInvocation) -> Result<NativeFutureBundle<'_, CodeHostResult>> {
+        if self.admitted.fetch_add(1, Ordering::SeqCst) == 1 {
+            return Err(rejected("original host future admission refused"));
+        }
+        NativeFutureBundle::new_optional(None, || async {
+            self.effects.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolResult { value: Value::Null }.into())
+        })
+    }
+}
+
+#[tokio::test]
+async fn host_future_admission_refuses_before_any_batch_effect() -> Result<()> {
+    let runtime = CodeRuntime::new(Arc::new(Memory))?;
+    let (_owner, control) = original_control();
+    let host = Arc::new(AdmissionRefusal {
+        admitted: AtomicUsize::new(0),
+        effects: AtomicUsize::new(0),
+    });
+    let result = runtime
+        .execute(
+            &outer(),
+            "return await Promise.all([echo({value:'first'}), echo({value:'second'})]);",
+            &[echo_definition()],
+            host.clone(),
+            control,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::ToolRejected {
+            reason: "original host future admission refused",
+            ..
+        })
+    ));
+    assert_eq!(host.admitted.load(Ordering::SeqCst), 2);
+    assert_eq!(host.effects.load(Ordering::SeqCst), 0);
+    Ok(())
 }
 
 #[tokio::test]

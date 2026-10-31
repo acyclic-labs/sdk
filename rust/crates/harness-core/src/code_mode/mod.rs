@@ -15,14 +15,13 @@ mod typescript;
 pub use declarations::declarations;
 
 use crate::{
-    Error, Result,
+    Error, NativeFutureBundle, NativeOrdered, Result,
     tool::{ToolDefinition, ToolInvocation, ToolResult},
 };
 use acyclic_stream::BoxProviderFuture;
 use buffers::{Buffers, Owned, PendingQueue};
 use custody::Retained;
 use engine::{Context, Runtime};
-use futures::{StreamExt, stream::FuturesOrdered};
 use serde_json::Value;
 use std::{
     num::NonZeroUsize,
@@ -113,9 +112,12 @@ pub trait CodeHost: Send + Sync {
             None,
         )
     }
-    /// Executes or replays one stable nested call through the ordinary dispatcher.
-    fn dispatch(&self, invocation: ToolInvocation)
-    -> BoxProviderFuture<'_, Result<CodeHostResult>>;
+    /// Admits the concrete future before executing or replaying one stable
+    /// nested call through the ordinary dispatcher. Admission executes no effect.
+    fn dispatch(
+        &self,
+        invocation: ToolInvocation,
+    ) -> Result<NativeFutureBundle<'_, CodeHostResult>>;
 }
 
 /// One interpreter shared by the harness, with event-driven execution credit.
@@ -337,7 +339,8 @@ async fn run(
         })
         .await?;
     protocol.check()?;
-    let mut calls = FuturesOrdered::new();
+    let work = engine.native_allocator.as_ref().map(|state| state.work());
+    let mut calls = NativeOrdered::new(work)?;
     loop {
         control.check()?;
         let queued = lock(&queue).take()?;
@@ -347,12 +350,13 @@ async fn run(
             drop(call.arguments);
             let invocation =
                 host.invocation(outer, call.ordinal, call.name.value, arguments.value)?;
-            let host = Arc::clone(&host);
-            calls.push_back(async move {
+            let dispatched = host.dispatch(invocation)?;
+            let continuation = NativeFutureBundle::new_optional(work, || async move {
                 let _name_credit = call.name.credit;
                 let _argument_credit = arguments.credit;
-                (call.ordinal, host.dispatch(invocation).await)
-            });
+                Ok((call.ordinal, dispatched.await?))
+            })?;
+            calls.push_back(continuation)?;
         }
         drop(_queue_credit);
         let state = engine
@@ -375,11 +379,10 @@ async fn run(
         }
         let (ordinal, result) = tokio::select! {
             error = futures::future::poll_fn(|context| control.poll_interrupted(context)) => return Err(error),
-            completed = calls.next() => completed.ok_or_else(|| rejected("code host-call producer was dropped"))?,
+            completed = calls.next() => completed?.ok_or_else(|| rejected("code host-call producer was dropped"))??,
         };
         // Preserve the original storage/uncertain/refusal error. JavaScript
         // cannot catch it and turn an unacknowledged effect into success.
-        let result = result?;
         let json = buffers.json(&result.result.value)?;
         let ordinal = buffers.format(format_args!("{ordinal}"))?;
         engine
