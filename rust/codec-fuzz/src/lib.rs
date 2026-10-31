@@ -2,6 +2,7 @@
 use prost::Message;
 pub mod auth_addressing;
 pub mod auth_capability;
+pub mod auth_credential;
 mod auth_resource;
 pub mod auth_socket;
 pub mod filesystem_pages;
@@ -270,6 +271,7 @@ pub fn ids(bytes: &[u8]) {
 }
 
 pub fn auth(bytes: &[u8]) {
+    auth_credential::check(bytes);
     auth_resource::check(bytes);
     auth_socket::check(bytes);
     use acyclic_auth::{authority, contract::*};

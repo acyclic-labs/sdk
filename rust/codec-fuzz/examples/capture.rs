@@ -350,6 +350,13 @@ fn capture() -> Result<(), Box<dyn Error>> {
     });
     save(
         "auth",
+        "opaque-bearer",
+        &acyclic_codec_fuzz::auth_credential::seed(&token),
+        "credential::bearer_bytes from hex-encoded testing::root output using deterministic SDK test keys; opaque transport admission only",
+        &mut manifest,
+    )?;
+    save(
+        "auth",
         "signed-capability",
         &token,
         "acyclic_auth::testing::root (test-only deterministic signing keys)",

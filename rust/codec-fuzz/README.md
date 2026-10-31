@@ -284,6 +284,15 @@ explicit epoch floors, preservation and retirement; ten binary/JSON inputs await
 capture, shared goldens and execution. These synchronous codec/model checks add
 no waits or production work and make no constant-time claim for ordered indexes.
 
+The shared Auth target also reaches opaque credential admission through the
+actual `CredentialProvider`. A ready source must complete in one poll and be
+called exactly once; admitted UTF-8 bytes survive resolved custody and bearer
+encoding unchanged. Appended CR/LF/NUL refuse with typed `Invalid`, leaving the
+original custody intact. This complements the existing `auth-fuzz/credential`
+grammar target. One actual bearer writer producer uses deterministic SDK test
+signing output and awaits capture/execution. Transport admission interprets no
+token claims and grants no authority. No real credential is captured.
+
 The Auth target also calls the resource component codec shared with grants:
 arbitrary opaque bytes round-trip, admitted syntax has one spelling, an
 incomplete escape refuses, and an opaque Objects key retains its separators.
