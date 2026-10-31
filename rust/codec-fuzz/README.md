@@ -124,6 +124,8 @@ Capture uses the same provenance and golden mechanism as the syntax targets;
 `--only-storage` runs only the physical producers and preserves unrelated
 provenance and golden rows. `--extend-goldens` admits new names while refusing
 changes to an existing captured value.
+At source `38a046a401`, all eighty storage inputs passed capture/readmission;
+their original bytes, provenance and shared golden rows are retained.
 Without this feature, capture preserves previous physical schedule entries. Replay
 of those entries requires the feature. The report groups reached physical
 operation/fault/stage/outcome branches and counts actual calls, owned boundaries
