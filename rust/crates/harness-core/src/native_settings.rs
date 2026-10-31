@@ -10,8 +10,6 @@ use std::{
     io::Read as _,
     path::{Path, PathBuf},
 };
-mod model;
-mod model_selection;
 mod workspace;
 
 /// Native user locations and independent trust for repository-supplied commands.

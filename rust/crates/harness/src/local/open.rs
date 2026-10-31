@@ -40,23 +40,26 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
-        // Settings resolve once, before the model and approvers they select.
+        // Native settings supply hooks, MCP and search; profiles already bind models.
         #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
         let (config, settings_configuration) = {
             let mut config = config;
             if config.without_user_settings {
                 config.settings = None;
-                (config.resolve(None, true)?, None)
-            } else if config.model.is_none() && config.models.is_none() {
+                (config, None)
+            } else if config.model.is_none() {
                 (config, None)
             } else {
+                #[cfg(feature = "search-http")]
                 let injected = config.settings.is_some();
                 let settings = settings::configuration(
                     &config.project,
                     config.settings.take(),
                     config.hermetic,
                 )?;
-                (config.resolve(Some(&settings), injected)?, Some(settings))
+                #[cfg(feature = "search-http")]
+                let config = config.bind_search(&settings, injected)?;
+                (config, Some(settings))
             }
         };
         if config.approval_issuer.is_some() {
