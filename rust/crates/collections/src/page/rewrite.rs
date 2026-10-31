@@ -54,6 +54,56 @@ pub trait Work<I: ?Sized> {
     fn append(&mut self, frame: &mut Self::Frame, output: Self::Output) -> Result<(), Self::Error>;
 }
 
+/// Original page IO and stack retirement for the shared iterative rewrite.
+///
+/// The returned futures are the caller's existing physical operations. This
+/// interface adds no task, allocation, admission or completion producer.
+pub trait Io<I: ?Sized>: Work<I> {
+    /// Reads and validates the original request, retaining its admitted page.
+    fn enter(
+        &mut self,
+        request: Self::Request,
+        input: &I,
+    ) -> impl Future<Output = Result<Entered<Self::Frame, Self::Output>, Self::Error>>;
+    /// Publishes this completed original frame through the existing IO owner.
+    fn finish(
+        &mut self,
+        frame: Self::Frame,
+    ) -> impl Future<Output = Result<Self::Output, Self::Error>>;
+    /// Releases the empty original stack after its completed result is owned.
+    fn retire_stack(&mut self, stack: Self::Stack) -> Result<(), Self::Error>;
+}
+
+/// Runs the single iterative rewrite over the caller's original stack and IO.
+///
+/// Each transition consumes a selected child, finishes one parent, or returns
+/// the final result. The only waits are the original page producers; their
+/// errors leave the original stack and retained frames to their owning drops.
+pub async fn run<I: ?Sized, W: Io<I>>(
+    work: &mut W,
+    mut stack: W::Stack,
+    request: W::Request,
+    input: &I,
+) -> Result<W::Output, W::Error> {
+    let mut action = Action::Enter(request);
+    loop {
+        action = match action {
+            Action::Enter(request) => {
+                let entered = work.enter(request, input).await?;
+                descend(work, &mut stack, entered, input)?
+            }
+            Action::Finish(frame) => {
+                let result = work.finish(frame).await?;
+                ascend(work, &mut stack, result, input)?
+            }
+            Action::Complete(result) => {
+                work.retire_stack(stack)?;
+                return Ok(result);
+            }
+        };
+    }
+}
+
 /// Continues from the original page read, without recursion or another IO owner.
 pub fn descend<I: ?Sized, W: Work<I>>(
     work: &mut W,
