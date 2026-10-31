@@ -166,12 +166,20 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
         let project = volume(directory.path()).await?;
         let (entered, entering) = oneshot::channel();
         let (producer, result) = oneshot::channel();
-        let harness = Arc::new(LocalHarness::open(
-            volume_config(directory.path(), project, Arc::new(ClosingModel {
-                counts: text(),
-                gate: Mutex::new(Some((entered, result))),
-            }))?.compaction(crate::context::CompactionPolicy::Disabled),
-        ).await?);
+        let harness = Arc::new(
+            LocalHarness::open(
+                volume_config(
+                    directory.path(),
+                    project,
+                    Arc::new(ClosingModel {
+                        counts: text(),
+                        gate: Mutex::new(Some((entered, result))),
+                    }),
+                )?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+            )
+            .await?,
+        );
         let connection = harness.connect().await?;
         let client = Conversation::open(connection.clone())?;
         let mut events = client.observe(0).await?;
@@ -211,13 +219,46 @@ async fn lost_model_producer_closes_local_session_without_settling_input() -> Re
             "observation lost the runtime cause: {observed:?}"
         );
         let hosted = harness.agents.get().unwrap();
-        assert!(matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed")));
-        assert!(retained.preparation().is_err(), "runtime closure must cancel retained context work before publishing its lifetime event" );
-        assert!(harness.agent_stream.as_ref().unwrap().failure().is_none(), "the Session's runtime failure must not be invented as a provider failure");
-        assert!(matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")), "commands must retain the same runtime cause");
-        assert_eq!(hosted.agents().reply(hosted.root(), &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?, inbox).await.map_err(agent)?, crate::agent::Reply::Pending, "failed input stays recoverable");
-        assert!(records(&**hosted.agents().provider(), hosted.root().conversation().map_err(agent)?).await?.is_empty());
-        assert!(matches!(harness.connect().await, Err(Error::Storage(_))), "late clients observe the already closed runtime");
+        assert!(
+            matches!(hosted.runtime.completion().await, Err(Error::Storage(reason)) if reason.contains("model producer closed"))
+        );
+        assert!(
+            retained.preparation().is_err(),
+            "runtime closure must cancel retained context work before publishing its lifetime event"
+        );
+        assert!(
+            harness.agent_stream.as_ref().unwrap().failure().is_none(),
+            "the Session's runtime failure must not be invented as a provider failure"
+        );
+        assert!(
+            matches!(connection.execute(&acyclic_harness_client::AgentCommand::Root {}).await, Err(Error::Storage(reason)) if reason.contains("model producer closed")),
+            "commands must retain the same runtime cause"
+        );
+        assert_eq!(
+            hosted
+                .agents()
+                .reply(
+                    hosted.root(),
+                    &crate::agent::IntentId::try_from("lost-producer").map_err(agent)?,
+                    inbox
+                )
+                .await
+                .map_err(agent)?,
+            crate::agent::Reply::Pending,
+            "failed input stays recoverable"
+        );
+        assert!(
+            records(
+                &**hosted.agents().provider(),
+                hosted.root().conversation().map_err(agent)?
+            )
+            .await?
+            .is_empty()
+        );
+        assert!(
+            matches!(harness.connect().await, Err(Error::Storage(_))),
+            "late clients observe the already closed runtime"
+        );
         Ok(())
     }
 }
