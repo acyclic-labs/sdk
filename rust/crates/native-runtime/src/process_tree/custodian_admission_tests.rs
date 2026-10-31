@@ -1,6 +1,7 @@
 //! The admission port is reachable by any local process; only a holder of
 //! the tree's secret may name its members.
 use super::*;
+use std::io::{Read as _, Write as _};
 use std::net::TcpStream;
 
 /// Asks the custodian at `address` to admit `pid` into `tree`.
