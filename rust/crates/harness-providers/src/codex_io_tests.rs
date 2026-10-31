@@ -127,7 +127,8 @@ async fn publication_control() -> Result<(NativeMaterializationWork, u64)> {
             )
         })
         .await
-        .expect_err("lost publication producer must refuse");
+        .err()
+        .expect("lost publication producer must refuse");
     assert!(
         matches!(error, acyclic_harness_core::Error::Invalid(ref reason) if reason == "publication producer lost")
     );
