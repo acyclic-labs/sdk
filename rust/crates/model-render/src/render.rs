@@ -24,7 +24,7 @@ impl fmt::Display for RenderError {
             Self::MissingProjection(family) => {
                 write!(f, "model rendering: missing {family:?} item projection")
             }
-            Self::Json(error) => write!(f, "model header encoding: {error}"),
+            Self::Json(error) => write!(f, "model JSON encoding: {error}"),
             Self::Write(error) => write!(f, "model request writer: {error}"),
         }
     }
@@ -38,12 +38,14 @@ pub struct Header {
     provider: String,
     epoch: [u8; 32],
     prefix: Vec<u8>,
+    summary_permitted: bool,
 }
 impl Header {
     /// Pins the renderer version, epoch, target protocol and fixed root fields.
     ///
     /// # Errors
-    /// Refuses another renderer version or a second conversation input field.
+    /// Refuses another renderer version, a second conversation input field, or
+    /// per-step tool controls that could conflict with the request purpose.
     pub fn new(
         family: Family,
         provider: String,
@@ -65,6 +67,29 @@ impl Header {
                 "header cannot contain conversation items",
             ));
         }
+        if ["tool_choice", "toolConfig"]
+            .iter()
+            .any(|key| fields.contains_key(*key))
+        {
+            return Err(RenderError::InvalidItem(
+                "per-step tool controls belong outside the frozen header",
+            ));
+        }
+        // GenerateContent's NONE controls function declarations only. It
+        // cannot establish that a built-in server tool will not execute.
+        let summary_permitted = family != Family::Gemini
+            || fields.get("tools").is_none_or(|tools| {
+                tools.as_array().is_some_and(|tools| {
+                    tools.iter().all(|tool| {
+                        tool.as_object().is_some_and(|tool| {
+                            tool.len() == 1
+                                && tool
+                                    .get("functionDeclarations")
+                                    .is_some_and(Value::is_array)
+                        })
+                    })
+                })
+            });
         let mut prefix = serde_json::to_vec(fields).map_err(RenderError::Json)?;
         prefix.pop(); // The encoded object always ends with its closing brace.
         if !fields.is_empty() {
@@ -77,6 +102,7 @@ impl Header {
             provider,
             epoch,
             prefix,
+            summary_permitted,
         })
     }
     /// Epoch identity; a changed header requires a changed epoch in the owner.
@@ -135,6 +161,42 @@ pub fn render<'a>(
     tail: Tail,
     writer: &mut impl Write,
 ) -> Result<(), RenderError> {
+    render_request(header, items, tail, None, writer)
+}
+
+/// Appends one transient summary instruction to the selected epoch range and
+/// disables tool invocation for that request. The header and prior item bytes
+/// are identical to ordinary rendering; provider cache hits are a separate
+/// guarantee (Anthropic tool-choice changes invalidate message caching).
+///
+/// # Errors
+/// Refuses Gemini built-in tools before writing any request bytes: its function
+/// calling control cannot disable those tools. Other failures are the same as
+/// [`render`]. No summary instruction is persisted as conversation history.
+pub fn render_summary<'a>(
+    header: &Header,
+    items: impl IntoIterator<Item = &'a WireItem>,
+    instruction: &str,
+    writer: &mut impl Write,
+) -> Result<(), RenderError> {
+    if instruction.is_empty() {
+        return Err(RenderError::InvalidItem("missing summary instruction"));
+    }
+    if !header.summary_permitted {
+        return Err(RenderError::InvalidItem(
+            "Gemini built-in tools cannot be disabled for summary generation",
+        ));
+    }
+    render_request(header, items, Tail, Some(instruction), writer)
+}
+
+fn render_request<'a>(
+    header: &Header,
+    items: impl IntoIterator<Item = &'a WireItem>,
+    tail: Tail,
+    summary: Option<&str>,
+    writer: &mut impl Write,
+) -> Result<(), RenderError> {
     writer
         .write_all(header.bytes())
         .map_err(RenderError::Write)?;
@@ -148,5 +210,55 @@ pub fn render<'a>(
             separator = b",";
         }
     }
-    writer.write_all(tail.bytes()).map_err(RenderError::Write)
+    if let Some(instruction) = summary {
+        writer.write_all(separator).map_err(RenderError::Write)?;
+        // Serialize borrowed leaves directly into the original sink. There
+        // is no Value tree, second message encoder or request-sized buffer.
+        match header.family {
+            Family::Responses | Family::Chat | Family::Anthropic => {
+                #[derive(serde::Serialize)]
+                struct Message<'a> {
+                    role: &'static str,
+                    content: &'a str,
+                }
+                serde_json::to_writer(
+                    &mut *writer,
+                    &Message {
+                        role: "user",
+                        content: instruction,
+                    },
+                )
+            }
+            Family::Gemini => {
+                #[derive(serde::Serialize)]
+                struct Part<'a> {
+                    text: &'a str,
+                }
+                #[derive(serde::Serialize)]
+                struct Content<'a> {
+                    role: &'static str,
+                    parts: [Part<'a>; 1],
+                }
+                serde_json::to_writer(
+                    &mut *writer,
+                    &Content {
+                        role: "user",
+                        parts: [Part { text: instruction }],
+                    },
+                )
+            }
+        }
+        .map_err(|error| match error.io_error_kind() {
+            Some(kind) => RenderError::Write(io::Error::new(kind, error)),
+            None => RenderError::Json(error),
+        })?;
+        let controls = match header.family {
+            Family::Responses | Family::Chat => b"],\"tool_choice\":\"none\"}".as_slice(),
+            Family::Anthropic => b"],\"tool_choice\":{\"type\":\"none\"}}",
+            Family::Gemini => b"],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"NONE\"}}}",
+        };
+        writer.write_all(controls).map_err(RenderError::Write)
+    } else {
+        writer.write_all(tail.bytes()).map_err(RenderError::Write)
+    }
 }
