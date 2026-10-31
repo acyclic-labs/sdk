@@ -157,6 +157,11 @@ impl NativeCredentialSource {
     /// that original file, retain conditional publication, and return a snapshot
     /// with the same revision. Parsing stays with the provider. Other files
     /// under this root do not invalidate this source.
+    ///
+    /// Writing this selected file also invalidates the attempt, even when the
+    /// write committed. Do not redispatch publication after this refusal. A
+    /// refreshed publication needs its original file/version admission before
+    /// it can be returned as a new snapshot.
     /// The clock must be the original owner's clock, never a relative TTL.
     pub async fn bind<F, Fut, C>(
         source: NativeDemandSource,
