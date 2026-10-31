@@ -441,6 +441,8 @@ pub(crate) fn write_all_in_place(
         };
         #[cfg(windows)]
         let length = length.min(u32::MAX as usize);
+        #[cfg(target_vendor = "apple")]
+        let length = length.min(i32::MAX as usize);
         let chunk = bytes.get(..length).ok_or(io::ErrorKind::InvalidData)?;
         let count = write_file_with(chunk, |chunk| {
             #[cfg(unix)]
