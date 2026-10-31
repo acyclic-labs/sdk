@@ -245,6 +245,7 @@ impl LocalHarness {
             source: crate::context::VolumeDiscovery {
                 reader: binding.reader,
                 root: &root,
+                io: None,
             },
         };
         let instructions = crate::context::capture_instructions(

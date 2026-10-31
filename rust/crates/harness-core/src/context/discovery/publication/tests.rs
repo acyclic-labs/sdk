@@ -207,6 +207,27 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         panic!("one original skill expected")
     };
     assert_eq!(metadata.description, "Original header");
+    // A selected prefix must use the same supplied finite owner. The original
+    // reader and pinned generation succeed above; only allocation credit differs.
+    let blocked = PreparationIo::from_budget(
+        WorkBudget {
+            allocation_operations: 0,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancel,
+    )?;
+    let refused = VolumeDiscovery {
+        reader: reader.as_ref(),
+        root: &metadata.source.root,
+        io: Some(&blocked),
+    }
+    .skill_prefix(&metadata.source.path, &metadata.source.generation, 32_768)
+    .await;
+    assert!(
+        refused.is_err(),
+        "prefix escaped its original allocation owner"
+    );
+    assert_eq!(blocked.spent()?.allocation_operations, 0);
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()

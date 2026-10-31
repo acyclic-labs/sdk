@@ -181,6 +181,7 @@ async fn changed_skill_reads_one_pinned_prefix_without_directory_recapture() -> 
     let (prefix, pinned) = acyclic_harness::context::VolumeDiscovery {
         reader: &reader,
         root,
+        io: None,
     }
     .skill_prefix(path, &generation, declaration.limits.header_bytes)
     .await?;
