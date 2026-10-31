@@ -112,6 +112,8 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             source: original.source.clone(),
         }
     };
+    let mut alias = view(&mounted.mounts.named(None)?.1.view);
+    alias.name = "project-alias".into();
     let mounts = Arc::new(crate::workspace::compose(
         mounted.path.clone(),
         &principal,
@@ -125,8 +127,26 @@ async fn selected_branch_publication_and_recovery_advance_the_selected_mount() -
             .mounts
             .mounts()
             .filter(|(path, _)| !path.is_empty())
-            .map(|(_, mount)| view(&mount.view)),
+            .map(|(_, mount)| view(&mount.view))
+            .chain(std::iter::once(alias)),
     )?);
+    // Repeated identities keep their first canonical visible binding. A
+    // missing identity must refuse instead of falling back to another mount.
+    assert!(std::ptr::eq(
+        mounts.by_volume(&harness.project, None)?,
+        mounts.named(None)?.1,
+    ));
+    let absent = crate::conversation::VolumeRef::new(
+        harness.project.provider().clone(),
+        "unmounted".into(),
+        crate::conversation::VolumeClass::Project,
+        crate::conversation::VolumeOwner::Project("unmounted".into()),
+        &mut None,
+    )?;
+    assert!(matches!(
+        mounts.by_volume(&absent, None),
+        Err(Error::Unauthorized(_))
+    ));
     Arc::get_mut(&mut mounted).unwrap().mounts = Arc::clone(&mounts);
     lock_owned(StateArc::clone(&mounted.state)).await.mounts = mounts;
     let tools = Arc::new(
