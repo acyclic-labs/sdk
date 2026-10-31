@@ -59,9 +59,11 @@ pub(crate) use executor::FileTool;
 pub(crate) use version::encode_version;
 mod assembly;
 mod authorization;
+mod lines;
 mod notebook;
 mod projection;
 mod read;
+mod window;
 pub use projection::FileProjection;
 #[cfg(test)]
 mod tests;

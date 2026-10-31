@@ -464,10 +464,16 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         .apply(
             &workspace,
             None,
-            &[crate::filesystem::WorkspaceMutation::PutFile {
-                path: "/large.txt".into(),
-                bytes: bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]).into(),
-            }],
+            &[
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/large.txt".into(),
+                    bytes: bytes::Bytes::from(vec![b'x'; 2 * 1024 * 1024]).into(),
+                },
+                crate::filesystem::WorkspaceMutation::PutFile {
+                    path: "/lines.txt".into(),
+                    bytes: bytes::Bytes::from("αβ\n".repeat(2_000) + "tail").into(),
+                },
+            ],
             &crate::IdempotencyKey::new("large-range-source")?,
         )
         .await?;
@@ -559,6 +565,18 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
             assert!(next > 0 && next < 2 * 1024 * 1024);
             let projected = read.projection.project(&page_invocation, &page_result, None)?.0;
             read.definition.validate_projection(&projected, limits, None)?;
+            let (line_invocation, line_result) = call(&task, &read,
+                json!({"path":"lines.txt","selection":{"kind":"lines","offset":1025,"limit":2}})).await?;
+            assert_eq!(line_result.value["text"], "αβ\nαβ\n");
+            assert_eq!(line_result.value["page"]["start"], 5125);
+            let line_projection = read.projection.project(&line_invocation, &line_result, None)?.0;
+            read.definition.validate_projection(&line_projection, limits, None)?;
+            let line_version = line_projection["value"]["version"].as_str().expect("immutable line source");
+            assert_eq!(call(&task, &read, json!({"path":"lines.txt","version":line_version,
+                "selection":{"kind":"lines","offset":1025,"limit":2}})).await?.1.value, line_result.value);
+            let (_, long_line) = call(&task, &read,
+                json!({"path":"large.txt","selection":{"kind":"lines","offset":0,"limit":1}})).await?;
+            assert!(long_line.value["text"].as_str().is_some_and(|text| !text.is_empty() && text.len() < 4096));
             let io = crate::executor::PreparationIo::from_native_work(&work)?;
             assert!(context.read_tool_path("large.txt", None, Some(&io)).await.is_err());
             cancellation.cancel();
@@ -610,6 +628,14 @@ async fn path_reads_and_edits_keep_original_grants_and_pinned_replay() -> Result
         assert_eq!(source.path, "notes/one.txt");
         assert_eq!(source.byte_length, 3);
         assert_eq!(call(&task, &read, json!({"path":"notes/one.txt","version":version})).await?.1.value, result.value);
+        let context = crate::runtime::ToolContext::new(Arc::new(task.clone()), invocation.operation_id, &invocation.call_id)?;
+        let (content, _bytes, _retained) = context.read_tool_path("notes/one.txt", Some(&source.generation), None).await?;
+        assert!(source.matches_content(&content));
+        let mut complete = crate::tool::ToolResult { value: json!({"file":{"content":content},"text":"one"}) };
+        let pinned = ToolInvocation { arguments: json!({"path":"notes/one.txt","version":version}), ..invocation.clone() };
+        read.projection.project(&pinned, &complete, None)?;
+        complete.value["file"]["content"]["version"] = json!("another-generation");
+        assert!(read.projection.project(&pinned, &complete, None).is_err());
 
         let (range_invocation, range_result) = call(&task, &read,
             json!({"path":"notes/one.txt", "range":{"start":0,"end":2}})).await?;

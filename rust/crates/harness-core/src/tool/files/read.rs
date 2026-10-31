@@ -17,35 +17,17 @@ impl FileTool {
                 "byte ranges and projections are mutually exclusive",
             ));
         }
-        let authored_version = input
-            .0
-            .version
-            .as_deref()
-            .is_some_and(super::version::is_authored);
-        let path_range = input.0.version.is_none()
-            && input.0.selection.is_none()
+        if let Some(ReadSelection::Lines { offset, limit }) = input.0.selection {
+            return super::lines::read(context, &input.0, offset, limit, work, io).await;
+        }
+        let byte_selection = input.0.selection.is_none()
             && (input.0.range.is_some() || !input.0.path.ends_with(".ipynb"));
-        if (path_range || authored_version) && input.0.selection.is_none() {
-            let original = input
-                .0
-                .version
-                .as_deref()
-                .map(|version| {
-                    super::version::decode_tool_version(Some(context), &input.0.path, version, work)
-                })
-                .transpose()?;
-            let selected = original.as_ref().and_then(|(source, _)| match source {
-                FileReadSource::Authored(selected) => Some(selected),
-                FileReadSource::Content(_) => None,
-            });
-            return self
-                .read_path_range(context, &input.0, selected, work, io)
-                .await;
+        if byte_selection {
+            return self.read_path_range(context, &input.0, work, io).await;
         }
         let (file, resolved, _source_custody) = self
             .source(context, &input.0.path, input.0.version.as_deref(), work, io)
             .await?;
-        let length = file.descriptor().byte_length();
         let selection = input.0.selection.clone().or_else(|| {
             if input.0.range.is_some() {
                 return None;
@@ -88,9 +70,6 @@ impl FileTool {
                 ReadSelection::Cells { offset, limit } => {
                     notebook::read(source, *offset, *limit, maximum, work)?
                 }
-                ReadSelection::Lines { offset, limit } => {
-                    line_page(source, *offset, *limit, maximum, work)?
-                }
                 _ => return Err(invalid("unsupported read projection")),
             };
             let encoded = super::value(
@@ -105,77 +84,13 @@ impl FileTool {
             )?;
             return Ok((ToolResult { value: encoded.0 }, encoded.1));
         }
-        let range = input.0.range.unwrap_or(text::TextRange {
-            start: 0,
-            end: length,
-        });
-        let count = range
-            .end
-            .checked_sub(range.start)
-            .filter(|_| range.end <= length)
-            .ok_or_else(|| invalid("read range exceeds source or is reversed"))?;
-        let empty = count == 0;
-        // At most three extra bytes are needed to finish a UTF-8 scalar at
-        // the byte window boundary. A large requested interval never causes
-        // an equally large pinned read allocation.
-        let admitted = count.min(
-            context
-                .effective_scope()
-                .limits()
-                .render_bytes
-                .min(crate::tool::output::VIEW_BYTES)
-                .saturating_add(3),
-        );
-        let was_resolved = resolved.is_some();
-        let bytes = if let Some(bytes) = resolved {
-            bytes
-        } else {
-            context
-                .read_file_range(
-                    &file,
-                    acyclic_fs::ByteRange {
-                        offset: range.start,
-                        length: if empty && range.start < length {
-                            1
-                        } else {
-                            admitted
-                        },
-                    },
-                    io,
-                )
-                .await?
-        };
-        let selected = if was_resolved {
-            let end = if empty && range.start < length {
-                range.start.checked_add(1)
-            } else {
-                range.start.checked_add(admitted)
-            };
-            usize::try_from(range.start)
-                .ok()
-                .zip(end.and_then(|n| usize::try_from(n).ok()))
-                .and_then(|(a, b)| bytes.get(a..b))
-                .ok_or_else(|| invalid("read range exceeds source"))?
-        } else {
-            bytes.as_ref()
-        };
-        let source = page_text(selected, empty, admitted < count, work)?;
-        text_result(
-            FileReadSource::Content(file),
-            source,
-            &input.0.path,
-            (range.start, range.end),
-            context.effective_scope().limits().render_bytes,
-            work,
-            io,
-        )
+        Err(invalid("unsupported read projection"))
     }
 
     async fn read_path_range(
         &self,
         context: &ToolContext,
         input: &ReadFileInput,
-        original: Option<&crate::conversation::FilePathSelection>,
         work: crate::NativeWork<'_>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(ToolResult, crate::NativeCustody)> {
@@ -193,23 +108,22 @@ impl FileTool {
             .min(crate::tool::output::VIEW_BYTES)
             .saturating_add(3)
             .min(context.effective_scope().limits().file_bytes);
-        let (selected, bytes, retained) = context
-            .read_tool_path_range(
-                &input.path,
-                original.map(|file| &file.generation),
-                acyclic_fs::ByteRange {
-                    offset: start,
-                    length: count.min(window).max(1),
-                },
-                io,
-            )
-            .await?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let _source_custody = io.map(|io| io.take_native_custody(retained)).transpose()?;
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = retained;
-        let end = input.range.map_or(selected.byte_length, |range| range.end);
-        if end > selected.byte_length || original.is_some_and(|file| file != &selected) {
+        let window = super::window::Window::first(
+            context,
+            input,
+            acyclic_fs::ByteRange {
+                offset: start,
+                length: count.min(window).max(1),
+            },
+            work,
+            io,
+        )
+        .await?;
+        let bytes = &window.bytes;
+        let end = input
+            .range
+            .map_or(window.source.byte_length(), |range| range.end);
+        if end > window.source.byte_length() {
             return Err(invalid("read result belongs to another selection"));
         }
         if input.range.is_none() {
@@ -219,6 +133,10 @@ impl FileTool {
                 })
                 .or_else(|| bytes.starts_with(b"%PDF-").then_some(ReadSelection::Pdf));
             if media.is_some() {
+                let selected = match window.source {
+                    FileReadSource::Authored(selected) => selected,
+                    FileReadSource::Content(file) => return self.media_result(file, media, work),
+                };
                 // Native input needs complete bytes. Resolve only this already
                 // selected generation; a concurrent head cannot substitute it.
                 let (file, _complete, retained) = context
@@ -232,13 +150,13 @@ impl FileTool {
             }
         }
         let source = page_text(
-            &bytes,
+            bytes,
             end == start,
             start + (bytes.len() as u64) < end,
             work,
         )?;
         text_result(
-            FileReadSource::Authored(selected),
+            window.source,
             source,
             &input.path,
             (start, end),
@@ -349,7 +267,7 @@ fn text_budget(
     encoded_text_budget(&version, path, maximum, work, io)
 }
 
-fn encoded_text_budget(
+pub(super) fn encoded_text_budget(
     version: &str,
     path: &str,
     maximum: u64,
@@ -377,62 +295,7 @@ fn encoded_text_budget(
         .ok_or_else(|| executor::rejection(work, "render credit cannot hold a source page"))
 }
 
-fn line_page(
-    source: &str,
-    offset: u64,
-    limit: Option<u64>,
-    maximum: u64,
-    work: crate::NativeWork<'_>,
-) -> Result<(String, ReadPage, crate::NativeCustody)> {
-    let mut start = 0;
-    let mut line = 0;
-    for part in source.split_inclusive('\n') {
-        if line == offset {
-            break;
-        }
-        start += part.len();
-        line += 1;
-    }
-    if line < offset {
-        return Err(rejection(work, "line offset exceeds source"));
-    }
-    let remaining = source
-        .get(start..)
-        .ok_or_else(|| rejection(work, "invalid line boundary"))?;
-    let mut selected = 0;
-    for part in remaining
-        .split_inclusive('\n')
-        .take(usize::try_from(limit.unwrap_or(u64::MAX)).unwrap_or(usize::MAX))
-    {
-        selected += part.len();
-        if selected as u64 >= maximum {
-            break;
-        }
-    }
-    let selected = remaining
-        .get(..selected)
-        .ok_or_else(|| rejection(work, "invalid line boundary"))?;
-    let shown =
-        crate::tools::bounds::prefix(selected, usize::try_from(maximum).unwrap_or(usize::MAX));
-    let mut text = String::new();
-    let mut hold = edit::allocation(work, std::mem::size_of::<String>())?;
-    edit::reserve_string(&mut hold, &mut text, shown.len())?;
-    edit::charge(&hold, shown.len() as u64, (start + selected.len()) as u64)?;
-    text.push_str(shown);
-    let end = start + shown.len();
-    Ok((
-        text,
-        ReadPage {
-            start: start as u64,
-            end: end as u64,
-            next: (end < source.len()).then_some(end as u64),
-            offset,
-        },
-        hold,
-    ))
-}
-
-fn page_text<'a>(
+pub(super) fn page_text<'a>(
     bytes: &'a [u8],
     empty: bool,
     truncated: bool,

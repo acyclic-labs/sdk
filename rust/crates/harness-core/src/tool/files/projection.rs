@@ -168,7 +168,7 @@ impl ToolProjection for FileProjection {
                 // cannot compare that view path to a volume-relative path.
                 if let Some(version) = input.0.version.as_deref() {
                     let original = super::version::decode_version(file.path(), version, work)?;
-                    if original.0 != *file {
+                    if !original.0.same_source(file) {
                         return Err(super::executor::rejection(
                             work,
                             "read result belongs to another version",

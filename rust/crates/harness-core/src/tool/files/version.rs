@@ -2,10 +2,6 @@ use super::*;
 
 const AUTHORED: &str = "authored-file-v1:";
 
-pub(super) fn is_authored(version: &str) -> bool {
-    version.starts_with(AUTHORED)
-}
-
 pub(super) fn decode_tool_version(
     context: Option<&ToolContext>,
     path: &str,

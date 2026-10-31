@@ -15,6 +15,14 @@ pub enum FileReadSource {
 }
 
 impl FileReadSource {
+    pub(super) fn same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Authored(selected), Self::Content(file))
+            | (Self::Content(file), Self::Authored(selected)) => selected.matches_content(file),
+            _ => self == other,
+        }
+    }
+
     pub(super) fn volume(&self) -> &crate::conversation::VolumeRef {
         match self {
             Self::Content(file) => file.volume(),
