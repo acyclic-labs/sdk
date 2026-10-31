@@ -10,7 +10,7 @@ import {Processes,Spool} from '../../../scripts/graphcoder-e2e/process.mjs';
 import {recordedRequests,requests} from '../../../scripts/graphcoder-e2e/assertions.mjs';
 import {environment} from '../../../scripts/graphcoder-e2e/scratch.mjs';
 import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
-import {installedHost,launchNativeHost} from './native-model.mjs';
+import {assertNativeCompletion,installedHost,launchNativeHost} from './native-model.mjs';
 import {ProcessPhases,pairPhases} from './process-phases.mjs';
 
 const digest=async path=>createHash('sha256').update(await readFile(path)).digest('hex');
@@ -75,8 +75,7 @@ export async function nativePair({host,binary,mock,plugin,output,source,artifact
      const completed=await scope.run(native.program,[...native.args,...launch.args],
       {cwd:workspace,env:legEnv,scopeOperation:operation},prompt+'\n');
      captures.push({mode,...completed});
-     assert.equal(completed.code,0,completed.stderr);
-     assert.ok(completed.stdout.includes(answer),'native terminal answer missing');
+     assertNativeCompletion(host,completed,answer);
      const effect=await readFile(join(workspace,'parent.txt'),'utf8');assert.equal(effect,'PARENT');
      samples.push({mode,binding,effect,physical:collector.complete(completed),transcripts:completed.transcripts});
      collector=undefined;

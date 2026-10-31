@@ -1,0 +1,27 @@
+{
+  "provenance": "Selected original installed-host JSONL records, captured against the loopback mock. Lines are unmodified; unrelated native events are omitted.",
+  "records": [
+    {
+      "host": "codex",
+      "host_version": "0.164.0",
+      "source": "0610981c4cdb69ff10d4a17d563ff13c2ef7bb68",
+      "capture_sha256": "bebea5540209ebebb22cb530f2869776634cb7fdfbfad7f5b7326d54883511f4",
+      "mode": "installed",
+      "answer": "PAIRED_NATIVE_DONE",
+      "code": 0,
+      "stdout": "{\"type\":\"thread.started\",\"thread_id\":\"01a193eb-fb8f-77c3-bf63-f2cb89618c45\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_2\",\"type\":\"agent_message\",\"text\":\"PAIRED_NATIVE_DONE\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":128,\"cached_input_tokens\":0,\"cache_write_input_tokens\":0,\"output_tokens\":4,\"reasoning_output_tokens\":0}}\n",
+      "stderr": "2026-10-31T21:44:38.820985Z ERROR codex_core::util: OutputTextDelta without active item\n"
+    },
+    {
+      "host": "claude-code",
+      "host_version": "2.1.278",
+      "source": "943c9d40e41c6a022a241ab19dab5431d7639aa8",
+      "capture_sha256": "366661fc085793ac0129a7e0e815f6d1d47ec9534601c0c963b1aace798cf7cb",
+      "mode": "installed",
+      "answer": "PAIRED_NATIVE_DONE",
+      "code": 0,
+      "stdout": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"id\":\"paired_shell\",\"input\":{\"command\":\"'/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node' '/work/src/plugin/tests/hosts/native-effects.mjs' 'parent' '/work/src/.native-pair-results/claude-code/workspace' 'claude-code'\"},\"name\":\"Bash\",\"type\":\"tool_use\"}],\"id\":\"mock-message\",\"role\":\"assistant\",\"type\":\"message\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2,\"total_tokens\":66},\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"a14f2590-4397-48a1-a076-1f2dac2d5349\",\"uuid\":\"2727be21-5552-4e99-bf04-fd69453788f6\",\"timestamp\":\"2026-10-31T21:35:29.336Z\"}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"text\":\"PAIRED_NATIVE_DONE\",\"type\":\"text\"}],\"id\":\"mock-message\",\"role\":\"assistant\",\"type\":\"message\",\"usage\":{\"input_tokens\":64,\"output_tokens\":2,\"total_tokens\":66},\"context_management\":null},\"parent_tool_use_id\":null,\"session_id\":\"a14f2590-4397-48a1-a076-1f2dac2d5349\",\"uuid\":\"06c01bb8-6665-4c0d-b537-810c7e75f871\",\"timestamp\":\"2026-10-31T21:35:29.407Z\"}\n{\"duration_api_ms\":37,\"stop_reason\":\"end_turn\",\"session_id\":\"a14f2590-4397-48a1-a076-1f2dac2d5349\",\"total_cost_usd\":0.000444,\"usage\":{\"input_tokens\":128,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":4,\"output_tokens_details\":{\"thinking_tokens\":0},\"server_tool_use\":{\"web_search_requests\":0,\"web_fetch_requests\":0},\"service_tier\":\"standard\",\"cache_creation\":{\"ephemeral_1h_input_tokens\":0,\"ephemeral_5m_input_tokens\":0},\"inference_geo\":\"\",\"iterations\":[],\"speed\":\"standard\"},\"modelUsage\":{\"claude-haiku-5-5\":{\"inputTokens\":128,\"outputTokens\":4,\"cacheReadInputTokens\":0,\"cacheCreationInputTokens\":0,\"webSearchRequests\":0,\"costUSD\":0.000444,\"contextWindow\":200000,\"maxOutputTokens\":32000,\"thinkingTokens\":0,\"canonicalModel\":\"claude-haiku-5-5\",\"provider\":\"foundry\",\"costBasis\":\"unknown\"}},\"permission_denials\":[],\"terminal_reason\":\"completed\",\"fast_mode_state\":\"off\",\"fast_mode_disabled_reason\":\"not_first_party\",\"subagent_stats\":{\"spawned\":0,\"requested\":{\"background\":0,\"foreground\":0,\"unset\":0},\"started_in_background\":0,\"max_depth\":0,\"spawned_by_subagents\":0,\"completed\":0,\"failed\":0,\"killed\":{\"parent\":0,\"user\":0,\"system\":0},\"refused\":{\"depth_limit\":0,\"concurrency_limit\":0,\"budget\":0},\"by_type\":{}},\"is_error\":false,\"num_turns\":2,\"subtype\":\"success\",\"api_error_status\":null,\"result\":\"PAIRED_NATIVE_DONE\",\"ttft_ms\":53,\"type\":\"result\",\"duration_ms\":167,\"uuid\":\"a4b8c314-546f-4e6d-b445-2ad4c5ecf13c\",\"ttft_stream_ms\":52,\"time_to_request_ms\":49,\"first_content_frame_ms\":53,\"queued_turn_count\":0,\"result_index\":0}\n",
+      "stderr": "[claude-code:unrecognized_model] {\"model\":\"claude-haiku-5-5\",\"query_source\":\"sdk\"}\n"
+    }
+  ]
+}

@@ -10,15 +10,24 @@ import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 import {nativeHost} from './native-host.mjs';
 
-// Pi's print process can exit zero after a failed model turn. The native
-// message terminal, rather than that exit code alone, owns its outcome.
+// Host process success also requires its own successful model-turn terminal.
 export function assertNativeCompletion(host,result,answer) {
  assert.equal(result.code,0,result.stderr);
- if(host==='pi') {
-  let terminal;
-  for(const line of result.stdout.split('\n')) {
-   if(!line)continue;
-   const event=JSON.parse(line),message=event.type==='message_end'?event.message:undefined;
+ let terminal,text,completed=false;
+ for(const line of result.stdout.split('\n')) {
+  if(!line)continue;
+  const event=JSON.parse(line);
+  if(host==='codex') {
+   if(event.type==='turn.started') {text=undefined;completed=false;}
+   if(event.type==='turn.failed'||event.type==='error') {
+    const error=new Error('native Codex turn failed',{cause:event});error.code='NATIVE_HOST_MODEL_FAILED';throw error;
+   }
+   if(event.type==='item.completed'&&event.item.type==='agent_message')text=event.item.text;
+   if(event.type==='turn.completed')completed=true;
+  } else if(host==='claude-code') {
+   if(event.type==='result')terminal=event;
+  } else if(host==='pi') {
+   const message=event.type==='message_end'?event.message:undefined;
    if(message?.role!=='assistant')continue;
    terminal=message;
    if(message.stopReason==='error') {
@@ -27,14 +36,23 @@ export function assertNativeCompletion(host,result,answer) {
      ?'UNSUPPORTED_NATIVE_KEYLESS_PROVIDER':'NATIVE_HOST_MODEL_FAILED';
     throw error;
    }
+  } else {
+   throw new Error('step=validate native terminal; recovery=select codex, claude-code or pi');
   }
-  assert.equal(terminal?.stopReason,'stop','native assistant terminal missing');
-  assert.ok(terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('').includes(answer),
-   'native answer missing');
-  return;
  }
- assert.ok(result.stdout.includes(answer),'native answer missing');
+ if(host==='codex')assert.equal(completed,true,'native Codex terminal missing');
+ else if(host==='claude-code') {
+  assert.ok(terminal,'native Claude terminal missing');
+  assert.equal(terminal.subtype,'success','native Claude turn failed');
+  assert.equal(terminal.is_error,false,'native Claude turn failed');
+  text=terminal.result;
+ } else {
+  assert.equal(terminal?.stopReason,'stop','native Pi terminal missing');
+  text=terminal.content.filter(part=>part.type==='text').map(part=>part.text).join('');
+ }
+ assert.ok(typeof text==='string'&&text.includes(answer),'native answer missing');
 }
+
 
 // Native policy arguments the root runs under and every managed child inherits
 // (ACYCLIC_HOST_ARGS), plus each host's own keyless provider selection.
