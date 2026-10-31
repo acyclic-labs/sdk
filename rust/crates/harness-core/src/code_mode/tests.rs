@@ -128,6 +128,58 @@ async fn sandbox_uses_only_host_calls_and_replays_seeded_values_and_identity() -
     Ok(())
 }
 
+#[cfg(feature = "filesystem")]
+#[tokio::test]
+async fn javascript_cannot_catch_original_heap_exhaustion_into_success() -> Result<()> {
+    use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+    let cancellation = CancellationToken::new();
+    let work = NativeMaterializationWork::new(
+        WorkBudget {
+            peak_allocation_bytes: 1024 * 1024,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+    )
+    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+    let baseline = work.live_allocation_bytes();
+    let runtime = CodeRuntime::new_with_native_work(Arc::new(Memory), &work)?;
+    let (_owner, control) = original_control();
+    let host = Arc::new(Echo::default());
+    let result = runtime
+        .execute(
+            &outer(),
+            "try { return new Array(1048576).fill(0).length; } catch (_) { return 'forged success'; }",
+            &[],
+            host.clone(),
+            control.clone(),
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::NativeWork {
+            cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                acyclic_fs::WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    ..
+                }
+            ),
+            ..
+        })
+    ));
+    // The original denial has retired the transient realm; it cannot poison
+    // independent subsequent code or acknowledge a host effect.
+    assert_eq!(
+        runtime
+            .execute(&outer(), "return 7;", &[], host.clone(), control)
+            .await?,
+        json!(7)
+    );
+    assert!(lock(&host.0).is_empty());
+    drop(runtime);
+    assert_eq!(work.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
 #[tokio::test]
 async fn producerless_promises_and_exhausted_original_work_refuse_without_waiting() -> Result<()> {
     let runtime = CodeRuntime::new(Arc::new(Memory))?;

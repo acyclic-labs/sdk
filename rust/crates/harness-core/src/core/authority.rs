@@ -198,16 +198,34 @@ impl Scope {
     /// Hosts do this before exporting a scope to a guest. The scope's claims,
     /// proof identity and revocation dependencies remain unchanged; subsequent
     /// delegation requires its custodian's admitted operation port.
-    pub fn seal(mut self, verifier: &AuthorityVerifier) -> Result<Self> {
+    pub fn seal(self, verifier: &AuthorityVerifier) -> Result<Self> {
+        self.seal_with_work(verifier, &mut None)
+    }
+
+    /// Seals the original scope with output storage admitted before encoding.
+    pub(crate) fn seal_with_work(
+        mut self,
+        verifier: &AuthorityVerifier,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Self> {
         let capability = workload::verify(
             verifier,
             &verifier.audience,
             &self,
             verifier.public.now(),
-            &mut None,
+            work,
         )?;
         if !capability.is_sealed() {
+            let length = capability.sealed_encoded_len() as u64;
+            if let Some(work) = work.as_deref_mut() {
+                work.admit_encoding(length)?;
+                work.retain_owned(length)?;
+                work.allocation_attempt(length)?;
+            }
             let mut encoded = capability.encode_sealed().map_err(workload::unauthorized)?;
+            if let Some(work) = work.as_deref_mut() {
+                work.encoded_bytes(encoded.len() as u64)?;
+            }
             zeroize::Zeroize::zeroize(&mut self.workload);
             self.workload = std::mem::take(&mut *encoded);
         }

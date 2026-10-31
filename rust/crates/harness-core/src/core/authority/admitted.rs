@@ -60,6 +60,14 @@ impl<'a> ScopeDerivation<'a> {
         self,
         parent: &Scope,
     ) -> Result<(std::borrow::Cow<'a, Capabilities>, Option<AgentId>)> {
+        self.resolve_with_work(parent, &mut None)
+    }
+
+    fn resolve_with_work(
+        self,
+        parent: &Scope,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(std::borrow::Cow<'a, Capabilities>, Option<AgentId>)> {
         use std::borrow::Cow;
         match self {
             Self::Narrow {
@@ -67,20 +75,26 @@ impl<'a> ScopeDerivation<'a> {
                 agent,
             } => {
                 if !capabilities.is_subset_of(parent.capabilities()) {
-                    return Err(Error::Unauthorized("child scope widens its parent".into()));
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "child scope widens its parent",
+                    ));
                 }
                 Ok((Cow::Borrowed(capabilities), agent))
             }
             Self::PrivateFileRead { file, reader } => {
-                file.validate(&mut None)?;
+                file.validate(work)?;
                 if is_internal_path(file.path()) {
-                    return Err(Error::Unauthorized(
-                        "internal storage files cannot be delegated".into(),
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "internal storage files cannot be delegated",
                     ));
                 }
-                Self::owner_read(parent, file.volume())?;
+                Self::owner_read(parent, file.volume(), work)?;
                 Ok((
-                    Cow::Owned(Capabilities::new([file.read_capability(&mut None)?])),
+                    Cow::Owned(Self::read_grant(file.read_capability(work)?, work)?),
                     Some(reader),
                 ))
             }
@@ -89,26 +103,44 @@ impl<'a> ScopeDerivation<'a> {
                 prefix,
                 reader,
             } => {
-                Self::owner_read(parent, volume)?;
+                Self::owner_read(parent, volume, work)?;
                 Ok((
-                    Cow::Owned(Capabilities::new([
-                        volume.directory_read_capability(prefix, &mut None)?
-                    ])),
+                    Cow::Owned(Self::read_grant(
+                        volume.directory_read_capability(prefix, work)?,
+                        work,
+                    )?),
                     Some(reader),
                 ))
             }
         }
     }
 
-    fn owner_read(parent: &Scope, volume: &crate::conversation::VolumeRef) -> Result<()> {
-        volume.validate(&mut None)?;
+    fn read_grant(label: String, work: &mut Option<&mut dyn HistoryIo>) -> Result<Capabilities> {
+        // The original scope format retains one String slot for each grant.
+        // The label itself was already constructed on this same ledger.
+        if let Some(work) = work.as_deref_mut() {
+            let bytes = std::mem::size_of::<String>() as u64;
+            work.retain_owned(bytes)?;
+            work.allocation_attempt(bytes)?;
+        }
+        Ok(Capabilities::new([label]))
+    }
+
+    fn owner_read(
+        parent: &Scope,
+        volume: &crate::conversation::VolumeRef,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        volume.validate(work)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == parent.agent)
             || !parent
                 .capabilities
-                .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
+                .contains(&volume.capability(VolumeOperation::Read, work)?)
         {
-            return Err(Error::Unauthorized(
-                "private read delegation requires its original owner".into(),
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "private read delegation requires its original owner",
             ));
         }
         Ok(())
@@ -129,6 +161,18 @@ pub trait AuthorityOperations: ProviderPlatform {
     /// This is synchronous and starts no foreign operation.
     fn check(&self, scope: &Scope) -> Result<()>;
 
+    /// The same synchronous observation under original work admission.
+    fn check_with_work(&self, scope: &Scope, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+        if work.is_some() {
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unsupported,
+                "authority producer has no original-work observation port",
+            ));
+        }
+        self.check(scope)
+    }
+
     /// Derive a host-attested scope from an authenticated descendant of the
     /// original admission. The platform checks the actual created resource or
     /// acting agent; request metadata alone never establishes that authority.
@@ -141,6 +185,26 @@ pub trait AuthorityOperations: ProviderPlatform {
         id: &'a str,
         request: ScopeDerivation<'a>,
     ) -> BoxProviderFuture<'a, Result<Scope>>;
+
+    /// Derive through the same custody producer on the original work ledger.
+    /// Implementations without that port refuse before dispatch; they never
+    /// drop the caller's work admission and invoke the ordinary operation.
+    fn derive_with_io<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        parent: &'a Scope,
+        id: &'a str,
+        request: ScopeDerivation<'a>,
+        io: &'a crate::executor::PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Scope>> {
+        let _ = (context, operation, parent, id, request);
+        Err(crate::executor::stock_boundary(
+            Some(io),
+            crate::wire::ErrorCode::Unsupported,
+            "authority producer has no original-work derivation port",
+        ))
+    }
 
     /// Sign only the named checkpoint under the admitted audience. The platform
     /// supplies the issuer and audience; neither is accepted from the guest.
@@ -309,6 +373,17 @@ impl AdmittedAuthority {
     }
 
     pub(super) fn check_scope(&self, scope: &Scope) -> Result<()> {
+        self.check_scope_with_work(scope, &mut None)
+    }
+
+    pub(super) fn check_scope_with_work(
+        &self,
+        scope: &Scope,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        if let Some(work) = work.as_deref() {
+            work.check_cancellation()?;
+        }
         self.context.check().map_err(|_| Error::Cancelled)?;
         self.caller
             .verifier
@@ -317,10 +392,10 @@ impl AdmittedAuthority {
             .check_open()
             .map_err(|_| Error::Cancelled)?;
         if let Custody::Platform(source) = &self.custody {
-            source.check(scope)?;
+            source.check_with_work(scope, work)?;
         }
         self.context.check().map_err(|_| Error::Cancelled)?;
-        self.caller.recheck(&mut None)?;
+        self.caller.recheck(work)?;
         Ok(())
     }
 
@@ -337,8 +412,44 @@ impl AdmittedAuthority {
             .map_err(|_| Error::Indeterminate(operation))?
     }
 
-    fn parent<'a>(&'a self, parent: &Scope) -> Result<Parent<'a>> {
-        self.check_scope(parent)?;
+    async fn run_with_io<T>(
+        &self,
+        context: &Context,
+        operation: OperationId,
+        io: Option<&crate::executor::PreparationIo>,
+        producer: impl std::future::Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let producer = self.run(context, operation, producer);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = io
+            .and_then(crate::filesystem::PreparationIo::original_native_work)
+            .filter(|_| matches!(self.custody, Custody::Platform(_)))
+        {
+            use std::future::Future as _;
+            let stopped = original.cancellation_wait()?;
+            futures::pin_mut!(producer, stopped);
+            return std::future::poll_fn(|cx| {
+                if stopped.as_mut().poll(cx).is_ready() {
+                    return std::task::Poll::Ready(Err(Error::Indeterminate(operation)));
+                }
+                let result = producer.as_mut().poll(cx);
+                if result.is_ready() && original.cancellation().check().is_err() {
+                    return std::task::Poll::Ready(Err(Error::Indeterminate(operation)));
+                }
+                result
+            })
+            .await;
+        }
+        let _ = io;
+        producer.await
+    }
+
+    fn parent<'a>(
+        &'a self,
+        parent: &Scope,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Parent<'a>> {
+        self.check_scope_with_work(parent, work)?;
         if std::ptr::eq(parent, &self.caller.scope) {
             return Ok(Parent::Original(self));
         }
@@ -347,11 +458,13 @@ impl AdmittedAuthority {
             &self.caller.verifier.audience,
             parent,
             self.caller.verifier.public.now(),
-            &mut None,
+            work,
         )?;
         if matches!(self.custody, Custody::Platform(_)) && !capability.is_sealed() {
-            return Err(Error::Unauthorized(
-                "platform request exports restricted append authority".into(),
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "platform request exports restricted append authority",
             ));
         }
         if !self
@@ -360,8 +473,10 @@ impl AdmittedAuthority {
             .preserved_by(&capability)
             .map_err(workload::unauthorized)?
         {
-            return Err(Error::Unauthorized(
-                "scope drops original admission dependencies".into(),
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Unauthorized,
+                "scope drops original admission dependencies",
             ));
         }
         Ok(Parent::Descendant(capability))
@@ -401,43 +516,72 @@ impl AdmittedAuthority {
         id: &str,
         request: ScopeDerivation<'_>,
     ) -> Result<Scope> {
+        self.derive_request_with_io(context, operation, parent, id, request, None)
+            .await
+    }
+
+    /// The same derivation, verification and producer lifetime with original IO.
+    pub async fn derive_request_with_io(
+        &self,
+        context: &Context,
+        operation: OperationId,
+        parent: &Scope,
+        id: &str,
+        request: ScopeDerivation<'_>,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Scope> {
         context.check().map_err(|_| Error::Cancelled)?;
-        let authenticated = self.parent(parent)?;
-        let (capabilities, agent) = request.resolve(parent)?;
+        let authenticated = crate::executor::with_history_io(io, |work| self.parent(parent, work))?;
+        let (capabilities, agent) =
+            crate::executor::with_history_io(io, |work| request.resolve_with_work(parent, work))?;
         let capabilities = capabilities.as_ref();
         let issued = self
-            .run(context, operation, async {
+            .run_with_io(context, operation, io, async {
                 match &self.custody {
                     Custody::Native(root) => {
                         if matches!(request, ScopeDerivation::Narrow { .. })
                             && agent != parent.agent()
                         {
-                            return Err(Error::Unauthorized(
-                                "delegation cannot attest a different acting agent".into(),
+                            return Err(crate::executor::stock_boundary(
+                                io,
+                                crate::wire::ErrorCode::Unauthorized,
+                                "delegation cannot attest a different acting agent",
                             ));
                         }
-                        root.issue_derived(parent, id, capabilities, agent, &mut None)
+                        crate::executor::with_history_io(io, |work| {
+                            root.issue_derived(parent, id, capabilities, agent, work)
+                        })
                     }
-                    Custody::Platform(source) => {
-                        source.derive(context, operation, parent, id, request).await
-                    }
+                    Custody::Platform(source) => match io {
+                        Some(io) => {
+                            source
+                                .derive_with_io(context, operation, parent, id, request, io)?
+                                .await
+                        }
+                        None => source.derive(context, operation, parent, id, request).await,
+                    },
                 }
             })
             .await?;
         match &self.custody {
-            Custody::Native(_) => self
-                .check()
-                .map_err(|error| Self::after_dispatch(error, operation))?,
+            Custody::Native(_) => crate::executor::with_history_io(io, |work| {
+                self.check_scope_with_work(&self.caller.scope, work)
+            })
+            .map_err(|error| Self::after_dispatch(error, operation))?,
             Custody::Platform(_) => {
-                self.check_scope(&issued)
-                    .map_err(|error| Self::after_dispatch(error, operation))?;
-                let capability = workload::verify(
-                    &self.caller.verifier,
-                    &self.caller.verifier.audience,
-                    &issued,
-                    self.caller.verifier.public.now(),
-                    &mut None,
-                )?;
+                crate::executor::with_history_io(io, |work| {
+                    self.check_scope_with_work(&issued, work)
+                })
+                .map_err(|error| Self::after_dispatch(error, operation))?;
+                let capability = crate::executor::with_history_io(io, |work| {
+                    workload::verify(
+                        &self.caller.verifier,
+                        &self.caller.verifier.audience,
+                        &issued,
+                        self.caller.verifier.public.now(),
+                        work,
+                    )
+                })?;
                 if !capability.is_sealed()
                     || issued.id() != id
                     || issued.capabilities() != capabilities
@@ -446,8 +590,10 @@ impl AdmittedAuthority {
                     || issued.parent_proof != Some(*parent.proof)
                     || !authenticated.preserved_by(&capability)?
                 {
-                    return Err(Error::Unauthorized(
-                        "platform returned a different derived authority".into(),
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Unauthorized,
+                        "platform returned a different derived authority",
                     ));
                 }
             }
@@ -499,6 +645,10 @@ impl AuthorityOperations for AdmittedAuthority {
         self.check_scope(scope)?;
         self.caller.verifier.verify(scope, &mut None)
     }
+    fn check_with_work(&self, scope: &Scope, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+        self.check_scope_with_work(scope, work)?;
+        self.caller.verifier.verify(scope, work)
+    }
     fn derive<'a>(
         &'a self,
         context: &'a Context,
@@ -511,6 +661,24 @@ impl AuthorityOperations for AdmittedAuthority {
             Self::derive_request(self, context, operation, parent, id, request)
                 .await?
                 .seal(&self.caller.verifier)
+        })
+    }
+    fn derive_with_io<'a>(
+        &'a self,
+        context: &'a Context,
+        operation: OperationId,
+        parent: &'a Scope,
+        id: &'a str,
+        request: ScopeDerivation<'a>,
+        io: &'a crate::executor::PreparationIo,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Scope>> {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
+            let scope = self
+                .derive_request_with_io(context, operation, parent, id, request, Some(io))
+                .await?;
+            crate::executor::with_history_io(Some(io), |work| {
+                scope.seal_with_work(&self.caller.verifier, work)
+            })
         })
     }
     fn checkpoint<'a>(

@@ -103,7 +103,7 @@ impl RuntimeAuthority {
                 authority,
                 operation,
             } => {
-                authority.check()?;
+                authority.check_scope_with_work(&authority.caller.scope, work)?;
                 let mut verifier = authority.caller.verifier.copy(work)?;
                 verifier.admission =
                     runtime_signing::AdmissionPort::platform(authority, *operation);
@@ -182,11 +182,36 @@ impl RuntimeAuthority {
                 authority,
                 operation,
             } => {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                if let Some(original) = work.as_deref().and_then(HistoryIo::original_native_work) {
+                    let io = crate::filesystem::PreparationIo::from_native_work(original)?;
+                    let issued = authority
+                        .derive_request_with_io(
+                            &authority.context,
+                            *operation,
+                            parent.unwrap_or(authority.caller().1),
+                            id,
+                            ScopeDerivation::Narrow {
+                                capabilities,
+                                agent,
+                            },
+                            Some(&io),
+                        )
+                        .await?;
+                    let custody = io.take_native_custody(io.owned_bytes()?)?;
+                    work.as_deref_mut()
+                        .ok_or_else(|| crate::Error::NativeBoundary {
+                            code: crate::wire::ErrorCode::Invalid,
+                            reason: "original derivation observer was lost",
+                        })?
+                        .absorb_native_custody(custody)?;
+                    return Ok(issued);
+                }
                 if work.is_some() {
                     return Err(crate::store::guarded_boundary(
                         work,
                         crate::wire::ErrorCode::Unsupported,
-                        "platform authority has no original-work derivation port",
+                        "authority derivation requires its original native work owner",
                     ));
                 }
                 authority

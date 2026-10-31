@@ -408,6 +408,11 @@ impl VerifiedCapability {
         ))
     }
 
+    /// Exact encoded length of the public seal, before allocating its output.
+    pub fn sealed_encoded_len(&self) -> usize {
+        wire::encoded_len(&self.signed, 64, VERSION)
+    }
+
     /// Exact encoded length, without allocating or exposing the append secret.
     pub fn encoded_len(&self) -> usize {
         let proof_len = match &self.proof {

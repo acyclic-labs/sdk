@@ -43,7 +43,7 @@ path = "tests/skill_materializer_loom.rs"
 required-features = ["model-checking"]
 
 [features]
-code-mode = ["dep:rquickjs", "dep:oxc_allocator", "dep:oxc_codegen", "dep:oxc_parser", "dep:oxc_semantic", "dep:oxc_span", "dep:oxc_transformer"]
+code-mode = ["dep:rquickjs", "dep:oxc_allocator", "dep:oxc_codegen", "dep:oxc_parser", "dep:oxc_semantic", "dep:oxc_span", "dep:oxc_transformer", "dep:oxc-browserslist"]
 conformance = ["acyclic-stream/conformance"]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
@@ -131,6 +131,8 @@ oxc_parser = { version = "=0.75.0", optional = true }
 oxc_semantic = { version = "=0.75.0", optional = true }
 oxc_span = { version = "=0.75.0", optional = true }
 oxc_transformer = { version = "=0.75.0", optional = true }
+# The transformer's generated target tables require the u32 Version ABI.
+oxc-browserslist = { version = "=2.0.0", optional = true }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false, features = ["grpc"], optional = true }
 dirs = { workspace = true, optional = true }
 tempfile = { version = "3.27.0", optional = true }
