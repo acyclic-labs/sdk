@@ -7,6 +7,7 @@ pub use agents::{
     definitions as agent_tool_definitions, spawned_child,
 };
 pub mod shell;
+pub mod variants;
 pub use shell::ShellInput;
 mod defaults;
 pub use defaults::{defaults, names as default_names};
