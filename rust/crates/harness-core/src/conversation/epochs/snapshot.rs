@@ -3,7 +3,7 @@
 
 use super::{
     Epoch, FileRef, InvalidEpoch,
-    protocol::{Completion, Pending, Refusal, State},
+    protocol::{Completion, Demand, Pending, Pressure, Refusal, State},
 };
 #[cfg(feature = "filesystem")]
 use acyclic_stream::{CommitCondition, OwnedBytes};
@@ -16,7 +16,27 @@ pub struct Snapshot {
     epoch: Epoch,
     state: State,
     outcome: Option<SummaryOutcome>,
+    attempt: u64,
     anchor: Option<(u64, CommitId)>,
+}
+
+/// The executor's next action after verified input accounting. Preparation
+/// changes only pending custody; the visible epoch stays fixed until swap.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Admission {
+    /// Dispatch the original request with its byte-identical epoch prefix.
+    Unchanged,
+    /// Publish the preparation conditionally, then drive the sole producer.
+    Produce {
+        /// Original identity retained on restore and producer observation.
+        summary: [u8; 32],
+        /// Hard demand drives the same producer before dispatching a response.
+        foreground: bool,
+    },
+    /// Wait for the existing exact-generation event; do not start work.
+    Await([u8; 32]),
+    /// Conditionally install the existing successful summary before dispatch.
+    Swap([u8; 32]),
 }
 
 /// One encoded contribution to the original conditional publication.
@@ -93,8 +113,8 @@ impl From<Refusal> for SnapshotError {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "version", content = "snapshot", deny_unknown_fields)]
 enum RecordWire<E, O> {
-    #[serde(rename = "1")]
-    V1(SnapshotWire<E, O>),
+    #[serde(rename = "2")]
+    V2(SnapshotWire<E, O>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,6 +122,7 @@ enum RecordWire<E, O> {
 struct SnapshotWire<E, O> {
     epoch: E,
     generation: u64,
+    attempt: u64,
     pending: Option<PendingWire<O>>,
 }
 
@@ -123,6 +144,7 @@ impl Snapshot {
             epoch,
             state: State::default(),
             outcome: None,
+            attempt: 0,
             anchor: None,
         })
     }
@@ -130,7 +152,7 @@ impl Snapshot {
     /// Admits the one versioned record against its inherited source and head.
     /// Decoding never scans previous snapshots or reconstructs a missing job.
     pub fn decode(record: &Record, source: &StreamPath, head: u64) -> Result<Self, SnapshotError> {
-        let RecordWire::V1(wire): RecordWire<Epoch, SummaryOutcome> =
+        let RecordWire::V2(wire): RecordWire<Epoch, SummaryOutcome> =
             serde_json::from_slice(&record.value)?;
         wire.epoch.validate(source, head)?;
         if (wire.generation == 0) != (wire.epoch.cursor() == 0) {
@@ -150,14 +172,17 @@ impl Snapshot {
         };
         let state = State::restore(wire.generation, wire.epoch.cursor(), pending, head)?;
         if let Some(pending) = state.pending() {
-            if wire.epoch.key.digest_through(pending.through) != pending.summary {
+            if wire.epoch.key.attempt_digest(pending.through, wire.attempt) != pending.summary {
                 return Err(SnapshotError::Identity);
             }
+        } else if wire.attempt != 0 {
+            return Err(SnapshotError::Identity);
         }
         Ok(Self {
             epoch: wire.epoch,
             state,
             outcome,
+            attempt: wire.attempt,
             anchor: Some((record.sequence, record.commit_id)),
         })
     }
@@ -204,8 +229,55 @@ impl Snapshot {
     /// Pins exactly the content address of this source range. The common
     /// ancestor's conditional publication arbitrates shared producer ownership.
     pub fn prepare(&mut self, through: u64, head: u64) -> Result<[u8; 32], SnapshotError> {
-        let summary = self.epoch.key.digest_through(through);
+        let summary = self.epoch.key.attempt_digest(through, self.attempt);
         self.state.prepare(summary, through, head)?;
+        Ok(summary)
+    }
+
+    /// One decision per request admission, with no wait or history read. The
+    /// owner publishes a Produce candidate before attaching its future. A
+    /// foreground failure returns to that caller; it must not loop admission
+    /// into another producer. A later independent admission may retry it.
+    pub fn admit(
+        &mut self,
+        pressure: Pressure,
+        closed: u64,
+        head: u64,
+    ) -> Result<Admission, SnapshotError> {
+        match (pressure, self.state.demand()) {
+            (Pressure::Below, _) => Ok(Admission::Unchanged),
+            (Pressure::Soft, Demand::Unprepared) if closed > self.state.cursor() => {
+                Ok(Admission::Produce {
+                    summary: self.prepare(closed, head)?,
+                    foreground: false,
+                })
+            }
+            (Pressure::Soft, _) => Ok(Admission::Unchanged),
+            (Pressure::Hard, Demand::Unprepared) => Ok(Admission::Produce {
+                summary: self.prepare(closed, head)?,
+                foreground: true,
+            }),
+            (Pressure::Hard, Demand::Await(summary)) => Ok(Admission::Await(summary)),
+            (Pressure::Hard, Demand::Swap(summary)) => Ok(Admission::Swap(summary)),
+            (Pressure::Hard, Demand::Failed(_)) => Ok(Admission::Produce {
+                summary: self.retry_failed(closed, head)?,
+                foreground: true,
+            }),
+        }
+    }
+
+    /// A foreground fallback is a fresh attempt on the same content-addressed
+    /// source. The failed result remains immutable in the preceding snapshot.
+    /// Publication uses the original snapshot fence and codec.
+    pub fn retry_failed(&mut self, through: u64, head: u64) -> Result<[u8; 32], SnapshotError> {
+        let pending = self.state.pending().ok_or(Refusal::Stale)?;
+        let attempt = self.attempt.checked_add(1).ok_or(Refusal::Exhausted)?;
+        let summary = self.epoch.key.attempt_digest(through, attempt);
+        let mut state = self.state;
+        state.retry_failed(pending.summary, summary, through, head)?;
+        self.state = state;
+        self.attempt = attempt;
+        self.outcome = None;
         Ok(summary)
     }
 
@@ -230,7 +302,7 @@ impl Snapshot {
     pub fn swap(&mut self, expected: u64, next: Epoch, head: u64) -> Result<(), SnapshotError> {
         next.validate(&self.epoch.key.source, head)?;
         let pending = self.state.pending().ok_or(Refusal::Stale)?;
-        if next.key.digest() != pending.summary {
+        if next.key.digest() != self.epoch.key.digest_through(pending.through) {
             return Err(SnapshotError::Identity);
         }
         let mut state = self.state;
@@ -243,6 +315,7 @@ impl Snapshot {
         self.state = state;
         self.epoch = next;
         self.outcome = None;
+        self.attempt = 0;
         Ok(())
     }
 
@@ -271,9 +344,10 @@ impl Snapshot {
         } else {
             CommitCondition::Absent { path }
         };
-        let wire = RecordWire::V1(SnapshotWire {
+        let wire = RecordWire::V2(SnapshotWire {
             epoch: &self.epoch,
             generation: self.state.generation(),
+            attempt: self.attempt,
             pending: self.state.pending().map(|pending| PendingWire {
                 summary: pending.summary,
                 generation: pending.generation,

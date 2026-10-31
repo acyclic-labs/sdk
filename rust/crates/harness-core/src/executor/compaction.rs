@@ -110,26 +110,15 @@ impl StockExecution<'_> {
         phase: &mut DispatchPhase,
     ) -> Result<crate::context::ContextSummary> {
         let material = self.prepare_summary_source(source.0, source.1)?;
-        let (summary, text) = crate::conversation::BoundedContentFuture::new(self.io, || {
-            self.summarize(
-                journal,
-                Some(input),
-                input.operation_id,
-                step,
-                material,
-                phase,
-            )
-        })?
-        .await?;
-        #[cfg(feature = "filesystem")]
-        let text_hold = self
-            .io
-            .map(|io| io.guard_owned(text.capacity() as u64))
-            .transpose()?;
-        drop(text);
-        #[cfg(feature = "filesystem")]
-        drop(text_hold);
-        Ok(summary)
+        let production = self.summary_production(
+            journal,
+            Some(input),
+            input.operation_id,
+            step,
+            material,
+            phase,
+        )?;
+        production.into_producer(self.io)?.await
     }
 
     async fn prepare_compacted_request(

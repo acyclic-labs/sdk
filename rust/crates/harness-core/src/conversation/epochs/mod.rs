@@ -15,7 +15,7 @@ pub mod protocol;
 mod snapshot;
 #[cfg(feature = "filesystem")]
 pub use snapshot::EncodedSnapshot;
-pub use snapshot::{Snapshot, SnapshotError, SummaryOutcome};
+pub use snapshot::{Admission, Snapshot, SnapshotError, SummaryOutcome};
 
 /// Immutable identity of a shared summary on the source's common ancestor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -47,6 +47,17 @@ impl SummaryKey {
         hash.update(&through.to_le_bytes());
         hash.update(&self.renderer.to_le_bytes());
         hash.update(&self.model);
+        *hash.finalize().as_bytes()
+    }
+
+    pub(super) fn attempt_digest(&self, through: u64, attempt: u64) -> [u8; 32] {
+        let source = self.digest_through(through);
+        if attempt == 0 {
+            return source;
+        }
+        let mut hash = blake3::Hasher::new_derive_key("acyclic.harness.epoch.summary-attempt.v1");
+        hash.update(&source);
+        hash.update(&attempt.to_le_bytes());
         *hash.finalize().as_bytes()
     }
 }
