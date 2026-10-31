@@ -94,7 +94,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       }
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (this.maximumResponse !== undefined && declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
-      const chunks: Uint8Array[] = [];
+      let data: Uint8Array | undefined;
+      let chunks: Uint8Array[] | undefined;
       let size = 0;
       if (reader !== undefined) while (true) {
         const { done, value } = await awaitSignal(reader.read(), signal);
@@ -102,11 +103,12 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         if (done) break;
         size += value.byteLength;
         if (this.maximumResponse !== undefined && size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
-        chunks.push(value);
+        if (data === undefined) data = value;
+        else (chunks ??= [data]).push(value);
       }
       if (sizes) sizes.responseBytes = size;
-      let data = chunks[0] ?? new Uint8Array(0);
-      if (chunks.length > 1) {
+      data ??= new Uint8Array(0);
+      if (chunks !== undefined) {
         data = new Uint8Array(size);
         let offset = 0;
         for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
