@@ -31,8 +31,8 @@ pub use settled::{TurnChildren, answer, settled};
 mod slots;
 mod targets;
 pub use targets::{
-    MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, ROSTER_LEAD, Refused, Roster, TargetClass,
-    TargetRecord, TargetRefusal, TargetState, USER_PREFIX,
+    MAX_OWNER_BYTES, MAX_TARGET_NAME_BYTES, PathStyle, Refused, Roster, TargetClass, TargetRecord,
+    TargetRefusal, TargetState, USER_PREFIX,
 };
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -44,8 +44,8 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
-    TurnOutputs, announce, approval_intent, entry_input, expand_attachments, model_input, turn_id,
-    turn_segment,
+    TurnOutputs, approval_intent, expand_attachments, model_input, roster_message, turn_id,
+    turn_roster, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

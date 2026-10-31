@@ -45,7 +45,7 @@ pub(crate) use admission::layout_reservation;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use admission::lexical_json_diagnostic_bytes;
 pub use records::json_value_logical_owned_bytes;
-pub(crate) use records::json_value_retained_owned_bytes;
+pub(crate) use records::{json_object_insert, json_value_retained_owned_bytes};
 pub use records::{json_from_slice_bounded, json_from_value_bounded};
 pub use serialization::{
     canonical_json_bytes_bounded, json_bytes_bounded, json_value_bounded, json_value_copy_bounded,

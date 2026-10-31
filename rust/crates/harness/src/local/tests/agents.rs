@@ -791,7 +791,7 @@ async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<
     else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
-    let policies = own_parts(parts)
+    let policies = parts
         .iter()
         .map(|part| match part {
             ModelContentPart::File { policy, .. } => {
@@ -1151,7 +1151,6 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
     else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
-    let parts = own_parts(parts);
     assert_eq!(parts.len(), MENTIONS + 1);
     for (index, part) in parts[1..].iter().enumerate() {
         let ModelContentPart::File { file, .. } = part else {
@@ -1245,7 +1244,7 @@ async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> 
     else {
         return Err(Error::Conflict("the turn input has no attachments".into()));
     };
-    assert_eq!(own_parts(parts).len(), MENTIONS + 1);
+    assert_eq!(parts.len(), MENTIONS + 1);
     Ok(())
 }
 
@@ -1399,7 +1398,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     // Control: the list alone exceeds the configured file bound.
     assert!(manifest.descriptor().byte_length() > FILE_BYTES);
     let attached = |content: &ModelContent| match content {
-        ModelContent::Parts(parts) => own_parts(parts).len(),
+        ModelContent::Parts(parts) => parts.len(),
         _ => 1,
     };
     let request = provider.last_request().expect("one model request");
@@ -1430,19 +1429,19 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     let replayed = request
         .messages
         .iter()
-        .filter(|message| message.role == ModelRole::User)
+        .filter(|message| message.role == ModelRole::User && !is_roster(&message.content))
         .map(|message| attached(&message.content))
         .collect::<Vec<_>>();
     assert_eq!(replayed, vec![MENTIONS + 1, 1]);
     Ok(())
 }
 
-/// A turn input's own parts: the roster announcement that leads a tree's
-/// first turn ([`crate::agent::announce`]) is no part of the prompt.
-fn own_parts(parts: &[crate::model::ModelContentPart]) -> &[crate::model::ModelContentPart] {
-    use crate::model::ModelContentPart::{File, Text};
-    match parts {
-        [Text { text }, File { .. }, rest @ ..] if text == crate::agent::ROSTER_LEAD => rest,
-        parts => parts,
-    }
+/// Whether `content` is a roster announcement: its own message, one staged
+/// roster file and nothing else ([`crate::agent::roster_message`]).
+fn is_roster(content: &crate::model::ModelContent) -> bool {
+    matches!(
+        content,
+        crate::model::ModelContent::Part(crate::model::ModelContentPart::File { file, .. })
+            if file.path().contains("/targets/")
+    )
 }

@@ -31,14 +31,37 @@ fn target(
 }
 
 /// Every shell result names the target and command language it ran under.
-fn echo(name: &str, target: &Target, mut result: ToolResult) -> ToolResult {
+/// Also returns the retained bytes the result grew by, which a native
+/// caller charges to the result's allocation.
+fn echo(name: &str, target: &Target, mut result: ToolResult) -> Result<(ToolResult, u64)> {
+    let mut grown = 0u64;
     if name == super::shell::PLATFORM.name
         && let serde_json::Value::Object(fields) = &mut result.value
     {
-        fields.insert("target".into(), target.record.name.clone().into());
-        fields.insert("shell".into(), target.record.shell.clone().into());
+        for (key, value) in [
+            ("target", target.record.name.clone()),
+            ("shell", target.record.shell.clone()),
+        ] {
+            let bytes = crate::executor::json::json_object_insert(fields, key, value.into())?;
+            grown = grown
+                .checked_add(bytes)
+                .ok_or_else(|| Error::Invalid("shell result size overflows".into()))?;
+        }
     }
-    result
+    Ok((result, grown))
+}
+
+/// [`echo`] on a native result, its growth charged to `allocation`.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+fn echo_charged(
+    name: &str,
+    target: &Target,
+    result: ToolResult,
+    allocation: &mut acyclic_fs::NativeAllocation,
+) -> Result<ToolResult> {
+    let (result, grown) = echo(name, target, result)?;
+    allocation.grow(grown)?;
+    Ok(result)
 }
 
 struct WorkspaceExecutor {
@@ -101,7 +124,7 @@ impl ToolExecutor for WorkspaceExecutor {
                 return Ok(super::rejected_input(error));
             }
             let result = target.executor.execute(invocation, Some(context)).await?;
-            super::bounds::result(self.name, echo(self.name, &target, result), limits.0)
+            super::bounds::result(self.name, echo(self.name, &target, result)?.0, limits.0)
         })
     }
 
@@ -126,7 +149,7 @@ impl ToolExecutor for WorkspaceExecutor {
                 .reconcile(invocation, Some(context))
                 .await?
                 .map(|result| {
-                    super::bounds::result(self.name, echo(self.name, &target, result), maximum)
+                    super::bounds::result(self.name, echo(self.name, &target, result)?.0, maximum)
                 })
                 .transpose()
         })
@@ -152,11 +175,12 @@ impl ToolExecutor for WorkspaceExecutor {
         let target = target(context, invocation, Some(work))?;
         let name = self.name;
         crate::NativeFutureBundle::new(work, move || async move {
-            let (result, allocation) = target
+            let (result, mut allocation) = target
                 .executor
                 .execute_with_native_context(context, invocation, work)?
                 .await?;
-            Ok((echo(name, &target, result), allocation))
+            let result = echo_charged(name, &target, result, &mut allocation)?;
+            Ok((result, allocation))
         })
     }
 
@@ -172,11 +196,14 @@ impl ToolExecutor for WorkspaceExecutor {
         let target = target(context, invocation, Some(work))?;
         let name = self.name;
         crate::NativeFutureBundle::new(work, move || async move {
-            let (result, allocation) = target
+            let (result, mut allocation) = target
                 .executor
                 .reconcile_with_native_context(context, invocation, work)?
                 .await?;
-            Ok((result.map(|result| echo(name, &target, result)), allocation))
+            let result = result
+                .map(|result| echo_charged(name, &target, result, &mut allocation))
+                .transpose()?;
+            Ok((result, allocation))
         })
     }
 }

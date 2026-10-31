@@ -18,9 +18,6 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// The fixed lead of a roster announcement, before the staged roster file.
-pub const ROSTER_LEAD: &str = "Execution targets changed. `shell` runs on its `target`: a name in the roster below, or user:<owner> for that user's home device; omitted, it runs on home. Write each command in its target's shell and path_style.";
-
 /// The `target` prefix that names a user's home device instead of a device.
 pub const USER_PREFIX: &str = "user:";
 /// Longest target name, in bytes.

@@ -77,10 +77,10 @@ impl StockExecution<'_> {
         let (task, _) = self
             .context
             .ok_or_else(|| Error::Unauthorized("tool hook has no issued task context".into()))?;
-        let home = task
-            .harness
-            .target(None)
-            .map_err(|_| Error::Unsupported("tool hook workspace execution is not bound".into()))?;
+        // Hooks run on the home target. One it cannot reach is the target's
+        // refusal ([`Error::Target`]), which the caller settles as the call's
+        // result like any other refusal; it never becomes a turn failure.
+        let home = task.harness.target(None)?;
         let executor = &home.executor;
         let phase = crate::hooks::effects::phase_operation(invocation.operation_id, event);
         let mut context =
