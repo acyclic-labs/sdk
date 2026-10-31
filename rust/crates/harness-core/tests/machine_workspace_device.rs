@@ -251,8 +251,11 @@ async fn committed_device_handover_runs_once_and_archive_fences_its_grant() -> R
         assert!(futures::poll!(following.as_mut()).is_pending());
         use acyclic_harness_core::runtime::TargetResolver as _;
         let remote = directory.resolve(Some("desktop"))?;
-        let storage =
-            acyclic_harness_core::filesystem::MemoryHarnessStorage::new(agent.id(), 4096).await?;
+        let storage = acyclic_harness_core::filesystem::MemoryHarnessStorage::new(
+            acyclic_harness_core::AgentId::from_bytes(agent.id().to_bytes()),
+            4096,
+        )
+        .await?;
         let mut bindings = acyclic_harness_core::runtime::Bindings::local();
         bindings.targets = Some(directory.clone());
         bindings.scope = acyclic_harness_core::runtime::RuntimeScope::new(
