@@ -63,3 +63,77 @@ test("native MCP pipe credits retain cancellation and terminals for queued calle
     assert.equal(signal, null);
   }
 });
+
+test("native MCP rejected initialization and partial frames retain exact terminal ownership", { timeout: 10_000 }, async () => {
+  const recovery = "node --test plugin/tests/hosts/mcp-client.test.mjs";
+  for (const command of ["eof", "malformed"]) {
+    const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), [], { silent: true });
+    const closed = once(child, "close");
+    child.stderr.resume();
+    const initialization = once(child, "message");
+    const failed = Promise.withResolvers();
+    const client = new McpClient(child, { name: "transport-conformance", version: "1",
+      recovery, onFailure: failed.resolve });
+    try {
+      const request = client.request("wait", {}).catch(error => error);
+      await initialization;
+      child.send(command);
+      const failure = await failed.promise;
+      assert.equal(await request, failure, "loss before initialize must settle the original gated request");
+      await assert.rejects(client.request("late", {}), error => error === failure);
+      if (command === "malformed") {
+        assert.doesNotThrow(() => child.stdin.emit("error", new Error("later stdin failure")));
+        await assert.rejects(client.request("later", {}), error => error === failure);
+      } else assert.match(failure.message, /output closed/);
+    } finally {
+      child.send("exit");
+      assert.deepEqual(await closed, [0, null]);
+      await client.closed;
+    }
+  }
+
+  const child = fork(new URL("./mcp-pipe-child.mjs", import.meta.url), ["cancel"], { silent: true });
+  const closed = once(child, "close");
+  child.stderr.resume();
+  const initialization = once(child, "message");
+  const failed = Promise.withResolvers();
+  const stalled = Promise.withResolvers();
+  const cancelledOnWire = Promise.withResolvers();
+  const observed = [];
+  child.on("message", message => {
+    if (message.phase === "request") observed.push(message);
+    if (message.phase === "cancelled") cancelledOnWire.resolve(message);
+  });
+  const originalWrite = child.stdin.write.bind(child.stdin);
+  child.stdin.write = (...args) => {
+    const credit = originalWrite(...args);
+    if (!credit) stalled.resolve();
+    return credit;
+  };
+  const client = new McpClient(child, { name: "transport-conformance", version: "1",
+    recovery, onFailure: failed.resolve });
+  try {
+    await initialization;
+    const abort = new AbortController();
+    const text = "💠".repeat(1024 * 1024);
+    const partial = client.request("wait", { text }, abort.signal).catch(error => error);
+    const next = client.request("wait", { text: "next" }).catch(error => error);
+    child.send("initialize");
+    await stalled.promise;
+    abort.abort();
+    assert.match((await partial).message, /cancelled/);
+    child.send("resume");
+    const cancellation = await cancelledOnWire.promise;
+    assert.deepEqual(observed, [{ phase: "request", id: 1, received: text.length }],
+      "the original complete Unicode frame must precede its cancellation");
+    assert.deepEqual(cancellation, { phase: "cancelled", id: 1, requests: 1 },
+      "cancellation must pass queued calls without cutting an admitted frame");
+    const failure = await failed.promise;
+    assert.equal(await next, failure);
+    await assert.rejects(client.request("late", {}), error => error === failure);
+  } finally {
+    child.send("exit");
+    assert.deepEqual(await closed, [0, null]);
+    await client.closed;
+  }
+});
