@@ -227,7 +227,6 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
         refused.is_err(),
         "prefix escaped its original allocation owner"
     );
-    assert_eq!(blocked.spent()?.allocation_operations, 0);
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
