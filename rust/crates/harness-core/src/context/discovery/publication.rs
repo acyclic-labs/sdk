@@ -484,12 +484,9 @@ impl SkillPublicationSource {
                     };
                     SkillPublicationChange::Skill(metadata)
                 } else if facts.before_present {
-                    let source = PinnedContextPath {
-                        root: root.clone(),
-                        generation: generation.clone(),
-                        path: path.clone(),
-                    };
-                    source.validate(&mut None)?;
+                    let source = crate::executor::with_history_io(Some(session), |work| {
+                        PinnedContextPath::capture(root, generation, &path, work)
+                    })?;
                     SkillPublicationChange::Removed(source)
                 } else {
                     continue;

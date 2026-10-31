@@ -231,6 +231,18 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
             .is_err(),
         "prefix escaped its original allocation owner"
     );
+    assert!(
+        crate::executor::with_history_io(Some(&blocked), |work| {
+            PinnedContextPath::capture(
+                &metadata.source.root,
+                &metadata.source.generation,
+                &metadata.source.path,
+                work,
+            )
+        })
+        .is_err(),
+        "pin capture escaped its original allocation owner"
+    );
     assert_eq!(
         hex::encode(metadata.source.generation.as_resource().key()),
         original.version()
@@ -578,6 +590,54 @@ async fn retained_source_stops_at_pending_cut_and_preserves_pins_on_bad_replacem
     let [SkillPublicationChange::Skill(retained)] = admitted.changes() else {
         panic!("admission lost original metadata custody");
     };
+    let (_, body) = retained.source.read(reader.as_ref(), 32_768).await?;
+    assert!(std::str::from_utf8(&body)?.contains("original body"));
+
+    workspace.remove("/skills/check/SKILL.md").await?;
+    let before_removal = session.remaining()?;
+    source
+        .prepare(reader.as_ref(), ContextDiscoveryLimits::default(), &session)
+        .await?;
+    let after_removal = session.remaining()?;
+    assert_eq!(
+        before_removal.object_bytes_read, after_removal.object_bytes_read,
+        "removal opened a skill body"
+    );
+    assert!(
+        after_removal.bytes_copied < before_removal.bytes_copied,
+        "removal pin copies escaped the original ledger"
+    );
+    let removal = source.pending()?.ok_or("missing removal member")?;
+    let [SkillPublicationChange::Removed(removed)] = removal.changes() else {
+        panic!("one removed skill expected");
+    };
+    assert_eq!(removed.path, retained.source.path);
+    assert_eq!(removed.root, retained.source.root);
+    let removal_cursor = removal.cursor();
+    assert_eq!(source.accepted(), repair.cursor());
+    let removal = journal
+        .publish_context(
+            &mut binding,
+            &mut source,
+            ContextPublicationRequest {
+                operation,
+                key: "removed-context",
+                step: 0,
+                expected_tail: 4,
+                profile: [7; 32],
+            },
+            &mut epoch,
+            &session,
+        )?
+        .await?
+        .ok_or("removal checkpoint publication lost")?
+        .confirm()?;
+    assert_eq!(source.accepted(), removal_cursor);
+    assert!(matches!(
+        removal.changes(),
+        [SkillPublicationChange::Removed(_)]
+    ));
+    // The old version remains readable after the removal's confirmed cut.
     let (_, body) = retained.source.read(reader.as_ref(), 32_768).await?;
     assert!(std::str::from_utf8(&body)?.contains("original body"));
 

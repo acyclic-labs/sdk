@@ -516,26 +516,7 @@ impl SkillReader for VolumeDiscovery<'_> {
         let content_io = None;
         crate::conversation::BoundedContentFuture::new(content_io, || async move {
             let pinned = crate::executor::with_history_io(self.io, |work| {
-                crate::wire_codec::CodecQuota::produce(work, |quota| {
-                    #[cfg(feature = "filesystem")]
-                    let generation = GenerationRef::from_resource(
-                        crate::core::copy_resource(revision.as_resource(), quota)?,
-                        quota.work(),
-                    )?;
-                    #[cfg(not(feature = "filesystem"))]
-                    let generation = revision.clone();
-                    let pinned = PinnedContextPath {
-                        root: ContextRoot {
-                            volume: self.root.volume.clone_in_quota(quota)?,
-                            directory: crate::core::copy_text(&self.root.directory, quota)?,
-                        },
-                        generation,
-                        path: crate::core::copy_text(path, quota)?,
-                    };
-                    pinned.validate(quota.work())?;
-                    Ok(pinned)
-                })
-                .map(|(pinned, _)| pinned)
+                PinnedContextPath::capture(self.root, revision, path, work)
             })?;
             let prefix = self
                 .reader
