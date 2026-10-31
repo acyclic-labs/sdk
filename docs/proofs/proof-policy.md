@@ -7,7 +7,7 @@ The first implemented suite is `acyclic_stream::conformance::wave1`. Its public 
 Run memory and local histories on Linux:
 
 ```sh
-cargo test -p acyclic-stream --features local,conformance --test wave1_keys -- --nocapture --test-threads=1
+cargo test -p acyclic-stream --features local,conformance --test main wave1_keys:: -- --nocapture --test-threads=1
 ```
 
 For an isolated HTTP endpoint, provide `ACYCLIC_CONFORMANCE_ENDPOINT`, `ACYCLIC_CONFORMANCE_TOKEN` and `ACYCLIC_CONFORMANCE_NAMESPACE` in the runner's environment, then run:

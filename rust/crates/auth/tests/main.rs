@@ -16,6 +16,9 @@ mod credentials;
 #[path = "minting.rs"]
 mod minting;
 
+#[path = "narrowing.rs"]
+mod narrowing;
+
 #[path = "operations.rs"]
 mod operations;
 
