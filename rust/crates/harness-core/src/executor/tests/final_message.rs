@@ -72,6 +72,38 @@ fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
             );
         }
         assert_eq!(provider.requests().len(), 2);
+        let usage: Vec<_> = journal
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|record| match &record.event {
+                ExecutionEvent::Model {
+                    usage: Some(file), ..
+                }
+                | ExecutionEvent::ModelInline {
+                    usage: Some(file), ..
+                } => Some(file.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            usage.len(),
+            if completed { 2 } else { 1 },
+            "a partial/closed stream is not a completed usage record; replay adds none"
+        );
+        for file in usage {
+            let bytes = futures::executor::block_on(journal.load(&file, None)?)?;
+            let record: ModelUsageRecord = crate::contract::json_from_slice(&bytes)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            assert_eq!(record.provider, "fixture");
+            assert_eq!(record.model, "completion");
+            assert_eq!(record.tokens, ModelTokenUsage::default());
+            #[cfg(not(target_arch = "wasm32"))]
+            assert!(record.latency_ns.is_some());
+            #[cfg(target_arch = "wasm32")]
+            assert!(record.latency_ns.is_none());
+        }
     }
     Ok(())
 }

@@ -239,6 +239,7 @@ where
 
     pub(super) async fn verify_event_refs_with_io(
         &self,
+        operation: OperationId,
         event: &ExecutionEvent,
         io: Option<&PreparationIo>,
     ) -> Result<Option<ModelEvent>> {
@@ -366,6 +367,38 @@ where
                         None => decode_json::<ModelEvent>(bytes, None)?.0,
                     });
                 }
+            }
+            if let ExecutionEvent::Model {
+                step,
+                purpose,
+                usage: Some(usage),
+                ..
+            }
+            | ExecutionEvent::ModelInline {
+                step,
+                purpose,
+                usage: Some(usage),
+                ..
+            } = event
+            {
+                let record = crate::executor::load_json::<crate::executor::ModelUsageRecord>(
+                    self, usage, io,
+                )
+                .await?;
+                crate::executor::validate_model_usage(
+                    &record.0,
+                    operation,
+                    *step,
+                    *purpose,
+                    model.as_ref().ok_or_else(|| {
+                        canonical_boundary(
+                            io,
+                            crate::wire::ErrorCode::Storage,
+                            "usage record lacks a model event",
+                        )
+                    })?,
+                    io,
+                )?;
             }
             Ok(model)
         }

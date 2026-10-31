@@ -14,6 +14,7 @@ macro_rules! stock_records {
 stock_records!(
     String,
     ExecutionEvent,
+    ModelUsageRecord,
     TurnInput,
     crate::conversation::ModelContextSelection,
     crate::context::CompactionRetention,

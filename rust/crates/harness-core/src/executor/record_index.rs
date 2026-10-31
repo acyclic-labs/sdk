@@ -116,19 +116,23 @@ impl ExecutionEvent {
                 step,
                 purpose,
                 event,
+                usage,
             } => Model {
                 step: *step,
                 purpose: *purpose,
                 event: file(event)?,
+                usage: usage.as_ref().map(file).transpose()?,
             },
             ModelInline {
                 step,
                 purpose,
                 event,
+                usage,
             } => ModelInline {
                 step: *step,
                 purpose: *purpose,
                 event: text(event)?,
+                usage: usage.as_ref().map(file).transpose()?,
             },
             ModelStopped { step, purpose } => ModelStopped {
                 step: *step,

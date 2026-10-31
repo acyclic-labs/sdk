@@ -242,7 +242,7 @@ where
                         })?;
                         None
                     } else {
-                        self.verify_event_refs_with_io(&observation.event, io)
+                        self.verify_event_refs_with_io(operation_id, &observation.event, io)
                             .await?
                     };
                     let _model_hold = if retain_models {

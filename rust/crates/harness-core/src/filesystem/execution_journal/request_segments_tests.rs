@@ -141,7 +141,9 @@ where
             acyclic_fs::performance::work_budget(64 * 1024 * 1024, 8 * 1024 * 1024),
             &acyclic_fs::CancellationToken::new(),
         )?;
-        let result = journal.verify_event_refs_with_io(&event, Some(&io)).await;
+        let result = journal
+            .verify_event_refs_with_io(operation, &event, Some(&io))
+            .await;
         assert_eq!(
             result.is_ok(),
             !forged,
