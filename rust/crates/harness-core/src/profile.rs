@@ -319,7 +319,7 @@ pub struct Capacity {
     pub model: ModelContextCapacity,
     /// User-admitted total input plus output reservation.
     pub budget_tokens: u32,
-    /// Input boundary for summary preparation, below the output-reserved budget.
+    /// Input boundary for summary preparation, within the output-reserved budget.
     pub watermark_tokens: u32,
 }
 
