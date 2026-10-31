@@ -22,8 +22,9 @@ mod capture;
 mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub use external_host::{
-    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostProgress,
-    run_external_process_host, run_external_process_host_with_progress,
+    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostFailure,
+    ProcessHostPartialProgress, ProcessHostPhase, ProcessHostProgress, run_external_process_host,
+    run_external_process_host_with_progress,
 };
 #[cfg(test)]
 mod capture_events_tests;

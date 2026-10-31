@@ -64,8 +64,9 @@ pub use process_tree::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::{
-    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostProgress,
-    run_external_process_host, run_external_process_host_with_progress,
+    ProcessHostCompletion, ProcessHostControl, ProcessHostControlObservation, ProcessHostFailure,
+    ProcessHostPartialProgress, ProcessHostPhase, ProcessHostProgress, run_external_process_host,
+    run_external_process_host_with_progress,
 };
 #[cfg(windows)]
 pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
