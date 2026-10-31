@@ -93,7 +93,7 @@ pub mod facade;
 #[macro_use]
 pub mod foundation;
 mod publication_changes;
-pub use publication_changes::PublicationChanges;
+pub use publication_changes::{PublicationChanges, PublicationContext};
 #[cfg(all(feature = "native-watch", target_os = "macos"))]
 mod fsevents;
 pub mod git_compat;
