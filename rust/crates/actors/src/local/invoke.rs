@@ -327,7 +327,6 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 })
             }
         )
-
     }
 
     /// A failed invocation consumes only its original input and retains every

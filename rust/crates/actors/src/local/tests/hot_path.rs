@@ -508,9 +508,25 @@ async fn alarm_replacement() -> TestResult {
     let address = actor("rearmed")?;
     place(&store, &address).await?;
     let mut binding = store.bind_state(store.load(&address).await?, 1)?;
-    binding.transaction(|state| state.alarm(Some(10)))?;
+    binding.transaction(|state| {
+        state.put("key-000000".into(), Bytes::from_static(b"accepted"));
+        state.alarm(Some(10))
+    })?;
+    rollback(&mut binding, 0)?;
     binding.flush(key("alarm/first")?).await?;
-    let mut binding = store.bind_state(binding.finish()?, 1)?;
+    let snapshot = binding.finish()?;
+    let alarm = snapshot.state().ok_or("missing state")?.alarm();
+    assert_eq!(
+        alarm.generation(),
+        1,
+        "refused callbacks retain the alarm fence"
+    );
+    assert_eq!(
+        alarm.pending(),
+        Some(10),
+        "error and unwind restore the alarm"
+    );
+    let mut binding = store.bind_state(snapshot, 1)?;
     binding.transaction(|state| state.alarm(Some(20)))?;
     let trigger = Trigger::Alarm {
         generation: 1,
