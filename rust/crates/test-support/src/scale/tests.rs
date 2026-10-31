@@ -183,8 +183,7 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
                 .findings(&LIFECYCLE_OPERATIONS, RECOVERY)
                 .iter()
                 .any(|failure| failure.step == "counter coverage"),
-            "missing {} escaped qualification",
-            name,
+            "missing {name} escaped qualification",
         );
         let mut tail = original.clone();
         let counter = &mut tail.points[2].samples[2].work[metric];
@@ -195,8 +194,7 @@ fn rejects_missing_coverage_hidden_tail_work_memory_growth_and_forged_reports() 
             tail.findings(&LIFECYCLE_OPERATIONS, RECOVERY)
                 .iter()
                 .any(|failure| failure.step == "constant work"),
-            "extra {} escaped qualification",
-            name,
+            "extra {name} escaped qualification",
         );
     }
     let mut memory = original.clone();
