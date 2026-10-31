@@ -12,6 +12,8 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationReceipt, WorkCounters, WorkError};
 use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
+use acyclic_collections::page::rewrite::{self, Action, Entered};
+use acyclic_collections::page::{merge, selection};
 use std::marker::PhantomData;
 use std::ops::Range;
 
@@ -37,20 +39,96 @@ struct InternalFrame<F: Format> {
     original: ObjectId,
     children: Owned<Vec<Child<F::Key>>>,
     inherited_upper: Owned<Option<F::Key>>,
-    next_child: usize,
-    mutation_cursor: usize,
-    mutation_end: usize,
+    selection: selection::Cursor,
     height: u16,
     rewritten: Owned<Vec<Child<F::Key>>>,
 }
 
-#[allow(
-    clippy::large_enum_variant,
-    reason = "The traversal frame stays on the stack instead of adding an unadmitted allocation."
-)]
-enum EnteredNode<F: Format> {
-    Complete(Owned<Vec<Child<F::Key>>>),
-    Internal(InternalFrame<F>),
+type EnteredNode<F> =
+    Entered<InternalFrame<F>, Owned<Vec<Child<<F as acyclic_collections::page::Format>::Key>>>>;
+
+impl<'mutation, S, F, M> rewrite::Work<[(usize, &'mutation M)]> for Context<'_, '_, '_, S, F, M>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F> + 'mutation,
+{
+    type Request = NodeRequest<F::Key>;
+    type Frame = InternalFrame<F>;
+    type Output = Owned<Vec<Child<F::Key>>>;
+    type Stack = Owned<Vec<InternalFrame<F>>>;
+    type Error = crate::FsError;
+
+    fn advance(
+        &mut self,
+        frame: &mut Self::Frame,
+        mutations: &[(usize, &'mutation M)],
+    ) -> Result<Option<Self::Request>, Self::Error> {
+        self.advance_frame(frame, mutations)
+    }
+
+    fn push(&mut self, stack: &mut Self::Stack, frame: Self::Frame) -> Result<(), Self::Error> {
+        stack.ensure_for_push(
+            usize::from(self.limits.maximum_page_height),
+            self.accounting,
+        )?;
+        stack.value.push(frame);
+        Ok(())
+    }
+
+    fn pop(&mut self, stack: &mut Self::Stack) -> Option<Self::Frame> {
+        stack.value.pop()
+    }
+
+    fn append(&mut self, frame: &mut Self::Frame, output: Self::Output) -> Result<(), Self::Error> {
+        append_owned(&mut frame.rewritten, output, self.accounting)
+    }
+}
+
+impl<S, F, M> merge::Work<F, M> for Context<'_, '_, '_, S, F, M>
+where
+    S: crate::AsyncObjectStore,
+    F: Format,
+    M: Mutation<F>,
+{
+    type Current = Owned<Option<F::Value>>;
+    type Output = Owned<Vec<F::Value>>;
+    type Error = crate::FsError;
+
+    fn mutation_key(mutation: &M) -> &F::Key {
+        mutation.key()
+    }
+
+    fn current(&mut self, value: Option<&F::Value>) -> Result<Self::Current, Self::Error> {
+        match value {
+            Some(value) => self.clone_value(value),
+            None => self.empty(None),
+        }
+    }
+
+    fn apply(&mut self, mutation: &M, current: &mut Self::Current) -> Result<(), Self::Error> {
+        self.apply_mutation(mutation, current)
+    }
+
+    fn append(
+        &mut self,
+        output: &mut Self::Output,
+        current: Self::Current,
+    ) -> Result<(), Self::Error> {
+        if current.value.is_some() {
+            push_value(output, current)
+        } else {
+            current.retire(self.accounting)
+        }
+    }
+
+    fn charge_items(&mut self, count: u64) -> Result<(), Self::Error> {
+        Context::charge_items(self, count)
+    }
+
+    fn invalid_input() -> Self::Error {
+        Self::error(Error::MutationContract)
+    }
 }
 
 struct Context<'a, 'accounting, 'work, S, F, M>
@@ -195,46 +273,29 @@ where
         mutations: &[(usize, &M)],
     ) -> Result<Owned<Vec<Child<F::Key>>>, crate::FsError> {
         let mut stack = Owned::<Vec<InternalFrame<F>>>::allocate(0, self.accounting)?;
-        let mut request = NodeRequest {
+        let request = NodeRequest {
             page: root,
             lower: self.empty(None)?,
             upper: self.empty(None)?,
             mutations: 0..mutations.len(),
             height: 1,
         };
-        'traverse: loop {
-            let mut result = match self.enter_node(request, mutations).await? {
-                EnteredNode::Complete(result) => result,
-                EnteredNode::Internal(mut frame) => {
-                    if let Some(next) = self.advance_frame(&mut frame, mutations)? {
-                        stack.ensure_for_push(
-                            usize::from(self.limits.maximum_page_height),
-                            self.accounting,
-                        )?;
-                        stack.value.push(frame);
-                        request = next;
-                        continue;
-                    }
-                    self.finish_frame(frame).await?
+        let mut action = Action::Enter(request);
+        loop {
+            action = match action {
+                Action::Enter(request) => {
+                    let entered = self.enter_node(request, mutations).await?;
+                    rewrite::descend(self, &mut stack, entered, mutations)?
                 }
-            };
-            loop {
-                let Some(mut frame) = stack.value.pop() else {
+                Action::Finish(frame) => {
+                    let result = self.finish_frame(frame).await?;
+                    rewrite::ascend(self, &mut stack, result, mutations)?
+                }
+                Action::Complete(result) => {
                     stack.retire(self.accounting)?;
                     return Ok(result);
-                };
-                append_owned(&mut frame.rewritten, result, self.accounting)?;
-                if let Some(next) = self.advance_frame(&mut frame, mutations)? {
-                    stack.ensure_for_push(
-                        usize::from(self.limits.maximum_page_height),
-                        self.accounting,
-                    )?;
-                    stack.value.push(frame);
-                    request = next;
-                    continue 'traverse;
                 }
-                result = self.finish_frame(frame).await?;
-            }
+            };
         }
     }
 
@@ -294,9 +355,7 @@ where
                     original: request.page,
                     children,
                     inherited_upper: request.upper,
-                    next_child: 0,
-                    mutation_cursor: request.mutations.start,
-                    mutation_end: request.mutations.end,
+                    selection: selection::Cursor::new(request.mutations),
                     height: request.height,
                     rewritten: Owned::allocate(0, self.accounting)?,
                 }))
@@ -309,44 +368,30 @@ where
         frame: &mut InternalFrame<F>,
         mutations: &[(usize, &M)],
     ) -> Result<Option<NodeRequest<F::Key>>, crate::FsError> {
-        while let Some(child) = frame.children.value.get(frame.next_child) {
-            let index = frame.next_child;
-            frame.next_child += 1;
-            let selected_start = frame.mutation_cursor;
-            if let Some(next) = frame.children.value.get(index + 1) {
-                while frame.mutation_cursor < frame.mutation_end {
-                    self.charge_items(1)?;
-                    let mutation = mutations
-                        .get(frame.mutation_cursor)
-                        .ok_or_else(|| Self::error(Error::MutationContract))?;
-                    if mutation.1.key() >= &next.first {
-                        break;
-                    }
-                    frame.mutation_cursor += 1;
-                }
-            } else {
-                frame.mutation_cursor = frame.mutation_end;
-            }
-            self.charge_items(1)?;
-            if selected_start == frame.mutation_cursor {
+        while let Some(selected) = frame.selection.select(
+            &frame.children.value,
+            |index| {
+                mutations
+                    .get(index)
+                    .map(|(_, mutation)| mutation.key())
+                    .ok_or_else(|| Self::error(Error::MutationContract))
+            },
+            || self.charge_items(1),
+        )? {
+            let child = selected.child;
+            if selected.mutations.is_empty() {
                 let first = self.clone_key(&child.first)?;
                 push_summary(&mut frame.rewritten, first, child.page, self.accounting)?;
                 continue;
             }
             let lower = self.clone_bound(Some(&child.first))?;
-            let upper = self.clone_bound(
-                frame
-                    .children
-                    .value
-                    .get(index + 1)
-                    .map(|next| &next.first)
-                    .or(frame.inherited_upper.value.as_ref()),
-            )?;
+            let upper =
+                self.clone_bound(selected.upper.or(frame.inherited_upper.value.as_ref()))?;
             return Ok(Some(NodeRequest {
                 page: child.page,
                 lower,
                 upper,
-                mutations: selected_start..frame.mutation_cursor,
+                mutations: selected.mutations,
                 height: frame
                     .height
                     .checked_add(1)
@@ -494,50 +539,7 @@ where
             .checked_add(mutations.len())
             .ok_or_else(|| Self::error(Error::AllocationFailed))?;
         let mut output = Owned::allocate(capacity, self.accounting)?;
-        let mut entry_index = 0;
-        let mut mutation_index = 0;
-        while entry_index < entries.len() || mutation_index < mutations.len() {
-            let Some((_, mutation)) = mutations.get(mutation_index) else {
-                self.charge_items(1)?;
-                let entry = entries
-                    .get(entry_index)
-                    .ok_or_else(|| Self::error(Error::MutationContract))?;
-                let cloned = self.clone_value(entry)?;
-                push_value(&mut output, cloned)?;
-                entry_index += 1;
-                continue;
-            };
-            let entry = entries.get(entry_index);
-            let ordering = entry.map(|entry| F::key(entry).cmp(mutation.key()));
-            self.charge_items(u64::from(ordering.is_some()))?;
-            if matches!(ordering, Some(std::cmp::Ordering::Less)) {
-                let cloned =
-                    self.clone_value(entry.ok_or_else(|| Self::error(Error::MutationContract))?)?;
-                push_value(&mut output, cloned)?;
-                entry_index += 1;
-                continue;
-            }
-            let mut current = if matches!(ordering, Some(std::cmp::Ordering::Equal)) {
-                entry_index += 1;
-                self.clone_value(entry.ok_or_else(|| Self::error(Error::MutationContract))?)?
-            } else {
-                self.empty(None)?
-            };
-            let key = mutation.key();
-            while let Some((_, mutation)) = mutations
-                .get(mutation_index)
-                .filter(|(_, mutation)| mutation.key() == key)
-            {
-                self.charge_items(1)?;
-                self.apply_mutation(mutation, &mut current)?;
-                mutation_index += 1;
-            }
-            if current.value.is_some() {
-                push_value(&mut output, current)?;
-            } else {
-                current.retire(self.accounting)?;
-            }
-        }
+        merge::apply::<F, M, _>(self, entries, mutations, &mut output)?;
         Ok(output)
     }
 
