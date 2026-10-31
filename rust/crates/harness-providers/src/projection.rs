@@ -190,12 +190,9 @@ pub(crate) fn body_named<'a>(
         .map_err(|error| invalid(error.to_string()))?;
     let tools = (!tools.is_empty() || adapter == Adapter::Responses).then_some(tools);
     system.retain(|text| !text.trim().is_empty());
-    let max = request
-        .max_output_tokens
-        .unwrap_or(provider.default_output_budget());
-    if !provider.capacity.permits_output(max) {
-        return Err(invalid("requested output exceeds selected model capacity"));
-    }
+    let max = provider
+        .admitted_capacity()
+        .output_reservation(request.max_output_tokens)?;
     let mut fields = serde_json::Map::new();
     let map = &mut fields;
     let model = request.model.name.as_str();
