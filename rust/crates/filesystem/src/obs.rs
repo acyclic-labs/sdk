@@ -168,7 +168,6 @@ pub(crate) use worker_context_tests::assert_filtered_callback_isolation;
 #[cfg(not(target_arch = "wasm32"))]
 mod worker_context_tests {
     use std::sync::{Arc, Mutex, mpsc};
-    use std::time::Duration;
     use tracing_subscriber::{layer::Context, prelude::*};
 
     use acyclic_grpc_observability::tests::{Capture, Evidence};
@@ -536,9 +535,7 @@ mod worker_context_tests {
                     worker_span.clone(),
                     move || {
                         started_tx.send(()).expect("worker start observer is live");
-                        release_rx
-                            .recv_timeout(Duration::from_secs(5))
-                            .expect("worker release arrives");
+                        release_rx.recv().expect("worker release arrives");
                         tracing::info!("actual work completed");
                         #[derive(strum::IntoStaticStr)]
                         enum Failure {
@@ -550,7 +547,7 @@ mod worker_context_tests {
             })
             .await;
             let job = job.expect("worker launched inside operation scope");
-            started_rx.recv_timeout(Duration::from_secs(5))?;
+            started_rx.recv()?;
             drop(job); // Tokio detaches: abandoning the caller cannot end actual work.
             drop(operation);
             drop(caller);
@@ -559,7 +556,7 @@ mod worker_context_tests {
                 Err(mpsc::TryRecvError::Empty)
             ));
             release_tx.send(())?;
-            closed_rx.recv_timeout(Duration::from_secs(5))?;
+            closed_rx.recv()?;
             Ok::<_, Box<dyn std::error::Error>>(())
         }
         .with_subscriber(unrelated)

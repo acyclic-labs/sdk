@@ -156,6 +156,9 @@ pub enum WorkspaceContextDiscardOutcome {
 }
 
 /// Core workspace-context registry over one durable adapter.
+///
+/// Each mutation attempts one conditional publication. A concurrent change
+/// returns [`WorkspaceContextError::Conflict`] without repeating the operation.
 pub struct WorkspaceContextRegistry<S> {
     store: S,
 }
@@ -186,6 +189,9 @@ pub enum WorkspaceContextError<E: std::error::Error + 'static> {
     /// A context already exists with different immutable lineage.
     #[error("workspace context conflicts with its durable registration")]
     ConflictingRegistration,
+    /// A checked revision or context set changed before publication.
+    #[error("workspace context changed before publication")]
+    Conflict,
     /// Root bindings are malformed or do not match the direct parent.
     #[error("workspace context roots do not match their direct parent")]
     InvalidRoots,
@@ -242,60 +248,59 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         root: WorkspaceContextRoot,
     ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
         collect_roots([root.clone()])?;
-        loop {
-            let mut context = self.resolve(context_id).await?;
-            if context.state == WorkspaceContextState::Discarded {
-                return Err(WorkspaceContextError::Discarded);
-            }
-            if let Some(existing) = context.roots.get(&root.root_id) {
-                return if existing == &root {
-                    Ok(context)
-                } else {
-                    Err(WorkspaceContextError::ConflictingRegistration)
-                };
-            }
-            if context
-                .roots
-                .values()
-                .any(|existing| existing.source_path == root.source_path)
-            {
-                return Err(WorkspaceContextError::ConflictingRegistration);
-            }
+        let mut context = self.resolve(context_id).await?;
+        if context.state == WorkspaceContextState::Discarded {
+            return Err(WorkspaceContextError::Discarded);
+        }
+        if let Some(existing) = context.roots.get(&root.root_id) {
+            return if existing == &root {
+                Ok(context)
+            } else {
+                Err(WorkspaceContextError::ConflictingRegistration)
+            };
+        }
+        if context
+            .roots
+            .values()
+            .any(|existing| existing.source_path == root.source_path)
+        {
+            return Err(WorkspaceContextError::ConflictingRegistration);
+        }
 
-            let mut expected = BTreeMap::from([(context_id, context.revision)]);
-            match context.parent_context_id {
-                None if root.parent_workspace_id.is_some() => {
+        let mut expected = BTreeMap::from([(context_id, context.revision)]);
+        match context.parent_context_id {
+            None if root.parent_workspace_id.is_some() => {
+                return Err(WorkspaceContextError::InvalidRoots);
+            }
+            None => {}
+            Some(parent_context_id) => {
+                let parent = self.resolve(parent_context_id).await?;
+                let valid_parent = parent.state != WorkspaceContextState::Discarded
+                    && parent.roots.get(&root.root_id).is_some_and(|parent_root| {
+                        parent_root.source_path == root.source_path
+                            && root.parent_workspace_id == Some(parent_root.workspace_id)
+                    });
+                if !valid_parent {
                     return Err(WorkspaceContextError::InvalidRoots);
                 }
-                None => {}
-                Some(parent_context_id) => {
-                    let parent = self.resolve(parent_context_id).await?;
-                    let valid_parent = parent.state != WorkspaceContextState::Discarded
-                        && parent.roots.get(&root.root_id).is_some_and(|parent_root| {
-                            parent_root.source_path == root.source_path
-                                && root.parent_workspace_id == Some(parent_root.workspace_id)
-                        });
-                    if !valid_parent {
-                        return Err(WorkspaceContextError::InvalidRoots);
-                    }
-                    expected.insert(parent_context_id, parent.revision);
-                }
-            }
-
-            context.roots.insert(root.root_id, root.clone());
-            context.revision = context
-                .revision
-                .checked_add(1)
-                .ok_or(WorkspaceContextError::IncompatibleState)?;
-            if self
-                .store
-                .compare_and_swap_many(expected, vec![context.clone()], false)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                return Ok(context);
+                expected.insert(parent_context_id, parent.revision);
             }
         }
+
+        context.roots.insert(root.root_id, root);
+        context.revision = context
+            .revision
+            .checked_add(1)
+            .ok_or(WorkspaceContextError::IncompatibleState)?;
+        if self
+            .store
+            .compare_and_swap_many(expected, vec![context.clone()], false)
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            return Ok(context);
+        }
+        Err(WorkspaceContextError::Conflict)
     }
 
     /// Removes one root binding only when no live descendant depends on it.
@@ -311,76 +316,75 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         context_id: WorkspaceContextId,
         root_id: WorkspaceRootId,
     ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
-        loop {
-            let contexts = self
-                .store
-                .list()
-                .await
-                .map_err(WorkspaceContextError::Store)?;
-            let mut by_id = BTreeMap::new();
-            for context in contexts {
-                validate_record(&context, context.context_id)?;
-                if by_id.insert(context.context_id, context).is_some() {
-                    return Err(WorkspaceContextError::IncompatibleState);
-                }
-            }
-            let mut context = by_id
-                .get(&context_id)
-                .cloned()
-                .ok_or(WorkspaceContextError::IncompatibleState)?;
-            if context.state == WorkspaceContextState::Discarded {
-                return Err(WorkspaceContextError::Discarded);
-            }
-            if !context.roots.contains_key(&root_id) || context.roots.len() == 1 {
-                return Err(WorkspaceContextError::InvalidRoots);
-            }
-            // Ancestors already walked to a root without meeting `context_id`
-            // end later walks, keeping deep fork chains linear.
-            let mut cleared = BTreeSet::new();
-            for candidate in by_id.values() {
-                if candidate.context_id == context_id
-                    || candidate.state == WorkspaceContextState::Discarded
-                    || !candidate.roots.contains_key(&root_id)
-                {
-                    continue;
-                }
-                let mut parent = candidate.parent_context_id;
-                let mut visited = BTreeSet::new();
-                while let Some(id) = parent {
-                    if id == context_id {
-                        return Err(WorkspaceContextError::RootInUse);
-                    }
-                    if cleared.contains(&id) {
-                        break;
-                    }
-                    if !visited.insert(id) {
-                        return Err(WorkspaceContextError::IncompatibleState);
-                    }
-                    parent = by_id
-                        .get(&id)
-                        .ok_or(WorkspaceContextError::IncompatibleState)?
-                        .parent_context_id;
-                }
-                cleared.append(&mut visited);
-            }
-            context.roots.remove(&root_id);
-            context.revision = context
-                .revision
-                .checked_add(1)
-                .ok_or(WorkspaceContextError::IncompatibleState)?;
-            let expected = by_id
-                .iter()
-                .map(|(id, record)| (*id, record.revision))
-                .collect();
-            if self
-                .store
-                .compare_and_swap_many(expected, vec![context.clone()], true)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                return Ok(context);
+        let contexts = self
+            .store
+            .list()
+            .await
+            .map_err(WorkspaceContextError::Store)?;
+        let mut by_id = BTreeMap::new();
+        for context in contexts {
+            validate_record(&context, context.context_id)?;
+            if by_id.insert(context.context_id, context).is_some() {
+                return Err(WorkspaceContextError::IncompatibleState);
             }
         }
+        let mut context = by_id
+            .get(&context_id)
+            .cloned()
+            .ok_or(WorkspaceContextError::IncompatibleState)?;
+        if context.state == WorkspaceContextState::Discarded {
+            return Err(WorkspaceContextError::Discarded);
+        }
+        if !context.roots.contains_key(&root_id) || context.roots.len() == 1 {
+            return Err(WorkspaceContextError::InvalidRoots);
+        }
+        // Ancestors already walked to a root without meeting `context_id`
+        // end later walks, keeping deep fork chains linear.
+        let mut cleared = BTreeSet::new();
+        for candidate in by_id.values() {
+            if candidate.context_id == context_id
+                || candidate.state == WorkspaceContextState::Discarded
+                || !candidate.roots.contains_key(&root_id)
+            {
+                continue;
+            }
+            let mut parent = candidate.parent_context_id;
+            let mut visited = BTreeSet::new();
+            while let Some(id) = parent {
+                if id == context_id {
+                    return Err(WorkspaceContextError::RootInUse);
+                }
+                if cleared.contains(&id) {
+                    break;
+                }
+                if !visited.insert(id) {
+                    return Err(WorkspaceContextError::IncompatibleState);
+                }
+                parent = by_id
+                    .get(&id)
+                    .ok_or(WorkspaceContextError::IncompatibleState)?
+                    .parent_context_id;
+            }
+            cleared.append(&mut visited);
+        }
+        context.roots.remove(&root_id);
+        context.revision = context
+            .revision
+            .checked_add(1)
+            .ok_or(WorkspaceContextError::IncompatibleState)?;
+        let expected = by_id
+            .iter()
+            .map(|(id, record)| (*id, record.revision))
+            .collect();
+        if self
+            .store
+            .compare_and_swap_many(expected, vec![context.clone()], true)
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            return Ok(context);
+        }
+        Err(WorkspaceContextError::Conflict)
     }
 
     /// Resolves one durable context.
@@ -436,7 +440,7 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
                 .roots
                 .get_mut(&root_id)
                 .ok_or(WorkspaceContextError::InvalidRoots)?;
-            root.mount_path = mount_path.clone();
+            root.mount_path = mount_path;
             Ok(())
         })
         .await
@@ -457,50 +461,49 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         if workspace_name.is_empty() {
             return Err(WorkspaceContextError::InvalidRoots);
         }
-        loop {
-            let mut context = self.resolve(context_id).await?;
-            if context.state == WorkspaceContextState::Discarded {
-                return Err(WorkspaceContextError::Discarded);
+        let mut context = self.resolve(context_id).await?;
+        if context.state == WorkspaceContextState::Discarded {
+            return Err(WorkspaceContextError::Discarded);
+        }
+        let mut expected = BTreeMap::from([(context_id, context.revision)]);
+        match context.parent_context_id {
+            None if parent_workspace_id.is_some() => {
+                return Err(WorkspaceContextError::InvalidRoots);
             }
-            let mut expected = BTreeMap::from([(context_id, context.revision)]);
-            match context.parent_context_id {
-                None if parent_workspace_id.is_some() => {
+            None => {}
+            Some(parent_context_id) => {
+                let parent = self.resolve(parent_context_id).await?;
+                if parent.state == WorkspaceContextState::Discarded
+                    || parent
+                        .roots
+                        .get(&root_id)
+                        .is_none_or(|root| Some(root.workspace_id) != parent_workspace_id)
+                {
                     return Err(WorkspaceContextError::InvalidRoots);
                 }
-                None => {}
-                Some(parent_context_id) => {
-                    let parent = self.resolve(parent_context_id).await?;
-                    if parent.state == WorkspaceContextState::Discarded
-                        || parent
-                            .roots
-                            .get(&root_id)
-                            .is_none_or(|root| Some(root.workspace_id) != parent_workspace_id)
-                    {
-                        return Err(WorkspaceContextError::InvalidRoots);
-                    }
-                    expected.insert(parent_context_id, parent.revision);
-                }
-            }
-            let root = context
-                .roots
-                .get_mut(&root_id)
-                .ok_or(WorkspaceContextError::InvalidRoots)?;
-            root.workspace_id = workspace_id;
-            root.workspace_name.clone_from(&workspace_name);
-            root.parent_workspace_id = parent_workspace_id;
-            context.revision = context
-                .revision
-                .checked_add(1)
-                .ok_or(WorkspaceContextError::IncompatibleState)?;
-            if self
-                .store
-                .compare_and_swap_many(expected, vec![context.clone()], false)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                return Ok(context);
+                expected.insert(parent_context_id, parent.revision);
             }
         }
+        let root = context
+            .roots
+            .get_mut(&root_id)
+            .ok_or(WorkspaceContextError::InvalidRoots)?;
+        root.workspace_id = workspace_id;
+        root.workspace_name = workspace_name;
+        root.parent_workspace_id = parent_workspace_id;
+        context.revision = context
+            .revision
+            .checked_add(1)
+            .ok_or(WorkspaceContextError::IncompatibleState)?;
+        if self
+            .store
+            .compare_and_swap_many(expected, vec![context.clone()], false)
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            return Ok(context);
+        }
+        Err(WorkspaceContextError::Conflict)
     }
 
     /// Freezes or resumes a retained context without changing its roots.
@@ -609,76 +612,74 @@ impl<S: WorkspaceContextStore> WorkspaceContextRegistry<S> {
         {
             return Err(WorkspaceContextError::InvalidRoots);
         }
-        loop {
-            let mut expected = BTreeMap::from([(context_id, 0)]);
-            if let Some(parent_id) = parent_context_id {
-                let parent = self.resolve(parent_id).await?;
-                if parent.state == WorkspaceContextState::Discarded
-                    || roots.len() != parent.roots.len()
-                    || roots.iter().any(|(root_id, root)| {
-                        parent.roots.get(root_id).is_none_or(|parent_root| {
-                            root.source_path != parent_root.source_path
-                                || root.parent_workspace_id != Some(parent_root.workspace_id)
-                        })
+        let mut expected = BTreeMap::from([(context_id, 0)]);
+        if let Some(parent_id) = parent_context_id {
+            let parent = self.resolve(parent_id).await?;
+            if parent.state == WorkspaceContextState::Discarded
+                || roots.len() != parent.roots.len()
+                || roots.iter().any(|(root_id, root)| {
+                    parent.roots.get(root_id).is_none_or(|parent_root| {
+                        root.source_path != parent_root.source_path
+                            || root.parent_workspace_id != Some(parent_root.workspace_id)
                     })
-                {
-                    return Err(WorkspaceContextError::InvalidRoots);
-                }
-                expected.insert(parent_id, parent.revision);
-            }
-            let record = WorkspaceContext {
-                version: WORKSPACE_CONTEXT_VERSION,
-                revision: 1,
-                context_id,
-                parent_context_id,
-                roots: roots.clone(),
-                state: WorkspaceContextState::Active,
-            };
-            if self
-                .store
-                .compare_and_swap_many(expected, vec![record.clone()], false)
-                .await
-                .map_err(WorkspaceContextError::Store)?
+                })
             {
-                return Ok(record);
+                return Err(WorkspaceContextError::InvalidRoots);
             }
-            if let Some(existing) = self
-                .store
-                .load(context_id)
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                validate_record(&existing, context_id)?;
-                return if same_registration(&existing, &record) {
-                    Ok(existing)
-                } else {
-                    Err(WorkspaceContextError::ConflictingRegistration)
-                };
-            }
+            expected.insert(parent_id, parent.revision);
         }
+        let record = WorkspaceContext {
+            version: WORKSPACE_CONTEXT_VERSION,
+            revision: 1,
+            context_id,
+            parent_context_id,
+            roots,
+            state: WorkspaceContextState::Active,
+        };
+        if self
+            .store
+            .compare_and_swap_many(expected, vec![record.clone()], false)
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            return Ok(record);
+        }
+        if let Some(existing) = self
+            .store
+            .load(context_id)
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            validate_record(&existing, context_id)?;
+            return if same_registration(&existing, &record) {
+                Ok(existing)
+            } else {
+                Err(WorkspaceContextError::ConflictingRegistration)
+            };
+        }
+        Err(WorkspaceContextError::Conflict)
     }
 
     async fn update(
         &self,
         context_id: WorkspaceContextId,
-        mut action: impl FnMut(&mut WorkspaceContext) -> Result<(), WorkspaceContextError<S::Error>>,
+        action: impl FnOnce(&mut WorkspaceContext) -> Result<(), WorkspaceContextError<S::Error>>,
     ) -> Result<WorkspaceContext, WorkspaceContextError<S::Error>> {
-        loop {
-            let mut context = self.resolve(context_id).await?;
-            let expected = context.revision;
-            action(&mut context)?;
-            context.revision = expected
-                .checked_add(1)
-                .ok_or(WorkspaceContextError::IncompatibleState)?;
-            if self
-                .store
-                .compare_and_swap(context_id, expected, context.clone())
-                .await
-                .map_err(WorkspaceContextError::Store)?
-            {
-                return Ok(context);
-            }
+        let mut context = self.resolve(context_id).await?;
+        let expected = context.revision;
+        action(&mut context)?;
+        context.revision = expected
+            .checked_add(1)
+            .ok_or(WorkspaceContextError::IncompatibleState)?;
+        if self
+            .store
+            .compare_and_swap(context_id, expected, context.clone())
+            .await
+            .map_err(WorkspaceContextError::Store)?
+        {
+            return Ok(context);
         }
+        Err(WorkspaceContextError::Conflict)
     }
 }
 
@@ -985,6 +986,22 @@ mod tests {
                 self.swaps.load(Ordering::Relaxed),
             )
         }
+
+        async fn publish_interleaved(&self) -> Result<(), MemoryWorkspaceContextStoreError> {
+            let inserted = self
+                .insert_before_swap
+                .lock()
+                .expect("injection lock")
+                .take();
+            if let Some(record) = inserted {
+                assert!(
+                    self.inner
+                        .compare_and_swap(record.context_id, record.revision - 1, record)
+                        .await?
+                );
+            }
+            Ok(())
+        }
     }
 
     impl WorkspaceContextStore for CountingContextStore {
@@ -1014,6 +1031,7 @@ mod tests {
             replacement: WorkspaceContext,
         ) -> Result<bool, Self::Error> {
             self.swaps.fetch_add(1, Ordering::Relaxed);
+            self.publish_interleaved().await?;
             self.inner
                 .compare_and_swap(context_id, expected_revision, replacement)
                 .await
@@ -1026,18 +1044,7 @@ mod tests {
             require_exact_set: bool,
         ) -> Result<bool, Self::Error> {
             self.swaps.fetch_add(1, Ordering::Relaxed);
-            let inserted = self
-                .insert_before_swap
-                .lock()
-                .expect("injection lock")
-                .take();
-            if let Some(record) = inserted {
-                assert!(
-                    self.inner
-                        .compare_and_swap(record.context_id, 0, record)
-                        .await?
-                );
-            }
+            self.publish_interleaved().await?;
             self.inner
                 .compare_and_swap_many(expected_revisions, replacements, require_exact_set)
                 .await
@@ -1269,7 +1276,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn root_removal_rechecks_a_concurrently_registered_descendant() {
+    async fn context_mutations_return_the_original_conditional_conflict() {
+        for operation in 0..5 {
+            let registry = WorkspaceContextRegistry::new(CountingContextStore::default());
+            let mut concurrent = registry
+                .register_root(context(41), scaled_roots(0, 2))
+                .await
+                .expect("original root");
+            concurrent.revision += 1;
+            concurrent.state = WorkspaceContextState::Frozen;
+            *registry
+                .store()
+                .insert_before_swap
+                .lock()
+                .expect("injection lock") = Some(concurrent.clone());
+            registry.store().reset();
+            let result = match operation {
+                0 => {
+                    registry
+                        .register_child(context(42), context(41), scaled_roots(1, 2))
+                        .await
+                }
+                1 => {
+                    registry
+                        .adopt_root(context(41), scaled_roots(0, 3).pop().expect("new root"))
+                        .await
+                }
+                2 => registry.remove_root(context(41), numbered_root(2)).await,
+                3 => {
+                    registry
+                        .set_workspace(
+                            context(41),
+                            numbered_root(2),
+                            workspace(99),
+                            "selected".to_owned(),
+                            None,
+                        )
+                        .await
+                }
+                _ => registry.set_active(context(41), true).await,
+            };
+            assert!(matches!(result, Err(WorkspaceContextError::Conflict)));
+            assert_eq!(
+                registry.store().counts(),
+                match operation {
+                    0 => (2, 0, 1),
+                    2 => (0, 1, 1),
+                    _ => (1, 0, 1),
+                }
+            );
+            assert_eq!(
+                registry.resolve(context(41)).await.expect("root"),
+                concurrent
+            );
+            assert!(
+                registry
+                    .store()
+                    .load(context(42))
+                    .await
+                    .expect("child")
+                    .is_none()
+            );
+            if operation == 0 {
+                let registered = registry
+                    .register_child(context(42), context(41), scaled_roots(1, 2))
+                    .await
+                    .expect("explicit new publication observes the concurrent parent");
+                assert_eq!(
+                    registry
+                        .register_child(context(42), context(41), scaled_roots(1, 2))
+                        .await
+                        .expect("exact registration remains idempotent"),
+                    registered
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn root_removal_preserves_a_concurrently_registered_descendant() {
         let registry = WorkspaceContextRegistry::new(CountingContextStore::default());
         let before = registry
             .register_root(context(41), scaled_roots(0, 2))
@@ -1294,14 +1379,20 @@ mod tests {
         registry.store().reset();
         assert!(matches!(
             registry.remove_root(context(41), numbered_root(2)).await,
-            Err(WorkspaceContextError::RootInUse)
+            Err(WorkspaceContextError::Conflict)
         ));
-        assert_eq!(registry.store().counts(), (0, 2, 1));
+        assert_eq!(registry.store().counts(), (0, 1, 1));
         assert_eq!(registry.resolve(context(41)).await.expect("target"), before);
         assert_eq!(
             registry.resolve(context(42)).await.expect("new child"),
             child
         );
+        registry.store().reset();
+        assert!(matches!(
+            registry.remove_root(context(41), numbered_root(2)).await,
+            Err(WorkspaceContextError::RootInUse)
+        ));
+        assert_eq!(registry.store().counts(), (0, 1, 0));
     }
 
     #[tokio::test]
