@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positions() -> Result<()> {
+    composed_cut_keeps_caller_members_and_original_request().await?;
     let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
     let operation = OperationId::from_bytes([11; 16]);
     let execution = crate::distributed::execution_path(operation, &mut None)?;
@@ -106,6 +107,160 @@ async fn atomic_cut_confirms_context_and_epoch_contributions_at_original_positio
         }
         drop(request.1);
     }
+    Ok(())
+}
+
+async fn composed_cut_keeps_caller_members_and_original_request() -> Result<()> {
+    let (journal, _issuer) = crate::filesystem::execution_journal::test_support::journal().await?;
+    let provider = Arc::new(acyclic_stream::MemoryStream::default());
+    let operation = OperationId::from_bytes([12; 16]);
+    let execution = crate::distributed::execution_path(operation, &mut None)?;
+    let head = journal.index_path(operation, "head", None)?;
+    let pages = journal.index_path(operation, "pages", None)?;
+    let context = StreamPath::new("contributed/context")?;
+    let caller = StreamPath::new("contributed/delta")?;
+    let epoch = StreamPath::new("contributed/epoch")?;
+    let fork = StreamPath::new("contributed/fork")?;
+    provider
+        .append(acyclic_stream::AppendRequest {
+            path: context.clone(),
+            records: vec![OwnedBytes::from_static(b"prior context").into()],
+            if_tail: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
+        })
+        .await?;
+    let observation = OwnedBytes::from_static(b"observation");
+    let checkpoint = OwnedBytes::from_static(b"checkpoint");
+    let records = [OwnedBytes::from_static(b"index page")];
+    let envelope = OwnedBytes::from_static(b"original context envelope");
+    let snapshot = OwnedBytes::from_static(b"original epoch checkpoint");
+    let contributions = [
+        Contribution {
+            condition: CommitCondition::Tail {
+                path: context.clone(),
+                expected: 1,
+            },
+            record: &envelope,
+        },
+        Contribution {
+            condition: CommitCondition::Absent {
+                path: epoch.clone(),
+            },
+            record: &snapshot,
+        },
+    ];
+    let cut = Cut {
+        operation,
+        execution: &execution,
+        head: &head,
+        pages: &pages,
+        execution_condition: CommitCondition::Absent {
+            path: execution.clone(),
+        },
+        head_condition: CommitCondition::Absent { path: head.clone() },
+        execution_tail: 0,
+        head_tail: 0,
+        base: 0,
+        digest: [12; 32],
+        contributions: &contributions,
+    };
+    let key = acyclic_stream::IdempotencyKey::unique();
+    let mut work = None;
+    let (mut request, mut quota) = crate::distributed::commit_request(key.clone(), 0, &mut work);
+    // The caller's original batch owns its key and members before the Cut is added.
+    request.conditions.extend([
+        CommitCondition::Absent {
+            path: caller.clone(),
+        },
+        CommitCondition::Absent { path: fork.clone() },
+    ]);
+    add_records(
+        &mut request,
+        &mut quota,
+        &caller,
+        &[OwnedBytes::from_static(b"caller effect")],
+    )?;
+    request.mutations.push(CommitMutation::Fork {
+        source: context.clone(),
+        destination: fork,
+        at_tail: 1,
+        records: Vec::new(),
+        exclude: Vec::new(),
+    });
+    let mut prepared = cut.contribute(
+        (acyclic_fs::FilesystemCommit::new(request), quota),
+        CommitCondition::Absent {
+            path: pages.clone(),
+        },
+        &records,
+        &observation,
+        &checkpoint,
+    )?;
+    assert_eq!(prepared.0.request().idempotency_key, key);
+    acyclic_stream::request::validate_commit(
+        prepared.0.request_mut().ok_or_else(|| invalid(None))?,
+    )?;
+    let original = prepared.0.request().clone();
+    let outcome = provider.commit(original.clone()).await?;
+    let CommitOutcome::Committed(receipt) = &outcome else {
+        panic!("fresh composed cut refused")
+    };
+    assert_eq!(
+        cut.confirm_composed(
+            &prepared.0,
+            &outcome,
+            0,
+            &records,
+            &observation,
+            &checkpoint
+        )?,
+        Some(receipt.commit_id)
+    );
+    assert!(
+        cut.confirm(&outcome, 0, &records, &observation, &checkpoint)
+            .is_err()
+    );
+    for omitted in 0..receipt.appends.len() {
+        let mut incomplete = receipt.clone();
+        incomplete.appends.remove(omitted);
+        assert!(
+            cut.confirm_composed(
+                &prepared.0,
+                &CommitOutcome::Committed(incomplete),
+                0,
+                &records,
+                &observation,
+                &checkpoint
+            )
+            .is_err()
+        );
+    }
+    let mut incomplete = receipt.clone();
+    incomplete.forks.clear();
+    assert!(
+        cut.confirm_composed(
+            &prepared.0,
+            &CommitOutcome::Committed(incomplete),
+            0,
+            &records,
+            &observation,
+            &checkpoint
+        )
+        .is_err()
+    );
+    let replay = provider.commit(original.clone()).await?;
+    assert_eq!(
+        cut.confirm_composed(&prepared.0, &replay, 0, &records, &observation, &checkpoint)?,
+        Some(receipt.commit_id)
+    );
+    let mut racing = original;
+    racing.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+    let loser = provider.commit(racing).await?;
+    assert_eq!(
+        cut.confirm_composed(&prepared.0, &loser, 0, &records, &observation, &checkpoint)?,
+        None
+    );
+    drop(prepared);
     Ok(())
 }
 
