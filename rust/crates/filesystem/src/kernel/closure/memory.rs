@@ -314,79 +314,29 @@ pub(super) struct ProofVec<'a, T> {
 
 #[derive(Default)]
 pub(crate) struct CachedProofs {
-    entries: Vec<CachedSlot>,
-    guard: Option<ProofGuard>,
-}
-
-struct CachedSlot {
-    volume: crate::VolumeId,
-    slot: Arc<ProofSlot<CachedProof>>,
-    // Last: the slot's own allocation retires after the slot.
-    _guard: ProofGuard,
+    entries: crate::kernel::allocation::fixed_index::FixedIndex<CachedProofSlot>,
 }
 
 impl CachedProofs {
-    fn position(
-        &self,
-        volume: crate::VolumeId,
-        meter: &ProofMeter<'_>,
-    ) -> Result<Result<usize, usize>, crate::FsError> {
-        let (mut low, mut high) = (0, self.entries.len());
-        while low < high {
-            meter.charge(WorkCounters {
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let middle = low + (high - low) / 2;
-            let entry = self.entries.get(middle).ok_or(ObjectStoreError::Corrupt)?;
-            match entry.volume.cmp(&volume) {
-                std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-                std::cmp::Ordering::Less => low = middle + 1,
-                std::cmp::Ordering::Greater => high = middle,
-            }
-        }
-        Ok(Err(low))
-    }
-
     /// The volume's proof slot, created empty on first use.
     pub(super) fn slot(
         &mut self,
         volume: crate::VolumeId,
         meter: &ProofMeter<'_>,
-    ) -> Result<Arc<ProofSlot<CachedProof>>, crate::FsError> {
-        let index = match self.position(volume, meter)? {
-            Ok(index) => {
-                return Ok(Arc::clone(
-                    &self
-                        .entries
-                        .get(index)
-                        .ok_or(ObjectStoreError::Corrupt)?
-                        .slot,
-                ));
-            }
-            Err(index) => index,
-        };
-        let (slot, guard) = meter.owned(|accounting| {
-            let bytes = usize_to_u64(size_of::<ProofSlot<CachedProof>>() + 2 * size_of::<usize>());
-            let allocation = accounting.claim_owned(bytes, 1)?;
-            Ok((Arc::new(ProofSlot::default()), allocation, bytes))
-        })?;
-        let mut entries = ProofVec {
-            values: std::mem::take(&mut self.entries),
-            guard: self.guard.take(),
-            meter: meter.clone(),
-        };
-        let result = entries.insert(
-            index,
-            CachedSlot {
-                volume,
-                slot: Arc::clone(&slot),
-                _guard: guard,
-            },
-        );
-        self.entries = std::mem::take(&mut entries.values);
-        self.guard = entries.guard.take();
-        result.map(|()| slot)
+    ) -> Result<CachedProofSlot, crate::FsError> {
+        let key = volume.into_bytes();
+        if let Some(slot) = meter.with_accounting(|accounting| self.entries.get(key, accounting))? {
+            return Ok(slot.clone());
+        }
+        // Refusal leaves the original cache untouched and constructs no slot.
+        // The alias retains its original funding after this cache is retired.
+        let admitted = meter.with_accounting(RetainedArc::admit)?;
+        let slot = admitted.into_value(ProofSlot::default());
+        meter.with_accounting(|accounting| {
+            self.entries
+                .get_or_try_insert_with(key, accounting, |_| Ok(slot))
+                .map(|slot| slot.clone())
+        })
     }
 }
 

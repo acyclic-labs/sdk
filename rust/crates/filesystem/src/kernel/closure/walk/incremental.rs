@@ -409,7 +409,7 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
 
     pub(super) fn remember(
         &self,
-        slot: Option<Arc<super::super::ProofSlot<CachedProof>>>,
+        slot: Option<CachedProofSlot>,
         began: crate::collection::CollectionEpoch,
         proof: &GenerationProof,
         object_count: u64,
@@ -421,12 +421,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             let bytes = (root.parents.capacity() * size_of::<GenerationId>()) as u64;
             Ok((root, allocation, bytes))
         })?;
-        let mut root = root;
-        let mut header = self.meter.owned(|accounting| {
-            let bytes = (size_of::<CachedProof>() + 2 * size_of::<usize>()) as u64;
-            Ok(((), accounting.claim_owned(bytes, 1)?, bytes))
-        })?;
-        root.1.absorb(&mut header.1)?;
+        // Admit only the original backing while the proof meter is borrowed.
+        // On refusal the root's guard retires after that borrow is unlocked.
+        let admitted = self.meter.with_accounting(RetainedArc::admit)?;
         let cached = CachedProof {
             limits: self.limits,
             root: root.0,
@@ -437,7 +434,11 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
             _guard: root.1,
             object_bytes: self.object_bytes,
         };
-        Ok(Some(PendingProof::new(slot, began, cached)))
+        Ok(Some(PendingProof::new(
+            slot,
+            began,
+            admitted.into_value(cached),
+        )))
     }
 }
 
